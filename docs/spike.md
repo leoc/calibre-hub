@@ -49,9 +49,13 @@ Date: 2026-11-01. Result: **Go for Crystal.**
 
 ## Risks and follow-ups
 
-- Scan time on a large library is untested (dmt has ~60 books). If it gets
-  slow: fetch only `id,last_modified` first and the full rows for changed ids
-  (with an overlap window), keep the full scan as a periodic reconcile.
+- Scan time on a large library is untested (dmt has ~60 books, the target is
+  more than 10,000). Decided 2026-11-01 for Phase 2 (#8391): no full scan per
+  change. Triggers in `metadata.db` (installed in calibre-server's preStart)
+  write `(seq, book_id, table, op)` to `hub_changelog`; the hub only reads it
+  past its cursor and fetches full rows for the affected ids. Writes through
+  the hub emit events immediately. A cheap reconcile (`id`, `last_modified`)
+  runs on start and nightly and checks that the triggers exist.
 - calibre version drift: pin nixpkgs to the same input as nixos-config
   (`inputs.nixpkgs.follows`) so dev, VM test and dmt use one calibre version.
   `/cdb/cmd` checks the command version and answers 404 on a mismatch, which
