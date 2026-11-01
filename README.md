@@ -4,7 +4,7 @@ A thin layer on top of [calibre-server](https://manual.calibre-ebook.com/server.
 its own JSON API with session login, change events with hooks, and a web UI.
 calibre-server stays the only writer of the library.
 
-Status: backend (Phase 1). Spike notes: [docs/spike.md](docs/spike.md). Plan: Redmine epic #8388.
+Status: backend, events and handlers (Phase 2). Spike notes: [docs/spike.md](docs/spike.md). Plan: Redmine epic #8388.
 
 ## API
 
@@ -25,6 +25,34 @@ header `X-Calibre-Hub: 1`. Field names are camelCase, missing values `null`.
 
 calibre-server down: 502 with a JSON body.
 
+## Events and handlers
+
+calibre-server stays the only writer. Triggers in `metadata.db` (installed
+by `calibre-hub install-triggers` in calibre-server's preStart) log every
+change to a book, its links and renamed tags/authors/series into
+`hub_changelog`; the hub only reads it. Writes the hub makes itself (inbox)
+emit events right away. A cheap reconcile (`id`, `last_modified`) runs on
+start and daily at `reconcileAt`.
+
+Events: `{"type": "added|changed|deleted", "bookId": 1, "changes":
+{"tags": [[old], [new]], "#kategorie": [...]}, "book": {...}, "at": ...}`.
+Every executable in the handlers directory gets each event on stdin, in
+order per handler. Exit 0 = done, otherwise retry with backoff (10 s up to
+1 h); after `handlerAttempts` the delivery is parked and `alertCommand` is
+called with subject and text.
+
+Bundled handler `calibre-hub handler leseliste` (`leseliste.enable`):
+mirrors books with a tag into a folder (epub, else pdf, else converted),
+subfolders from the category column, files named `Author - Series NN - Title`.
+
+Inbox (`inbox.path`): files unchanged for `inbox.stableSeconds` are added
+through calibre-server; `A/B/x.epub` gets category `A.B` and tags `A`, `B`,
+tags embedded in the file are dropped. Originals move to `_imported/<date>/`
+or `_duplicates/<date>/`, after 3 failures to `_failed/<date>/`. Folders the
+hub can't write are skipped.
+
+Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
+
 ## NixOS module
 
 ```nix
@@ -39,6 +67,10 @@ calibre-server down: 502 with a JSON body.
     login.passwordFile = "/run/secrets/login";
     sessionKeyFile = "/run/secrets/session-key";
     calibre.servicePasswordFile = "/run/secrets/calibre-service";
+    inbox.path = "/srv/books/inbox";
+    leseliste = { enable = true; target = "/srv/books/reader"; };
+    alertCommand = "/run/current-system/sw/bin/notify-admin";
+    handlers."20-log" = pkgs.writeShellScript "log" "cat >> /var/lib/calibre-hub/events.log";
   };
 }
 ```
@@ -56,7 +88,7 @@ dev/testlib.sh /tmp/hub-testlib &      # test library + calibre-server on :18083
 printf %s hub > /tmp/hub-pw
 export CALIBRE_HUB_CALIBRE_URL=http://127.0.0.1:18083 CALIBRE_HUB_CALIBRE_USER=hub \
   CALIBRE_HUB_CALIBRE_PASSWORD_FILE=/tmp/hub-pw CALIBRE_HUB_CUSTOM_COLUMNS=kategorie \
-  CALIBRE_HUB_WATCH=/tmp/hub-testlib/library/metadata.db
+  CALIBRE_HUB_LIBRARY=/tmp/hub-testlib/library CALIBRE_HUB_LIBRARY_ID=library
 shards build && bin/calibre-hub serve   # API on 127.0.0.1:8084
 crystal spec
 nix build                               # package
@@ -75,5 +107,10 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CUSTOM_COLUMNS` | none | comma separated, e.g. `kategorie` |
 | `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot and event queue |
 | `CALIBRE_HUB_HOST`, `CALIBRE_HUB_PORT` | `127.0.0.1`, `8084` | |
-| `CALIBRE_HUB_WATCH` | none | `metadata.db`; scan when it changes |
-| `CALIBRE_HUB_SCAN_INTERVAL` | `900` | seconds between full scans |
+| `CALIBRE_HUB_LIBRARY` | none | library path: changelog in `metadata.db`, read-only |
+| `CALIBRE_HUB_SCAN_INTERVAL` | `900` | reconcile interval when triggers are missing |
+| `CALIBRE_HUB_RECONCILE_AT` | `03:30` | daily reconcile, local time |
+| `CALIBRE_HUB_HANDLERS_DIR` | none | executables called per event |
+| `CALIBRE_HUB_HANDLER_ATTEMPTS`, `_TIMEOUT` | `10`, `600` | |
+| `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
+| `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |

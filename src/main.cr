@@ -3,6 +3,9 @@ require "./calibre_hub/calibre"
 require "./calibre_hub/detector"
 require "./calibre_hub/auth"
 require "./calibre_hub/api"
+require "./calibre_hub/dispatcher"
+require "./calibre_hub/inbox"
+require "./calibre_hub/handlers/leseliste"
 
 module CalibreHub
   VERSION = "0.1.0"
@@ -20,9 +23,19 @@ module CalibreHub
     getter state_db : String = env("CALIBRE_HUB_STATE_DB", "calibre-hub.sqlite")
     getter host : String = env("CALIBRE_HUB_HOST", "127.0.0.1")
     getter port : Int32 = env("CALIBRE_HUB_PORT", "8084").to_i
-    # metadata.db of the library: scan when its mtime changes, else every interval
-    getter watch : String? = ENV["CALIBRE_HUB_WATCH"]?
+    # library path: metadata.db is watched (mtime) and its trigger changelog read
+    getter library : String? = ENV["CALIBRE_HUB_LIBRARY"]?.presence
+    # fallback reconcile interval when the changelog is missing
     getter interval : Time::Span = env("CALIBRE_HUB_SCAN_INTERVAL", "900").to_i.seconds
+    # daily full reconcile, local time HH:MM
+    getter reconcile_at : String = env("CALIBRE_HUB_RECONCILE_AT", "03:30")
+    getter handlers_dir : String? = ENV["CALIBRE_HUB_HANDLERS_DIR"]?.presence
+    getter handler_timeout : Time::Span = env("CALIBRE_HUB_HANDLER_TIMEOUT", "600").to_i.seconds
+    getter max_attempts : Int32 = env("CALIBRE_HUB_HANDLER_ATTEMPTS", "10").to_i
+    # executable called with subject and text when a handler is parked
+    getter alert_command : String? = ENV["CALIBRE_HUB_ALERT_COMMAND"]?.presence
+    getter inbox : String? = ENV["CALIBRE_HUB_INBOX"]?.presence
+    getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
     getter login_user : String = env("CALIBRE_HUB_LOGIN_USER", "arthur")
     # read only by serve, so scan works without them
     def login_password : String
@@ -30,7 +43,7 @@ module CalibreHub
     end
 
     def session_key : Bytes
-      secret("CALIBRE_HUB_SESSION_KEY_FILE").to_slice
+      Config.secret_bytes("CALIBRE_HUB_SESSION_KEY_FILE")
     end
 
     getter session_days : Int32 = env("CALIBRE_HUB_SESSION_DAYS", "30").to_i
@@ -44,7 +57,17 @@ module CalibreHub
 
     # Trailing newlines are dropped, like nix/init.sh does for calibre-server
     def self.secret(key) : String
-      File.read(env(key)).sub(/\n+\z/, "")
+      String.new(secret_bytes(key))
+    end
+
+    # byte-wise, so binary keys (not valid UTF-8) work too
+    def self.secret_bytes(key) : Bytes
+      bytes = File.open(env(key), &.getb_to_end)
+      size = bytes.size
+      while size > 0 && bytes[size - 1] == '\n'.ord
+        size -= 1
+      end
+      bytes[0, size]
     end
 
     private def env(key, default = nil)
@@ -58,6 +81,15 @@ module CalibreHub
     def calibre : Calibre
       Calibre.new(calibre_url, calibre_user, calibre_password, library_id, custom_columns)
     end
+
+    def metadata_db : String?
+      library.try { |l| File.join(l, "metadata.db") }
+    end
+
+    def state : DB::Database
+      # one connection: fibers share it, so SQLite never sees two writers
+      DB.open("sqlite3://#{state_db}?max_pool_size=1&busy_timeout=5000")
+    end
   end
 
   def self.print_events(events)
@@ -65,36 +97,119 @@ module CalibreHub
     STDOUT.flush
   end
 
-  # Scan on start, then whenever metadata.db changes (debounced) or the
-  # interval passes. Polls the mtime instead of inotify: robust across
-  # filesystems and cheap. Phase 2 replaces the full scan with the trigger
-  # changelog.
-  def self.watch(detector : Detector, config : Config)
+  # Change detection: reconcile on start (until calibre-server answers),
+  # then read the changelog whenever metadata.db changes (polled mtime,
+  # debounced) and at least every minute; full reconcile daily and, if the
+  # triggers are missing, every interval.
+  def self.detect(detector : Detector, config : Config, wake : Channel(Nil))
     spawn do
-      last_mtime = nil
-      last_scan = Time::UNIX_EPOCH
       loop do
-        mtime = config.watch.try { |p| File.info?(p).try(&.modification_time) }
-        if mtime != last_mtime || Time.utc - last_scan > config.interval
-          sleep 2.seconds if last_mtime && mtime != last_mtime # let a burst of writes settle
-          begin
-            print_events(detector.scan)
-            last_scan = Time.utc
-            last_mtime = mtime
-          rescue ex
-            STDERR.puts "scan failed: #{ex.message}"
-            sleep 10.seconds
+        print_events(detector.reconcile)
+        wake.send(nil) rescue nil
+        break
+      rescue ex
+        STDERR.puts "reconcile failed: #{ex.message}"
+        sleep 10.seconds
+      end
+      triggers = begin
+        detector.library_db.try { |db| LibraryDB.triggers_installed?(db) } || false
+      rescue ex
+        STDERR.puts "trigger check failed: #{ex.message}"
+        false
+      end
+      STDERR.puts "no trigger changelog in metadata.db, reconciling every #{config.interval.total_seconds.to_i} s" unless triggers
+      last_mtime = nil
+      last_poll = Time.utc
+      last_reconcile = Time.utc
+      failures = 0
+      loop do
+        mtime = config.metadata_db.try { |p| File.info?(p).try(&.modification_time) }
+        begin
+          if !triggers && Time.utc - last_reconcile > config.interval
+            emit(detector.reconcile, wake)
+            last_reconcile = Time.utc
+          elsif reconcile_due?(config.reconcile_at, last_reconcile)
+            emit(detector.reconcile, wake)
+            last_reconcile = Time.utc
+          elsif triggers && (mtime != last_mtime || Time.utc - last_poll > 1.minute)
+            sleep 500.milliseconds if mtime != last_mtime # let a burst of writes settle
+            emit(detector.poll, wake)
+            last_poll = Time.utc
           end
+          last_mtime = mtime
+          failures = 0
+        rescue ex
+          failures += 1
+          STDERR.puts "change detection failed (#{failures}): #{ex.message}"
+          # the same changes keep failing: rebuild from a reconcile instead
+          # of retrying them forever (calibre-server down fails here too)
+          if failures >= 3 && !ex.is_a?(Calibre::Unavailable)
+            begin
+              emit(detector.reconcile, wake)
+              last_reconcile = Time.utc
+              failures = 0
+            rescue ex2
+              STDERR.puts "reconcile failed: #{ex2.message}"
+            end
+          end
+          sleep 10.seconds
         end
         sleep 1.second
       end
     end
   end
 
+  def self.emit(events, wake)
+    print_events(events)
+    wake.send(nil) unless events.empty?
+  end
+
+  def self.reconcile_due?(at : String, last : Time, now = Time.local) : Bool
+    h, m = at.split(':').map(&.to_i)
+    today = Time.local(now.year, now.month, now.day, h, m, location: now.location)
+    now >= today && last < today
+  end
+
+  def self.dispatch(dispatcher : Dispatcher, wake : Channel(Nil))
+    spawn do
+      loop do
+        begin
+          while dispatcher.run_once > 0
+          end
+        rescue ex
+          STDERR.puts "dispatch failed: #{ex.message}"
+        end
+        select
+        when wake.receive
+        when timeout(5.seconds)
+        end
+      end
+    end
+  end
+
+  def self.watch_inbox(inbox : Inbox, wake : Channel(Nil))
+    spawn do
+      loop do
+        begin
+          wake.send(nil) if inbox.run_once > 0
+        rescue ex
+          STDERR.puts "inbox failed: #{ex.message}"
+        end
+        sleep 30.seconds
+      end
+    end
+  end
+
   def self.serve(config : Config)
     calibre = config.calibre
-    db = DB.open("sqlite3://#{config.state_db}")
-    watch(Detector.new(calibre, db), config)
+    db = config.state
+    detector = Detector.new(calibre, db, config.metadata_db)
+    wake = Channel(Nil).new(1)
+    detect(detector, config, wake)
+    alert = config.alert_command.try { |c| [c] }
+    env = {"CALIBRE_HUB_LIBRARY" => config.library || ""}
+    dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert), wake)
+    config.inbox.try { |dir| watch_inbox(Inbox.new(dir, calibre, detector, config.category_column, config.inbox_stable), wake) }
 
     auth = Auth.new(config.login_user, config.login_password, config.session_key,
       lifetime: config.session_days.days, secure: config.secure_cookies)
@@ -109,9 +224,13 @@ module CalibreHub
   end
 
   USAGE = <<-TXT
-    usage: calibre-hub [serve|scan|--help|--version]
-      serve  API on CALIBRE_HUB_HOST:CALIBRE_HUB_PORT, scans in the background
-      scan   compare the library with the snapshot once, print events as JSON lines
+    usage: calibre-hub <command>
+      serve                       API, change detection, handlers, inbox (default)
+      scan                        reconcile with the library once, print events as JSON lines
+      install-triggers <db>       create the changelog triggers in metadata.db
+                                  (only while calibre-server is stopped)
+      handler leseliste           mirror the reading list (event JSON on stdin)
+      --help, --version
     TXT
 
   def self.main(args)
@@ -120,8 +239,16 @@ module CalibreHub
       serve(Config.new)
     when "scan"
       config = Config.new
-      db = DB.open("sqlite3://#{config.state_db}")
-      print_events(Detector.new(config.calibre, db).scan)
+      print_events(Detector.new(config.calibre, config.state, config.metadata_db).reconcile)
+    when "install-triggers"
+      path = args[1]? || abort USAGE
+      LibraryDB.install_triggers(path)
+      puts "triggers installed in #{path}"
+    when "handler"
+      case args[1]?
+      when "leseliste" then exit Leseliste.run
+      else                  abort USAGE
+      end
     when "--help", "-h", "help"
       puts USAGE
     when "--version"

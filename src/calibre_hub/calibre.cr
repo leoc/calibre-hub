@@ -36,14 +36,65 @@ module CalibreHub
       Book.from_list(cmd("list", [requested, "id", true, search, -1]), @custom_columns)
     end
 
+    # Up to this many ids go into one "id:1 or id:2 ..." search; calibre's
+    # parser recurses per term and fails at a few hundred. Above it, listing
+    # everything and filtering is cheaper anyway (~1 s for 10,000 books).
+    SEARCH_IDS = 20
+
     def books(ids : Array(Int64), fields = FIELDS) : Array(Book)
       return [] of Book if ids.empty?
-      by_id = list(ids.map { |id| "id:#{id}" }.join(" or "), fields).index_by(&.id)
+      found = if ids.size <= SEARCH_IDS
+                list(ids.map { |id| "id:#{id}" }.join(" or "), fields)
+              else
+                wanted = ids.to_set
+                list("", fields).select { |b| wanted.includes?(b.id) }
+              end
+      by_id = found.index_by(&.id)
       ids.compact_map { |id| by_id[id]? }
     end
 
     def book(id : Int64) : Book?
       books([id], DETAIL_FIELDS).first?
+    end
+
+    # Cheap pass for reconciling: only id and last_modified of every book
+    def last_modified : Hash(Int64, String)
+      result = cmd("list", [["last_modified"], "id", true, "", -1])
+      data = result["data"]["last_modified"].as_h
+      result["book_ids"].as_a.to_h do |id|
+        v = Calibre.unwrap(data[id.to_s]? || JSON::Any.new(nil))
+        {id.as_i64, v.as_s? ? Time.parse_iso8601(v.as_s).to_utc.to_rfc3339(fraction_digits: 6) : ""}
+      end
+    end
+
+    record Added, book_id : Int64?, duplicates : Array(String)
+
+    # POST /cdb/add-book: the file is the body; calibre reads its metadata
+    def add_book(file : String, filename : String, duplicates = false) : Added
+      path = "/cdb/add-book/#{Random::Secure.hex(4)}/#{duplicates ? "y" : "n"}/#{URI.encode_path_segment(filename)}#{library_path}"
+      body = File.open(file) do |io|
+        c = client
+        c.basic_auth(@user, @password)
+        r = c.post(path, headers: HTTP::Headers{"Accept" => "application/json"}, body: io)
+        raise Unavailable.new("calibre-server add-book: HTTP #{r.status_code}") if r.status_code >= 500
+        raise Error.new("calibre-server add-book: HTTP #{r.status_code} #{r.body[0, 200]}") unless r.success?
+        JSON.parse(r.body)
+      end
+      dups = body["duplicates"]?.try(&.as_a.map { |d| "#{d["title"]} (#{d["authors"].as_a.join(", ")})" }) || [] of String
+      Added.new(body["book_id"]?.try(&.as_i64), dups)
+    rescue ex : IO::Error | Socket::Error
+      raise Unavailable.new("calibre-server: #{ex.message}")
+    end
+
+    # POST /cdb/set-fields: {"changes": {"tags": [...], "#kategorie": "A.B",
+    # "added_formats": [{"ext": "epub", "data_url": "<base64>"}]}}
+    def set_fields(book_id : Int64, changes : Hash(String, JSON::Any)) : Nil
+      request("POST", "/cdb/set-fields/#{book_id}#{library_path}", {changes: changes, loaded_book_ids: [book_id]}.to_json)
+    end
+
+    def add_format(book_id : Int64, file : String, ext : String) : Nil
+      data = Base64.strict_encode(File.open(file, &.getb_to_end))
+      set_fields(book_id, {"added_formats" => JSON.parse([{ext: ext, data_url: data}].to_json)})
     end
 
     # Paging with total count via the same search the web UI uses

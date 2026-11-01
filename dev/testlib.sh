@@ -27,5 +27,8 @@ fi
 calibre-server --userdb "$userdb" --manage-users -- list | grep -qx hub \
   || calibre-server --userdb "$userdb" --manage-users -- add hub < <(printf %s hub) >/dev/null
 calibre-server --userdb "$userdb" --manage-users -- chpass hub < <(printf %s hub) >/dev/null
+# changelog triggers, like the NixOS module does before every start
+here=$(dirname "$0")/..
+[ -x "$here/bin/calibre-hub" ] && "$here/bin/calibre-hub" install-triggers "$lib/metadata.db"
 exec calibre-server --userdb "$userdb" --enable-auth --auth-mode basic \
   --listen-on 127.0.0.1 --port 18083 "$lib"

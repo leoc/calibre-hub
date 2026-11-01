@@ -28,6 +28,19 @@ let
     lib.filterAttrs (_: c: c.hierarchical) cfg.customColumns
   );
 
+  leseliste = pkgs.writeShellScript "calibre-hub-leseliste" ''
+    export LESELISTE_TAG=${lib.escapeShellArg cfg.leseliste.tag}
+    export LESELISTE_TARGET=${lib.escapeShellArg (toString cfg.leseliste.target)}
+    export LESELISTE_FORMATS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.leseliste.formats)}
+    exec ${lib.getExe cfg.package} handler leseliste
+  '';
+  handlers = cfg.handlers // lib.optionalAttrs cfg.leseliste.enable { "50-leseliste" = leseliste; };
+  handlersDir = pkgs.linkFarm "calibre-hub-handlers" (
+    lib.mapAttrsToList (name: path: { inherit name path; }) handlers
+  );
+  writable = lib.optional (cfg.inbox.path != null) (toString cfg.inbox.path)
+    ++ lib.optional cfg.leseliste.enable (toString cfg.leseliste.target);
+
   column = types.submodule (
     { name, ... }:
     {
@@ -147,7 +160,79 @@ in
     scanInterval = mkOption {
       type = types.ints.positive;
       default = 900;
-      description = "Seconds between full scans when metadata.db does not change.";
+      description = "Seconds between reconciles when the trigger changelog is missing.";
+    };
+
+    reconcileAt = mkOption {
+      type = types.strMatching "[0-9]{2}:[0-9]{2}";
+      default = "03:30";
+      description = "Local time of the daily full reconcile.";
+    };
+
+    handlers = mkOption {
+      type = types.attrsOf types.path;
+      default = { };
+      example = lib.literalExpression ''{ "20-notify" = pkgs.writeShellScript "notify" "jq .type"; }'';
+      description = ''
+        Executables called for every event, in name order, with the event as
+        JSON on stdin (type, bookId, changes, book). Exit 0 means done; other
+        exit codes are retried with backoff and parked after handlerAttempts.
+        The environment has the CALIBRE_HUB_* settings of the service.
+      '';
+    };
+
+    handlerAttempts = mkOption {
+      type = types.ints.positive;
+      default = 10;
+    };
+
+    handlerTimeout = mkOption {
+      type = types.ints.positive;
+      default = 600;
+      description = "Seconds before a handler run is killed and counted as failed.";
+    };
+
+    alertCommand = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "/run/current-system/sw/bin/dmt-alert";
+      description = "Executable called with subject and text when a handler is parked.";
+    };
+
+    inbox = {
+      path = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Folder whose files are imported. Subfolders become the category
+          (A/B -> "A.B") and tags (A, B); tags embedded in the files are dropped.
+        '';
+      };
+      stableSeconds = mkOption {
+        type = types.ints.positive;
+        default = 120;
+        description = "A file is imported once it has not changed for this long.";
+      };
+    };
+
+    leseliste = {
+      enable = mkEnableOption "the reading list handler (mirror tagged books into a folder)";
+      tag = mkOption {
+        type = types.str;
+        default = "leseliste";
+      };
+      target = mkOption {
+        type = types.path;
+        description = "Folder to mirror into, e.g. a Syncthing folder.";
+      };
+      formats = mkOption {
+        type = types.listOf types.str;
+        default = [
+          "epub"
+          "pdf"
+        ];
+        description = "Formats in order of preference; missing ones are converted to the first.";
+      };
     };
 
     calibre = {
@@ -226,6 +311,8 @@ in
         USERS=$(sed "s#|#|$CREDENTIALS_DIRECTORY/#" <<<"$USERS")
         export USERS
         ${pkgs.bash}/bin/bash ${./init.sh}
+        # change log for the hub; calibre-server is not running yet
+        ${lib.getExe cfg.package} install-triggers ${lib.escapeShellArg "${toString cfg.library}/metadata.db"}
       '';
     };
 
@@ -237,8 +324,12 @@ in
         "calibre-server.service"
       ];
       wants = [ "calibre-server.service" ];
-      unitConfig.RequiresMountsFor = [ (toString cfg.library) ];
+      unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable;
+      # ebook-convert for the reading list
+      path = [ calibre ];
       environment = {
+        HOME = "/var/lib/calibre-hub";
+        QT_QPA_PLATFORM = "offscreen";
         CALIBRE_HUB_CALIBRE_URL = "http://127.0.0.1:${toString cfg.calibre.port}";
         CALIBRE_HUB_CALIBRE_USER = cfg.calibre.serviceUser;
         CALIBRE_HUB_CALIBRE_PASSWORD_FILE = "%d/calibre-password";
@@ -248,8 +339,15 @@ in
         CALIBRE_HUB_STATE_DB = "/var/lib/calibre-hub/state.sqlite";
         CALIBRE_HUB_HOST = cfg.host;
         CALIBRE_HUB_PORT = toString cfg.port;
-        CALIBRE_HUB_WATCH = "${toString cfg.library}/metadata.db";
+        CALIBRE_HUB_LIBRARY = toString cfg.library;
         CALIBRE_HUB_SCAN_INTERVAL = toString cfg.scanInterval;
+        CALIBRE_HUB_RECONCILE_AT = cfg.reconcileAt;
+        CALIBRE_HUB_HANDLERS_DIR = "${handlersDir}";
+        CALIBRE_HUB_HANDLER_ATTEMPTS = toString cfg.handlerAttempts;
+        CALIBRE_HUB_HANDLER_TIMEOUT = toString cfg.handlerTimeout;
+        CALIBRE_HUB_ALERT_COMMAND = lib.optionalString (cfg.alertCommand != null) cfg.alertCommand;
+        CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
+        CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";
         CALIBRE_HUB_SESSION_KEY_FILE = "%d/session-key";
@@ -284,7 +382,11 @@ in
         RestrictNamespaces = true;
         LockPersonality = true;
         SystemCallArchitectures = "native";
+        # the library only through calibre-server; inbox and reading list are ours
         ReadOnlyPaths = [ (toString cfg.library) ];
+        ReadWritePaths = writable;
+        # files in the inbox and the reading list stay group-writable for srv
+        UMask = "0002";
       };
     };
   };

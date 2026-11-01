@@ -14,6 +14,7 @@ pkgs.testers.runNixOSTest {
         pkgs.calibre
         pkgs.curl
         pkgs.jq
+        pkgs.sqlite
       ];
       environment.etc = {
         "hub/service".text = "service-secret";
@@ -33,8 +34,26 @@ pkgs.testers.runNixOSTest {
         sessionKeyFile = "/etc/hub/key";
         calibre.servicePasswordFile = "/etc/hub/service";
         calibre.extraUsers.scripts = "/etc/hub/scripts";
+        inbox = {
+          path = "/srv/books/inbox";
+          stableSeconds = 2;
+        };
+        leseliste = {
+          enable = true;
+          target = "/srv/books/boox";
+        };
+        handlerAttempts = 2;
+        alertCommand = "${pkgs.writeShellScript "alert" ''echo "$1: $2" >> /var/lib/calibre-hub/alerts.log''}";
+        handlers = {
+          "10-log" = pkgs.writeShellScript "log" ''${pkgs.jq}/bin/jq -c '[.type, .bookId, (.changes // {} | keys)]' >> /var/lib/calibre-hub/events.log'';
+          "90-fail" = pkgs.writeShellScript "fail" ''! ${pkgs.jq}/bin/jq -e '.book.title == "Kaputt"' >/dev/null'';
+        };
       };
-      systemd.tmpfiles.rules = [ "d /srv/books/library 2775 calibre-server calibre-hub -" ];
+      systemd.tmpfiles.rules = [
+        "d /srv/books/library 2775 calibre-server calibre-hub -"
+        "d /srv/books/inbox 2775 root calibre-hub -"
+        "d /srv/books/boox 2775 root calibre-hub -"
+      ];
     };
 
   testScript = ''
@@ -79,8 +98,53 @@ pkgs.testers.runNixOSTest {
         assert code(f"-b /tmp/jar {H}/api/books/1/download/epub") == "200"
         assert code(f"-b /tmp/jar '{H}/api/books/1/cover?size=thumb'") == "200"
 
-    with subtest("events"):
-        machine.wait_until_succeeds("journalctl -u calibre-hub -o cat | grep '\"type\":\"changed\"' | grep -q leseliste", timeout=30)
+    with subtest("trigger changelog"):
+        n = machine.succeed("sqlite3 /srv/books/library/metadata.db \"select count(*) from sqlite_master where type = 'trigger' and name like 'hub_%'\"").strip()
+        assert int(n) > 10, n
+        machine.succeed("sqlite3 /srv/books/library/metadata.db 'select count(*) from hub_changelog' | grep -qv '^0$'")
+
+    with subtest("events reach handlers"):
+        machine.wait_until_succeeds("grep -q '\"changed\",1,.*tags' /var/lib/calibre-hub/events.log", timeout=30)
+
+    with subtest("reading list"):
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Fachbuch/Software/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        machine.succeed(f"{DB} set_metadata 1 -f tags:")
+        machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
+
+    with subtest("inbox"):
+        machine.succeed("printf 'Krimi\\n\\nText\\n' > /tmp/k.txt")
+        # a folder without group write is skipped, not imported twice
+        machine.succeed("mkdir -m 755 /srv/books/inbox/Privat && cp /tmp/b.epub /srv/books/inbox/Privat/")
+        machine.wait_until_succeeds("journalctl -u calibre-hub -o cat | grep -q 'Privat/b.epub skipped'", timeout=30)
+        # like Samba on dmt: directory mask 2775
+        machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Roman /srv/books/inbox/Roman/Krimi")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt /srv/books/inbox/Roman/Krimi/k.epub --title Inboxbuch --authors 'Agatha Test' --tags Eingebettet")
+        machine.wait_until_succeeds("ls /srv/books/inbox/_imported/*/Roman/Krimi/k.epub", timeout=90)
+        books = json.loads(machine.succeed(f"curl -sf -b /tmp/jar '{H}/api/books?q=title:Inboxbuch'"))
+        b = books["books"][0]
+        assert b["tags"] == ["Krimi", "Roman"] or sorted(b["tags"]) == ["Krimi", "Roman"], b
+        assert b["custom"]["kategorie"] == "Roman.Krimi", b
+        # one added event, not one per write
+        added = machine.succeed(f"grep -c '\"added\",{b['id']},' /var/lib/calibre-hub/events.log").strip()
+        assert added == "1", added
+
+    with subtest("failing handler is parked and alerts"):
+        machine.succeed("printf 'x\\n' > /tmp/x.txt")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/x.txt /tmp/kaputt.epub --title Kaputt --authors Niemand")
+        machine.succeed(f"{DB} add /tmp/kaputt.epub")
+        machine.wait_until_succeeds("grep -q '90-fail failed' /var/lib/calibre-hub/alerts.log", timeout=120)
+
+    with subtest("deleted"):
+        machine.succeed(f"{DB} remove 1")
+        machine.wait_until_succeeds("grep -q '\"deleted\",1,' /var/lib/calibre-hub/events.log", timeout=30)
+
+    with subtest("restart does not repeat events"):
+        before = machine.succeed("wc -l < /var/lib/calibre-hub/events.log").strip()
+        machine.systemctl("restart calibre-hub.service")
+        machine.wait_for_open_port(8084)
+        machine.sleep(10)
+        after = machine.succeed("wc -l < /var/lib/calibre-hub/events.log").strip()
+        assert before == after, (before, after)
 
     with subtest("opds with basic auth"):
         assert code(f"{H}/opds") == "401"

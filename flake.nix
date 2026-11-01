@@ -20,6 +20,12 @@
 
       nixosModules.default = ./nix/module.nix;
 
+      # slow, not part of `nix flake check`: nix build .#scale-test -L
+      scale-test = import ./nix/scale-test.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        module = self.nixosModules.default;
+      };
+
       checks = forAll (pkgs: {
         package = self.packages.${pkgs.system}.default;
         vm = import ./nix/test.nix {
