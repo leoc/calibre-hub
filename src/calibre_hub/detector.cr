@@ -22,7 +22,10 @@ module CalibreHub
   # resolution in places and mixes time zones, so it is not a safe cursor.
   # Fine for a personal library (a few thousand rows per scan).
   class Detector
-    IGNORED = %w(last_modified)
+    IGNORED = %w(lastModified)
+    # Bump when the Book JSON changes; the snapshot is then rebuilt silently
+    # instead of reporting every book as changed.
+    SNAPSHOT_VERSION = "3"
 
     def initialize(@calibre : Calibre, @db : DB::Database)
       migrate
@@ -31,7 +34,7 @@ module CalibreHub
     def scan : Array(Event)
       current = @calibre.list.to_h { |b| {b.id, JSON.parse(b.to_json)} }
       previous = snapshot
-      first_run = previous.empty? && !initialized?
+      first_run = !initialized?
 
       events = [] of Event
       unless first_run
@@ -56,7 +59,7 @@ module CalibreHub
         end
         cnn.exec "delete from snapshot"
         current.each { |id, book| cnn.exec "insert into snapshot (id, data) values (?, ?)", id, book.to_json }
-        cnn.exec "insert or replace into meta (key, value) values ('initialized', '1')"
+        cnn.exec "insert or replace into meta (key, value) values ('snapshot_version', ?)", SNAPSHOT_VERSION
       end
       events
     end
@@ -88,7 +91,7 @@ module CalibreHub
     end
 
     private def initialized? : Bool
-      !@db.query_one?("select value from meta where key = 'initialized'", as: String).nil?
+      @db.query_one?("select value from meta where key = 'snapshot_version'", as: String) == SNAPSHOT_VERSION
     end
 
     private def migrate

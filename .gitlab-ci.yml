@@ -1,0 +1,19 @@
+# Runner ci02: Docker with nixos/nix, no /dev/kvm. The package build runs the
+# specs; the VM test runs emulated (TCG) and may fail on time, the binding
+# run is `nix flake check` locally.
+default:
+  image: nixos/nix:latest
+  before_script:
+    - echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
+    - echo "system-features = nixos-test benchmark big-parallel kvm" >> /etc/nix/nix.conf
+
+build:
+  script:
+    - nix build .#checks.x86_64-linux.package -L
+
+vm-test:
+  needs: [build]
+  allow_failure: true
+  timeout: 45m
+  script:
+    - nix build .#checks.x86_64-linux.vm -L

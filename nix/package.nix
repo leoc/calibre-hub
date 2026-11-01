@@ -21,9 +21,8 @@ crystal.buildCrystalPackage {
   format = "shards";
   buildInputs = [ sqlite ];
 
-  # Specs need a running calibre-server (see dev/testlib.sh); covered by the
-  # NixOS VM test instead.
-  doCheck = false;
+  # unit specs only; calibre-server is covered by the NixOS VM test
+  doCheck = true;
 
   meta = {
     description = "Thin API, change events and web UI on top of calibre-server";

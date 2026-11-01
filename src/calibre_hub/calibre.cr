@@ -1,20 +1,29 @@
 require "http/client"
 require "json"
 require "uri"
+require "./book"
 
 module CalibreHub
   # Talks to calibre-server the way calibredb does: POST /cdb/cmd/<name>/<version>
   # with the positional arguments of the command's implementation() as JSON.
+  # Read paths (/ajax, /get) are used where they offer paging or files.
   class Calibre
     class Error < Exception
     end
 
-    # Fields the snapshot and the API care about. Custom columns are "#name"
-    # in results but "*name" in requests.
+    # calibre-server not reachable or answering with a server error
+    class Unavailable < Error
+    end
+
+    # Fields for lists and the snapshot. Custom columns are "#name" in results
+    # but "*name" in requests.
     FIELDS = %w(title authors author_sort tags series series_index formats
       last_modified timestamp pubdate rating publisher identifiers languages)
+    DETAIL_FIELDS = FIELDS + %w(comments)
 
-    getter url : URI
+    record SearchResult, total : Int32, ids : Array(Int64)
+
+    getter custom_columns : Array(String)
 
     def initialize(url : String, @user : String, @password : String, @library : String? = nil,
                    @custom_columns : Array(String) = [] of String)
@@ -24,110 +33,103 @@ module CalibreHub
     # calibredb list: fields, sort_by, ascending, search_text, limit
     def list(search = "", fields = FIELDS) : Array(Book)
       requested = fields + @custom_columns.map { |c| "*#{c}" }
-      result = cmd("list", [requested, "id", true, search, -1])
-      Book.from_list(result, @custom_columns)
+      Book.from_list(cmd("list", [requested, "id", true, search, -1]), @custom_columns)
+    end
+
+    def books(ids : Array(Int64), fields = FIELDS) : Array(Book)
+      return [] of Book if ids.empty?
+      by_id = list(ids.map { |id| "id:#{id}" }.join(" or "), fields).index_by(&.id)
+      ids.compact_map { |id| by_id[id]? }
+    end
+
+    def book(id : Int64) : Book?
+      books([id], DETAIL_FIELDS).first?
+    end
+
+    # Paging with total count via the same search the web UI uses
+    def search(query : String, sort : String, ascending : Bool, offset : Int32, limit : Int32) : SearchResult
+      params = URI::Params.build do |p|
+        p.add "query", query
+        p.add "sort", sort
+        p.add "sort_order", ascending ? "asc" : "desc"
+        p.add "offset", offset.to_s
+        p.add "num", limit.to_s
+      end
+      body = JSON.parse(get("/ajax/search#{library_path}?#{params}"))
+      SearchResult.new(body["total_num"].as_i, body["book_ids"].as_a.map(&.as_i64))
+    end
+
+    # calibredb list_categories: [categories, field_metadata]; items are
+    # wrapped Tag objects with name, count, sort
+    def categories : Hash(String, Array(NamedTuple(name: String, count: Int32)))
+      cats = cmd("list_categories", [] of String)[0].as_h
+      cats.transform_values do |items|
+        items.as_a.map do |item|
+          v = Calibre.unwrap(item)
+          {name: v["name"].as_s, count: v["count"].as_i}
+        end
+      end
+    end
+
+    # Streams a calibre-server response (covers, downloads, OPDS)
+    def forward(method : String, path : String, headers = HTTP::Headers.new, body : IO? = nil, &)
+      headers = headers.dup
+      headers["Authorization"] = "Basic #{Base64.strict_encode("#{@user}:#{@password}")}"
+      client.exec(method, path, headers: headers, body: body) { |r| yield r }
+    rescue ex : IO::Error | Socket::Error
+      raise Unavailable.new("calibre-server: #{ex.message}")
     end
 
     def cmd(name : String, args, version = 0) : JSON::Any
       path = "/cdb/cmd/#{name}/#{version}"
       path += "?" + URI::Params.encode({"library_id" => @library.not_nil!}) if @library
-      response = client.post(path, headers: headers, body: args.to_json)
-      unless response.success?
-        raise Error.new("calibre-server #{name}: HTTP #{response.status_code}")
-      end
-      body = JSON.parse(response.body)
+      response = request("POST", path, args.to_json)
+      body = JSON.parse(response)
       if err = body["err"]?
         raise Error.new("calibre-server #{name}: #{err}")
       end
       body["result"]
     end
 
-    private def client
-      HTTP::Client.new(@url).tap do |c|
-        c.basic_auth(@user, @password)
-        c.connect_timeout = 5.seconds
-        c.read_timeout = 60.seconds
-      end
-    end
-
-    private def headers
-      HTTP::Headers{"Content-Type" => "application/json", "Accept" => "application/json"}
-    end
-
-    # Datetimes come wrapped as {"<marker>": 0, "v": "<iso>"}
     def self.unwrap(value : JSON::Any) : JSON::Any
+      # Datetimes and objects come wrapped as {"<marker>": n, "v": value}
       if (h = value.as_h?) && h.has_key?("v") && h.size == 2
         h["v"]
       else
         value
       end
     end
-  end
 
-  struct Book
-    include JSON::Serializable
-
-    getter id : Int64
-    getter title : String
-    getter authors : Array(String)
-    getter author_sort : String?
-    getter tags : Array(String)
-    getter series : String?
-    getter series_index : Float64?
-    getter formats : Array(String)
-    getter last_modified : Time
-    getter timestamp : Time?
-    getter pubdate : Time?
-    getter rating : Float64?
-    getter publisher : String?
-    getter identifiers : Hash(String, String)
-    getter languages : Array(String)
-    getter custom : Hash(String, JSON::Any)
-
-    def initialize(@id, @title, @authors, @author_sort, @tags, @series, @series_index, @formats,
-                   @last_modified, @timestamp, @pubdate, @rating, @publisher, @identifiers,
-                   @languages, @custom)
+    private def get(path) : String
+      request("GET", path, nil)
     end
 
-    # list returns columns: {"book_ids": [...], "data": {field: {id: value}}}
-    def self.from_list(result : JSON::Any, custom_columns : Array(String)) : Array(Book)
-      data = result["data"].as_h
-      col = ->(field : String, id : String) do
-        Calibre.unwrap(data[field]?.try(&.as_h[id]?) || JSON::Any.new(nil))
+    private def request(method, path, body : String?) : String
+      c = client
+      c.basic_auth(@user, @password)
+      headers = HTTP::Headers{"Accept" => "application/json"}
+      headers["Content-Type"] = "application/json" if body
+      response = c.exec(method, path, headers: headers, body: body)
+      if response.status_code >= 500
+        raise Unavailable.new("calibre-server #{path}: HTTP #{response.status_code}")
       end
-      result["book_ids"].as_a.map do |raw_id|
-        id = raw_id.to_s
-        Book.new(
-          id: raw_id.as_i64,
-          title: col.call("title", id).as_s? || "",
-          authors: strings(col.call("authors", id)),
-          author_sort: col.call("author_sort", id).as_s?,
-          tags: strings(col.call("tags", id)),
-          series: col.call("series", id).as_s?,
-          series_index: number(col.call("series_index", id)),
-          formats: strings(col.call("formats", id)),
-          last_modified: time(col.call("last_modified", id)) || Time::UNIX_EPOCH,
-          timestamp: time(col.call("timestamp", id)),
-          pubdate: time(col.call("pubdate", id)),
-          rating: number(col.call("rating", id)),
-          publisher: col.call("publisher", id).as_s?,
-          identifiers: (col.call("identifiers", id).as_h? || {} of String => JSON::Any).transform_values(&.to_s),
-          languages: strings(col.call("languages", id)),
-          custom: custom_columns.to_h { |c| {c, col.call("##{c}", id)} },
-        )
+      unless response.success?
+        raise Error.new("calibre-server #{path}: HTTP #{response.status_code}")
       end
+      response.body
+    rescue ex : IO::Error | Socket::Error
+      raise Unavailable.new("calibre-server: #{ex.message}")
     end
 
-    private def self.strings(v : JSON::Any) : Array(String)
-      v.as_a?.try(&.map(&.to_s)) || [] of String
+    private def library_path
+      @library ? "/#{URI.encode_path_segment(@library.not_nil!)}" : ""
     end
 
-    private def self.number(v : JSON::Any) : Float64?
-      v.as_f? || v.as_i64?.try(&.to_f)
-    end
-
-    private def self.time(v : JSON::Any) : Time?
-      v.as_s?.try { |s| Time.parse_iso8601(s) }
+    private def client
+      HTTP::Client.new(@url).tap do |c|
+        c.connect_timeout = 5.seconds
+        c.read_timeout = 60.seconds
+      end
     end
   end
 end
