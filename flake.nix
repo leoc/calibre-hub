@@ -14,9 +14,16 @@
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      packages = forAll (pkgs: {
-        default = pkgs.callPackage ./nix/package.nix { };
-      });
+      packages = forAll (
+        pkgs:
+        {
+          default = pkgs.callPackage ./nix/package.nix { };
+        }
+        # web app, built by frontend/package.nix (Phase 3)
+        // pkgs.lib.optionalAttrs (builtins.pathExists ./frontend/package.nix) {
+          frontend = pkgs.callPackage ./frontend/package.nix { };
+        }
+      );
 
       nixosModules.default = ./nix/module.nix;
 

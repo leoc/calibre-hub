@@ -6,6 +6,7 @@ require "./calibre_hub/api"
 require "./calibre_hub/dispatcher"
 require "./calibre_hub/inbox"
 require "./calibre_hub/handlers/leseliste"
+require "./calibre_hub/frontend"
 
 module CalibreHub
   VERSION = "0.1.0"
@@ -36,6 +37,10 @@ module CalibreHub
     getter alert_command : String? = ENV["CALIBRE_HUB_ALERT_COMMAND"]?.presence
     getter inbox : String? = ENV["CALIBRE_HUB_INBOX"]?.presence
     getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
+    # tags the web app offers as one-click toggles
+    getter fast_tags : Array(String) = env("CALIBRE_HUB_FAST_TAGS", "leseliste").split(',', remove_empty: true).map(&.strip)
+    # built web app (dist/); served without login
+    getter frontend : String? = ENV["CALIBRE_HUB_FRONTEND"]?.presence
     getter login_user : String = env("CALIBRE_HUB_LOGIN_USER", "arthur")
     # read only by serve, so scan works without them
     def login_password : String
@@ -215,8 +220,9 @@ module CalibreHub
       lifetime: config.session_days.days, secure: config.secure_cookies)
     auth_handler = AuthHandler.new(auth, config.trusted_proxies)
     use UnavailableHandler.new
+    config.frontend.try { |dir| use FrontendHandler.new(dir) }
     use auth_handler
-    routes(calibre, auth, auth_handler, config.category_column)
+    routes(calibre, auth, auth_handler, config.category_column, config.fast_tags)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

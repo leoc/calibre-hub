@@ -215,6 +215,20 @@ in
       };
     };
 
+    fastTags = mkOption {
+      type = types.listOf types.str;
+      default = [ "leseliste" ];
+      description = "Tags the web app offers as one-click toggles (GET /api/config).";
+    };
+
+    frontend.package = mkOption {
+      type = types.nullOr types.package;
+      default =
+        if builtins.pathExists ../frontend/package.nix then pkgs.callPackage ../frontend/package.nix { } else null;
+      defaultText = lib.literalExpression "pkgs.callPackage ../frontend/package.nix { }";
+      description = "Built web app (contents of Vite's dist/), served without login; null serves none.";
+    };
+
     leseliste = {
       enable = mkEnableOption "the reading list handler (mirror tagged books into a folder)";
       tag = mkOption {
@@ -348,6 +362,8 @@ in
         CALIBRE_HUB_ALERT_COMMAND = lib.optionalString (cfg.alertCommand != null) cfg.alertCommand;
         CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
         CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
+        CALIBRE_HUB_FAST_TAGS = lib.concatStringsSep "," cfg.fastTags;
+        CALIBRE_HUB_FRONTEND = lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";
         CALIBRE_HUB_SESSION_KEY_FILE = "%d/session-key";

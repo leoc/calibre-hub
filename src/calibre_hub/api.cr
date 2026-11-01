@@ -130,7 +130,8 @@ module CalibreHub
     end
   end
 
-  def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?)
+  def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
+                  fast_tags = [] of String)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -150,6 +151,8 @@ module CalibreHub
     end
 
     get "/api/session" { {user: auth.user}.to_json }
+
+    get "/api/config" { {fastTags: fast_tags, categoryColumn: kategorie}.to_json }
 
     delete "/api/session" do |env|
       env.response.cookies << auth.expired_cookie
