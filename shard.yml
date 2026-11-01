@@ -1,0 +1,19 @@
+name: calibre-hub
+version: 0.1.0
+
+description: Thin API, change events and web UI on top of calibre-server
+
+authors:
+  - Arthur Andersen <leoc.git@gmail.com>
+
+crystal: ">= 1.19.0"
+
+targets:
+  calibre-hub:
+    main: src/main.cr
+
+dependencies:
+  kemal:
+    github: kemalcr/kemal
+  sqlite3:
+    github: crystal-lang/crystal-sqlite3
