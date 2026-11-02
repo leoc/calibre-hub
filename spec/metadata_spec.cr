@@ -277,6 +277,8 @@ describe CalibreHub::Meta::Clean do
       {"Songbook, Vol. 2 (Guitar Scores)", ["Baden Powell"], nil, nil, false},
     {"Applied Software Project Management (2005, O'Reilly Media)", ["Andrew Stellman", "Jennifer Greene"]} =>
       {"Applied Software Project Management", ["Andrew Stellman", "Jennifer Greene"], nil, nil, false},
+    {"Brian Hodel - The Brazilian Masters (Guitar Scores) (, TRO Hollis Music, Inc.)", ["libgen.lc"]} =>
+      {"The Brazilian Masters (Guitar Scores)", ["Brian Hodel"], nil, nil, false},
     {"Guidance", ["FDA/CDER"]}                                             => {"Guidance", ["FDA/CDER"], nil, nil, false},
     {"ISO/IEC 42001:2023", ["ISO"]}                                        => {"ISO/IEC 42001:2023", ["ISO"], nil, nil, false},
     {"\u{FEFF}ISO/IEC 42001:2023\u{FEFF}", ["ISO"]}                       => {"ISO/IEC 42001:2023", ["ISO"], nil, nil, false},
@@ -484,10 +486,21 @@ describe CalibreHub::Meta::Merge do
     CalibreHub::Meta::Merge.plan(book("Der Herr der Ringe", ["J. R. R. Tolkien"]), nil, nil, [weak]).should be_empty
   end
 
+  it "ignores a translation with the same title (live: Effortless by Crown vs. REDLINE)" do
+    b = book("Effortless", ["Greg McKeown"], publisher: "Crown", languages: ["eng"])
+    german = CalibreHub::Meta::Candidate.new("dnb", record(title: "Effortless", authors: ["Greg McKeown"],
+      isbn: "9783962673741", publisher: "REDLINE Verlag", languages: ["deu"]), by_isbn: "9783962673741")
+    german.sure = true
+    german.score = 1.0
+    CalibreHub::Meta::Merge.plan(b, nil, nil, [german]).should be_empty
+  end
+
   it "corrects existing fields only on a sure match, and never the description" do
+    # the book's own ISBN: the same edition, so even the language is corrected
     b = book("Der Herr der Ringe", ["J. R. R. Tolkien"], publisher: "Rowohlt", comments: "<p>Eigene</p>",
       pubdate: Time.utc(1972, 1, 1, 12, 0, 0), languages: ["eng"])
-    changes = CalibreHub::Meta::Merge.plan(b, nil, nil, [sure, text_match]).to_h { |c| {c.field, c.new.raw} }
+    file = record(isbn: "9783608938289")
+    changes = CalibreHub::Meta::Merge.plan(b, nil, file, [sure, text_match]).to_h { |c| {c.field, c.new.raw} }
     changes["publisher"].should eq("Klett-Cotta")
     changes["pubdate"].should eq("2009")
     changes["languages"].should eq([JSON::Any.new("deu")])

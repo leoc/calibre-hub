@@ -336,9 +336,9 @@ module CalibreHub
       def self.guesses(title : String, authors : Array(String), pubdate_year : Int32? = nil) : {Array(Guess), Bool}
         year = pubdate_year
         raw_title = title
-        # "(1974, Tonos)" at the end: year and publisher from the download site
-        if m = raw_title.match(/\s*\(((?:1[5-9]|20)\d\d),\s*[^()]+\)\s*\z/)
-          year ||= m[1].to_i
+        # "(1974, Tonos)" or "(, Tonos)" at the end: year and publisher from the download site
+        if m = raw_title.match(/\s*\(((?:1[5-9]|20)\d\d)?,\s*[^()]+\)\s*\z/)
+          year ||= m[1]?.try(&.to_i)
           raw_title = raw_title.sub(m[0], "")
         end
         if m = raw_title.match(/\s*[\(\[]((?:1[5-9]|20)\d\d)[\)\]]\s*/)
@@ -626,6 +626,18 @@ module CalibreHub
       def self.plan(book : Book, guess : Guess?, file : Record?, candidates : Array(Candidate),
                     has_cover = true) : Array(Change)
         changes = [] of Change
+        # a candidate in another language is another edition (a translation
+        # with the same title), never a source for this book
+        # A match by the book's own ISBN is this edition and may correct the
+        # language.
+        known_langs = book.languages.presence || file.try(&.languages).try(&.presence)
+        own_isbns = [book.identifiers["isbn"]?, file.try(&.isbn)].compact.compact_map { |i| Isbn.normalize(i) }
+        if known_langs
+          candidates = candidates.reject do |c|
+            next false if (bi = c.by_isbn) && own_isbns.includes?(bi)
+            (l = c.fields.languages.try(&.presence)) && (l & known_langs).empty?
+          end
+        end
         accepted = candidates.select { |c| c.sure || c.score >= ACCEPT }
         sure = accepted.find(&.sure)
         best = sure || accepted.first?
