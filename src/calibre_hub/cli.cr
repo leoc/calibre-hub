@@ -5,6 +5,7 @@ require "./cli/client"
 require "./cli/output"
 require "./cli/completion"
 require "./cli/import"
+require "./tui"
 
 module CalibreHub
   # Command line client for a running hub: `calibre-hub cli <command>` or
@@ -83,6 +84,7 @@ module CalibreHub
         when "list"       then list(args)
         when "import"     then import(args)
         when "completion" then completion(args)
+        when "tui"        then tui
         when "help"
           help(args.positional.first?.try { |n| Cli.command(n) || raise Usage.new("unknown command: #{n}") })
         end
@@ -114,6 +116,13 @@ module CalibreHub
           Exit codes: 0 ok, 1 usage or invalid input, 2 not found, 3 conflict or duplicate,
           4 not authorized, 5 server unavailable or failed.
           TXT
+      end
+
+      # --- tui --------------------------------------------------------------
+
+      private def tui
+        raise Usage.new("tui needs a terminal", "tui") unless @in.tty? && @out.tty?
+        Tui.run(client)
       end
 
       # --- read -------------------------------------------------------------

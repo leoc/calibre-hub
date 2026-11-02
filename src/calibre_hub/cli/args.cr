@@ -127,6 +127,7 @@ module CalibreHub
         Flag.new("max-id", "N", "cleanup: books up to this id"),
         Flag.new("since", "TIME", "cleanup: books added since (2026-11-02T18:00, local time)"),
       ]),
+      Command.new("tui", "tui", "browse the library in the terminal (Vim keys, ? shows them)"),
       Command.new("completion", "completion fish|bash [--prog hub|calibre-hub]",
         "print a shell completion script", [
         Flag.new("prog", "NAME", "complete only this command name", choices: %w(hub calibre-hub)),

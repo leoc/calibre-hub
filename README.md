@@ -668,6 +668,31 @@ the package installs both. A Claude Code skill for the CLI is in
 [docs/skills/calibre-hub/SKILL.md](docs/skills/calibre-hub/SKILL.md)
 (copy it to `~/.claude/skills/calibre-hub/`).
 
+### TUI
+
+`hub tui` browses the library in the terminal, with the same token as the
+CLI (read-only so far): the books as a table (title, authors, series,
+category, tags), newest first, loaded page by page where the cursor goes;
+the web app's sidebar (lists, categories with "Ohne Kategorie", fast tags,
+authors, series, tags, languages); a book's detail with its description.
+Colours follow the terminal's light or dark background.
+
+| Keys | |
+|---|---|
+| `j`/`k`, `gg`/`G`, `Ctrl-d`/`Ctrl-u`, `Ctrl-f`/`Ctrl-b` | move; a count in front repeats (`5j`) or picks the line (`12G`) |
+| `Enter` | open the book; in the sidebar: filter on/off |
+| `/` | search (calibre syntax, like the web app's search field); `n`/`N` next/previous result, in a book the next/previous book |
+| `h`/`l`, `Tab` | sidebar and library; in the sidebar `l`/`h` unfold/fold |
+| `o`/`O` | change the sort / reverse it |
+| `gl` | all books (filters off) |
+| `q`, `Esc` | back (close the book, previous filter); `q` at the start quits |
+| `?` | all keys |
+
+It is built on [bubbletea.cr](https://github.com/leoc/bubbletea.cr) (Crystal
+bindings for Bubble Tea, Lip Gloss, Bubbles and Glamour through a Go
+library), so the binary
+links `libbubbletea_go.so`.
+
 Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
 
 ## NixOS module
@@ -732,6 +757,12 @@ nix build                               # package
 ```
 
 After changing dependencies: `shards install && crystal2nix`.
+
+bubbletea.cr comes from GitHub (`leoc/bubbletea.cr`, in `shard.yml` and as the
+flake input `bubbletea-cr`; keep both on the same tag). Its Go library comes
+from the flake (`BUBBLETEA_LIB_DIR` in the dev shell), so the dev shell needs no
+Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it, the
+package links the flake input instead.
 
 ## Configuration (environment)
 
