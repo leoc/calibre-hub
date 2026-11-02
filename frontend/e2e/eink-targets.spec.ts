@@ -78,6 +78,20 @@ test("E-Ink: command palette", async ({ page }) => {
   expect(await smallTargets(page, "[role=dialog]")).toEqual([])
 })
 
+test("E-Ink: category suggestions and the box in the detail", async ({ page }) => {
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await page.getByRole("link", { name: /^Vorschläge/ }).click()
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
+  const first = page.getByRole("list", { name: "Vorschläge" }).getByRole("listitem").first()
+  await expect(first).toBeVisible()
+  await first.getByRole("button", { name: /^Ändern/ }).click()
+  expect(await smallTargets(page)).toEqual([])
+  await first.getByRole("link").nth(1).click()
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
+  expect(await smallTargets(page, "main")).toEqual([])
+})
+
 test("E-Ink: trash and login", async ({ page }) => {
   await page.goto("/")
   await expect(results(page)).toBeVisible()

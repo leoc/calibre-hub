@@ -75,7 +75,7 @@ export function SuggestionsPage() {
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm eink:min-h-11">
+            <label className="flex items-center gap-2 text-sm eink:min-h-11 touch:min-h-11">
               <input
                 type="checkbox"
                 className="size-4 eink:size-6"
@@ -112,18 +112,26 @@ function SuggestionRow({ suggestion: s, book, selected, onSelect }: { suggestion
   const failed = accept.error ?? reject.error
   return (
     <li className="flex flex-wrap items-start gap-3 py-3" aria-label={book.title}>
-      <input
-        type="checkbox"
-        className="mt-1 size-4 eink:size-6"
-        checked={selected}
-        onChange={(e) => onSelect(e.target.checked)}
-        aria-label={`${t("suggest.select")}: ${book.title}`}
-      />
+      {/* the label is the tap target: 44 px on touch screens and E-Ink */}
+      <label className="flex size-6 shrink-0 cursor-pointer items-center justify-center eink:-m-2.5 eink:size-11 touch:-m-2.5 touch:size-11">
+        <input
+          type="checkbox"
+          className="size-4 eink:size-6"
+          checked={selected}
+          onChange={(e) => onSelect(e.target.checked)}
+          aria-label={`${t("suggest.select")}: ${book.title}`}
+        />
+      </label>
       <Link to="/books/$id" params={{ id: book.id }} search={{}} className="shrink-0">
         <BookCover book={book} compact className="w-12" />
       </Link>
       <div className="min-w-0 flex-1 basis-56 space-y-1">
-        <Link to="/books/$id" params={{ id: book.id }} search={{}} className="font-medium underline-offset-2 hover:underline">
+        <Link
+          to="/books/$id"
+          params={{ id: book.id }}
+          search={{}}
+          className="font-medium underline-offset-2 hover:underline eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center"
+        >
           {book.title}
         </Link>
         <p className="text-sm text-muted-foreground eink:text-black">{book.authors.join(", ")}</p>
