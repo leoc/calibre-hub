@@ -334,7 +334,8 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/jobs/{r['jobId']} | jq -e '.done > 0'", timeout=30)
         machine.systemctl("restart calibre-hub.service")
         machine.wait_for_open_port(8084)
-        machine.succeed(f"journalctl -u calibre-hub -o cat | grep -q 'resuming job {r['jobId']} at '")
+        # the worker picks the job up shortly after the port is open
+        machine.wait_until_succeeds(f"journalctl -u calibre-hub -o cat | grep -q 'resuming job {r['jobId']} at '", timeout=30)
         j = wait_job(r["jobId"], 180)
         assert j["status"] == "done" and j["done"] == len(ids), {k: v for k, v in j.items() if k != "errors"}
         assert len(j["errors"]) == len(ids) - 1 and uid not in [e["bookId"] for e in j["errors"]], len(j["errors"])
