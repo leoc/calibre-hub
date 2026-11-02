@@ -95,3 +95,102 @@ test("phones: suggestions are accepted from a bar at the bottom (M14)", async ({
   const height = page.viewportSize()!.height
   expect(box!.y + box!.height).toBeGreaterThan(height - 80)
 })
+
+test("phones: the list toggle on a cover is small but has a 44 px hit area (M12)", async ({ page, isMobile }) => {
+  test.skip(!isMobile, "touch screens only")
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  const toggle = page.locator("main li").first().getByRole("button", { name: /Leseliste/ })
+  const box = (await toggle.boundingBox())!
+  expect(box.width).toBeLessThanOrEqual(28)
+  expect(box.height).toBeLessThanOrEqual(28)
+  // the invisible ::after takes taps up to 44 px around the toggle
+  const hit = await toggle.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const cx = r.left + r.width / 2
+    const cy = r.top + r.height / 2
+    return [[cx, cy - 21], [cx, cy + 21], [cx - 21, cy], [cx + 21, cy]].map(([x, y]) => el.contains(document.elementFromPoint(x, y)))
+  })
+  expect(hit).toEqual([true, true, true, true])
+})
+
+test("phones: the view switch stays in the row of the sort (M13)", async ({ page, isMobile }) => {
+  test.skip(!isMobile, "phones only")
+  await page.setViewportSize({ width: 360, height: 740 })
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  const sort = (await page.getByRole("combobox", { name: "Sortierung" }).boundingBox())!
+  const view = (await page.getByRole("radiogroup", { name: "Ansicht" }).boundingBox())!
+  expect(Math.abs(view.y + view.height / 2 - (sort.y + sort.height / 2))).toBeLessThanOrEqual(2)
+  expect(view.x + view.width).toBeLessThanOrEqual(360)
+})
+
+test("phones: the book's first action is on the first screen at 360×740 (M16)", async ({ page, isMobile }) => {
+  test.skip(!isMobile, "phones only")
+  await page.setViewportSize({ width: 360, height: 740 })
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await page.locator("main li a").nth(1).click()
+  const action = page.locator("main").locator("a[download], button").filter({ hasText: /^\s*(Lesen|EPUB|PDF|MOBI|AZW3|KEPUB|Bearbeiten)/ }).first()
+  await expect(action).toBeVisible()
+  const box = (await action.boundingBox())!
+  expect(box.y + box.height).toBeLessThanOrEqual(740)
+})
+
+test("palette rows start their text at one x (D21)", async ({ page, isMobile }) => {
+  test.skip(isMobile, "checked on the desktop palette")
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await page.keyboard.press("Control+k")
+  await page.keyboard.type("erd")
+  await expect(page.locator("[cmdk-group-heading]", { hasText: "Bücher" })).toBeVisible()
+  await expect(page.locator("[cmdk-group-heading]", { hasText: "Serien" })).toBeVisible()
+  const xs = await page.locator("[cmdk-item]").evaluateAll((items) =>
+    items.map((item) => {
+      const walk = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.textContent!.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) })
+      const range = document.createRange()
+      range.selectNodeContents(walk.nextNode()!)
+      return Math.round(range.getBoundingClientRect().left)
+    }),
+  )
+  expect(xs.length).toBeGreaterThan(3)
+  expect(new Set(xs).size, `text starts at ${xs}`).toBe(1)
+})
+
+test("the selection ring keeps clear of cover and title (D23)", async ({ page, isMobile }) => {
+  test.skip(isMobile, "checked on the desktop grid")
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await page.locator("main").getByRole("button", { name: "Auswählen" }).click()
+  const item = page.locator("main li [role=checkbox]").first()
+  await item.click()
+  await expect(item).toHaveAttribute("aria-checked", "true")
+  const gaps = await item.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const title = el.querySelector("p")!.getBoundingClientRect()
+    const cover = el.querySelector("div")!.getBoundingClientRect()
+    return [title.left - r.left, r.right - title.right, cover.left - r.left, cover.top - r.top].map(Math.round)
+  })
+  for (const g of gaps) expect(g, `gaps ${gaps}`).toBeGreaterThanOrEqual(4)
+})
+
+test("five grid columns at 1024 px next to the sidebar (D25)", async ({ page, isMobile }) => {
+  test.skip(isMobile, "desktop width")
+  await page.setViewportSize({ width: 1024, height: 800 })
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  const columns = await page.locator("main ul").first().evaluate((ul) => getComputedStyle(ul).gridTemplateColumns.split(" ").length)
+  expect(columns).toBe(5)
+})
+
+test("E-Ink: the list headers are black (D20)", async ({ page, isMobile }) => {
+  test.skip(isMobile, "headers from 768 px")
+  await page.addInitScript(() => {
+    localStorage.setItem("hub.view", "list")
+    localStorage.setItem("hub.theme", "eink")
+  })
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await expect(page.getByRole("link", { name: "Nach Titel sortieren" })).toHaveCSS("color", "rgb(0, 0, 0)")
+  await expect(page.locator("main").getByText("Kategorie", { exact: true })).toHaveCSS("color", "rgb(0, 0, 0)")
+})
