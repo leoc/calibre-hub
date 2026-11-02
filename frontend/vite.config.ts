@@ -19,7 +19,8 @@ export default defineConfig(({ mode }) => ({
       closeBundle: () => fs.rmSync(path.resolve(import.meta.dirname, "dist/mockServiceWorker.js"), { force: true }),
     },
   ],
-  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
+  // foliate-js is vendored at a fixed commit (vendor/foliate-js/README.md)
+  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src"), "foliate-js": path.resolve(import.meta.dirname, "vendor/foliate-js") } },
   server: {
     port: 5173,
     proxy:

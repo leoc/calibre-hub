@@ -17,6 +17,8 @@ import { DeleteBookButton } from "./delete-book"
 import { SuggestionBox } from "./suggestion-box"
 import { Badge } from "./ui/badge"
 import { LibraryLink } from "@/components/library-link"
+import { ReadButton } from "./reading"
+import { readerFormat } from "@/lib/reader"
 
 // Order in which formats are offered; the first is the primary button.
 const FORMAT_ORDER = ["EPUB", "KEPUB", "AZW3", "MOBI", "PDF", "CBZ", "CBR", "DJVU", "TXT"]
@@ -52,6 +54,8 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const kategorie = categoryOf(book, config.categoryColumn)
   const formats = sortFormats(book.formats)
+  // reading in the browser is the primary action, downloads come after it
+  const readable = readerFormat(book) != null
   const { data: lists } = useQuery(listsQuery)
   const inLists = lists?.filter((l) => book.lists?.includes(l.id)) ?? []
   // E-Ink: links become 44 px tall tap targets
@@ -62,7 +66,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
       {/* phones: a small cover next to the title, the actions below both, so
           title and downloads fit on the first screen; wider: cover on the left */}
       <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-4 gap-y-4 sm:grid-cols-[11rem_minmax(0,1fr)] sm:grid-rows-[auto_1fr] sm:gap-x-5 sm:gap-y-2">
-        <BookCover book={book} thumb={false} className="w-full self-start sm:row-span-2" />
+        <BookCover book={book} thumb={false} progress className="w-full self-start sm:row-span-2" />
         <div className="min-w-0 space-y-2">
           <h1 className="text-xl leading-tight font-semibold text-balance sm:text-2xl">{book.title}</h1>
           <p className="sm:text-lg">
@@ -88,8 +92,9 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
         <div className="col-span-2 min-w-0 space-y-2 sm:col-span-1 sm:col-start-2">
           <div className="flex flex-wrap gap-2 sm:pt-2">
             {formats.length === 0 && <p className="text-muted-foreground eink:text-black">{t("book.noFormats")}</p>}
+            <ReadButton book={book} />
             {formats.map((f, i) => (
-              <a key={f} href={downloadUrl(book.id, f)} download className={buttonVariants({ variant: i === 0 ? "default" : "outline" })}>
+              <a key={f} href={downloadUrl(book.id, f)} download className={buttonVariants({ variant: i === 0 && !readable ? "default" : "outline" })}>
                 <Download aria-hidden /> {f}
               </a>
             ))}

@@ -28,7 +28,7 @@ export function BookGrid({ books, search, showIndex }: { books: Book[]; search: 
             selectedClassName="ring-offset-0"
           >
             <div className="relative">
-              <BookCover book={b} className="transition-shadow group-hover:shadow-md" />
+              <BookCover book={b} progress className="transition-shadow group-hover:shadow-md" />
               {showIndex && b.seriesIndex != null && (
                 <span className="absolute top-1.5 left-1.5 rounded-sm bg-background/90 px-1.5 text-sm font-semibold tabular-nums eink:border-2 eink:border-black eink:bg-white">
                   {formatIndex(b.seriesIndex)}

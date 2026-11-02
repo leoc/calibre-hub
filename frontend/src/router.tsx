@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query"
-import { createRootRouteWithContext, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router"
+import { createRootRouteWithContext, createRoute, createRouter, lazyRouteComponent, Outlet, redirect } from "@tanstack/react-router"
 import { z } from "zod"
 import { ApiError } from "./lib/api"
 import { sessionQuery } from "./lib/queries"
@@ -27,21 +27,38 @@ const loginRoute = createRoute({
   component: LoginPage,
 })
 
+async function requireSession({ context, location }: { context: { queryClient: QueryClient }; location: { href: string } }) {
+  try {
+    await context.queryClient.ensureQueryData(sessionQuery)
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      throw redirect({ to: "/login", search: { redirect: location.href } })
+    }
+    throw e
+  }
+}
+
 // Everything behind the login
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "_app",
-  beforeLoad: async ({ context, location }) => {
-    try {
-      await context.queryClient.ensureQueryData(sessionQuery)
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        throw redirect({ to: "/login", search: { redirect: location.href } })
-      }
-      throw e
-    }
-  },
+  beforeLoad: requireSession,
   component: AppShell,
+})
+
+// The reader: behind the login, but full screen without the app's header,
+// sidebar and library keys
+const readerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/read/$id",
+  beforeLoad: requireSession,
+  params: {
+    parse: ({ id }) => ({ id: z.coerce.number().int().parse(id) }),
+    stringify: ({ id }) => ({ id: String(id) }),
+  },
+  validateSearch: z.object({ format: z.string().regex(/^[A-Za-z0-9]{1,10}$/).optional().catch(undefined) }),
+  // its own chunk; foliate-js and pdf.js load from there when a book opens
+  component: lazyRouteComponent(() => import("./routes/reader"), "ReaderPage"),
 })
 
 const libraryRoute = createRoute({
@@ -86,7 +103,7 @@ const listsRoute = createRoute({
   component: ListsPage,
 })
 
-const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([libraryRoute, bookRoute, trashRoute, suggestionsRoute, metadataRoute, listsRoute])])
+const routeTree = rootRoute.addChildren([loginRoute, readerRoute, appRoute.addChildren([libraryRoute, bookRoute, trashRoute, suggestionsRoute, metadataRoute, listsRoute])])
 
 export function makeRouter(queryClient: QueryClient) {
   return createRouter({

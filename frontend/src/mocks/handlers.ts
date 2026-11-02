@@ -3,6 +3,7 @@ import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Sug
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
+import { progressHandlers } from "./progress"
 import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from "./lists"
 
 
@@ -174,11 +175,7 @@ export const readHandlers = [
     if (!b || b.id % 13 === 0) return new HttpResponse(null, { status: 404 })
     return new HttpResponse(cover(b), { headers: { "Content-Type": "image/svg+xml" } })
   }),
-  http.get("/api/books/:id/download/:format", ({ params }) =>
-    new HttpResponse(`mock ${params.format} of book ${params.id}`, {
-      headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="book-${params.id}.${params.format}"` },
-    }),
-  ),
+  // book files: progress.ts
 ]
 
 export const writeHandlers = [
@@ -399,4 +396,4 @@ export const setLoggedIn = (v: boolean) => {
 
 const listMocks = listHandlers(books, (target) => ("ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query))))
 
-export const handlers = [...listMocks, ...writeHandlers, ...metadata, ...readHandlers]
+export const handlers = [...listMocks, ...progressHandlers, ...writeHandlers, ...metadata, ...readHandlers]

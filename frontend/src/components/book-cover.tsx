@@ -2,9 +2,11 @@ import { useState } from "react"
 import { BookIcon } from "lucide-react"
 import { coverUrl, type Book } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { ReadBar } from "./reading"
 
 // Fixed 3:4 box so the grid does not jump while covers load.
-export function BookCover({ book, thumb = true, compact = false, className }: { book: Book; thumb?: boolean; compact?: boolean; className?: string }) {
+// progress: a thin bar with how far the book has been read
+export function BookCover({ book, thumb = true, compact = false, progress = false, className }: { book: Book; thumb?: boolean; compact?: boolean; progress?: boolean; className?: string }) {
   const [failed, setFailed] = useState(false)
   return (
     <div className={cn("relative aspect-[3/4] overflow-hidden rounded-md bg-muted eink:border-2 eink:border-black", className)}>
@@ -25,6 +27,7 @@ export function BookCover({ book, thumb = true, compact = false, className }: { 
           className="h-full w-full object-cover"
         />
       )}
+      {progress && <ReadBar bookId={book.id} />}
     </div>
   )
 }

@@ -32,9 +32,14 @@ async function columns(page: Page): Promise<number> {
   })
 }
 
+// polls both: after a page change the grid may still show the previous page
 async function expectActiveAt(page: Page, index: number) {
-  const ids = await bookIds(page)
-  await expect(activeBook(page)).toHaveAttribute("data-book-id", String(ids[index]))
+  await expect
+    .poll(async () => {
+      const ids = await bookIds(page)
+      return (await activeBook(page).getAttribute("data-book-id")) === String(ids[index])
+    })
+    .toBe(true)
 }
 
 const activeBefore = new WeakMap<Page, string | null>()

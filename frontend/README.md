@@ -155,4 +155,22 @@ the lockfile (v9) works with 10 to 12.
   (`?direct=1`) for its own only; "Aus dieser Liste" is offered only there
   or without sublists. Renaming a list (a new path) takes its sublists along.
 
+- Reader (`e2e/features/reading.feature`): `/read/:id[?format=]`, full
+  screen outside the app shell (own keys, the library's keymap is not
+  mounted), lazy-loaded with foliate-js (`vendor/foliate-js`, pinned commit
+  in its README) and `pdfjs-dist`. EPUB, KEPUB, AZW3/MOBI, FB2, CBZ, PDF
+  (`src/lib/reader.ts`). Table of contents, font size and paginated or
+  scrolled (per device, `hub.reader.*`), progress bar with percentage and
+  chapter. Keys: arrows, PageUp/PageDown, Space/Shift+Space, `j`/`k` (and
+  `l`/`h`) in Vim mode, Escape back to the detail. Phones swipe (foliate-js);
+  E-Ink: no animation, always paginated, tap zones (left third back, right
+  third on, middle shows the toolbar), no swiping. The position is saved
+  1.5 s after a page turn and when leaving, with the device id
+  `hub.device` and a name from the user agent (`hub.deviceName`
+  overrides it). A book opens where this device stopped; a newer position of
+  another device (more than 1 % apart) is offered: "Auf Boox bei 71 % – dort
+  weiterlesen?". The detail shows "Lesen" / "Weiterlesen (63 %)", covers in
+  grid and list a thin bar (`GET /api/progress`), the palette "Lesen: <Titel>"
+  for the open book. The mocks serve every file as a small three-chapter
+  EPUB (`src/mocks/fixtures`), PDFs as a three-page PDF.
 - The category column comes from `GET /api/config`.

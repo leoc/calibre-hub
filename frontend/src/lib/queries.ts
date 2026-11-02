@@ -78,6 +78,22 @@ export const metadataChangesQuery = (query: MetadataChangesQuery = {}) =>
     staleTime: 0,
   })
 
+// reading positions of a book on every device; always fresh when the reader opens
+export const progressQuery = (bookId: number) =>
+  queryOptions({
+    queryKey: ["progress", bookId],
+    queryFn: () => api.progress(bookId),
+    staleTime: 0,
+  })
+
+// newest position per book, for the bars on the covers
+export const allProgressQuery = queryOptions({
+  queryKey: ["progress"],
+  queryFn: api.allProgress,
+  staleTime: 60_000,
+  select: (rows) => new Map(rows.map((r) => [r.bookId, r.fraction])),
+})
+
 // asks Open Library and the DNB: slow, kept until the dialog asks again
 export const metadataCandidatesQuery = (bookId: number, q: string) =>
   queryOptions({

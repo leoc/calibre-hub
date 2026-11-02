@@ -55,6 +55,33 @@ export interface ReadingList {
   editable: boolean
 }
 
+// A device's last reading position in a book (GET /api/books/:id/progress).
+// position depends on the format: CFI (EPUB, MOBI/AZW3, CBZ), page (PDF)
+export interface ProgressEntry {
+  bookId: number
+  device: string
+  deviceName: string
+  format: string
+  position: string
+  fraction: number
+  source: "web" | "koreader"
+  updatedAt: string
+}
+
+export interface BookProgress {
+  // newest over all devices, null when never opened
+  latest: ProgressEntry | null
+  devices: ProgressEntry[]
+}
+
+export interface ProgressSave {
+  format: string
+  position: string
+  fraction: number
+  device: string
+  deviceName?: string
+}
+
 export type ListPatch = Partial<Pick<ReadingList, "name" | "description" | "visibility" | "sync" | "favorite" | "isDefault">>
 
 export interface BookPage {
@@ -265,6 +292,13 @@ export const api = {
   // q: own search text instead of the book's title and author
   metadataCandidates: (bookId: number, q?: string) =>
     request<{ candidates: MetadataCandidate[] }>(`/api/books/${bookId}/metadata/candidates${q ? `?${new URLSearchParams({ q })}` : ""}`),
+  progress: (bookId: number) => request<BookProgress>(`/api/books/${bookId}/progress`),
+  // the newest position per book (bars on the covers); older hubs: none
+  allProgress: () =>
+    request<Pick<ProgressEntry, "bookId" | "fraction" | "format" | "updatedAt">[]>("/api/progress").catch((e) => {
+      if (e instanceof ApiError && e.status === 404) return []
+      throw e
+    }),
   lists: () => request<ReadingList[]>("/api/lists"),
   list: (id: number) => request<ReadingList>(`/api/lists/${id}`),
   // not every hub has /api/config yet (#8391); fall back to the defaults
@@ -353,6 +387,9 @@ export interface ListChange {
 }
 
 export const write = {
+  // keepalive: also when the page is closing
+  saveProgress: (bookId: number, p: ProgressSave, keepalive = false) =>
+    request<ProgressEntry>(`/api/books/${bookId}/progress`, { method: "PUT", keepalive, ...json(p) }),
   createList: (list: ListPatch & { name: string }) => request<ReadingList>("/api/lists", { method: "POST", ...json(list) }),
   updateList: (id: number, patch: ListPatch) => request<ReadingList>(`/api/lists/${id}`, { method: "PATCH", ...json(patch) }),
   deleteList: (id: number) => request<{ list: ReadingList }>(`/api/lists/${id}`, { method: "DELETE" }),

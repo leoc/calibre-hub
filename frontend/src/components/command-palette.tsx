@@ -16,6 +16,8 @@ import { MODES } from "@/lib/keymap"
 import { THEMES, useTheme } from "@/lib/theme"
 import { useDesktop } from "@/lib/use-media"
 import { leaveOverlays } from "@/lib/back-to-close"
+import { readerFormat } from "@/lib/reader"
+import { BookOpenText } from "lucide-react"
 import { formatNumber, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "./ui/command"
@@ -78,12 +80,17 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const { lists, tree, user } = useListTree(open)
   const membership = useListMembership()
   const createList = useCreateList()
-  // the book open in the detail, if any
-  const openBook = search.book != null ? queryClient.getQueryData<Book>(["book", search.book]) : undefined
+  // the book open in the detail (?book= or /books/:id), if any
+  const pageBook = useRouterState({ select: (s) => /^\/books\/(\d+)/.exec(s.location.pathname)?.[1] })
+  const openId = search.book ?? (pageBook ? Number(pageBook) : null)
+  const openBook = openId != null ? queryClient.getQueryData<Book>(["book", openId]) : undefined
   const editableLists = lists?.filter((l) => l.editable) ?? []
   const last = lastUsedList(lists)
   const bookActions: Action[] = openBook
     ? [
+        ...(readerFormat(openBook)
+          ? [{ id: "read", label: t("reader.command", { title: openBook.title }), icon: <BookOpenText />, run: () => closeThen(() => navigate({ to: "/read/$id", params: { id: openBook.id } })) }]
+          : []),
         ...(last && !inList(openBook, last.id)
           ? [{ id: "list-last", label: t("list.quick", { name: listLabel(last) }), icon: <BookmarkPlus />, run: () => (membership.mutate({ list: last, bookIds: [openBook.id], on: true }), close()) }]
           : []),
@@ -101,7 +108,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
             },
           }
         }),
-        { id: "edit", label: `${t("book.edit")}: ${openBook.title}`, icon: <Pencil />, run: () => go({ ...search, edit: true }) },
+        ...(search.book != null ? [{ id: "edit", label: `${t("book.edit")}: ${openBook.title}`, icon: <Pencil />, run: () => go({ ...search, edit: true }) }] : []),
       ]
     : []
   // "Neue Liste: <Name>": creates it (with the open book) and opens it

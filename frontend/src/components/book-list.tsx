@@ -48,7 +48,7 @@ export function BookList({ books, search }: { books: Book[]; search: LibrarySear
             search={search}
             className={cn("grid min-w-0 flex-1 items-center py-2 hover:bg-accent eink:min-h-16", COLUMNS)}
           >
-            <BookCover book={b} compact className="w-10 rounded-sm" />
+            <BookCover book={b} compact progress className="w-10 rounded-sm" />
             <div className="min-w-0">
               <p className="truncate font-medium">{b.title}</p>
               <p className="truncate text-sm text-muted-foreground eink:text-black">{b.authors.join(", ")}</p>
