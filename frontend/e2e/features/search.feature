@@ -116,16 +116,27 @@ Feature: Search bar and command palette
     And the palette input contains "insel"
 
   @wide
-  Scenario Outline: Wide: keyboard shortcuts open the palette
+  Scenario: Wide: Ctrl+K opens the palette
     Given I use a wide device
     And the focus is not in an input
-    When I press "<key>"
+    When I press "Control+k"
     Then the command palette opens
 
-    Examples:
-      | key       |
-      | Control+k |
-      | /         |
+  # "/" searches the library live from the header (see keyboard.feature)
+  @wide
+  Scenario: Wide: "/" puts the focus into the search bar
+    Given I use a wide device
+    And the focus is not in an input
+    When I press "/"
+    Then the palette stays closed
+    And the focus is in the search bar
+
+  @narrow
+  Scenario: Narrow: "/" opens the palette
+    Given I use a narrow device
+    And the focus is not in an input
+    When I press "/"
+    Then the command palette opens
 
   @wide
   Scenario: Wide: Escape restores the search bar

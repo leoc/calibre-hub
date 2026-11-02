@@ -24,7 +24,7 @@ export function BookGrid({ books, search, showIndex }: { books: Book[]; search: 
             id={b.id}
             order={order}
             search={search}
-            className="-m-1 block w-[calc(100%+0.5rem)] rounded-lg p-1 outline-none [&>[data-check]]:top-2.5 [&>[data-check]]:left-2.5 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            className="-m-1 block w-[calc(100%+0.5rem)] rounded-lg p-1 [&>[data-check]]:top-2.5 [&>[data-check]]:left-2.5"
             selectedClassName="ring-offset-0"
           >
             <div className="relative">

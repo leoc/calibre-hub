@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
-import { ArrowDownUp, Bookmark, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
+import { useNavigate, useRouterState } from "@tanstack/react-router"
+import { ArrowDownUp, Bookmark, Keyboard, ListChecks, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
 import { api, coverUrl, DEFAULT_CONFIG, SORTS, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { useToggleTag } from "@/lib/mutations"
 import { matchNamed, parseInput, type Scope } from "@/lib/palette"
 import { categorySuggestions } from "@/lib/kategorie"
-import { defaultOrder, toggleTag, withFilter } from "@/lib/search"
+import { defaultOrder, toBookQuery, toggleTag, withFilter } from "@/lib/search"
 import { useLibrarySearch } from "@/lib/use-library"
 import { setView } from "@/lib/prefs"
+import { requestBulk, useSelection, type BulkAction } from "@/lib/selection"
+import { keyboard } from "@/lib/keyboard"
+import { MODES } from "@/lib/keymap"
 import { THEMES, useTheme } from "@/lib/theme"
 import { useDesktop } from "@/lib/use-media"
 import { leaveOverlays } from "@/lib/back-to-close"
@@ -90,6 +93,21 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       ]
     : []
 
+  // with books selected (bulk mode in the library): the bulk commands, with the count
+  const sel = useSelection()
+  const onLibrary = useRouterState({ select: (s) => s.location.pathname }) === "/"
+  const { data: matches } = useQuery({ ...booksQuery(toBookQuery(search, config.categoryColumn)), enabled: open && sel.all && onLibrary })
+  const selCount = sel.all ? (matches?.total ?? 0) : sel.ids.size
+  const bulkActions: Action[] =
+    onLibrary && sel.active && selCount > 0
+      ? (["addTags", "removeTags", "kategorie", "series", "delete"] as BulkAction[]).map((a) => ({
+          id: `bulk-${a}`,
+          label: `${t(`bulk.${a}`)} (${formatNumber(selCount)})`,
+          icon: a === "delete" ? <Trash2 /> : <ListChecks />,
+          run: () => closeThen(() => requestBulk(a)),
+        }))
+      : []
+
   const actions: Action[] = useMemo(
     () => [
       { id: "all", label: t("nav.all"), icon: <LibraryBig />, run: () => go({}) },
@@ -103,6 +121,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       { id: "grid", label: t("view.grid"), icon: <LayoutGrid />, run: () => (setView("grid"), close()) },
       { id: "list", label: t("view.list"), icon: <List />, run: () => (setView("list"), close()) },
       ...THEMES.map((th) => ({ id: `theme-${th}`, label: `${t("theme.label")}: ${t(`theme.${th}`)}`, icon: <Palette />, run: () => (setTheme(th), close()) })),
+      ...MODES.map((m) => ({ id: `keys-${m}`, label: `${t("keys.label")}: ${t(`keys.${m}`)}`, icon: <Keyboard />, run: () => (keyboard.setMode(m), close()) })),
       ...SORTS.map((s: Sort) => ({
         id: `sort-${s}`,
         label: `${t("sort.label")}: ${t(`sort.${s}`)}`,
@@ -132,7 +151,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const kategorien = cats && wants("kategorie") ? matchNamed(categorySuggestions(cats.kategorie), text, limit) : []
   const matchedActions =
     scope === "actions" || (scope === "all" && text)
-      ? [...bookActions, ...actions].filter((a) => a.label.toLowerCase().includes(text.toLowerCase())).slice(0, scope === "all" ? 4 : undefined)
+      ? [...bulkActions, ...bookActions, ...actions].filter((a) => a.label.toLowerCase().includes(text.toLowerCase())).slice(0, scope === "all" ? 4 : undefined)
       : []
   const showFulltext = (scope === "all" || scope === "books") && text.length > 0
 

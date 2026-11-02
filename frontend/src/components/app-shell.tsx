@@ -16,6 +16,8 @@ import { CommandPalette } from "./command-palette"
 import { EinkSuggestion } from "./theme-switch"
 import { UploadButton, UploadHost } from "./upload"
 import { LibraryLink, ReplaceHistory } from "@/components/library-link"
+import { KeyboardHost } from "./keyboard"
+import { activateWhenLoaded, focusActive, focusSearch, registerSearchFocus } from "@/lib/keyboard"
 
 export function AppShell() {
   const desktop = useDesktop()
@@ -42,11 +44,10 @@ export function AppShell() {
     setTimeout(() => el?.isConnected && el.focus(), 0)
   }
 
-  // Ctrl/Cmd+K anywhere, "/" outside text fields
+  // Ctrl/Cmd+K anywhere; "/" and ">" come from the KeyboardHost
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing = e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))
-      if ((e.key === "k" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey)) {
+      if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault()
         setPalette((p) => (p === null ? (searchRef.current.q ?? "") : null))
       }
@@ -104,6 +105,8 @@ export function AppShell() {
       <UploadHost />
       {/* mounted only while open, so the input starts empty each time */}
       {palette !== null && <CommandPalette initialInput={palette} onClose={closePalette} />}
+      {/* "/" focuses the wide search bar (phones: opens the palette), ">" the palette's commands */}
+      <KeyboardHost onSearch={() => focusSearch() || setPalette(searchRef.current.q ?? "")} onCommands={() => setPalette(">")} />
     </div>
   )
 }
@@ -134,6 +137,32 @@ function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (i
 
   useEffect(() => () => clearTimeout(timer.current), [])
   const apple = isApple()
+  const input = useRef<HTMLInputElement>(null)
+  useEffect(
+    () =>
+      registerSearchFocus(() => {
+        input.current?.focus()
+        input.current?.select()
+      }),
+    [],
+  )
+
+  // Enter: search now and go on in the list from its first result.
+  // Escape: back to the list as it was.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing) return
+    if (e.key === "Enter") {
+      e.preventDefault()
+      clearTimeout(timer.current)
+      const q = text || undefined
+      activateWhenLoaded({ at: "first", focus: true, when: (s) => s.q === q })
+      if (text !== value) go(withFilter(search, { q }), { replace: !!search.q && !!text })
+    } else if (e.key === "Escape") {
+      // not the search field's own Escape, which would empty it
+      e.preventDefault()
+      if (!focusActive()) input.current?.blur()
+    }
+  }
 
   const change = (next: string) => {
     clearTimeout(timer.current)
@@ -155,9 +184,11 @@ function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (i
     <div className="relative flex max-w-xl min-w-0 flex-1 items-center">
       <Search className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground eink:text-black" aria-hidden />
       <input
+        ref={input}
         type="search"
         value={text}
         onChange={(e) => change(e.target.value)}
+        onKeyDown={onKeyDown}
         placeholder={t("search.placeholder")}
         aria-label={t("search.placeholder")}
         className={cn(searchBox, "pr-20 [&::-webkit-search-cancel-button]:hidden")}

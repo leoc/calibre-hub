@@ -38,3 +38,14 @@ it("keeps the selection order: clicks as clicked, ranges and pages as shown", ()
   selection.addPage(order)
   expect([...current().ids]).toEqual([9, 6, 7, 8, 5])
 })
+
+it("adds ranges for the keyboard and replaces the ids in visual mode", () => {
+  const order = [5, 6, 7, 8, 9]
+  selection.toggle(6, false, order)
+  selection.addRange(6, 8, order)
+  expect([...current().ids]).toEqual([6, 7, 8])
+  expect(current().anchor).toBe(6)
+  selection.replace([9, 5])
+  expect(current().active).toBe(true)
+  expect([...current().ids]).toEqual([9, 5])
+})

@@ -40,9 +40,26 @@ the lockfile (v9) works with 10 to 12.
 - Search and command palette, specified in `e2e/features/search.feature`:
   wide screens (≥ 640 px) search the library live from the header; a prefix
   at the start (`a ` author, `s ` series, `t ` tag, `k ` category, `b `
-  books, `>` commands) hands over to the palette, as do the command button,
-  Ctrl+K and `/`. Narrow screens open the palette full screen from the
+  books, `>` commands) hands over to the palette, as do the command button
+  and Ctrl+K. Narrow screens open the palette full screen from the
   search bar, with scope chips instead of typed prefixes.
+- Keyboard control, specified in `e2e/features/keyboard.feature`
+  (`src/lib/keymap.ts` bindings and key parser, `src/lib/keyboard.ts` state,
+  `src/components/keyboard.tsx` the one keydown listener and the list's
+  keys). Two modes per device (`hub.keys`), switched in the sidebar footer
+  or with the palette commands "Tastatur: App" / "Tastatur: Vim". App:
+  arrows, Home/End, PageUp/PageDown, Enter opens, Space selects,
+  Shift+arrows extend, Ctrl+A selects the page. Vim: the same plus hjkl,
+  counts (`5j`), `gg`/`G`, Ctrl+D/U, `[`/`]` pages, `v` visual mode (shown
+  top right with a pending count or sequence). In the open detail j/k go to
+  the next/previous book. `/` puts the focus into the wide search bar
+  (phones: the palette); Enter searches and goes on in the list from the
+  first result, Escape returns to the list. `>` opens the palette's
+  commands, with books selected the bulk commands with the count
+  ("Tags hinzufügen (3)"). Selection uses the bulk store and turns
+  selection mode on. Keys do nothing in text fields and while a dialog is
+  open; the active book is a roving tab stop with real focus and a ring
+  (thick black in E-Ink).
 - Themes: system, light, dark, E-Ink (black on white, no animations, larger
   targets), stored per device. Boox/Onyx user agents get a one-time prompt.
 - Category suggestions (`/suggestions`, sidebar entry with the open count,

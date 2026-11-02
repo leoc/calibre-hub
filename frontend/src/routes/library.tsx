@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowLeft } from "lucide-react"
@@ -19,6 +19,8 @@ import { Button, buttonVariants } from "@/components/ui/button"
 import { BulkBar } from "@/components/bulk-bar"
 import { useSelection } from "@/lib/selection"
 import { LibraryLink } from "@/components/library-link"
+import { useListKeys } from "@/components/keyboard"
+import { activateWhenLoaded, focusActive, keyboard, usePendingActivation } from "@/lib/keyboard"
 
 const route = getRouteApi("/_app/")
 
@@ -38,6 +40,19 @@ export function LibraryPage() {
   const setEdit = (on: boolean) => navigate({ to: "/", search: { ...search, edit: on || undefined }, replace: !on })
   const deleted = () => navigate({ to: "/", search: { ...search, book: undefined, edit: undefined }, replace: true })
   const placeholder = data?.books.find((b) => b.id === search.book)
+
+  // keyboard: moving, selecting, opening; after a search or a page change
+  // the first new book becomes the active one
+  useListKeys({ books: data?.books, search, page, pages })
+  const pendingActivation = usePendingActivation()
+  useEffect(() => {
+    if (!pendingActivation || !data || isPlaceholderData || !pendingActivation.when(search)) return
+    activateWhenLoaded(null)
+    const first = data.books[0]
+    if (!first) return
+    keyboard.setActive(first.id)
+    if (pendingActivation.focus) requestAnimationFrame(() => focusActive())
+  }, [pendingActivation, data, isPlaceholderData, search])
 
   // "Ohne Kategorie": once a book has one, go on with the next unsorted book
   // in the list (it drops out of the refetched list), or close at the end.
@@ -98,7 +113,16 @@ export function LibraryPage() {
       {desktop && (
         <Sheet open={search.book != null} onOpenChange={(o) => !o && closeBook()}>
           {/* opening it pushed ?book=, so Back closes it already */}
-          <SheetContent side="right" className="sm:max-w-2xl" closeOnBack={false} aria-describedby={undefined}>
+          <SheetContent
+            side="right"
+            className="sm:max-w-2xl"
+            closeOnBack={false}
+            aria-describedby={undefined}
+            // the list keys go on working in the detail (j: next book), not in the form
+            data-keys={search.edit ? undefined : "pass"}
+            // back to the active book, which may be another one by now
+            onCloseAutoFocus={(e) => focusActive() && e.preventDefault()}
+          >
             <SheetTitle className="sr-only">{placeholder?.title ?? t("app.title")}</SheetTitle>
             {/* no bottom padding: the edit form's sticky bar sits flush at the bottom */}
             <div className="min-h-0 flex-1 overflow-y-auto px-6">

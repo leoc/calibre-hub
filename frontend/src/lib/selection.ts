@@ -16,6 +16,7 @@ const set = (patch: Partial<Selection>) => {
 }
 
 export const selection = {
+  get: () => state,
   start: () => set({ active: true }),
   stop: () => set({ active: false, ids: new Set(), all: false, anchor: null }),
   clear: () => set({ ids: new Set(), all: false, anchor: null }),
@@ -33,6 +34,29 @@ export const selection = {
   addPage(order: number[]) {
     set({ ids: new Set([...state.ids, ...order]), all: false })
   },
+  // keyboard: Shift+movement adds the books between `from` and `to`
+  addRange(from: number, to: number, order: number[]) {
+    const [a, b] = [order.indexOf(from), order.indexOf(to)].sort((x, y) => x - y)
+    if (a < 0) return
+    set({ ids: new Set([...state.ids, ...order.slice(a, b + 1)]), all: false, anchor: state.anchor ?? from })
+  },
+  // visual mode: what was selected before plus the range it spans
+  replace(ids: number[]) {
+    set({ active: true, ids: new Set(ids), all: false })
+  },
+}
+
+// Bulk commands from elsewhere (the command palette) open the bulk bar's dialog.
+export type BulkAction = "addTags" | "removeTags" | "kategorie" | "series" | "delete"
+const bulkListeners = new Set<(a: BulkAction) => void>()
+export function requestBulk(action: BulkAction) {
+  bulkListeners.forEach((l) => l(action))
+}
+export function onBulkRequest(listener: (a: BulkAction) => void) {
+  bulkListeners.add(listener)
+  return () => {
+    bulkListeners.delete(listener)
+  }
 }
 
 export function useSelection(): Selection {

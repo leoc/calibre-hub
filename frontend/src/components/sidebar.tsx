@@ -10,6 +10,7 @@ import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
 import { CategoryTree } from "./category-tree"
 import { ThemeSwitch } from "./theme-switch"
+import { KeyboardSwitch } from "./keyboard"
 import { LibraryLink, ReplaceHistory } from "@/components/library-link"
 
 interface Props {
@@ -121,6 +122,8 @@ export function Sidebar({ search, onNavigate }: Props) {
           </span>
         </Link>
         <ThemeSwitch />
+        {/* keyboard control is for wide screens; phones stay as they are */}
+        <KeyboardSwitch className="hidden sm:grid" />
       </div>
     </nav>
   )

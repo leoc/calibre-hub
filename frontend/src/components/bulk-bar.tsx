@@ -5,13 +5,13 @@ import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget } fr
 import { categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { categoriesQuery, configQuery } from "@/lib/queries"
 import { toBookQuery, type LibrarySearch } from "@/lib/search"
-import { selection, useSelection } from "@/lib/selection"
+import { onBulkRequest, selection, useSelection, type BulkAction } from "@/lib/selection"
 import { formatNumber, t } from "@/i18n"
 import { Button } from "./ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog"
 import { ChipsInput, Combobox } from "./ui/suggest"
 
-type Action = "addTags" | "removeTags" | "kategorie" | "series" | "delete"
+type Action = BulkAction
 interface StartedJob {
   id: string
   total: number
@@ -32,6 +32,8 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
     if (sel.all) selection.clear()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
+  // the command palette's "Tags hinzufügen (3)" …
+  useEffect(() => onBulkRequest(setAction), [])
 
   const { page: _p, book: _b, edit: _e, ...filters } = search
   // the bulk query takes filters only, no paging or sorting; ids keep the
