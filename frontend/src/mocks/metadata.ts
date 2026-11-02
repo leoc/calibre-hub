@@ -152,8 +152,12 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
         enabled: true,
         roots: ["/srv/media/ebooks/inbox"],
         running: false,
+        scanning: true,
         hooksPaused: false,
         runs: [
+          { id: "r3", path: "/srv/media/ebooks/backlog", paths: ["/srv/media/ebooks/backlog"], dryRun: true, limit: 200,
+            createdAt: "2026-11-03T08:00:00Z", jobId: "j3", status: "scanning", done: null, total: 0, error: null,
+            scan: { files: 12840, units: 6210, planned: 0 }, summary: null, results: {} },
           { id: "r2", path: "/srv/media/ebooks/inbox", dryRun: false, createdAt: "2026-11-02T20:10:00Z", jobId: "j2", status: "done",
             done: 1240, total: 1240, error: null, summary, results: { imported: 1100, formatAdded: 40, duplicate: 98, failed: 2 } },
           { id: "r1", path: "/srv/media/ebooks/inbox", dryRun: true, createdAt: "2026-11-02T20:00:00Z", jobId: null, status: "planned",

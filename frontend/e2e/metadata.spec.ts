@@ -139,3 +139,12 @@ test("metadata from the command palette", async ({ page, isMobile }) => {
   await page.getByRole("option", { name: "Metadaten" }).click()
   await expect(page).toHaveURL(/\/metadata$/)
 })
+
+test("backlog import: a running scan shows its progress", async ({ page, isMobile }) => {
+  await openMetadata(page, isMobile)
+  const section = page.getByRole("region", { name: "Altbestand" })
+  await expect(section.getByRole("status")).toHaveText("durchsucht … 12.840 Dateien, 6.210 Bücher")
+  // no summary or report before the scan is done
+  await expect(section.getByRole("listitem").first().getByRole("link", { name: "Bericht (JSON)" })).toHaveCount(0)
+  await expect(section.getByRole("link", { name: "Bericht (JSON)" })).toHaveCount(2)
+})

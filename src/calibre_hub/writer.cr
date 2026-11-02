@@ -380,6 +380,15 @@ module CalibreHub
 
     # Progress is saved after every book
     private def run(job : Job)
+      begin
+        job = prepare(job)
+      rescue ex
+        job.status = "failed"
+        job.error = ex.message || ex.class.name
+        STDERR.puts "#{@table}: job #{job.id} failed before its first book: #{job.error}"
+        @db.exec "update #{@table} set status = ?, error = ? where id = ?", job.status, job.error, job.id
+        return
+      end
       resumed_at = job.done > 0 ? job.done : nil
       (job.done...job.total).each do |i|
         id = job.ids[i]
@@ -403,6 +412,12 @@ module CalibreHub
         delete from #{@table} where status != 'running' and rowid not in (
           select rowid from #{@table} where status != 'running' order by created_at desc, rowid desc limit ?)
         SQL
+    end
+
+    # Work a job does before its books (e.g. finding them); returns the
+    # job with its ids. An exception stops the job as failed.
+    protected def prepare(job : Job) : Job
+      job
     end
 
     # One book of a job; resumed: the book the job was at when the hub stopped

@@ -165,18 +165,23 @@ export interface MetadataChange {
 
 export type MetadataTarget = "incomplete" | "all" | "authors" | { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }
 
-// A backlog import run (POST /api/import): its scan summary and, applied,
-// the job's progress and the results per status
+// A backlog import run (POST /api/import): the scan's progress, then its
+// summary and, applied, the job's progress and the results per status
 export interface ImportRun {
   id: string
   path: string
+  paths?: string[]
   dryRun: boolean
+  limit?: number | null
   createdAt: string
   jobId: string | null
-  status: "planned" | "running" | "done" | "failed" | "gone"
+  status: "scanning" | "planned" | "running" | "done" | "failed" | "gone"
   done: number | null
   total: number
   error: string | null
+  // files looked at, books found, books checked against the library
+  scan?: { files: number; units: number; planned: number } | null
+  // null while the scan runs (or when it failed)
   summary: {
     books: number
     files: number
@@ -187,8 +192,11 @@ export interface ImportRun {
     toAddFormats: number
     duplicates: Record<string, number> & { total: number }
     alreadyImported: number
+    // what this run imports (everything without a limit)
+    selected?: { books: number; toAdd: number; toAddFormats: number; duplicates: number }
+    deferred?: number
     skipped: { total: number; byReason: Record<string, number>; byType: Record<string, number> }
-  }
+  } | null
   results: Record<string, number>
 }
 
@@ -204,6 +212,7 @@ export interface ImportStatus {
   enabled: boolean
   roots?: string[]
   running?: boolean
+  scanning?: boolean
   hooksPaused?: boolean
   runs?: ImportRun[]
   cleanups: ImportCleanup[]

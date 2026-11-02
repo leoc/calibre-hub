@@ -78,7 +78,7 @@ export const importStatusQuery = queryOptions({
   queryFn: api.importStatus,
   staleTime: 30_000,
   refetchInterval: (q) =>
-    q.state.data?.running || q.state.data?.cleanups.some((c) => c.job?.status === "running" || c.undoJob?.status === "running") ? 2000 : false,
+    q.state.data?.running || q.state.data?.scanning || q.state.data?.cleanups.some((c) => c.job?.status === "running" || c.undoJob?.status === "running") ? 2000 : false,
 })
 
 export const metadataChangesQuery =(query: MetadataChangesQuery = {}) =>

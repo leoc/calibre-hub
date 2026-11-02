@@ -462,6 +462,41 @@ describe "hub import" do
     end
   end
 
+  it "waits for the scan, with several paths and a limit" do
+    summary = {books: 5, files: 5, formats: {PDF: 5}, calibreFolders: 0, plainFiles: 5, withCover: 0, toAdd: 5,
+               toAddFormats: 0, duplicates: {total: 0}, alreadyImported: 0, limit: 2,
+               selected: {books: 2, toAdd: 2, toAddFormats: 0, duplicates: 0}, deferred: 3,
+               skipped: {total: 0, byReason: {} of String => Int32, byType: {} of String => Int32, byFolder: [] of String}}
+    scanning = {id: "r2", path: "/srv/a, /srv/b", paths: ["/srv/a", "/srv/b"], dryRun: true, status: "scanning",
+                scan: {files: 10, units: 3, planned: 0}, summary: nil, results: {} of String => Int32}
+    with_stub do |s|
+      s.on("POST", "/api/import", scanning, 202)
+      s.on("GET", "/api/import/runs/r2", scanning)
+      s.on("GET", "/api/import/runs/r2", scanning.merge({status: "planned", scan: {files: 12, units: 5, planned: 5}, summary: summary, results: {pending: 2, deferred: 3}}))
+      code, stdo, _ = cli(s, "import", "a", "b", "--limit", "2")
+      code.should eq(0)
+      JSON.parse(s.requests.first.body).should eq(JSON.parse(%({"paths":["a","b"],"dryRun":true,"limit":2})))
+      s.requests.count { |r| r.resource == "/api/import/runs/r2" }.should eq(2)
+      stdo.should contain("scanned 12 files")
+      stdo.should contain("this run (--limit 2): 2 books: add 2, formats 0, duplicates 0; 3 left for later runs")
+      cli(s, "import", "a", "--limit", "0")[0].should eq(1)
+    end
+    with_stub do |s|
+      s.on("POST", "/api/import", scanning, 202)
+      s.on("GET", "/api/import/runs/r2", scanning.merge({status: "failed", error: "calibre-server unavailable"}))
+      code, _, err = cli(s, "import", "a", "b")
+      code.should eq(5)
+      err.should contain("calibre-server unavailable")
+    end
+    with_stub do |s|
+      s.on("GET", "/api/import", {enabled: true, roots: ["/srv"], running: false, scanning: true,
+                                  runs: [scanning.merge({createdAt: "2026-11-03T08:00:00Z"})], cleanups: [] of String})
+      code, stdo, _ = cli(s, "import", "status")
+      code.should eq(0)
+      stdo.should contain("r2  2026-11-03T08:00:00Z  /srv/a, /srv/b  scanning 10 files")
+    end
+  end
+
   it "cleans up inbox imports and undoes it" do
     entry = {bookId: 120, title: "A", folders: ["Defaults", "Algebra"], kategorie: "Defaults.Algebra",
              tags: ["Algebra", "Defaults"], removeTags: ["Algebra", "Defaults"], clearKategorie: true}

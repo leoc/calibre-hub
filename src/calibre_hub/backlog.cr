@@ -9,6 +9,7 @@ require "./library_db"
 require "./meta_sources"
 require "./files"
 require "./sanitizer"
+require "./dedup"
 require "./backlog_pause"
 
 module CalibreHub
@@ -23,15 +24,17 @@ module CalibreHub
   #
   # Before adding, every book is checked against the library: the same file
   # (size and KOReader partial MD5, also of files the hub rewrote since), the
-  # ISBN, or title and an author. A duplicate is skipped, or adds the formats
-  # the library's book lacks. Files without an OPF are checked by file before
-  # adding and by what calibre read from them right after (calibre's own
-  # title/author check, then ISBN and title/author).
+  # ISBN, or title and an author, with the duplicate page's rules (Dedup:
+  # its normalization, never two volumes, editions of a standard or numbers
+  # of a series). A duplicate is skipped, or adds the formats the library's
+  # book lacks. Files without an OPF are checked by file before adding and
+  # by what calibre read from them right after (calibre's own title/author
+  # check, then ISBN and title/author).
   #
-  # A run scans synchronously (the dry run's summary) and imports as a job
-  # in a queue of its own (GET /api/jobs/:id), resumed after a restart.
-  # While it runs the metadata, classify, convert and embed hooks pause
-  # (Backlog.paused?) and work off the new books afterwards.
+  # A run scans one or more folders as a job (the scan, then a unit per
+  # book; a dry run only scans), in a queue of its own, resumed after a
+  # restart. While an import runs the metadata, classify, convert and embed
+  # hooks pause (Backlog.paused?) and work off the new books afterwards.
   module Backlog
     # calibre reads the metadata from the first of these the book has
     FORMATS  = %w(EPUB KEPUB AZW3 AZW MOBI PRC AZW4 FB2 FBZ DOCX ODT RTF PDF DJVU DJV CHM CBZ CBR CB7 LIT PDB TXT)
@@ -178,17 +181,32 @@ module CalibreHub
     # path -> {size, mtime, status, book}: files earlier runs handled
     alias Known = Hash(String, {Int64, Int64, String, Int64?})
 
-    # Walks a folder (read-only) into units and skipped files
+    # Walks folders (read-only, one after another) into units and skipped files
     class Scanner
+      # other fibers (the API) run every this many entries
+      YIELD_EVERY = 64
+      # on_progress is called every this many entries
+      PROGRESS_EVERY = 500
+
       getter units = [] of Unit
       getter skipped = [] of Skipped
       getter already = 0
+      # files looked at, book files or not
+      getter files = 0
+      # (files, units) now and then while walking
+      property on_progress : Proc(Int32, Int32, Nil)?
+      @entries = 0
 
-      def initialize(@root : String, @known : Known = Known.new)
+      def initialize(@roots : Array(String), @known : Known = Known.new)
+      end
+
+      def initialize(root : String, @known : Known = Known.new)
+        @roots = [root]
       end
 
       def run : self
-        walk(@root, top: true)
+        @roots.each { |r| walk(r, top: true) }
+        @on_progress.try &.call(@files, @units.size)
         self
       end
 
@@ -234,6 +252,7 @@ module CalibreHub
         end
         files = [] of String
         children.each do |name|
+          tick
           path = File.join(dir, name)
           info = File.info?(path, follow_symlinks: false)
           if info.nil? || info.symlink?
@@ -247,6 +266,7 @@ module CalibreHub
               walk(path)
             end
           elsif info.file?
+            @files += 1
             if name.starts_with?('.')
               @skipped << Skipped.new(path, "hidden file")
             else
@@ -259,6 +279,13 @@ module CalibreHub
         else
           plain(dir, files)
         end
+      end
+
+      # the file system calls block the process: let the API in now and then
+      private def tick
+        @entries += 1
+        Fiber.yield if @entries % YIELD_EVERY == 0
+        @on_progress.try &.call(@files, @units.size) if @entries % PROGRESS_EVERY == 0
       end
 
       # the book files of a calibre folder are one book
@@ -331,13 +358,36 @@ module CalibreHub
       end
     end
 
+    # A book for Dedup's rules from what is known of it
+    def self.book(id : Int64, title : String, authors : Array(String), series : String? = nil,
+                  series_index : Float64? = nil, identifiers = {} of String => String, publisher : String? = nil) : Book
+      Book.new(id: id, title: title, authors: authors, author_sort: nil, tags: [] of String, series: series,
+        series_index: series_index, formats: [] of String, last_modified: Time::UNIX_EPOCH, timestamp: nil,
+        pubdate: nil, rating: nil, publisher: publisher, identifiers: identifiers, languages: [] of String,
+        comments: nil, custom: {} of String => JSON::Any)
+    end
+
+    def self.book(id : Int64, meta : OpfMeta) : Book
+      book(id, meta.title || "", meta.authors, meta.series, meta.series_index, meta.identifiers, meta.publisher)
+    end
+
     # The library as the duplicate check sees it; books a run adds are added
-    # to it, so a backlog with the same book twice adds it once
+    # to it, so a backlog with the same book twice adds it once. Titles,
+    # authors and ISBNs are compared with Dedup's rules (normalization,
+    # never different volumes, editions of a standard or numbers of a
+    # series); a title needs an author in common and the same words
+    # (TITLE_SIMILARITY), stricter than the duplicates page, where a person
+    # decides on the looser matches.
     class Index
       record Entry, book : Int64, path : String?
 
-      @isbn = {} of String => Int64
-      @titles = {} of String => Array({Int64, Set(String)})
+      # Dedup.similarity: 1 is the same title after normalization
+      TITLE_SIMILARITY = 1.0
+
+      @items = {} of Int64 => Dedup::Item
+      @isbn = {} of String => Array(Int64)
+      # Dedup's full title key -> books
+      @titles = {} of String => Array(Int64)
       @formats = {} of Int64 => Set(String)
       @by_size = {} of Int64 => Array(Entry)
       @sums = {} of {Int64, String} => Int64
@@ -349,7 +399,10 @@ module CalibreHub
       # library_files: {book, format, path, size}; checksums: {book, partial md5, size}
       def initialize(books : Array(Book), library_files = [] of {Int64, String, String, Int64},
                      checksums = [] of {Int64, String, Int64})
-        books.each { |b| add_book(b) }
+        books.each_with_index do |b, i|
+          add_book(b)
+          Fiber.yield if i % 256 == 255
+        end
         library_files.each do |book, format, path, size|
           (@formats[book] ||= Set(String).new) << format.upcase
           (@by_size[size] ||= [] of Entry) << Entry.new(book, path)
@@ -363,7 +416,7 @@ module CalibreHub
       # From calibre-server and, when the hub can read the library, its
       # files and the checksums of files the hub rewrote
       def self.load(calibre : Calibre, library : String?, db : DB::Database) : Index
-        books = calibre.list("", %w(title authors identifiers formats))
+        books = calibre.list("")
         files = [] of {Int64, String, String, Int64}
         if library && File.file?(File.join(library, "metadata.db"))
           ldb = LibraryDB.open_read_only(File.join(library, "metadata.db"))
@@ -384,28 +437,25 @@ module CalibreHub
         Index.new(books, files, sums)
       end
 
-      def self.title_key(title : String) : String
-        Meta::Text.key(title)
-      end
-
-      def self.author_keys(authors : Array(String)) : Set(String)
-        authors.map { |a| Meta::Authors.key(a) }.reject(&.empty?).to_set
-      end
-
       def add_book(b : Book)
         (@formats[b.id] ||= Set(String).new).concat(b.formats.map(&.upcase))
-        b.identifiers["isbn"]?.try { |i| Meta::Isbn.normalize(i) }.try { |i| @isbn[i] ||= b.id }
-        add_title(b.id, b.title, b.authors)
+        add_item(Dedup::Item.new(b))
       end
 
-      def add_title(id : Int64, title : String?, authors : Array(String))
-        key = title.try { |t| Index.title_key(t) }
-        return if key.nil? || key.empty?
-        (@titles[key] ||= [] of {Int64, Set(String)}) << {id, Index.author_keys(authors)}
+      # a book from a calibre folder's metadata.opf (added, or a dry run's pseudo id)
+      def add_meta(id : Int64, meta : OpfMeta)
+        add_item(Dedup::Item.new(Backlog.book(id, meta)))
       end
 
-      def add_isbn(id : Int64, isbn : String?)
-        isbn.try { |i| @isbn[i] ||= id }
+      private def add_item(item : Dedup::Item)
+        @items[item.id] = item
+        item.isbns.each do |i|
+          list = @isbn[i] ||= [] of Int64
+          list << item.id unless list.includes?(item.id)
+        end
+        return if item.title_key.empty?
+        list = @titles[item.full_key] ||= [] of Int64
+        list << item.id unless list.includes?(item.id)
       end
 
       def add_files(id : Int64, files : Array(BookFile))
@@ -437,39 +487,41 @@ module CalibreHub
         nil
       end
 
-      def by_isbn(isbn : String?) : Int64?
-        isbn.try { |i| @isbn[i]? }
+      # {book, how}: another book with an ISBN of the item, or with its
+      # title and an author in common; never another part (Dedup)
+      def match_item(item : Dedup::Item) : {Int64, String}?
+        item.isbns.each do |i|
+          @isbn[i]?.try &.each do |id|
+            next if id == item.id
+            return {id, "isbn"} unless Dedup.different_parts?(item, @items[id])
+          end
+        end
+        return nil if item.title_key.empty? || item.author_keys.empty?
+        @titles[item.full_key]?.try &.each do |id|
+          next if id == item.id
+          other = @items[id]
+          next unless item.author_keys.intersects?(other.author_keys)
+          next if Dedup.different_parts?(item, other)
+          return {id, "title"} if Dedup.similarity(item, other) >= TITLE_SIMILARITY
+        end
+        nil
       end
 
-      # same title (ignoring case, accents, punctuation) and an author in common
-      def by_title(title : String?, authors : Array(String)) : Int64?
-        key = title.try { |t| Index.title_key(t) }
-        return nil if key.nil? || key.empty?
-        mine = Index.author_keys(authors)
-        return nil if mine.empty?
-        @titles[key]?.try &.find { |_, theirs| mine.intersects?(theirs) }.try(&.[0])
+      # the book with this title and an author in common
+      def by_title(title : String, authors : Array(String)) : Int64?
+        hit = match_item(Dedup::Item.new(Backlog.book(0_i64, title, authors)))
+        hit && hit[1] == "title" ? hit[0] : nil
       end
 
       # {book, how} for a unit, before adding
       def match(u : Unit) : {Int64, String}?
         u.files.each { |f| same_file(f).try { |id| return {id, "file"} } }
-        if m = u.meta
-          by_isbn(m.isbn).try { |id| return {id, "isbn"} }
-          by_title(m.title, m.authors).try { |id| return {id, "title"} }
-        end
-        nil
+        u.meta.try { |m| match_item(Dedup::Item.new(Backlog.book(0_i64, m))) }
       end
 
       # {book, how} for a book calibre just added from a file, other than itself
       def match_book(b : Book) : {Int64, String}?
-        isbn = b.identifiers["isbn"]?.try { |i| Meta::Isbn.normalize(i) }
-        if (id = by_isbn(isbn)) && id != b.id
-          return {id, "isbn"}
-        end
-        key = Index.title_key(b.title)
-        mine = Index.author_keys(b.authors)
-        return nil if key.empty? || mine.empty?
-        @titles[key]?.try &.find { |id, theirs| id != b.id && mine.intersects?(theirs) }.try { |hit| {hit[0], "title"} }
+        match_item(Dedup::Item.new(b))
       end
 
       # {partial MD5, MD5 of the first KiB}
@@ -506,21 +558,47 @@ module CalibreHub
       false
     end
 
-    # Plans a scan for a dry run: books it would add count for later ones
-    def self.plan_all(units : Array(Unit), index : Index)
+    # Plans a scan: books it would add count for later ones; yields the
+    # number of units planned now and then
+    def self.plan_all(units : Array(Unit), index : Index, &progress : Int32 ->)
       units.each_with_index do |u, i|
+        if i % 32 == 31
+          progress.call(i + 1)
+          Fiber.yield
+        end
         next unless plan(u, index)
         pseudo = -(i.to_i64 + 1)
         index.planned[pseudo] = u.name
-        if m = u.meta
-          index.add_isbn(pseudo, m.isbn)
-          index.add_title(pseudo, m.title, m.authors)
-        end
+        u.meta.try { |m| index.add_meta(pseudo, m) }
         index.add_files(pseudo, u.files)
       end
+      progress.call(units.size)
     end
 
-    def self.summary(units : Array(Unit), skipped : Array(Skipped), already : Int32, root : String) : JSON::Any
+    def self.plan_all(units : Array(Unit), index : Index)
+      plan_all(units, index) { }
+    end
+
+    # The units a run imports (indexes): all, or with a limit the first in
+    # scan order until `limit` of them add a book or formats; duplicates on
+    # the way go along (the next run skips them), the rest waits for the
+    # next run
+    def self.take(units : Array(Unit), limit : Int32?) : Array(Int32)
+      return (0...units.size).to_a unless limit
+      taken = [] of Int32
+      books = 0
+      units.each_with_index do |u, i|
+        break if books >= limit
+        taken << i
+        books += 1 unless u.action == "duplicate"
+      end
+      taken
+    end
+
+    # roots: the scanned folders; taken: Backlog.take's units with a limit
+    def self.summary(units : Array(Unit), skipped : Array(Skipped), already : Int32, roots : Array(String) | String,
+                     taken : Array(Int32)? = nil, limit : Int32? = nil) : JSON::Any
+      roots = roots.is_a?(String) ? [roots] : roots
       formats = Hash(String, Int32).new(0)
       units.each { |u| u.files.each { |f| formats[f.format] += 1 } }
       dups = Hash(String, Int32).new(0)
@@ -532,10 +610,13 @@ module CalibreHub
         reason = s.reason.sub(/ \(.*\z/, "")
         by_reason[reason] += 1
         by_type[s.path.ends_with?('/') ? "(folder)" : s.ext] += 1
+        root = roots.select { |r| s.path.starts_with?(r.rstrip('/') + "/") }.max_by?(&.size) || ""
         rel = s.path.lchop(root).lchop('/')
         top = rel.includes?('/') ? rel.split('/').first : "."
+        top = File.join(File.basename(root), top).chomp("/.") if roots.size > 1
         (by_folder[top] ||= Hash(String, Int32).new(0))[s.path.ends_with?('/') ? "(folder)" : s.ext] += 1
       end
+      chosen = taken.try(&.map { |i| units[i] }) || units
       folders = by_folder.map { |f, types| {folder: f, count: types.values.sum, types: types.to_a.sort_by { |_, n| -n }.to_h} }
         .sort_by { |f| -f[:count] }.first(50)
       JSON.parse({
@@ -549,6 +630,11 @@ module CalibreHub
         toAddFormats:    units.count(&.action.==("addFormats")),
         duplicates:      {"total" => units.count(&.action.==("duplicate"))}.merge(dups),
         alreadyImported: already,
+        limit:           limit,
+        # what this run imports (everything without a limit)
+        selected: {books: chosen.size, toAdd: chosen.count(&.action.==("add")),
+                   toAddFormats: chosen.count(&.action.==("addFormats")), duplicates: chosen.count(&.action.==("duplicate"))},
+        deferred: units.size - chosen.size,
         skipped:         {total: skipped.size, byReason: by_reason.to_a.sort_by { |_, n| -n }.to_h,
                   byType: by_type.to_a.sort_by { |_, n| -n }.to_h, byFolder: folders},
       }.to_json)

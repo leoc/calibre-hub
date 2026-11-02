@@ -7,12 +7,16 @@ require "./writer"
 require "./api"
 
 module CalibreHub
-  # Backlog imports as jobs (one per run, a unit per book) and their runs in
-  # the state DB: the scan with its plan (import_units), the summary and the
-  # skipped files (import_runs), and every file a run handled (import_files),
-  # so another run of the same folder skips them.
+  # Backlog imports as jobs (one per run: the scan, then a unit per book)
+  # and their runs in the state DB: the scan with its plan (import_units),
+  # the summary and the skipped files (import_runs), and every file a run
+  # handled (import_files), so another run of the same folder skips them.
+  # A dry run is only the scan, in a queue of its own (ImportScans): it
+  # doesn't wait for an import and doesn't pause the hooks.
   class ImportJobs < Jobs
     KEEP_RUNS = 20
+    # units stored per transaction; the API gets the state DB in between
+    STORE_BATCH = 500
 
     class Busy < Exception
     end
@@ -26,6 +30,13 @@ module CalibreHub
       super(db, calibre, writer, nil, "import_jobs")
       @index = nil.as(Backlog::Index?)
       @index_run = ""
+      @scans = nil.as(ImportScans?)
+      @scans = ImportScans.new(db, calibre, writer, self)
+    end
+
+    # the dry runs' queue
+    def scans : ImportScans
+      @scans.not_nil!
     end
 
     def self.migrate(db : DB::Database)
@@ -40,6 +51,15 @@ module CalibreHub
           skipped text not null
         )
         SQL
+      columns = [] of String
+      db.query_each("select name from pragma_table_info('import_runs')") { |rs| columns << rs.read(String) }
+      # every folder of the run (JSON), path is them joined
+      db.exec "alter table import_runs add column paths text" unless columns.includes?("paths")
+      db.exec "alter table import_runs add column limit_n integer" unless columns.includes?("limit_n")
+      # 0 until the job's scan stored units and summary (runs from before scanned at once)
+      db.exec "alter table import_runs add column scanned integer not null default 1" unless columns.includes?("scanned")
+      # the scan's progress: {files, units, planned}
+      db.exec "alter table import_runs add column scan text" unless columns.includes?("scan")
       db.exec <<-SQL
         create table if not exists import_units (
           run_id text not null,
@@ -88,29 +108,84 @@ module CalibreHub
       k
     end
 
-    # Scans and plans; an apply run is queued as a job. Returns the run.
-    def start(path : String, dry_run : Bool) : JSON::Any
-      dir = resolve(path)
+    # Queues a run of one or more folders and returns it right away: a dry
+    # run only scans and plans (status scanning, then planned), an import
+    # scans and then imports the units (scanning, running, done). limit:
+    # the first that many books that add a book or formats, in scan order.
+    def start(paths : Array(String), dry_run : Bool, limit : Int32? = nil) : JSON::Any
+      raise Edit::Invalid.new("path", "path expected") if paths.empty?
+      raise Edit::Invalid.new("limit", "1 or more expected") if limit && limit < 1
+      dirs = paths.map { |p| resolve(p) }.uniq
+      # a folder below another one of the run is scanned with that
+      dirs = dirs.reject { |d| dirs.any? { |o| o != d && d.starts_with?(o.rstrip('/') + "/") } }
       raise Busy.new("an import is running") if !dry_run && running?
-      scan = Backlog::Scanner.new(dir, known).run
-      index = Backlog::Index.load(@calibre, @library, @db)
-      Backlog.plan_all(scan.units, index)
-      summary = Backlog.summary(scan.units, scan.skipped, scan.already, dir)
       id = Random::Secure.hex(8)
-      @db.transaction do |tx|
-        c = tx.connection
-        c.exec "insert into import_runs (id, path, dry_run, created_at, summary, skipped) values (?, ?, ?, ?, ?, ?)",
-          id, dir, dry_run ? 1 : 0, Time.utc.to_unix, summary.to_json, scan.skipped.to_json
-        scan.units.each_with_index do |u, i|
-          c.exec "insert into import_units (run_id, idx, status, unit) values (?, ?, ?, ?)", id, i, u.status, u.to_json
-        end
-      end
-      unless dry_run
-        job = enqueue((0_i64...scan.units.size.to_i64).to_a, {"run" => JSON::Any.new(id)})
-        @db.exec "update import_runs set job_id = ? where id = ?", job.id, id
-      end
+      @db.exec "insert into import_runs (id, path, paths, dry_run, limit_n, created_at, summary, skipped, scanned) values (?, ?, ?, ?, ?, ?, 'null', '[]', 0)",
+        id, dirs.join(", "), dirs.to_json, dry_run ? 1 : 0, limit.try(&.to_i64), Time.utc.to_unix
+      job = dry_run ? scans.queue(id) : enqueue([] of Int64, {"run" => JSON::Any.new(id)})
+      @db.exec "update import_runs set job_id = ? where id = ?", job.id, id
       prune
       run(id) || raise Writer::NotFound.new
+    end
+
+    def start(path : String, dry_run : Bool, limit : Int32? = nil) : JSON::Any
+      start([path], dry_run, limit)
+    end
+
+    # A run's scan, the first step of its job (table: the job's queue):
+    # walks the folders, plans every unit and stores units and summary; an
+    # import's job gets the units it imports. Done already when the hub
+    # restarted after it.
+    def scan(job : Job, table : String) : Job
+      run_id = job.changes["run"].as_s
+      row = @db.query_one?("select path, paths, dry_run, limit_n, scanned from import_runs where id = ?", run_id,
+        as: {String, String?, Int64, Int64?, Int64})
+      raise Jobs::Abort.new("run #{run_id} is gone") unless row
+      path, paths, dry, limit_n, scanned = row
+      return job if scanned == 1
+      dirs = paths.try { |p| Array(String).from_json(p) } || [path]
+      limit = limit_n.try(&.to_i32)
+      last = Time.instant
+      progress = ->(files : Int32, units : Int32, planned : Int32, force : Bool) do
+        now = Time.instant
+        if force || now - last >= 1.second
+          last = now
+          @db.exec "update import_runs set scan = ? where id = ?", {files: files, units: units, planned: planned}.to_json, run_id
+        end
+        nil
+      end
+      progress.call(0, 0, 0, true)
+      scanner = Backlog::Scanner.new(dirs, known)
+      scanner.on_progress = ->(files : Int32, units : Int32) { progress.call(files, units, 0, false) }
+      scanner.run
+      units = scanner.units
+      progress.call(scanner.files, units.size, 0, true)
+      index = with_retry { Backlog::Index.load(@calibre, @library, @db) }
+      Backlog.plan_all(units, index) { |n| progress.call(scanner.files, units.size, n, false) }
+      progress.call(scanner.files, units.size, units.size, true)
+      taken = Backlog.take(units, limit)
+      if limit
+        chosen = taken.to_set
+        units.each_with_index { |u, i| u.status = "deferred" unless chosen.includes?(i) }
+      end
+      summary = Backlog.summary(units, scanner.skipped, scanner.already, dirs, taken, limit)
+      @db.exec "delete from import_units where run_id = ?", run_id
+      units.each_slice(STORE_BATCH).with_index do |slice, n|
+        @db.transaction do |tx|
+          slice.each_with_index do |u, i|
+            tx.connection.exec "insert into import_units (run_id, idx, status, unit) values (?, ?, ?, ?)",
+              run_id, n * STORE_BATCH + i, u.status, u.to_json
+          end
+        end
+        Fiber.yield
+      end
+      ids = dry == 1 ? [] of Int64 : taken.map(&.to_i64)
+      @db.transaction do |tx|
+        c = tx.connection
+        c.exec "update import_runs set summary = ?, skipped = ?, scanned = 1 where id = ?", summary.to_json, scanner.skipped.to_json, run_id
+        c.exec "update #{table} set ids = ? where id = ?", ids.to_json, job.id
+      end
+      Job.new(ids, job.changes, job.id)
     end
 
     def runs(limit = 10) : Array(JSON::Any)
@@ -119,21 +194,34 @@ module CalibreHub
       ids.compact_map { |id| run(id) }
     end
 
+    # status: scanning (the job's scan), planned (a dry run's result),
+    # running, done, failed (the import job's), gone (the job was pruned)
     def run(id : String) : JSON::Any?
-      row = @db.query_one?("select path, dry_run, job_id, created_at, summary from import_runs where id = ?", id,
-        as: {String, Int64, String?, Int64, String})
+      row = @db.query_one?("select path, paths, dry_run, job_id, created_at, summary, limit_n, scanned, scan from import_runs where id = ?", id,
+        as: {String, String?, Int64, String?, Int64, String, Int64?, Int64, String?})
       return nil unless row
-      path, dry, job_id, created, summary = row
+      path, paths, dry, job_id, created, summary, limit, scanned, scan = row
       results = Hash(String, Int64).new(0_i64)
       @db.query_each("select status, count(*) from import_units where run_id = ? group by status", id) do |rs|
         results[rs.read(String)] = rs.read(Int64)
       end
-      job = job_id.try { |j| self[j]? }
-      status = dry == 1 ? "planned" : (job.try(&.status) || "gone")
+      job = job_id.try { |j| dry == 1 ? scans[j]? : self[j]? }
+      status = if scanned == 0
+                 case job.try(&.status)
+                 when nil       then "gone"
+                 when "running" then "scanning"
+                 else                "failed"
+                 end
+               elsif dry == 1
+                 "planned"
+               else
+                 job.try(&.status) || "gone"
+               end
       JSON.parse({
-        id: id, path: path, dryRun: dry == 1, createdAt: Time.unix(created).to_rfc3339, jobId: job_id,
-        status: status, done: job.try(&.done), total: job.try(&.total) || results.values.sum,
-        error: job.try(&.error), summary: JSON.parse(summary), results: results,
+        id: id, path: path, paths: paths.try { |p| JSON.parse(p) } || [path], dryRun: dry == 1, limit: limit,
+        createdAt: Time.unix(created).to_rfc3339, jobId: job_id, status: status,
+        done: dry == 1 ? nil : job.try(&.done), total: dry == 1 ? results.values.sum : (job.try(&.total) || results.values.sum),
+        error: job.try(&.error), scan: scan.try { |s| JSON.parse(s) }, summary: JSON.parse(summary), results: results,
       }.to_json)
     end
 
@@ -153,6 +241,10 @@ module CalibreHub
         @db.exec "delete from import_units where run_id = ?", id
         @db.exec "delete from import_runs where id = ?", id
       end
+    end
+
+    protected def prepare(job : Job) : Job
+      scan(job, @table)
     end
 
     # One unit of a run
@@ -294,8 +386,7 @@ module CalibreHub
         raise ex
       end
       if opf
-        ix.add_isbn(id, opf.isbn)
-        ix.add_title(id, opf.title, opf.authors)
+        ix.add_meta(id, opf)
       elsif b = book
         ix.add_book(b)
       end
@@ -318,6 +409,21 @@ module CalibreHub
       data = File.open(path, &.getb_to_end)
       type = Covers.image_type(data)
       @calibre.set_cover(id, data, type.not_nil!) if type && {"jpeg", "png"}.includes?(type)
+    end
+  end
+
+  # The dry runs of the backlog import: only the scan (ImportJobs#scan)
+  class ImportScans < Jobs
+    def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @imports : ImportJobs)
+      super(db, calibre, writer, nil, "import_scan_jobs")
+    end
+
+    def queue(run_id : String) : Job
+      enqueue([] of Int64, {"run" => JSON::Any.new(run_id)})
+    end
+
+    protected def prepare(job : Job) : Job
+      @imports.scan(job, @table)
     end
   end
 
@@ -500,20 +606,34 @@ module CalibreHub
     get "/api/import" do
       cleanups = cleanup.try(&.cleanups) || [] of JSON::Any
       next {enabled: false, cleanups: cleanups}.to_json unless imports
+      runs = imports.runs
       {enabled: true, roots: imports.roots, running: imports.running?, hooksPaused: imports.running?,
-       runs: imports.runs, cleanups: cleanups}.to_json
+       scanning: runs.any? { |r| r["status"] == "scanning" }, runs: runs, cleanups: cleanups}.to_json
     end
 
     post "/api/import" do |env|
       write_errors(env) do
         next fail(env, 404, {error: "backlog import is off"}) unless imports
         body = json_body(env)
-        path = body["path"]?.try(&.as_s?) || raise Edit::Invalid.new("path", "string expected")
+        paths = [] of String
+        body["path"]?.try { |p| paths << (p.as_s? || raise Edit::Invalid.new("path", "string expected")) }
+        body["paths"]?.try do |list|
+          (list.as_a? || raise Edit::Invalid.new("paths", "list of strings expected")).each do |p|
+            paths << (p.as_s? || raise Edit::Invalid.new("paths", "list of strings expected"))
+          end
+        end
+        raise Edit::Invalid.new("path", "path or paths expected") if paths.empty?
+        limit = body["limit"]?.try do |l|
+          next nil if l.raw.nil?
+          n = l.as_i64? || raise Edit::Invalid.new("limit", "number expected")
+          raise Edit::Invalid.new("limit", "1 or more expected") if n < 1
+          n.clamp(1_i64, Int32::MAX.to_i64).to_i32
+        end
         dry = body["dryRun"]?.try(&.as_bool?)
         dry = true if dry.nil?
         begin
-          run = imports.start(path, dry)
-          env.response.status_code = dry ? 200 : 202
+          run = imports.start(paths, dry, limit)
+          env.response.status_code = 202
           run.to_json
         rescue ex : ImportJobs::Busy
           fail(env, 409, {error: ex.message})

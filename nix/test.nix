@@ -1071,10 +1071,10 @@ pkgs.testers.runNixOSTest {
     </package>
     """
 
-        def pdf():
+        def pdf(fill=b"x"):
             objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                     b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>"]
-            out = b"%PDF-1.4\n%" + b"x" * 3000 + b"\n"
+            out = b"%PDF-1.4\n%" + fill * 3000 + b"\n"
             offsets = []
             for i, o in enumerate(objs, 1):
                 offsets.append(len(out))
@@ -1110,9 +1110,22 @@ pkgs.testers.runNixOSTest {
         put(f"{ALT}/Some Author/talk.mp3", b"ID3" + b"\0" * 4000)
         machine.succeed(f"mkdir -p '{ALT}/Krimi' && cp /srv/books/inbox/_imported/*/Roman/Krimi/k.epub '{ALT}/Krimi/k.epub'")
 
+        def wait_run(run_id, seconds=120):
+            for _ in range(seconds):
+                status, r = api("GET", f"/api/import/runs/{run_id}")
+                assert status == 200, (status, r)
+                if r["status"] != "scanning":
+                    return r
+                machine.sleep(1)
+            raise Exception(f"run {run_id} still scanning")
+
         assert api("POST", "/api/import", {"path": "/srv/books"})[0] == 400
+        assert api("POST", "/api/import", {"path": ALT, "limit": 0})[0] == 400
+        # the scan runs in the run's job, the request returns at once
         status, dry = api("POST", "/api/import", {"path": ALT})
-        assert status == 200 and dry["dryRun"] is True, (status, dry)
+        assert status == 202 and dry["dryRun"] is True and dry["status"] == "scanning" and dry["summary"] is None, (status, dry)
+        dry = wait_run(dry["id"])
+        assert dry["status"] == "planned" and dry["scan"]["planned"] == 4, dry
         s = dry["summary"]
         assert s["books"] == 4 and s["calibreFolders"] == 2 and s["withCover"] == 1, s
         assert s["toAddFormats"] == 1 and s["toAdd"] + s["duplicates"]["total"] == 3, s
@@ -1120,7 +1133,7 @@ pkgs.testers.runNixOSTest {
         assert book_by_title("Inboxbuch")["formats"] == ib["formats"]
 
         status, run = api("POST", "/api/import", {"path": "/srv/books/alt", "dryRun": False})
-        assert status == 202 and run["jobId"], (status, run)
+        assert status == 202 and run["jobId"] and run["status"] == "scanning", (status, run)
         j = wait_job(run["jobId"], 180)
         assert j["status"] == "done" and j["errors"] == [], j
         status, run = api("GET", f"/api/import/runs/{run['id']}")
@@ -1146,6 +1159,7 @@ pkgs.testers.runNixOSTest {
         # nothing moved, and another run skips what was handled
         machine.succeed(f"test -f '{ALT}/Some Author/book.pdf' && test -f '{ALT}/Krimi/k.epub'")
         status, again = api("POST", "/api/import", {"path": ALT})
+        again = wait_run(again["id"])
         assert again["summary"]["books"] == 0 and again["summary"]["alreadyImported"] == 5, again["summary"]
         st = api("GET", "/api/import")[1]
         assert st["enabled"] and st["roots"] == [ALT] and st["hooksPaused"] is False and st["runs"][0]["id"] == again["id"], st
@@ -1153,6 +1167,24 @@ pkgs.testers.runNixOSTest {
         # the CLI
         out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import '{ALT}'")
         assert "0 books in 0 files" in out and "imported before: 5" in out, out
+
+        # several folders in portions: the first two books, then the rest
+        for i, (folder, name) in enumerate([("Teil1", "Erstes Stueck"), ("Teil1", "Zweites Stueck"), ("Teil2", "Drittes Stueck")]):
+            put(f"{ALT}/{folder}/{name}.pdf", pdf(bytes([ord("a") + i])))
+        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import Teil1 Teil2 --limit 2")
+        assert "3 books in 3 files" in out and "this run (--limit 2): 2 books: add 2" in out and "1 left for later runs" in out, out
+        status, run = api("POST", "/api/import", {"paths": ["Teil1", f"{ALT}/Teil2"], "limit": 2, "dryRun": False})
+        assert status == 202 and run["paths"] == [f"{ALT}/Teil1", f"{ALT}/Teil2"] and run["limit"] == 2, (status, run)
+        assert wait_job(run["jobId"], 180)["status"] == "done"
+        run = api("GET", f"/api/import/runs/{run['id']}")[1]
+        assert run["results"] == {"imported": 2, "deferred": 1} and run["total"] == 2, run
+        status, run = api("POST", "/api/import", {"paths": ["Teil1", "Teil2"], "limit": 2, "dryRun": False})
+        assert wait_job(run["jobId"], 180)["status"] == "done"
+        run = api("GET", f"/api/import/runs/{run['id']}")[1]
+        assert run["results"] == {"imported": 1} and run["summary"]["alreadyImported"] == 2, run
+        last = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"]
+        assert [u["files"][0]["path"] for u in last] == [f"{ALT}/Teil2/Drittes Stueck.pdf"], last
+        assert api("GET", f"/api/books/{last[0]['bookId']}")[1]["formats"] == ["PDF"], last
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")

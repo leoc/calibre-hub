@@ -79,9 +79,9 @@ can't log in.
 | `POST /api/epub-fix` `{dryRun?, target?}` | runs the EPUB fixer over every book with an EPUB, or `target` (`{ids}` or `{query}` as in bulk edits); `dryRun` defaults to `true` (only checks); returns 202 `{jobId, total, dryRun}`, progress in `GET /api/jobs/:id` |
 | `GET /api/epub-fix/status` | `{onImport, keepOriginal, running, lastRun}`; `lastRun` is the job with `dryRun`, `from` (library, selection, added), `booksWithFixes`, `booksWithProblems`, `booksFixed` and counts per fix and problem (`fixes`, `problems`) |
 | `GET /api/epub-fix/jobs/:id` | the same for one run plus `results`: `[{bookId, title, applied, fixes: [{code, file, detail}], problems: [...]}]` (books with something to report, at most 500) |
-| `GET /api/import` | backlog import: `{enabled, roots, running, hooksPaused, runs: [...], cleanups: [...]}` (the last 10 runs and cleanups); only `{enabled: false, cleanups}` without `backlogImport.roots` |
-| `POST /api/import` `{path, dryRun?}` | scans `path` (absolute, or relative to the first root; must be in a root, 400) and plans; `dryRun` (default true): 200 with the run `{id, path, dryRun, status, summary, results}`; `dryRun: false`: 202 with `jobId` too, the import runs as a job (`GET /api/jobs/:id`, a unit per book); 409 while another import runs |
-| `GET /api/import/runs/:id`, `GET /api/import/runs/:id/report` | a run (status, `done`/`total`, `results` per status: pending, imported, formatAdded, duplicate, failed); the report adds every book (`units`: files, plan, status, `bookId`, `match`, `detail`) and every skipped file (`skipped: [{path, reason}]`) |
+| `GET /api/import` | backlog import: `{enabled, roots, running, scanning, hooksPaused, runs: [...], cleanups: [...]}` (the last 10 runs and cleanups); only `{enabled: false, cleanups}` without `backlogImport.roots` |
+| `POST /api/import` `{path \| paths: [...], dryRun?, limit?}` | queues a run of the folders (absolute, or relative to the first root; must be in a root, 400) and returns at once: 202 with the run `{id, path, paths, dryRun, limit, status: "scanning", jobId, scan, summary: null}`; the job scans and plans (`scan: {files, units, planned}` while it runs), a dry run (default) ends `planned`, an import goes on with a unit per book (`GET /api/jobs/:id`); `limit`: at most that many books that add a book or formats, in scan order; 409 while another import runs |
+| `GET /api/import/runs/:id`, `GET /api/import/runs/:id/report` | a run (status: scanning, planned, running, done, failed, gone; `done`/`total`, `summary` once scanned, `results` per status: pending, imported, formatAdded, duplicate, failed, deferred); the report adds every book (`units`: files, plan, status, `bookId`, `match`, `detail`) and every skipped file (`skipped: [{path, reason}]`) |
 | `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see Backlog import); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
 | `GET /api/import/cleanups/:id`, `POST /api/import/cleanups/:id/undo` `{dryRun?}` | a cleanup with its backup; undo puts category and tags back (dry run by default, else 202 with `undoJob`) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
@@ -375,7 +375,11 @@ or tags, and nothing is moved or deleted.
 - Duplicates are checked against the library before adding: the same file
   (size, then KOReader's partial MD5 and the first KiB; also files the hub
   rewrote since, by the checksum kept from before), the ISBN, or the same
-  title (ignoring case, accents, punctuation) with an author in common.
+  title with an author in common, normalized like on the duplicates page
+  (case, accents, punctuation, download-site junk; unknown authors are no
+  author in common). Two volumes, two numbers of a series or two editions
+  of a standard are never duplicates, not even with the same ISBN. Unlike
+  the duplicates page, the title must be the same, not only alike.
   Files without an OPF are checked by file before adding and right after by
   what calibre read from them: calibre's own title/author check, then ISBN
   and title/author (the new book is removed again). A duplicate is skipped,
@@ -384,19 +388,30 @@ or tags, and nothing is moved or deleted.
   mtime, book), so another run of the same folder skips them ("imported
   before") and only takes new or changed files.
 
-A run scans and plans right away (the dry run's summary: books, formats,
-calibre folders, covers, to add, formats to add, duplicates by how they were
-found, skipped). Applied, it is a job in a queue of its own, resumed after a
-restart; a failed book is listed and tried again by the next run. There is
-no stability wait per file, and while the job runs the metadata, classify,
-convert and embed hooks pause (`hooksPaused`), so calibre-server only adds
-books; afterwards they work off the new books' events as for any added
-book. calibre-server down: the job waits (20 x 15 s), then stops as failed.
-The Metadaten page of the web app shows the runs and cleanups.
+A run is a job: the request returns at once, the job scans the folders and
+plans (a large backlog takes minutes; the API stays responsive, the run
+shows the files and books found so far, then the books checked), then the
+summary: books, formats, calibre folders, covers, to add, formats to add,
+duplicates by how they were found, skipped. A dry run ends there and runs
+in a queue of its own, beside an import. An import goes on with its books in
+the import queue, resumed after a restart (also during the scan); a failed
+book is listed and tried again by the next run. There is no stability wait
+per file, and while an import runs the metadata, classify, convert and
+embed hooks pause (`hooksPaused`), so calibre-server only adds books;
+afterwards they work off the new books' events as for any added book.
+calibre-server down: the job waits (20 x 15 s), then stops as failed.
+
+Several folders can go into one run (`paths`), and `limit` imports a
+portion: the first N books in scan order (folders as given, then sorted)
+that add a book or formats; duplicates on the way go along, the rest is
+`deferred`. The next run with the same folders skips what was handled and
+takes the next N. The Metadaten page of the web app shows the runs (with a
+running scan) and cleanups.
 
 ```sh
 hub import alt                      # dry run of <first root>/alt
 hub import /srv/media/ebooks/inbox --apply --report report.json
+hub import alt neu --limit 200 --apply   # the next 200 books of both
 hub import status
 ```
 
@@ -663,7 +678,7 @@ hub upload *.epub --tag neu --kategorie Roman/Krimi
 hub upload dune.pdf --add-format-to 12
 hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
 hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
-hub import alt                           # backlog import: dry run, --apply imports
+hub import alt                           # backlog import: dry run, --apply imports, --limit N a portion
 ```
 
 Every command has `--help` and `--json` (the API's JSON; on errors

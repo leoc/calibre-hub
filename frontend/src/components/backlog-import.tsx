@@ -38,22 +38,41 @@ export function BacklogImport() {
   )
 }
 
+// the scan first (files and books found, then the duplicate check), then
+// the dry run's plan or the import's progress
+function runState(run: ImportRun) {
+  if (run.status === "scanning") {
+    const scan = run.scan ?? { files: 0, units: 0, planned: 0 }
+    return scan.planned > 0
+      ? t("import.checking", { done: n(scan.planned), total: n(scan.units) })
+      : t("import.scanning", { files: n(scan.files), books: n(scan.units) })
+  }
+  const finished = t(run.status === "done" ? "import.status.done" : run.status === "failed" ? "import.status.failed" : "import.status.gone")
+  if (run.dryRun) return run.status === "planned" ? t("import.dryRun") : `${t("import.dryRun")}: ${finished}`
+  return run.status === "running" ? t("import.progress", { done: n(run.done), total: n(run.total) }) : finished
+}
+
 function RunItem({ run }: { run: ImportRun }) {
-  const s = run.summary
-  const r = run.results
-  const state = run.dryRun
-    ? t("import.dryRun")
-    : run.status === "running"
-      ? t("import.progress", { done: n(run.done), total: n(run.total) })
-      : t(run.status === "done" ? "import.status.done" : run.status === "failed" ? "import.status.failed" : "import.status.gone")
+  const scanning = run.status === "scanning"
   return (
     <li className="space-y-0.5 text-sm">
       <div className="flex flex-wrap gap-x-2">
-        <span className="font-medium break-all">{run.path}</span>
+        <span className="font-medium break-all">{(run.paths ?? [run.path]).join(", ")}</span>
         <span className="text-muted-foreground eink:text-black">{dateTime(run.createdAt)}</span>
-        <span>{state}</span>
+        <span role={scanning ? "status" : undefined} className="tabular-nums">
+          {runState(run)}
+        </span>
         {run.error && <span className="text-destructive">{run.error}</span>}
       </div>
+      {run.summary && <Summary run={run} summary={run.summary} />}
+    </li>
+  )
+}
+
+function Summary({ run, summary: s }: { run: ImportRun; summary: NonNullable<ImportRun["summary"]> }) {
+  const r = run.results
+  return (
+    <>
       <p className="tabular-nums">
         {t("import.found", {
           books: n(s.books),
@@ -65,6 +84,9 @@ function RunItem({ run }: { run: ImportRun }) {
           skipped: n(s.skipped.total),
         })}
       </p>
+      {run.limit != null && s.selected && (
+        <p className="tabular-nums">{t("import.limit", { books: n(s.selected.books), limit: n(run.limit), deferred: n(s.deferred) })}</p>
+      )}
       {!run.dryRun && (
         <p className="tabular-nums">
           {t("import.results", { imported: n(r.imported), formats: n(r.formatAdded), duplicates: n(r.duplicate), failed: n(r.failed) })}
@@ -73,6 +95,6 @@ function RunItem({ run }: { run: ImportRun }) {
       <a className="underline-offset-2 hover:underline eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center" href={`/api/import/runs/${run.id}/report`} target="_blank" rel="noreferrer">
         {t("import.report")}
       </a>
-    </li>
+    </>
   )
 }

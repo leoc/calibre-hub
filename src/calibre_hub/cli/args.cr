@@ -119,9 +119,10 @@ module CalibreHub
         Flag.new("offset", "N", "show: skip the first N books"),
         Flag.new("yes", short: 'y', help: "delete: don't ask for confirmation"),
       ], choices: %w(ls show create add rm delete)),
-      Command.new("import", "import <path> [--apply] | import status | import cleanup (--min-id N | --since TIME) [--apply] | import undo <cleanup> [--apply]",
-        "import an old collection without folder categories or tags (dry run unless --apply; path on the hub, relative to its first import root), show runs, or take back the folder categories and tags the inbox set", [
+      Command.new("import", "import <path>... [--apply] [--limit N] | import status | import cleanup (--min-id N | --since TIME) [--apply] | import undo <cleanup> [--apply]",
+        "import an old collection without folder categories or tags (dry run unless --apply; paths on the hub, relative to its first import root), show runs, or take back the folder categories and tags the inbox set", [
         Flag.new("apply", help: "import, clean up or undo instead of a dry run"),
+        Flag.new("limit", "N", "import at most N books (new books and formats, in scan order); the next run takes the next N"),
         Flag.new("report", "FILE", "save the run's full report (every book and skipped file) as JSON", file: true),
         Flag.new("min-id", "N", "cleanup: books added with this id or higher"),
         Flag.new("max-id", "N", "cleanup: books up to this id"),

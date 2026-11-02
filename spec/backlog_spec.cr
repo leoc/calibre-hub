@@ -166,6 +166,20 @@ private def wait_job(jobs : CalibreHub::Jobs, id : String) : CalibreHub::Jobs::J
   raise "job #{id} still running"
 end
 
+# a run once its scan is done
+private def wait_run(jobs : CalibreHub::ImportJobs, id : String) : JSON::Any
+  200.times do
+    r = jobs.run(id).not_nil!
+    return r unless r["status"] == "scanning"
+    sleep 20.milliseconds
+  end
+  raise "run #{id} still scanning"
+end
+
+private def opf_series(title : String, author : String, series : String, index : String, isbn : String? = nil) : String
+  opf(title, author, isbn).sub(%(content="Toolbox"), %(content="#{series}")).sub(%(content="2.0"), %(content="#{index}"))
+end
+
 describe Backlog::OpfMeta do
   it "takes the fields of a calibre folder's metadata.opf, without the old library's ids" do
     m = Backlog::OpfMeta.parse(OPF_XML)
@@ -241,6 +255,27 @@ describe Backlog::Scanner do
     end
   end
 
+  it "walks several folders and lets other fibers run meanwhile" do
+    tmpdir do |root|
+      100.times { |i| write(File.join(root, "a", "f#{i}.txt"), "x") }
+      write(File.join(root, "b", "book.pdf"), pdf)
+      write(File.join(root, "b", "_imported", "x.pdf"), pdf("x"))
+      ran = false
+      seen = false
+      spawn { ran = true }
+      scan = Backlog::Scanner.new([File.join(root, "a"), File.join(root, "b")])
+      scan.on_progress = ->(files : Int32, units : Int32) { seen ||= ran; nil }
+      scan.run
+      seen.should be_true
+      scan.files.should eq 101
+      scan.units.map { |u| File.basename(u.files.first.path) }.should eq ["book.pdf"]
+      # the inbox's folders at the top of every scanned folder
+      scan.skipped.map(&.reason).should contain("inbox folder")
+      summary = Backlog.summary(scan.units, scan.skipped, scan.already, [File.join(root, "a"), File.join(root, "b")])
+      summary["skipped"]["byFolder"].as_a.map(&.["folder"].as_s).sort.should eq ["a", "b/_imported"]
+    end
+  end
+
   it "skips files an earlier run handled, unless they changed" do
     tmpdir do |root|
       write(File.join(root, "a.pdf"), pdf)
@@ -291,6 +326,38 @@ describe Backlog::Index do
     index.by_title("Die Welt - ein Buch", ["Someone Else"]).should be_nil
     index.by_title("Die Welt", ["Anna Müller"]).should be_nil
   end
+
+  it "uses the duplicate page's rules: normalization, never another volume or number" do
+    vol = book(8, "Die Chronik Band 1", ["Anna Müller"])
+    numbered = CalibreHub::Book.new(id: 9_i64, title: "Saga", authors: ["Bo Berg"], author_sort: nil, tags: [] of String,
+      series: "Saga", series_index: 1.0, formats: ["EPUB"], last_modified: Time.utc, timestamp: nil, pubdate: nil,
+      rating: nil, publisher: nil, identifiers: {"isbn" => "9783446264137"}, languages: [] of String, comments: nil,
+      custom: {} of String => JSON::Any)
+    unknown = book(10, "Ohne Namen", ["Unknown"])
+    junk = book(11, "Ein Titel (z-lib.org)", ["Cara Cole"])
+    index = Backlog::Index.new([vol, numbered, unknown, junk])
+    index.by_title("Die Chronik Band 1", ["Müller, Anna"]).should eq 8
+    index.by_title("Die Chronik Band 2", ["Anna Müller"]).should be_nil
+    # the same ISBN, but another number of the series
+    other = Backlog::OpfMeta.parse(opf_series("Saga", "Bo Berg", "Saga", "2.0", "9783446264137"))
+    index.match_item(CalibreHub::Dedup::Item.new(Backlog.book(0_i64, other))).should be_nil
+    same = Backlog::OpfMeta.parse(opf_series("Saga", "Bo Berg", "Saga", "1.0", "9783446264137"))
+    index.match_item(CalibreHub::Dedup::Item.new(Backlog.book(0_i64, same))).should eq({9_i64, "isbn"})
+    # an unknown author is no author in common
+    index.by_title("Ohne Namen", ["Unknown"]).should be_nil
+    # download-site junk in a title is no difference
+    index.by_title("Ein Titel", ["Cara Cole"]).should eq 11
+  end
+
+  it "takes the next books of a scan up to a limit, duplicates on the way go along" do
+    units = %w(add duplicate add addFormats duplicate add).map do |a|
+      Backlog::Unit.new("file", "/x", [Backlog::BookFile.new("/x/#{a}", "PDF", 3000_i64, 0_i64)]).tap(&.action=(a))
+    end
+    Backlog.take(units, nil).should eq [0, 1, 2, 3, 4, 5]
+    Backlog.take(units, 2).should eq [0, 1, 2]
+    Backlog.take(units, 3).should eq [0, 1, 2, 3]
+    Backlog.take(units, 10).size.should eq 6
+  end
 end
 
 describe CalibreHub::ImportCleanup do
@@ -326,15 +393,23 @@ describe CalibreHub::ImportJobs do
       jobs = CalibreHub::ImportJobs.new(db, calibre, writer, [root], nil, retries: 0)
 
       expect_raises(CalibreHub::Edit::Invalid, /not below an import root/) { jobs.start("/tmp", true) }
-      dry = jobs.start(".", true)
+      started = jobs.start(".", true)
+      # the scan is the job's, the run comes back right away
+      started["status"].should eq "scanning"
+      started["summary"].raw.should be_nil
+      dry = wait_run(jobs, started["id"].as_s)
       dry["status"].should eq "planned"
+      dry["scan"]["files"].should eq 8
+      dry["scan"]["planned"].should eq 4
+      # a dry run doesn't pause the hooks
+      CalibreHub::Backlog.paused?(db).should be_false
       dry["summary"]["books"].should eq 4
       dry["summary"]["toAdd"].should eq 4
       dry["summary"]["skipped"]["byType"]["mp3"].should eq 1
       fake.requests.none? { |r| r[0] == "add-book" }.should be_true
 
       run = jobs.start(root, false)
-      run["status"].should eq "running"
+      run["status"].should eq "scanning"
       CalibreHub::Backlog.paused?(db).should be_true
       job = wait_job(jobs, run["jobId"].as_s)
       job.status.should eq "done"
@@ -360,9 +435,70 @@ describe CalibreHub::ImportJobs do
       report["skipped"].as_a.map(&.["reason"].as_s).should eq ["not a book format"]
 
       # another run: everything handled already
-      again = jobs.start(root, true)
+      again = wait_run(jobs, jobs.start(root, true)["id"].as_s)
       again["summary"]["books"].should eq 0
       again["summary"]["alreadyImported"].should eq 5
+    end
+  end
+end
+
+describe CalibreHub::ImportJobs do
+  it "imports several folders in portions of a limit" do
+    tmpdir do |root|
+      write(File.join(root, "A", "a1.pdf"), pdf("a1"))
+      write(File.join(root, "A", "a2.pdf"), pdf("a2"))
+      write(File.join(root, "A", "dup.pdf"), pdf("dup"))
+      write(File.join(root, "B", "b1.pdf"), pdf("b1"))
+      write(File.join(root, "B", "b2.pdf"), pdf("b2"))
+      write(File.join(root, "C", "c1.pdf"), pdf("c1"))
+      fake = FakeCalibre.new
+      fake.add(1, "Bekannt", ["Alte Autorin"], ["EPUB"])
+      fake.duplicate_titles["dup"] = 1_i64
+      calibre = fake.calibre
+      db = state_db
+      writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
+      jobs = CalibreHub::ImportJobs.new(db, calibre, writer, [root], nil, retries: 0)
+
+      expect_raises(CalibreHub::Edit::Invalid) { jobs.start(["A"], true, 0) }
+      dry = wait_run(jobs, jobs.start(["A", "B", File.join(root, "A")], true, 2)["id"].as_s)
+      dry["paths"].should eq [File.realpath(File.join(root, "A")), File.realpath(File.join(root, "B"))]
+      dry["limit"].should eq 2
+      dry["summary"]["books"].should eq 5
+      dry["summary"]["selected"]["books"].should eq 2
+      dry["summary"]["deferred"].should eq 3
+      dry["results"].as_h.transform_values(&.as_i).should eq({"pending" => 2, "deferred" => 3})
+
+      run = jobs.start(["A", "B"], false, 2)
+      expect_raises(CalibreHub::ImportJobs::Busy) { jobs.start(["C"], false) }
+      job = wait_job(jobs, run["jobId"].as_s)
+      job.status.should eq "done"
+      job.total.should eq 2
+      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 2, "deferred" => 3})
+      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "a1", "a2"]
+
+      # the next portion: calibre's check makes dup.pdf a format of #1
+      run = jobs.start(["A", "B"], false, 2)
+      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
+      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 1, "formatAdded" => 1, "deferred" => 1})
+      run = jobs.start(["A", "B"], false, 2)
+      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
+      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 1})
+      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "a1", "a2", "b1", "b2"]
+      wait_run(jobs, jobs.start(["A", "B"], true)["id"].as_s)["summary"]["books"].should eq 0
+    end
+  end
+
+  it "fails the run when the scan fails" do
+    tmpdir do |root|
+      Dir.mkdir_p(File.join(root, "x"))
+      db = state_db
+      # nothing listens there: the library can't be read for the plan
+      calibre = CalibreHub::Calibre.new("http://127.0.0.1:1", "hub", "pw", nil, ["kategorie"])
+      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
+      run = wait_run(jobs, jobs.start("x", true)["id"].as_s)
+      run["status"].should eq "failed"
+      run["error"].as_s.should contain("calibre-server unavailable")
+      run["summary"].raw.should be_nil
     end
   end
 end
