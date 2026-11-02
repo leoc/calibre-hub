@@ -1,5 +1,5 @@
 import type { ProgressEntry } from "./api"
-import { deviceLabel, percent, positionOf, readerFormat, readerKey, startPoint, stepFontSize, tapZone, targetOf } from "./reader"
+import { deviceLabel, percent, positionOf, readerFormat, readerKey, startPoint, tapZone, targetOf } from "./reader"
 
 const entry = (device: string, fraction: number, at: string, extra: Partial<ProgressEntry> = {}): ProgressEntry => ({
   bookId: 1,
@@ -71,12 +71,9 @@ describe("reader", () => {
     expect(readerKey(key("ArrowRight", { altKey: true }), false)).toBeNull()
   })
 
-  it("splits the page into tap zones and steps the font size", () => {
+  it("splits the page into tap zones", () => {
     expect(tapZone(10, 900)).toBe("prev")
     expect(tapZone(450, 900)).toBe("menu")
     expect(tapZone(890, 900)).toBe("next")
-    expect(stepFontSize(100, 1)).toBe(110)
-    expect(stepFontSize(80, -1)).toBe(80)
-    expect(stepFontSize(200, 1)).toBe(200)
   })
 })

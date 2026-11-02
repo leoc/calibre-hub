@@ -5,6 +5,7 @@ import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
 import { progressHandlers } from "./progress"
 import { duplicateHandlers } from "./duplicates"
+import { readerSettingsHandlers } from "./reader-settings"
 import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from "./lists"
 
 
@@ -406,3 +407,4 @@ const listMocks = listHandlers(books, (target) => ("ids" in target ? books.filte
 const duplicates = duplicateHandlers({ books, touch, moveToTrash, restoreFromTrash, withLists, delay })
 
 export const handlers = [...listMocks, ...progressHandlers, ...writeHandlers, ...metadata, ...duplicates, ...readHandlers]
+export const handlers = [...listMocks, ...progressHandlers, ...readerSettingsHandlers, ...writeHandlers, ...metadata, ...readHandlers]

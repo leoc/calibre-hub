@@ -1,5 +1,4 @@
 import type { Book, ProgressEntry } from "./api"
-import { load, save } from "./storage"
 import { looksLikeEink } from "./theme"
 
 // Formats foliate-js opens, in the order the reader prefers them
@@ -124,24 +123,8 @@ export function targetOf(entry: Pick<ProgressEntry, "format" | "position" | "fra
 // everything else by CFI
 export const positionOf = (format: string, cfi: string, section: number) => (format.toUpperCase() === "PDF" ? String(section + 1) : cfi)
 
-// --- preferences per device --------------------------------------------------
-
-export const FLOWS = ["paginated", "scrolled"] as const
-export type Flow = (typeof FLOWS)[number]
-export const FONT_SIZES = [80, 90, 100, 110, 120, 135, 150, 175, 200] as const
-
-export const readerPrefs = {
-  flow: () => load("hub.reader.flow", FLOWS, "paginated"),
-  setFlow: (f: Flow) => save("hub.reader.flow", f),
-  fontSize: () => Number(load("hub.reader.fontSize", FONT_SIZES.map(String), "100")),
-  setFontSize: (n: number) => save("hub.reader.fontSize", String(n)),
-}
-
-export const stepFontSize = (size: number, dir: 1 | -1) => {
-  const i = FONT_SIZES.indexOf(size as (typeof FONT_SIZES)[number])
-  const next = (i < 0 ? FONT_SIZES.indexOf(100) : i) + dir
-  return FONT_SIZES[Math.max(0, Math.min(FONT_SIZES.length - 1, next))]
-}
+// The reader's settings (font, layout, colors) are per account:
+// lib/reader-settings.ts
 
 // --- keys --------------------------------------------------------------------
 

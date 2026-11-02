@@ -17,22 +17,27 @@ function SheetContent({
   header,
   closeOnBack = true,
   onOpenAutoFocus,
+  overlayClassName,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
-  side?: "left" | "right"
+  // bottom: over the lower part of the screen, the rest stays visible
+  side?: "left" | "right" | "bottom"
   header?: React.ReactNode
   // off when opening the sheet already added a history entry (?book=)
   closeOnBack?: boolean
+  overlayClassName?: string
 }) {
   return (
     <SheetPrimitive.Portal>
-      <SheetPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 eink:bg-transparent" />
+      <SheetPrimitive.Overlay className={cn("fixed inset-0 z-50 bg-black/40 eink:bg-transparent", overlayClassName)} />
       <SheetPrimitive.Content
         className={cn(
-          "fixed inset-y-0 z-50 flex h-full flex-col bg-background outline-none pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-lg eink:border-black",
-          side === "right"
-            ? "right-0 w-full border-l pr-[env(safe-area-inset-right)] sm:max-w-xl eink:border-l-2"
-            : "left-0 w-80 max-w-[85vw] border-r pl-[env(safe-area-inset-left)] eink:border-r-2",
+          "fixed z-50 flex flex-col bg-background outline-none pb-[env(safe-area-inset-bottom)] shadow-lg eink:border-black",
+          side === "bottom"
+            ? "inset-x-0 bottom-0 max-h-[60dvh] rounded-t-xl border-t pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] eink:rounded-none eink:border-t-2"
+            : "inset-y-0 h-full pt-[env(safe-area-inset-top)]",
+          side === "right" && "right-0 w-full border-l pr-[env(safe-area-inset-right)] sm:max-w-xl eink:border-l-2",
+          side === "left" && "left-0 w-80 max-w-[85vw] border-r pl-[env(safe-area-inset-left)] eink:border-r-2",
           className,
         )}
         // Radix would focus the close button and show its ring right away;

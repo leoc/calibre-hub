@@ -159,11 +159,18 @@ the lockfile (v9) works with 10 to 12.
   screen outside the app shell (own keys, the library's keymap is not
   mounted), lazy-loaded with foliate-js (`vendor/foliate-js`, pinned commit
   in its README) and `pdfjs-dist`. EPUB, KEPUB, AZW3/MOBI, FB2, CBZ, PDF
-  (`src/lib/reader.ts`). Table of contents, font size and paginated or
-  scrolled (per device, `hub.reader.*`), progress bar with percentage and
-  chapter. Keys: arrows, PageUp/PageDown, Space/Shift+Space, `j`/`k` (and
+  (`src/lib/reader.ts`). Table of contents, progress bar with percentage and
+  chapter. Settings sheet ("Darstellung", `src/components/reader-settings.tsx`,
+  `src/lib/reader-settings.ts`): font (book's, serif, sans, bundled
+  @fontsource fonts loaded on demand), size, line height, justification,
+  hyphenation, margins, column width, columns, paginated/scrolled,
+  animation, colors (Hell, Sepia, Dunkel, E-Ink, independent of the app
+  theme), "Buchstil überschreiben"; per account (`/api/reader/settings`),
+  applied live, saved 0.6 s after a change; bottom sheet on phones.
+  Absolute font sizes in the book's CSS follow the size
+  (`--hub-font-scale`). Keys: arrows, PageUp/PageDown, Space/Shift+Space, `j`/`k` (and
   `l`/`h`) in Vim mode, Escape back to the detail. Phones swipe (foliate-js);
-  E-Ink: no animation, always paginated, tap zones (left third back, right
+  E-Ink: no animation, always paginated, black on white, tap zones (left third back, right
   third on, middle shows the toolbar), no swiping. The position is saved
   1.5 s after a page turn and when leaving, with the device id
   `hub.device` and a name from the user agent (`hub.deviceName`

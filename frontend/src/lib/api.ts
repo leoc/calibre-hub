@@ -1,4 +1,5 @@
 // Types and fetch helpers for the calibre-hub API (see README.md).
+import type { ReaderSettings } from "./reader-settings"
 
 export interface Book {
   id: number
@@ -295,6 +296,8 @@ export const api = {
   metadataCandidates: (bookId: number, q?: string) =>
     request<{ candidates: MetadataCandidate[] }>(`/api/books/${bookId}/metadata/candidates${q ? `?${new URLSearchParams({ q })}` : ""}`),
   progress: (bookId: number) => request<BookProgress>(`/api/books/${bookId}/progress`),
+  // the reader's settings (lib/reader-settings.ts checks them)
+  readerSettings: () => request<unknown>("/api/reader/settings"),
   // the newest position per book (bars on the covers); older hubs: none
   allProgress: () =>
     request<Pick<ProgressEntry, "bookId" | "fraction" | "format" | "updatedAt">[]>("/api/progress").catch((e) => {
@@ -411,6 +414,9 @@ export const write = {
   // keepalive: also when the page is closing
   saveProgress: (bookId: number, p: ProgressSave, keepalive = false) =>
     request<ProgressEntry>(`/api/books/${bookId}/progress`, { method: "PUT", keepalive, ...json(p) }),
+  // only the given fields change; returns all of them
+  saveReaderSettings: (patch: Partial<ReaderSettings>, keepalive = false) =>
+    request<unknown>("/api/reader/settings", { method: "PUT", keepalive, ...json(patch) }),
   createList: (list: ListPatch & { name: string }) => request<ReadingList>("/api/lists", { method: "POST", ...json(list) }),
   updateList: (id: number, patch: ListPatch) => request<ReadingList>(`/api/lists/${id}`, { method: "PATCH", ...json(patch) }),
   deleteList: (id: number) => request<{ list: ReadingList }>(`/api/lists/${id}`, { method: "DELETE" }),

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { getRouteApi, useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, ChevronLeft, ChevronRight, List, Minus, Plus, Type } from "lucide-react"
+import { ArrowLeft, ChevronLeft, ChevronRight, List, Type } from "lucide-react"
 import type { FoliateView, RelocateDetail, TocItem } from "foliate-js/view.js"
 import { ApiError, type Book, type ProgressEntry, type ProgressSave } from "@/lib/api"
 import { bookQuery, progressQuery } from "@/lib/queries"
@@ -17,14 +17,12 @@ import {
   positionOf,
   readerFormat,
   readerKey,
-  readerPrefs,
   startPoint,
-  stepFontSize,
   tapZone,
   targetOf,
-  type Flow,
   type StartPoint,
 } from "@/lib/reader"
+import { chromeVars, effectiveSettings } from "@/lib/reader-settings"
 import { keyboard } from "@/lib/keyboard"
 import { useTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
@@ -32,6 +30,7 @@ import { t } from "@/i18n"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { ErrorMessage } from "@/components/error-view"
+import { ReaderSettingsSheet, applyReaderSettings, prepareBook, useApplyReaderSettings, useReaderSettings, useReaderSettingsReady } from "@/components/reader-settings"
 
 const route = getRouteApi("/read/$id")
 
@@ -52,6 +51,7 @@ export function ReaderPage() {
   useEffect(() => {
     if (progress.data) refreshOffline(id, { progress: progress.data.devices })
   }, [id, progress.data])
+  const settingsReady = useReaderSettingsReady()
   const error = book.error ?? progress.error
   // without the hub a book stored offline opens from what was stored
   const local = stored && (!online || unreachable(book.error) || unreachable(progress.error)) ? stored : null
@@ -65,6 +65,9 @@ export function ReaderPage() {
   // the stored format unless another one is asked for, so the reader
   // doesn't reopen when the hub answers again
   const format = stored && (!wanted || wanted.toUpperCase() === stored.format) ? stored.format : readerFormat(data, wanted)
+  if (error) return <Centered><ErrorMessage error={error} onRetry={() => (book.refetch(), progress.refetch())} /><BackButton onClick={back} /></Centered>
+  if (!book.data || !progress.data || !settingsReady) return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
+  const format = readerFormat(book.data, wanted)
   if (!format) return <Centered><p role="alert">{t("reader.noFormat")}</p><BackButton onClick={back} /></Centered>
   const start = startPoint(withQueued(devices, queuedProgress(id)), getDeviceId())
   return <Reader key={`${id}-${format}`} book={data} format={format} start={start} onBack={back} />
@@ -94,18 +97,6 @@ function BackButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-// Styles put into the book's documents (reflowable formats only)
-function bookCSS(fontSize: number, dark: boolean, eink: boolean) {
-  return `
-    html { color-scheme: ${dark ? "dark" : "light"}; }
-    body { font-size: ${fontSize}% !important; }
-    ${eink ? "body, p, li, h1, h2, h3, h4, h5, h6, blockquote, a { color: #000 !important; } a { text-decoration: underline !important; }" : ""}
-    ${dark ? "body { color: #e4e4e7; } a:link { color: #93c5fd; }" : ""}
-    p, li, blockquote, dd { line-height: 1.5; hyphens: auto; -webkit-hyphens: auto; widows: 2; orphans: 2; }
-    pre { white-space: pre-wrap !important; }
-  `
-}
-
 interface Location {
   fraction: number
   chapter: string | null
@@ -128,8 +119,9 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
   const [settingsOpen, setSettingsOpen] = useState(false)
   // E-Ink: the bars only after a tap in the middle
   const [bars, setBars] = useState(!eink)
-  const [fontSize, setFontSize] = useState(readerPrefs.fontSize)
-  const [flow, setFlowState] = useState<Flow>(() => (eink ? "paginated" : readerPrefs.flow()))
+  // per account (components/reader-settings.tsx); E-Ink overrides some
+  const { settings: accountSettings, update: updateSettings } = useReaderSettings()
+  const settings = useMemo(() => effectiveSettings(accountSettings, eink), [accountSettings, eink])
   const overlayOpen = tocOpen || settingsOpen
 
   // --- saving: debounced, and right away when leaving -----------------------
@@ -261,11 +253,8 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
         const isFixed = view.isFixedLayout
         setFixed(isFixed)
         setToc(view.book.toc ?? [])
-        if (!isFixed) {
-          view.renderer.setAttribute("flow", flow)
-          view.renderer.setStyles?.(bookCSS(fontSize, document.documentElement.classList.contains("dark"), eink))
-        }
-        if (!eink) view.renderer.setAttribute("animated", "")
+        prepareBook(view)
+        applyReaderSettings(view, settings, el.clientWidth)
         await view.init({ lastLocation: start.mine ? targetOf(start.mine, format) : null })
         ready = true
         if (!gone) setStatus("ready")
@@ -287,22 +276,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book.id, format])
 
-  useEffect(() => {
-    const view = viewRef.current
-    if (status !== "ready" || !view || fixed) return
-    view.renderer.setStyles?.(bookCSS(fontSize, document.documentElement.classList.contains("dark"), eink))
-    view.renderer.setAttribute("flow", flow)
-  }, [status, fixed, fontSize, flow, eink])
-
-  const changeFont = (dir: 1 | -1) => {
-    const n = stepFontSize(fontSize, dir)
-    readerPrefs.setFontSize(n)
-    setFontSize(n)
-  }
-  const setFlow = (f: Flow) => {
-    readerPrefs.setFlow(f)
-    setFlowState(f)
-  }
+  useApplyReaderSettings(viewRef, host, status === "ready" && !fixed, settings)
 
   const pct = percent(loc.fraction)
   const goElsewhere = () => {
@@ -314,7 +288,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
   // E-Ink: the bars lie over the page, so the page keeps its size (one redraw)
   const overlay = eink ? "absolute inset-x-0 z-10 bg-white" : ""
   return (
-    <div className="fixed inset-0 flex flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]" data-reader={status}>
+    <div style={chromeVars(settings.theme)} className="fixed inset-0 flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]" data-reader={status}>
       {bars && (
         <header className={cn("flex h-12 shrink-0 items-center gap-1 border-b px-1 eink:h-16 eink:border-b-2 eink:border-black", overlay, "top-0")}>
           <Button variant="ghost" size="icon" onClick={onBack} aria-label={t("reader.back")}>
@@ -435,6 +409,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
           </div>
         </SheetContent>
       </Sheet>
+      <ReaderSettingsSheet open={settingsOpen} onOpenChange={setSettingsOpen} settings={accountSettings} update={updateSettings} eink={eink} />
     </div>
   )
 }

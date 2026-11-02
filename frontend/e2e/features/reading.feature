@@ -81,3 +81,52 @@ Feature: Reading
     And this device's position waits for the connection
     When the connection is back
     Then the hub has this device's position from offline
+
+  # Reader settings: per account (GET/PUT /api/reader/settings), applied
+  # while the settings are open. The mock book sets its own sizes and line
+  # height (p.text { font-size: small; line-height: 1.2 }), like many
+  # publishers do.
+
+  Scenario: The font size also changes text the book sizes itself
+    Given the reader is open for a book with the format "EPUB"
+    When I open the reader settings
+    And I click "Schrift größer" in the reader settings 2 times
+    Then the book's text is larger than before
+    When I click "Schrift kleiner" in the reader settings 4 times
+    Then the book's text is smaller than at first
+
+  Scenario: The settings are kept for the account
+    Given the reader is open for a book with the format "EPUB"
+    When I open the reader settings
+    And I choose "Sepia" for "Farben" in the reader settings
+    And I choose "Literata" for "Schriftart" in the reader settings
+    Then the page is shown in sepia
+    And the book's text is set in "Literata"
+    And the hub has the reader setting "theme" as "sepia"
+    When I open the book in the reader again
+    Then the page is shown in sepia
+    And the book's text is set in "Literata"
+
+  Scenario: Overriding the book's style
+    Given the reader is open for a book with the format "EPUB"
+    When I open the reader settings
+    Then the book's paragraphs have the line height 1.2
+    When I turn on "Buchstil überschreiben" in the reader settings
+    Then the book's paragraphs have the line height 1.5
+
+  Scenario: Columns, scrolling and the page-turn animation
+    Given the reader is open for a book with the format "EPUB"
+    Then the book is shown with up to 2 columns, paginated and animated
+    When I open the reader settings
+    And I choose "Eine" for "Spalten" in the reader settings
+    And I choose "Fortlaufend" for "Anzeige" in the reader settings
+    And I turn off "Animation beim Blättern" in the reader settings
+    Then the book is shown with up to 1 columns, scrolled and not animated
+
+  Scenario: E-Ink: no page-turn animation, black on white
+    Given E-Ink mode is on
+    And the reader is open for a book with the format "EPUB"
+    When I tap the middle of the page
+    And I open the reader settings
+    Then the reader settings offer no animation and no colors
+    And the book is shown with up to 2 columns, paginated and not animated

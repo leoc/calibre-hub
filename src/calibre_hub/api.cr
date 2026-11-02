@@ -8,6 +8,7 @@ require "./metadata"
 require "./lists"
 require "./opds"
 require "./progress"
+require "./reader_settings"
 
 module CalibreHub
   module Api
@@ -209,7 +210,8 @@ module CalibreHub
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
                   fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil,
                   classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil, lists : Lists? = nil,
-                  extra_jobs = [] of Jobs, progress : Progress? = nil)
+                  extra_jobs = [] of Jobs, progress : Progress? = nil,
+                  reader_settings : ReaderSettings? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -290,6 +292,7 @@ module CalibreHub
     trash.try { |t| trash_routes(t) }
     lists.try { |l| list_routes(l, auth, jobs, calibre) }
     progress.try { |pr| progress_routes(pr, auth) }
+    reader_settings.try { |rs| reader_settings_routes(rs, auth) }
     classify_routes(classify, calibre)
     metadata_routes(metadata, calibre)
 
@@ -495,6 +498,17 @@ module CalibreHub
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
         progress.save(auth.user, id, json_body(env)).to_json
       end
+    end
+  end
+
+  # Reader settings (reader_settings.cr) of the logged-in user
+  def self.reader_settings_routes(settings : ReaderSettings, auth : Auth)
+    get "/api/reader/settings" do |env|
+      write_errors(env) { settings.of(auth.user).to_json }
+    end
+
+    put "/api/reader/settings" do |env|
+      write_errors(env) { settings.save(auth.user, json_body(env)).to_json }
     end
   end
 

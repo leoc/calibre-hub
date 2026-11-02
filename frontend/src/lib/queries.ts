@@ -1,5 +1,6 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query"
-import { api, type BookQuery, type MetadataChangesQuery, type SuggestionStatus } from "./api"
+import { api, ApiError, type BookQuery, type MetadataChangesQuery, type SuggestionStatus } from "./api"
+import { DEFAULT_READER_SETTINGS, normalize } from "./reader-settings"
 
 export const sessionQuery = queryOptions({
   queryKey: ["session"],
@@ -85,6 +86,17 @@ export const progressQuery = (bookId: number) =>
     queryFn: () => api.progress(bookId),
     staleTime: 0,
   })
+
+// the reader's settings, per account; an older hub without them: defaults
+export const readerSettingsQuery = queryOptions({
+  queryKey: ["reader-settings"],
+  queryFn: () =>
+    api.readerSettings().then(normalize, (e) => {
+      if (e instanceof ApiError && e.status === 404) return DEFAULT_READER_SETTINGS
+      throw e
+    }),
+  staleTime: 5 * 60_000,
+})
 
 // newest position per book, for the bars on the covers
 export const allProgressQuery = queryOptions({

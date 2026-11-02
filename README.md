@@ -32,6 +32,8 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /api/books/:id/progress` | reading progress of the user: `{latest, devices: [...]}`, every device's last position, newest first; an entry is `{bookId, device, deviceName, format, position, fraction, source, updatedAt}`, `latest` is the newest (null when the book was never opened) |
 | `PUT /api/books/:id/progress` `{format, position, fraction, device, deviceName?, source?, age?}` | stores the device's position (replaces its last one unless that is newer; the time is the hub's, minus `age` in ms for a position read offline and sent later, at most 30 days): `position` depends on the format (EPUB/MOBI/AZW3/CBZ: CFI from foliate-js, PDF: page number), `fraction` 0..1, `device` an id per browser/device, `deviceName` shown in "Auf … weiterlesen?", `source` web (default) or koreader |
 | `GET /api/progress` | the newest position per book (progress bars on the covers): `[{bookId, fraction, format, updatedAt}]` |
+| `GET /api/reader/settings` | the user's reader settings, all fields (defaults for unset ones): `{fontFamily, fontSize, lineHeight, justify, hyphenate, margin, maxWidth, columns, flow, animated, theme, override}` |
+| `PUT /api/reader/settings` `{field: value, ...}` | changes the given fields, returns all; `fontFamily` original, serif, sans, literata, atkinson, source-serif or inter; `fontSize` 50..300 (%); `lineHeight` 1.0..2.5; `margin` 0..20 (% per side); `maxWidth` 400..2000 (px per column); `columns` auto, 1 or 2; `flow` paginated or scrolled; `theme` light, sepia, dark or eink; `justify`, `hyphenate`, `animated`, `override` true/false; unknown fields or bad values: 400 `{error, field}` |
 | `DELETE /api/books/:id` | moves the book to calibre's trash; returns `{book}` as it was |
 | `GET /api/trash` | books in calibre's trash, newest first: `[{id, title, authors, formats, deletedAt}]` (`id` is the id the book had) |
 | `POST /api/trash/:id/restore` | adds the book again from the trash (metadata, files, cover); returns `{book}` with a **new** id |
@@ -163,6 +165,16 @@ file then lives in the browser's Cache Storage; a service worker
 caches `/api/`. Positions read offline wait in the browser and are sent on
 reconnect with their `age`, so they don't win over what another device read
 in the meantime.
+
+The reader's settings (font, size, line height, justification, hyphenation,
+margins, column width, columns, paginated or scrolled, page-turn animation,
+colors, "Buchstil überschreiben") are per user and the same on every device
+(`reader_settings` in the state DB, `GET/PUT /api/reader/settings`). Fonts
+besides the book's and the system's serif/sans come with the web app
+(Literata, Atkinson Hyperlegible, Source Serif 4, Inter; SIL OFL, from
+@fontsource) and load only when chosen, no CDN. Absolute font sizes in a
+book's CSS (`font-size: small`, `12pt`, `1rem`) are rewritten while loading
+so they follow the reader's font size.
 
 ## Events and handlers
 

@@ -437,6 +437,7 @@ module CalibreHub
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
       writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs, progress)
       writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix] of Jobs, Progress.new(db))
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs, Progress.new(db), ReaderSettings.new(db))
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
     epub_fix_routes(epub_fix)
