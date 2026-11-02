@@ -53,16 +53,17 @@ module CalibreHub
     # nightly run over the unsorted books, local time HH:MM; empty: none
     getter classify_schedule : String = env("CALIBRE_HUB_CLASSIFY_SCHEDULE", "03:45")
     getter classify_timeout : Time::Span = env("CALIBRE_HUB_CLASSIFY_TIMEOUT", "300").to_i.seconds
-    # metadata cleanup: book file, Open Library, DNB; the classify model
+    # metadata cleanup: book file, Hardcover, DNB, Open Library; the classify model
     # (endpoint, model) only cleans up names when the rules can't decide
     getter metadata : Bool = env("CALIBRE_HUB_METADATA", "false") == "true"
-    getter metadata_sources : Array(String) = env("CALIBRE_HUB_METADATA_SOURCES", "file,openlibrary,dnb").split(',', remove_empty: true).map(&.strip)
+    getter metadata_sources : Array(String) = env("CALIBRE_HUB_METADATA_SOURCES", "file,hardcover,dnb,openlibrary").split(',', remove_empty: true).map(&.strip)
     getter metadata_model : Bool = env("CALIBRE_HUB_METADATA_MODEL", "false") == "true"
     # nightly run over the incomplete books, local time HH:MM; empty: none
     getter metadata_nightly : String = env("CALIBRE_HUB_METADATA_NIGHTLY", "")
     getter openlibrary_url : String = env("CALIBRE_HUB_OPENLIBRARY_URL", "https://openlibrary.org")
     getter openlibrary_covers_url : String = env("CALIBRE_HUB_OPENLIBRARY_COVERS_URL", "https://covers.openlibrary.org")
     getter dnb_url : String = env("CALIBRE_HUB_DNB_URL", "https://services.dnb.de/sru/dnb")
+    getter hardcover_url : String = env("CALIBRE_HUB_HARDCOVER_URL", "https://api.hardcover.app/v1/graphql")
     # pause between two requests to the same source
     getter metadata_interval : Time::Span = env("CALIBRE_HUB_METADATA_INTERVAL", "1000").to_i.milliseconds
 
@@ -73,6 +74,16 @@ module CalibreHub
 
     def session_key : Bytes
       Config.secret_bytes("CALIBRE_HUB_SESSION_KEY_FILE")
+    end
+
+    # Hardcover API token: from CALIBRE_HUB_HARDCOVER_TOKEN_FILE (a systemd
+    # credential), else CALIBRE_HUB_HARDCOVER_TOKEN; nil skips the source
+    def hardcover_token : String?
+      if path = ENV["CALIBRE_HUB_HARDCOVER_TOKEN_FILE"]?.presence
+        Config.read_secret(path).strip.presence
+      else
+        ENV["CALIBRE_HUB_HARDCOVER_TOKEN"]?.try(&.strip).presence
+      end
     end
 
     # API tokens (Authorization: Bearer) for the CLI, one per file
@@ -251,13 +262,22 @@ module CalibreHub
     end
     http = Meta::Http.new(config.metadata_interval)
     ollama = config.metadata_model ? Ollama.new(config.classify_endpoint, config.classify_model, config.classify_timeout, 2, 2.seconds) : nil
+    hardcover = nil
+    if config.metadata_sources.includes?("hardcover")
+      if token = config.hardcover_token
+        alert = DailyAlert.new(db, config.alert_command.try { |c| [c] })
+        hardcover = Meta::Hardcover.new(http, token, config.hardcover_url, alert.proc)
+      else
+        puts "metadata: no Hardcover token, source hardcover skipped"
+      end
+    end
     m = Metadata.new(calibre, writer, MetaLog.new(db), config.metadata_sources,
       Meta::OpenLibrary.new(http, config.openlibrary_url, config.openlibrary_covers_url),
-      Meta::Dnb.new(http, config.dnb_url), http, ollama, nightly: config.metadata_nightly.presence)
+      Meta::Dnb.new(http, config.dnb_url), http, ollama, nightly: config.metadata_nightly.presence, hardcover: hardcover)
     jobs = MetadataJobs.new(db, calibre, writer, m)
     jobs.watch_events
     config.metadata_nightly.presence.try { |at| jobs.schedule(at) }
-    puts "metadata: sources #{config.metadata_sources.join(", ")}#{ollama ? ", names cleaned with #{config.classify_model}" : ""}"
+    puts "metadata: sources #{m.active_sources.join(", ")}#{ollama ? ", names cleaned with #{config.classify_model}" : ""}"
     jobs
   end
 

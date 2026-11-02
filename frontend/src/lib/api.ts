@@ -96,7 +96,7 @@ export interface HubConfig {
 
 export const METADATA_FIELDS = ["title", "authors", "authorSort", "isbn", "publisher", "pubdate", "languages", "comments", "series", "seriesIndex", "cover"] as const
 export type MetadataField = (typeof METADATA_FIELDS)[number]
-export type MetadataSource = "rules" | "model" | "file" | "openlibrary" | "dnb" | "authors"
+export type MetadataSource = "rules" | "model" | "file" | "hardcover" | "openlibrary" | "dnb" | "authors"
 
 // One logged field change of the metadata cleanup; revertable while the
 // field still has the new value
@@ -129,7 +129,7 @@ export interface MetadataStatus {
 
 // What one source knows about a book; only the fields it has
 export interface MetadataCandidate {
-  source: "rules" | "file" | "openlibrary" | "dnb"
+  source: "rules" | "file" | "hardcover" | "openlibrary" | "dnb"
   score: number
   // ISBN matched exactly
   sure: boolean

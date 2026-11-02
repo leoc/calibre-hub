@@ -153,6 +153,7 @@ export const de = {
   "meta.source.rules": "Regeln",
   "meta.source.model": "Modell",
   "meta.source.file": "Datei",
+  "meta.source.hardcover": "Hardcover",
   "meta.source.openlibrary": "Open Library",
   "meta.source.dnb": "DNB",
   "meta.source.authors": "Autorenabgleich",

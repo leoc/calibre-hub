@@ -597,7 +597,7 @@ module CalibreHub
         JSON.parse(job.to_json).as_h.merge({"startedAt" => JSON::Any.new(started.to_rfc3339), "target" => JSON::Any.new(jobs.target(job))})
       end
       {
-        enabled: true, sources: m.sources, model: m.model, nightly: m.nightly, running: jobs.running?,
+        enabled: true, sources: m.active_sources, model: m.model, nightly: m.nightly, running: jobs.running?,
         changedBooks: m.log.changed_books, lastRun: last,
       }.to_json
     end

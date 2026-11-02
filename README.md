@@ -195,33 +195,73 @@ in `meta_sources.cr`):
    extensions, underscores), "Autor - Titel" or "Titel - Autor" in the
    title, "Author - Series 03 - Title", "Unbekannt"/"Unknown" as author,
    "Last, First", several authors in one field, all caps or all lower case,
-   a broken author sort (one that shares no name with the authors). When
+   "Mckeown"/"MCKEOWN" as "McKeown" ("MACDONALD" as "MacDonald", but a
+   "Macdonald" written so stays, and "Mack", "Macy" and the like are names
+   of their own), a broken author sort (one that shares no name with the
+   authors). A "(1974, Tonos)" or "(, TRO Hollis Music, Inc.)" at the end
+   of a title goes, its year and publisher fill an empty date and
+   publisher (source `rules`, after an edition found by ISBN). When
    the rules can't tell author from title (`Wolken - Atlas`) and
    `metadata.useModel` is on, the classify model is asked, with title and
    authors only; its answer is used only if every word in it was in the
    input.
-3. Sources, in `metadata.sources` order: ISBNs first (calibre's, the
-   OPF's, the text's) at Open Library (books API) and the DNB (SRU,
-   MARC21); title and author search only when no ISBN gave a sure match.
+3. Sources (`metadata.sources`, default `file hardcover dnb openlibrary`):
+   ISBNs first (calibre's, the OPF's, the text's) at every source; title
+   and author search only when no ISBN gave a sure match, and only where
+   the book fits the source:
+   - **Hardcover** (GraphQL, needs `metadata.hardcoverTokenFile`): editions
+     by ISBN-13/10. A title search needs the author; a hit counts only with
+     a title similarity of at least 0.9, the same author, no placeholder
+     ("Untitled") and no book about the book (summary, workbook), and the
+     work needs an edition in the book's language (`language.code3`;
+     unknown: German for a German-looking title, else English). ISBN,
+     publisher and date come only from a clear edition (the only one in
+     that language, or the only one of the book's publisher), never from
+     the work (`release_year`).
+   - **DNB** (SRU, MARC21): a title search only for German books (language
+     `deu`, or none and a German-looking title), always with `per=`
+     (surname) and `spr=ger`.
+   - **Open Library** (books and search API) as the supplement.
+
+   Candidates that aren't this book are dropped: a translation (DNB 041 h,
+   240 or a translator in 700 $4 `trl`) when the book isn't German, another
+   language (DNB 041 a), another volume (245 n/p "Vol. 3" for a book "Vol.
+   1"). A match by the book's own ISBN (calibre's or the OPF's) is always
+   kept: it is this edition.
 4. Score 0..1: title 60 %, authors 30 %, language and year 10 %. A match
    by ISBN is **sure** when the ISBN is in calibre or the OPF, or when the
    result also agrees with the book (score ≥ 0.5; an ISBN on an ad page
    doesn't). A text match from 0.75 is **accepted**.
 5. Merge per field: rules' title and authors, then the file, then the
-   candidates, best first. Missing fields are filled from an accepted
-   candidate (ISBN, publisher and date only from one edition, not a work
-   with many); an existing value is replaced only when it is broken, by a
-   sure match that clearly differs (publisher, year, language, a
-   completely different title), or by the same value spelled better
-   (case, accents, "Le Guin" for "LeGuin", "J. R. R. Tolkien" for
-   "Tolkien"). Descriptions are only filled; a cover only for books
-   without one.
+   candidates in the field's order of sources (from the comparison runs):
+
+   | Field | Order |
+   |---|---|
+   | description | Hardcover, DNB, Open Library |
+   | author spelling | sure (ISBN) matches first, then Hardcover, DNB, Open Library |
+   | publisher, date, language | file, sure matches (DNB, Open Library, Hardcover), `rules` (title suffix), other matches |
+   | series | file, then DNB, Hardcover, Open Library |
+   | subtitle | only Hardcover's, added to the same title without one |
+
+   Missing fields are filled from an accepted candidate (ISBN, publisher
+   and date only from one edition, not a work with many; a year alone
+   takes the full date of another source with that year); an existing
+   value is replaced only when it is broken, by a sure match that clearly
+   differs (publisher, year, language, a completely different title; never
+   by Hardcover's publisher, year or language), or by the same value
+   spelled better (case, accents, "McKeown", "Le Guin" for "LeGuin",
+   "J. R. R. Tolkien" for "Tolkien"). A sure match naming all of the
+   book's authors and more adds the co-authors. Descriptions are only
+   filled; a cover only for books without one.
 6. One `PATCH` with `lastModified`; a book changed meanwhile is tried once
    more, then on the next run.
 
 Standards (`Meta::Norms`): a title in the file-name form
 `[DIN EN ISO 11073-10404 2011-07] -- …` (calibre split the rest at the last
-" - " into title and author), or exactly a designation like
+" - " into title and author; also prestandards `[DIN V ENV 13606-2 …]`,
+amendments `[DIN EN ISO 14971 A1 Entwurf 2003-01]` as
+`DIN EN ISO 14971/A1` and corrigenda `[DIN EN ISO 14971 Berichtigung 1
+2007-10]`), or exactly a designation like
 `ISO/IEC 42001:2023` by an issuing body, is a standard; books about
 standards are not. Its fields come from the rules alone, no online source
 is asked: title `DIN EN ISO 11073-10404:2011-07 – Pulsoximeter` (the most
@@ -237,8 +277,9 @@ three) and reverted like the other fields.
 
 Author unification: a library-wide pass groups names by a key without
 case, accents, punctuation, spaces and "Last, First" and renames every
-variant to the best form: proper case, then confirmed by Open Library/DNB,
-then the most books. Logged and revertible like the rest.
+variant to the best form: proper case ("McKeown"), then confirmed by
+Hardcover/Open Library/DNB, then the most books. Logged and revertible like
+the rest.
 
 Runs are jobs in a queue of their own, resumed after a restart:
 `POST /api/metadata/run`, nightly at `metadata.nightly` (off by default;
@@ -247,7 +288,19 @@ book is classified only after its metadata run is done or failed (at most
 30 minutes later). "incomplete": books missing ISBN, publisher, date,
 language or description, or with messy names; books checked in the last 30
 days without a failed source are skipped. Requests to a source are spaced
-by `metadata.requestInterval` ms.
+by `metadata.requestInterval` ms (Hardcover allows about 60 a minute, the
+default 1000 ms keeps below).
+
+Hardcover token: a personal token from https://hardcover.app/account/api
+(with or without "Bearer "), set as `metadata.hardcoverTokenFile` and passed
+as a systemd credential (`CALIBRE_HUB_HARDCOVER_TOKEN_FILE`; for development
+also `CALIBRE_HUB_HARDCOVER_TOKEN`). Without one the source is skipped. When
+Hardcover rejects it (401/403), the source pauses for an hour, the other
+sources go on (the book isn't marked for retry) and `alertCommand` is called
+with "calibre-hub: Hardcover-Token abgelaufen oder ungültig", at most once a
+day (kept in the state DB, so a restart doesn't repeat it). A JWT token is
+also checked for its `exp` (decoded, not verified): from 14 days before
+expiry the alert "Hardcover-Token läuft bald ab" comes once a day.
 
 ## CLI
 
@@ -324,9 +377,10 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     };
     metadata = {
       enable = true;
-      # defaults: sources = [ "file" "openlibrary" "dnb" ]; nightly = null; useModel = classify.enable;
-      # openLibraryUrl, openLibraryCoversUrl, dnbUrl (the public services); requestInterval = 1000;
+      # defaults: sources = [ "file" "hardcover" "dnb" "openlibrary" ]; nightly = null; useModel = classify.enable;
+      # hardcoverUrl, openLibraryUrl, openLibraryCoversUrl, dnbUrl (the public services); requestInterval = 1000;
       nightly = "03:15";
+      hardcoverTokenFile = "/run/secrets/hardcover-token";  # null: no Hardcover
     };
     alertCommand = "/run/current-system/sw/bin/notify-admin";
     handlers."20-log" = pkgs.writeShellScript "log" "cat >> /var/lib/calibre-hub/events.log";
@@ -379,5 +433,6 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CLASSIFY_ENDPOINT`, `_MODEL` | `http://127.0.0.1:11434`, `qwen2.5:3b` | Ollama API and model |
 | `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT` | `0.85`, `03:45`, `300` | auto-apply from, nightly run (empty: none), seconds per answer |
 | `CALIBRE_HUB_METADATA` | `false` | `true` turns on the metadata cleanup |
-| `CALIBRE_HUB_METADATA_SOURCES`, `_NIGHTLY`, `_MODEL`, `_INTERVAL` | `file,openlibrary,dnb`, none, `false`, `1000` | sources, nightly run, clean names with the classify model, ms between requests |
-| `CALIBRE_HUB_OPENLIBRARY_URL`, `_OPENLIBRARY_COVERS_URL`, `_DNB_URL` | the public services | base URLs (stubs in the VM test) |
+| `CALIBRE_HUB_METADATA_SOURCES`, `_NIGHTLY`, `_MODEL`, `_INTERVAL` | `file,hardcover,dnb,openlibrary`, none, `false`, `1000` | sources, nightly run, clean names with the classify model, ms between requests |
+| `CALIBRE_HUB_OPENLIBRARY_URL`, `_OPENLIBRARY_COVERS_URL`, `_DNB_URL`, `_HARDCOVER_URL` | the public services | base URLs (stubs in the VM test) |
+| `CALIBRE_HUB_HARDCOVER_TOKEN_FILE`, `_HARDCOVER_TOKEN` | none | Hardcover API token (file first); none: source skipped |

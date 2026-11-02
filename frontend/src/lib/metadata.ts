@@ -31,6 +31,7 @@ const SOURCE_LABEL: Record<MetadataSource, MessageKey> = {
   rules: "meta.source.rules",
   model: "meta.source.model",
   file: "meta.source.file",
+  hardcover: "meta.source.hardcover",
   openlibrary: "meta.source.openlibrary",
   dnb: "meta.source.dnb",
   authors: "meta.source.authors",

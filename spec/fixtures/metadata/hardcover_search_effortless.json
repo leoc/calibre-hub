@@ -1,0 +1,88 @@
+{
+ "data": {
+  "search": {
+   "results": {
+    "found": 3,
+    "hits": [
+     {
+      "document": {
+       "id": "2411654",
+       "title": "Summary: Effortless by Greg McKeown: Make it Easier to Do What Matters Most",
+       "subtitle": "Effortless by Greg McKeown: Make it Easier to Do What Matters Most",
+       "author_names": [
+        "Meaningful Publishing"
+       ],
+       "release_year": null,
+       "users_count": 0,
+       "isbns": [],
+       "slug": "summary-effortless-by-greg-mckeown-make-it-easier-to-do-what-matters-most",
+       "alternative_titles": [
+        "Summary: Effortless by Greg McKeown: Make it Easier to Do What Matters Most"
+       ]
+      }
+     },
+     {
+      "document": {
+       "id": "427508",
+       "title": "Effortless: Make It Easier to Do What Matters Most",
+       "subtitle": "Make It Easier to Do What Matters Most",
+       "author_names": [
+        "Greg McKeown",
+        "Uğur Gülsün"
+       ],
+       "release_year": 2021,
+       "users_count": 264,
+       "isbns": [
+        "0593135652",
+        "9780593135655",
+        "0593401115",
+        "9780593401118",
+        "0593135644",
+        "9780593135648",
+        "6555641932",
+        "9786555641936",
+        "0593153928",
+        "9780593153925",
+        "0753558378",
+        "9780753558379",
+        "0753558386",
+        "9780753558386"
+       ],
+       "slug": "effortless",
+       "alternative_titles": [
+        "Effortless: Make It Easier to Do What Matters Most",
+        "Effortless",
+        "Effortless: Make It Easy to Do What Matters",
+        "Zahmetsiz: Önemli İşleri Yapmayı Kolaylaştırın",
+        "Sem Esforço: Torne Mais Fácil O Que É Mais Importante",
+        "Effortless: Make It Easier to Do What Matters Most: The Instant New York Times Bestseller"
+       ]
+      }
+     },
+     {
+      "document": {
+       "id": "2789518",
+       "title": "Effortless: Wie man sich mühelos auf das Wichtigste konzentriert",
+       "subtitle": "Wie man sich mühelos auf das Wichtigste konzentriert",
+       "author_names": [
+        "Greg McKeown"
+       ],
+       "release_year": 2021,
+       "users_count": 1,
+       "isbns": [
+        "3868818561",
+        "9783868818567"
+       ],
+       "slug": "effortless-wie-man-sich-muhelos-auf-das-wichtigste-konzentriert",
+       "alternative_titles": [
+        "Effortless: Wie man sich mühelos auf das Wichtigste konzentriert"
+       ]
+      }
+     }
+    ],
+    "out_of": 2671060,
+    "page": 1
+   }
+  }
+ }
+}

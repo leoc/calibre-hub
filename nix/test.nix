@@ -29,6 +29,7 @@ pkgs.testers.runNixOSTest {
         "hub/key".text = "0123456789abcdef0123456789abcdef";
         "hub/scripts".text = "scripts-secret";
         "hub/token".text = "cli-token-0123456789abcdef\n";
+        "hub/hardcover".text = "Bearer hardcover-test-token\n";
       };
       services.calibre-hub = {
         enable = true;
@@ -55,13 +56,15 @@ pkgs.testers.runNixOSTest {
           enable = true;
           model = "stub";
         };
-        # Open Library and DNB from recorded answers (sources-stub below)
+        # Hardcover, Open Library and DNB from recorded answers (sources-stub below)
         metadata = {
           enable = true;
           useModel = false;
           openLibraryUrl = "http://127.0.0.1:8095/ol";
           openLibraryCoversUrl = "http://127.0.0.1:8095/covers";
           dnbUrl = "http://127.0.0.1:8095/dnb";
+          hardcoverUrl = "http://127.0.0.1:8095/hc";
+          hardcoverTokenFile = "/etc/hub/hardcover";
           requestInterval = 0;
         };
         handlerAttempts = 2;
@@ -118,11 +121,13 @@ pkgs.testers.runNixOSTest {
           HTTPServer(("127.0.0.1", 11434), Handler).serve_forever()
         ''}";
       };
-      # stands in for Open Library and the DNB: the recorded answers of the
-      # specs (spec/fixtures/metadata) for one ISBN, nothing for the rest
+      # stands in for Hardcover, Open Library and the DNB: the recorded
+      # answers of the specs (spec/fixtures/metadata) for one ISBN, nothing
+      # for the rest; Hardcover only with the token from the module option
       systemd.services.sources-stub = {
         wantedBy = [ "multi-user.target" ];
         serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${pkgs.writeText "sources-stub.py" ''
+          import json
           from http.server import BaseHTTPRequestHandler, HTTPServer
           from urllib.parse import urlparse, parse_qs
 
@@ -146,6 +151,24 @@ pkgs.testers.runNixOSTest {
                       return self.reply(EMPTY_SRU, "application/xml")
                   self.send_response(404)
                   self.end_headers()
+
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                  auth = self.headers.get("Authorization")
+                  print("POST", self.path, auth == "Bearer hardcover-test-token", json.dumps(body.get("variables")), flush=True)
+                  if self.path != "/hc":
+                      self.send_response(404)
+                      self.end_headers()
+                      return
+                  if auth != "Bearer hardcover-test-token":
+                      self.send_response(401)
+                      self.end_headers()
+                      return
+                  if (body.get("variables") or {}).get("isbn") == "9783608938289":
+                      return self.file("hardcover_isbn_ringe.json", "application/json")
+                  if "search(" in body["query"]:
+                      return self.reply('{"data": {"search": {"results": {"hits": []}}}}', "application/json")
+                  return self.reply('{"data": {"editions": [], "books": []}}', "application/json")
 
               def file(self, name, ctype):
                   with open(f"{FIXTURES}/{name}") as f:
@@ -614,11 +637,11 @@ pkgs.testers.runNixOSTest {
     with subtest("metadata"):
         assert api("GET", "/api/config")[1]["metadata"] is True
         status, st = api("GET", "/api/metadata/status")
-        assert status == 200 and st["enabled"] and st["sources"] == ["file", "openlibrary", "dnb"], st
+        assert status == 200 and st["enabled"] and st["sources"] == ["file", "hardcover", "dnb", "openlibrary"], st
         machine.wait_for_open_port(8095)
-        # a book named from its file, with the ISBN only on its first page
+        # a German book named from its file, with the ISBN only on its first page
         machine.succeed("printf 'Der Herr der Ringe\\n\\nISBN 978-3-608-93828-9\\n\\nText\\n' > /tmp/ringe.txt")
-        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/ringe.txt /tmp/ringe.epub --title 'tolkien - der herr der ringe (z-lib.org)' --authors Unbekannt")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/ringe.txt /tmp/ringe.epub --title 'tolkien - der herr der ringe (z-lib.org)' --authors Unbekannt --language de")
         machine.succeed(f"{DB} add /tmp/ringe.epub")
         messy = book_by_title("tolkien - der herr der ringe (z-lib.org)")["id"]
         # the added event starts a run: cleaned by the rules, completed by
@@ -628,13 +651,19 @@ pkgs.testers.runNixOSTest {
         assert b["authors"] == ["J.R.R. Tolkien"], b
         assert b["identifiers"].get("isbn") == "9783608938289", b
         # calibre may keep the date a day off (time zones)
-        assert b["publisher"] == "Klett-Cotta Verlag" and b["pubdate"].startswith("2009-08-0"), b
+        # publisher from the DNB (edition sources first), the full date
+        # from Open Library, the description from Hardcover
+        assert b["publisher"] == "Klett-Cotta" and b["pubdate"].startswith("2009-08-0"), b
+        assert b["comments"].startswith("<p>Die Gefährten"), b
         assert "auto-metadaten" in b["tags"], b
         status, log = api("GET", f"/api/metadata/changes?bookId={messy}")
         assert status == 200, (status, log)
         by_field = {c["field"]: c for c in log["changes"]}
         assert by_field["title"]["old"] == "tolkien - der herr der ringe (z-lib.org)" and by_field["title"]["source"] == "rules", by_field
-        assert by_field["authors"]["old"] == ["Unbekannt"] and by_field["isbn"]["source"] == "openlibrary", by_field
+        assert by_field["authors"]["old"] == ["Unbekannt"] and by_field["isbn"]["source"] == "hardcover", by_field
+        # the token came through the module option (a systemd credential)
+        assert by_field["comments"]["source"] == "hardcover", by_field
+        machine.fail("grep -q Hardcover /var/lib/calibre-hub/alerts.log")
         assert log["books"][0]["id"] == messy, log
         # classified after the cleanup, on the clean title
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/suggestions/{messy} | jq -e '.status == \"none\"'", timeout=60)

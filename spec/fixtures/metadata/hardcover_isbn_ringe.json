@@ -1,0 +1,40 @@
+{
+ "data": {
+  "editions": [
+   {
+    "id": 900001,
+    "title": "Der Herr der Ringe",
+    "subtitle": null,
+    "isbn_13": "9783608938289",
+    "isbn_10": null,
+    "release_date": null,
+    "publisher": null,
+    "language": {
+     "code3": "ger"
+    },
+    "book": {
+     "id": 900000,
+     "slug": "der-herr-der-ringe",
+     "title": "Der Herr der Ringe",
+     "subtitle": null,
+     "description": "Die Gefährten, Die zwei Türme und Die Rückkehr des Königs in einem Band.\nMit Anhängen.",
+     "contributions": [
+      {
+       "author": {
+        "name": "J.R.R. Tolkien"
+       },
+       "contribution": null
+      },
+      {
+       "author": {
+        "name": "Wolfgang Krege"
+       },
+       "contribution": "Translator"
+      }
+     ],
+     "book_series": []
+    }
+   }
+  ]
+ }
+}

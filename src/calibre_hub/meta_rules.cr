@@ -31,6 +31,8 @@ module CalibreHub
       include JSON::Serializable
 
       property title : String?
+      # only when the source has it apart from the title (Hardcover)
+      property subtitle : String?
       property authors : Array(String)?
       property isbn : String?
       property publisher : String?
@@ -47,7 +49,8 @@ module CalibreHub
       property cover_url : String?
 
       def initialize(@title = nil, @authors = nil, @isbn = nil, @publisher = nil, @pubdate = nil,
-                     @languages = nil, @comments = nil, @series = nil, @series_index = nil, @cover_url = nil)
+                     @languages = nil, @comments = nil, @series = nil, @series_index = nil, @cover_url = nil,
+                     @subtitle = nil)
       end
 
       def year : Int32?
@@ -75,14 +78,22 @@ module CalibreHub
       # provider reference for details fetched later (Open Library work key)
       @[JSON::Field(ignore: true)]
       property ref : String?
+      # the record says it is a translation (DNB: 041 h, 240, translator)
+      @[JSON::Field(ignore: true)]
+      property translation : Bool = false
+      # the volume of a multi-volume work ("2" for "Vol. 2"), DNB 245 n/p
+      @[JSON::Field(ignore: true)]
+      property volume : String?
 
       def initialize(@source, @fields, @url = nil, @by_isbn = nil, @edition = true, @ref = nil)
       end
     end
 
     # What the rules (or the model) make of title and authors
+    # publisher, pubdate: from a "(1974, Tonos)" suffix of the title
     record Guess, title : String, authors : Array(String), series : String? = nil,
-      series_index : Float64? = nil, year : Int32? = nil, source : String = "rules"
+      series_index : Float64? = nil, year : Int32? = nil, source : String = "rules",
+      publisher : String? = nil, pubdate : String? = nil
 
     module Isbn
       # ISBN-13 digits, or nil when it isn't a valid ISBN-10/13
@@ -166,6 +177,23 @@ module CalibreHub
       def self.diacritics(s : String) : Int32
         s.unicode_normalize(:nfkd).count { |c| c.mark? }
       end
+
+      ROMAN_VALUES = {'i' => 1, 'v' => 5, 'x' => 10}
+
+      # The volume of a multi-volume work: "2" for "Songbook, Vol. 2",
+      # "Band II", "Teil 2"; nil when the title names none
+      def self.volume(s : String) : String?
+        m = s.match(/\b(?:vol(?:ume)?|bd|band|teil|part|tome)\.?\s*(\d+|[ivx]{1,4})\b/i) || return nil
+        v = m[1].downcase
+        return v.to_i.to_s if v[0].ascii_number?
+        total = 0
+        v.each_char_with_index do |c, i|
+          n = ROMAN_VALUES[c]
+          nxt = v[i + 1]?.try { |x| ROMAN_VALUES[x] } || 0
+          total += n < nxt ? -n : n
+        end
+        total.to_s
+      end
     end
 
     # Cleaning rules for titles and authors that came from file names
@@ -248,12 +276,32 @@ module CalibreHub
       end
 
       def self.fix_name_case(s : String) : String
-        return s unless broken_case?(s)
+        return s.split(' ').map { |w| mc(w, mac: false) }.join(' ') unless broken_case?(s)
         return s if organization?(s)
         tokens = s.downcase.split(' ')
         tokens.map_with_index do |w, i|
-          (i > 0 && i < tokens.size - 1 && PARTICLES.includes?(w)) ? w : capitalize(w)
+          (i > 0 && i < tokens.size - 1 && PARTICLES.includes?(w)) ? w : mc(capitalize(w), mac: true)
         end.join(' ')
+      end
+
+      # "Mack", "Macy" and the like are names of their own, not Mac + name
+      MAC_EXCEPTIONS = Set{"macaulay", "mace", "machado", "machar", "machell", "machen", "machiel", "machin", "machiol",
+                           "machlin", "machon", "macias", "macin", "maciulis", "macevicius", "mack", "mackell", "macken",
+                           "mackey", "mackie", "mackintosh", "mackle", "macklem", "macklin", "mackley", "mackmin",
+                           "mackrell", "maclin", "macomber", "macon", "macquarie", "macy"}
+
+      # "Mckeown" -> "McKeown". "Macdonald" -> "MacDonald" only with mac
+      # (the name came in all caps or lower case): "Macdonald" written so is
+      # a spelling of its own. A word with a capital inside stays.
+      def self.mc(w : String, mac : Bool) : String
+        if m = w.match(/\A(Mc)(\p{Ll})(\p{Ll}*)\z/)
+          return "#{m[1]}#{m[2].upcase}#{m[3]}"
+        end
+        if mac && (m = w.match(/\A(Mac)(\p{Ll})(\p{Ll}+)\z/)) && !w.matches?(/[aciozj]\z/) &&
+           !MAC_EXCEPTIONS.includes?(w.downcase)
+          return "#{m[1]}#{m[2].upcase}#{m[3]}"
+        end
+        w
       end
 
       # All caps that is an acronym, not a shouted name: one word (ISPE,
@@ -331,16 +379,29 @@ module CalibreHub
         score
       end
 
+      # "(1974, Tonos)" or "(, TRO Hollis Music, Inc.)" at the end of a
+      # title: year and publisher from the download site
+      SUFFIX = /\s*\(((?:1[5-9]|20)\d\d)?,\s*([^()]+)\)\s*\z/
+
       # Readings of title and authors, the most likely first. ambiguous:
-      # the rules can't tell which part is the author.
+      # the rules can't tell which part is the author. The year and
+      # publisher of a SUFFIX go into every reading.
       def self.guesses(title : String, authors : Array(String), pubdate_year : Int32? = nil) : {Array(Guess), Bool}
+        publisher = pubdate = nil
+        if m = title.match(SUFFIX)
+          pubdate = m[1]?
+          publisher = m[2].strip.presence
+          pubdate_year ||= pubdate.try(&.to_i)
+          title = title.sub(m[0], "")
+        end
+        gs, ambiguous = readings(title, authors, pubdate_year)
+        return {gs, ambiguous} unless publisher || pubdate
+        {gs.map(&.copy_with(publisher: publisher, pubdate: pubdate)), ambiguous}
+      end
+
+      private def self.readings(title : String, authors : Array(String), pubdate_year : Int32?) : {Array(Guess), Bool}
         year = pubdate_year
         raw_title = title
-        # "(1974, Tonos)" or "(, Tonos)" at the end: year and publisher from the download site
-        if m = raw_title.match(/\s*\(((?:1[5-9]|20)\d\d)?,\s*[^()]+\)\s*\z/)
-          year ||= m[1]?.try(&.to_i)
-          raw_title = raw_title.sub(m[0], "")
-        end
         if m = raw_title.match(/\s*[\(\[]((?:1[5-9]|20)\d\d)[\)\]]\s*/)
           year ||= m[1].to_i
           raw_title = raw_title.sub(m[0], " ")
@@ -408,7 +469,7 @@ module CalibreHub
       # The title or authors need the rules (or the model)
       def self.messy?(book : Book) : Bool
         junk?(book.title) || broken_case?(book.title) || unknown_authors?(book.authors) ||
-          book.authors.any? { |a| junk?(a) || broken_case?(a) || a.matches?(/\A[^,]+,\s*[^,]+\z/) } ||
+          book.authors.any? { |a| junk?(a) || broken_case?(a) || a.matches?(/\A[^,]+,\s*[^,]+\z/) || fix_name_case(a) != a } ||
           (book.title.matches?(/\s[-–]\s/) && guesses(book.title, book.authors)[0].first.title != book.title)
       end
     end
@@ -467,6 +528,34 @@ module CalibreHub
 
       def self.list(codes : Enumerable(String)) : Array(String)
         codes.compact_map { |c| normalize(c) }.uniq
+      end
+
+      # ISO 639-2/T -> the bibliographic code MARC catalogues (DNB) search by
+      MARC = MAP.select { |k, _| k.size == 3 }.to_h { |b, t| {t, b} }
+
+      def self.marc(code : String) : String
+        MARC[code]? || code
+      end
+
+      GERMAN_WORDS = Set{"der", "die", "das", "des", "dem", "den", "und", "ein", "eine", "einer", "eines", "mit", "für",
+                         "von", "vom", "zur", "zum", "im", "über", "auf", "nicht", "wie", "sich", "ist", "sie", "ihr",
+                         "ihre", "ihres", "unser", "durch", "oder", "aus", "bei", "nach", "wenn", "warum", "was"}
+
+      # umlauts or German function words
+      def self.german_title?(title : String) : Bool
+        return true if title.matches?(/[äöüÄÖÜß]/)
+        title.downcase.scan(/\p{L}+/).any? { |m| GERMAN_WORDS.includes?(m[0]) }
+      end
+
+      # The book's languages, or German when there are none and the title
+      # looks German
+      def self.effective(languages : Array(String), title : String) : Array(String)
+        return languages unless languages.empty?
+        german_title?(title) ? ["deu"] : [] of String
+      end
+
+      def self.german?(languages : Array(String), title : String) : Bool
+        effective(languages, title).includes?("deu")
       end
     end
 
@@ -555,6 +644,24 @@ module CalibreHub
       end
     end
 
+    module Match
+      # Why a candidate is not this book (nil when it may be): a translation
+      # while the book isn't German, another language, another volume. A
+      # match by the book's own ISBN is this edition, whatever it says.
+      def self.reject(c : Candidate, languages : Array(String), title : String, own_isbns : Array(String)) : String?
+        return nil if (bi = c.by_isbn) && own_isbns.includes?(bi)
+        langs = Lang.effective(languages, title)
+        return "translation" if c.translation && !langs.includes?("deu")
+        if !langs.empty? && (l = c.fields.languages.try(&.presence)) && (l & langs).empty?
+          return "language"
+        end
+        if (v = c.volume) && (mine = Text.volume(title)) && v != mine
+          return "volume"
+        end
+        nil
+      end
+    end
+
     # One field change: old and new as the API shows them
     record Change, field : String, old : JSON::Any, new : JSON::Any, source : String
 
@@ -616,13 +723,39 @@ module CalibreHub
         body
       end
 
+      # Per field, the sources in order of preference (comparison runs of
+      # 02.11.): Hardcover has the best descriptions, subtitles and author
+      # spellings but weak years and publishers (the work's, a reprint's or
+      # the distributor's), the DNB is best for German editions, Open
+      # Library is the supplement
+      PRECEDENCE = {
+        "authors"   => %w(hardcover dnb openlibrary),
+        "comments"  => %w(hardcover dnb openlibrary),
+        "series"    => %w(dnb hardcover openlibrary),
+        "publisher" => %w(dnb openlibrary hardcover),
+        "pubdate"   => %w(dnb openlibrary hardcover),
+        "languages" => %w(dnb openlibrary hardcover),
+      }
+      # fields a source may fill but never correct
+      FILL_ONLY = {"hardcover" => Set{"publisher", "pubdate", "languages"}}
+
+      # The candidates in the field's order of sources; sure (ISBN) matches
+      # first unless sure_first is false
+      def self.ordered(list : Array(Candidate), field : String, sure_first = true) : Array(Candidate)
+        order = PRECEDENCE[field]? || [] of String
+        list.each_with_index.to_a.sort_by do |c, i|
+          {sure_first && c.sure ? 0 : 1, order.index(c.source) || order.size, i}
+        end.map(&.[0])
+      end
+
       # Per field what to change, with its source. Precedence: the rules'
       # (or model's) cleaned title and authors, then the book file, then the
-      # online candidates, best first. Missing fields are filled from an
-      # accepted candidate (score >= ACCEPT); an existing value is only
-      # replaced when it is broken, or by a sure (ISBN) match, or by the same
-      # value spelled better (case, accents, spacing). Descriptions are only
-      # filled, never replaced. cover: the book has none.
+      # online candidates in the field's order of sources (PRECEDENCE).
+      # Missing fields are filled from an accepted candidate (score >=
+      # ACCEPT); an existing value is only replaced when it is broken, or by
+      # a sure (ISBN) match, or by the same value spelled better (case,
+      # accents, spacing, "McKeown"). Descriptions are only filled, never
+      # replaced. cover: the book has none.
       def self.plan(book : Book, guess : Guess?, file : Record?, candidates : Array(Candidate),
                     has_cover = true) : Array(Change)
         changes = [] of Change
@@ -667,9 +800,16 @@ module CalibreHub
             title, title_source = bt, best.source
           end
         end
+        # Hardcover's subtitle, for the same title without one
+        if Text.main_title(title) == title &&
+           (hc = accepted.find { |c| c.source == "hardcover" && (c.sure || c.score >= HIGH) && c.fields.subtitle }) &&
+           (ht = hc.fields.title) && Text.key(Text.main_title(ht)) == Text.key(title) &&
+           (sub = hc.fields.subtitle.try(&.strip)) && subtitle?(sub, title)
+          title, title_source = "#{title}: #{sub}", hc.source
+        end
         set.call("title", JSON::Any.new(title), title_source) unless title_source.empty?
 
-        # authors
+        # authors: the spelling of the first source in PRECEDENCE
         authors, authors_source = book.authors, ""
         if guess && !guess.authors.empty? && guess.authors != book.authors
           authors, authors_source = guess.authors, guess.source
@@ -677,14 +817,25 @@ module CalibreHub
         if Clean.unknown_authors?(authors) && file && (fa = file.authors) && !(clean = Clean.authors(fa)).empty?
           authors, authors_source = clean, "file"
         end
-        if best && (ba = best.fields.authors) && !(theirs = Clean.authors(ba)).empty?
+        if (ab = ordered(accepted, "authors").first?) && (ba = ab.fields.authors) && !(theirs = Clean.authors(ba)).empty?
           if Clean.unknown_authors?(authors)
-            authors, authors_source = theirs, best.source
+            authors, authors_source = theirs, ab.source
           elsif authors.size == theirs.size && authors.zip(theirs).all? { |m, o| Text.key(m) == Text.key(o) || fuller?(o, m) } &&
                 authors.zip(theirs).any? { |m, o| better_form?(o, m) || fuller?(o, m) }
-            authors, authors_source = theirs, best.source
-          elsif best.sure && Score.authors(authors, theirs) < 0.5
-            authors, authors_source = theirs, best.source
+            authors, authors_source = theirs, ab.source
+          elsif ab.sure && Score.authors(authors, theirs) < 0.5
+            authors, authors_source = theirs, ab.source
+          end
+        end
+        # co-authors: a sure match naming all of ours and more (Kegan & Lahey)
+        unless Clean.unknown_authors?(authors)
+          ordered(accepted.select(&.sure), "authors").each do |c|
+            theirs = Clean.authors(c.fields.authors || next)
+            next unless theirs.size > authors.size
+            next unless authors.all? { |m| theirs.any? { |o| Text.key(o) == Text.key(m) } }
+            authors = theirs.map { |o| authors.find { |m| Text.key(m) == Text.key(o) } || o }
+            authors_source = c.source
+            break
           end
         end
         set.call("authors", JSON.parse(authors.to_json), authors_source) unless authors_source.empty?
@@ -711,12 +862,14 @@ module CalibreHub
           end
         end
 
-        fill(book, file, accepted, sure, "publisher", set) { |r, c| c.nil? || c.edition ? r.publisher : nil }
-        fill(book, file, accepted, sure, "pubdate", set) { |r, c| c.nil? || c.edition ? r.pubdate : nil }
-        fill(book, file, accepted, sure, "languages", set) { |r, _| r.languages.try { |l| l.empty? ? nil : l } }
-        fill(book, file, accepted, nil, "comments", set) { |r, _| r.comments.presence }
+        # publisher and year: the edition found by ISBN first, then the
+        # "(1974, Tonos)" the rules took from the title
+        fill(book, file, accepted, "publisher", set, guess.try(&.publisher)) { |r, c| c.nil? || c.edition ? r.publisher : nil }
+        fill(book, file, accepted, "pubdate", set, guess.try(&.pubdate)) { |r, c| c.nil? || c.edition ? r.pubdate : nil }
+        fill(book, file, accepted, "languages", set) { |r, _| r.languages.try { |l| l.empty? ? nil : l } }
+        fill(book, file, accepted, "comments", set, replace: false) { |r, _| r.comments.presence }
         if book.series.nil? && changes.none? { |c| c.field == "series" }
-          src = file.try { |f| f.series ? {f, "file"} : nil } || accepted.find(&.fields.series).try { |c| {c.fields, c.source} }
+          src = file.try { |f| f.series ? {f, "file"} : nil } || ordered(accepted, "series").find(&.fields.series).try { |c| {c.fields, c.source} }
           if src && (s = src[0].series)
             set.call("series", JSON::Any.new(s), src[1])
             src[0].series_index.try { |i| set.call("seriesIndex", JSON::Any.new(i), src[1]) }
@@ -729,22 +882,54 @@ module CalibreHub
         changes
       end
 
-      # Fills a missing field from the file, else the best candidate having
-      # it; replaces a different value only on a sure match
-      private def self.fill(book, file, accepted, sure, field, set, &pick : Record, Candidate? -> String | Array(String) | Nil)
+      # a subtitle worth adding: not the title again, not a blurb
+      def self.subtitle?(sub : String, title : String) : Bool
+        3 <= sub.size <= 120 && !Text.key(sub).includes?(Text.key(title)) && !sub.includes?(':')
+      end
+
+      # Fills a missing field: the file, the sure matches, the rules' value,
+      # the other accepted candidates (each group in the field's order of
+      # sources). With replace, a sure match that clearly differs corrects
+      # it, unless its source may only fill the field (FILL_ONLY).
+      private def self.fill(book, file, accepted, field, set, rules : String? = nil, replace = true,
+                            &pick : Record, Candidate? -> String | Array(String) | Nil)
         current = value(book, field)
         empty = current.raw.nil? || current.as_a?.try(&.empty?)
+        list = ordered(accepted, field, sure_first: replace)
         if empty
           if file && (v = pick.call(file, nil))
             return set.call(field, JSON.parse(v.to_json), "file")
           end
-          accepted.each do |c|
+          sure, other = replace ? list.partition(&.sure) : {[] of Candidate, list}
+          take = ->(v : String | Array(String), c : Candidate) do
+            # a year alone: the full date of another source with that year
+            if field == "pubdate" && (y = v.as?(String)) && y.size == 4
+              list.each do |o|
+                d = pick.call(o.fields, o)
+                return set.call(field, JSON::Any.new(d), o.source) if d.is_a?(String) && d.size > 4 && d.starts_with?(y)
+              end
+            end
+            set.call(field, JSON.parse(v.to_json), c.source)
+          end
+          sure.each do |c|
             if v = pick.call(c.fields, c)
-              return set.call(field, JSON.parse(v.to_json), c.source)
+              return take.call(v, c)
             end
           end
-        elsif sure && (v = pick.call(sure.fields, sure)) && different?(field, current, v)
-          set.call(field, JSON.parse(v.to_json), sure.source)
+          return set.call(field, JSON::Any.new(rules), "rules") if rules
+          other.each do |c|
+            if v = pick.call(c.fields, c)
+              return take.call(v, c)
+            end
+          end
+        elsif replace
+          list.each do |c|
+            next unless c.sure
+            next if FILL_ONLY[c.source]?.try(&.includes?(field))
+            v = pick.call(c.fields, c) || next
+            set.call(field, JSON.parse(v.to_json), c.source) if different?(field, current, v)
+            return
+          end
         end
       end
 
@@ -785,10 +970,11 @@ module CalibreHub
         t.size > m.size && m.last? == t.last? && m.all? { |w| t.includes?(w) }
       end
 
-      # proper case beats broken case, accents beat none, "Le Guin" beats "LeGuin"
+      # proper case beats broken case ("McKeown" too), accents beat none,
+      # "Le Guin" beats "LeGuin"
       def self.better_form?(theirs : String, mine : String) : Bool
         return false if theirs == mine || Clean.broken_case?(theirs)
-        return true if Clean.broken_case?(mine)
+        return true if Clean.broken_case?(mine) || Clean.fix_name_case(mine) == theirs
         return Text.diacritics(theirs) > Text.diacritics(mine) if Text.diacritics(theirs) != Text.diacritics(mine)
         theirs.count(' ') > mine.count(' ') && !theirs.includes?(',')
       end
@@ -809,9 +995,11 @@ module CalibreHub
       # the tags the rules manage (the change log's "tags")
       TAGS = [TAG, DRAFT, REPLACED, CORRIGENDUM]
       BODY = "(?:DIN|EN|ISO|IEC|IEEE|VDE|VDI|CEN|CENELEC|ETSI)"
-      # "DIN EN ISO 11073-10404", "ISO/IEC 42001", "DIN SPEC 91020"
-      DESIGNATION = "#{BODY}(?:[ /](?:#{BODY}|TS|TR|PAS|SPEC))*\\s+\\d+(?:-\\d+)*"
-      FILE_NAME   = /\A\s*\[\s*(#{DESIGNATION})\s+(?:(Entwurf)\s+)?(\d{4})-(\d{2})\s*\](?:\s*-{1,2}\s*(.*))?\z/
+      # "DIN EN ISO 11073-10404", "ISO/IEC 42001", "DIN SPEC 91020", a
+      # prestandard "DIN V ENV 13606-2", an amendment "DIN EN ISO 14971/A1"
+      DESIGNATION = "#{BODY}(?:[ /](?:#{BODY}|ENV|V|TS|TR|PAS|SPEC))*\\s+\\d+(?:-\\d+)*(?:/A\\d+)?"
+      # "[DIN EN ISO 14971 A1 Entwurf 2003-01]", "[DIN EN ISO 14971 Berichtigung 1 2007-10]"
+      FILE_NAME = /\A\s*\[\s*(#{DESIGNATION})(?:\s+(A\d+))?\s+(?:(Entwurf|Berichtigung(?:\s+\d+)?)\s+)?(\d{4})-(\d{2})\s*\](?:\s*-{1,2}\s*(.*))?\z/
       # what this module makes of it: "DIN EN ISO 11073-10102:2013-07
       # (Entwurf) – Mit Annotationen versehenes EKG"
       DESIGNATED = /\A(#{DESIGNATION}):(\d{4})(?:-(\d{2}))?(?:\s+\((Entwurf|Berichtigung)\))?(?:\s+–\s+(.+))?\z/
@@ -820,7 +1008,8 @@ module CalibreHub
       # references to the international original, also cut off by the file
       # name: "(ISO IEEE 11073-10404 2010)", "(ISO IEEE FDIS"
       REFERENCE = /\s*\((?:ISO|IEC|IEEE|EN|DIN|HL7|CEN)\b[^()]*(?:\)|\z)/
-      FASSUNG   = /[\s;,]*\b(Englische|Deutsche|Französische)(?:\s+Fassung\b.*)?\z/
+      # also cut off by the file name: "Englische Fassu", "Deutsche Fa"
+      FASSUNG   = /[\s;,]*\b(Englische|Deutsche|Französische)(?:\s+Fa(?:ssung|ssun|ssu|ss|s)?\b.*)?\z/
       LANGUAGES = {"Englische" => "eng", "Deutsche" => "deu", "Französische" => "fra"}
       PART      = /\A(Teil|Part)\s+(\d+)\s*:?\s*(.*)\z/
 
@@ -874,6 +1063,11 @@ module CalibreHub
           "#{id}#{flag}#{short_title.try { |s| " – #{s}" }}"
         end
 
+        # the number without parts and amendment: "11073-10404", "14971"
+        def number : String
+          designation[/(\d+(?:-\d+)*)(?:\/A\d+)?\z/, 1]
+        end
+
         # "DIN EN ISO 11073" for a part of a standard, else none
         def series : String?
           designation.match(/\A(.*\d)-\d+\z/).try(&.[1])
@@ -910,8 +1104,10 @@ module CalibreHub
       def self.parse(title : String, authors : Array(String), publisher : String? = nil, cover : String? = nil) : Norm?
         t = title.unicode_normalize.gsub(/[\x{FEFF}\x{200B}-\x{200D}\x{2060}]/, "").strip
         if m = t.match(FILE_NAME)
-          norm = Norm.new(m[1], m[3].to_i, m[4].to_i, draft: !m[2]?.nil?)
-          text = m[5]?.to_s
+          designation = m[2]? ? "#{m[1]}/#{m[2]}" : m[1]
+          flag = m[3]?.to_s
+          norm = Norm.new(designation, m[4].to_i, m[5].to_i, draft: flag == DRAFT, corrigendum: flag.starts_with?(CORRIGENDUM))
+          text = m[6]?.to_s
           # the rest of the file name, unless calibre found a real author
           unless Clean.unknown_authors?(authors) || issuer?(authors)
             text = "#{text} - #{authors.join(" & ")}"
@@ -990,8 +1186,7 @@ module CalibreHub
       # has the designation and (nearly) all words of that title.
       # anywhere: the hint is a part of the title, not its start.
       def self.cover_title(cover : String, norm : Norm, hint : String, anywhere = false) : String?
-        number = norm.designation[/\d+(?:-\d+)*\z/]
-        return nil unless cover.includes?(number)
+        return nil unless cover.includes?(norm.number)
         want = Text.tokens(hint)
         return nil if want.empty?
         lines = cover.lines.map(&.strip)
@@ -1088,7 +1283,7 @@ module CalibreHub
         counts.keys.group_by { |n| key(n) }.compact_map do |k, names|
           next if names.size < 2 || k.empty?
           best = names.max_by do |n|
-            {Clean.broken_case?(n) ? 0 : 1, n.includes?(',') ? 0 : 1, sourced.includes?(n) ? 1 : 0,
+            {Clean.broken_case?(n) ? 0 : 1, Clean.fix_name_case(n) == n ? 1 : 0, n.includes?(',') ? 0 : 1, sourced.includes?(n) ? 1 : 0,
              counts[n], Text.diacritics(n), n.count(' '), n.count('.')}
           end
           {best, (names - [best]).sort}

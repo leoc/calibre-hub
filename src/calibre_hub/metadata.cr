@@ -106,7 +106,7 @@ module CalibreHub
     # author names an online source confirmed; they win the unification
     def sourced_authors : Set(String)
       set = Set(String).new
-      @db.query_each("select new from metadata_changes where field = 'authors' and source in ('openlibrary', 'dnb') and reverted_at is null") do |rs|
+      @db.query_each("select new from metadata_changes where field = 'authors' and source in ('hardcover', 'openlibrary', 'dnb') and reverted_at is null") do |rs|
         JSON.parse(rs.read(String)).as_a?.try &.each { |a| a.as_s?.try { |s| set << s } }
       end
       set
@@ -133,12 +133,42 @@ module CalibreHub
     end
   end
 
+  # The alert command (CALIBRE_HUB_ALERT_COMMAND, called with subject and
+  # text), each key at most once a day; the last time per key is kept in
+  # the state DB, so a restart doesn't repeat it
+  class DailyAlert
+    def initialize(@db : DB::Database, @command : Array(String)?)
+      @db.exec "create table if not exists alerts (key text primary key, at integer not null)"
+    end
+
+    # false when the key was sent within the last day
+    def call(key : String, subject : String, text : String, now = Time.utc) : Bool
+      last = @db.query_one?("select at from alerts where key = ?", key, as: Int64)
+      return false if last && now.to_unix - last < 1.day.total_seconds
+      @db.exec "insert or replace into alerts (key, at) values (?, ?)", key, now.to_unix
+      STDERR.puts "alert: #{subject}: #{text}"
+      if (cmd = @command) && !cmd.empty?
+        Process.run(cmd[0], cmd[1..] + [subject, text], output: :inherit, error: :inherit)
+      end
+      true
+    rescue ex : File::Error | IO::Error | DB::Error
+      STDERR.puts "alert failed: #{ex.message}"
+      false
+    end
+
+    def proc : Meta::Hardcover::Alert
+      ->(key : String, subject : String, text : String) { call(key, subject, text); nil }
+    end
+  end
+
   # Completes and cleans up a book's metadata: file -> rules (model only
   # when they can't decide) -> online sources (ISBN first, then title and
-  # author) -> scored candidates -> per-field merge (Meta::Merge) -> one
-  # PATCH with lastModified -> change log and the tag auto-metadaten.
+  # author: Hardcover for English books, the DNB for German ones, Open
+  # Library as the supplement) -> scored and checked candidates (no
+  # translation, other language or volume) -> per-field merge (Meta::Merge)
+  # -> one PATCH with lastModified -> change log and the tag auto-metadaten.
   class Metadata
-    SOURCES = %w(file openlibrary dnb)
+    SOURCES = %w(file hardcover dnb openlibrary)
 
     MODEL_SYSTEM = <<-TXT
       You clean up the title and author fields of an e-book whose metadata
@@ -159,7 +189,13 @@ module CalibreHub
 
     def initialize(@calibre : Calibre, @writer : Writer, @log : MetaLog, @sources : Array(String),
                    @openlibrary : Meta::OpenLibrary?, @dnb : Meta::Dnb?, @http : Meta::Http,
-                   @ollama : Ollama? = nil, @read_file : FileReader? = nil, @nightly : String? = nil)
+                   @ollama : Ollama? = nil, @read_file : FileReader? = nil, @nightly : String? = nil,
+                   @hardcover : Meta::Hardcover? = nil)
+    end
+
+    # the sources asked: Hardcover only with a token
+    def active_sources : Array(String)
+      @sources.reject { |s| s == "hardcover" && !@hardcover.try(&.enabled?) }
     end
 
     def model : String?
@@ -232,10 +268,12 @@ module CalibreHub
       Meta::Guess.new(Meta::Clean.fix_title_case(title), Meta::Clean.authors(authors), series, series ? index : nil, source: "model")
     end
 
-    private def providers : Array({String, Meta::OpenLibrary | Meta::Dnb})
-      list = [] of {String, Meta::OpenLibrary | Meta::Dnb}
+    # in @sources order; Hardcover only with a token
+    private def providers : Array({String, Meta::OpenLibrary | Meta::Dnb | Meta::Hardcover})
+      list = [] of {String, Meta::OpenLibrary | Meta::Dnb | Meta::Hardcover}
       @sources.each do |s|
         case s
+        when "hardcover"   then @hardcover.try { |p| list << {s, p} if p.enabled? }
         when "openlibrary" then @openlibrary.try { |p| list << {s, p} }
         when "dnb"         then @dnb.try { |p| list << {s, p} }
         end
@@ -243,13 +281,24 @@ module CalibreHub
       list
     end
 
-    # Candidates from the online sources, ranked; errors: a source failed.
-    # ISBNs first (calibre's, the OPF's, the text's); title and author only
-    # when no ISBN gave a sure match. q: the user's own search text.
+    # Candidates from the online sources, checked and ranked; errors: a
+    # source failed. ISBNs first (calibre's, the OPF's, the text's); title
+    # and author only when no ISBN gave a sure match, and each source
+    # decides whether the book is one for it (Hardcover: English, DNB:
+    # German). Translations, other languages and other volumes are dropped
+    # (Meta::Match). q: the user's own search text.
     def lookup(book : Book, guesses : Array(Meta::Guess), info : Meta::FileMeta::Info?, q : String? = nil) : {Array(Meta::Candidate), Bool}
       trusted = [book.identifiers["isbn"]?.try { |i| Meta::Isbn.normalize(i) }, info.try(&.record.isbn)].compact.uniq
       isbns = (trusted + (info.try(&.isbns.first(3)) || [] of String)).uniq.first(4)
-      languages = book.languages
+      languages = book.languages.presence || info.try(&.record.languages) || [] of String
+      title = guesses.first?.try(&.title).presence || book.title
+      check = ->(list : Array(Meta::Candidate)) do
+        list.reject do |c|
+          reason = Meta::Match.reject(c, languages, title, trusted)
+          STDERR.puts "metadata: #{book.id}: #{c.source} #{c.url} dropped (#{reason})" if reason
+          reason
+        end
+      end
       all = [] of Meta::Candidate
       errors = false
       ask = ->(block : Proc(Array(Meta::Candidate))) do
@@ -263,15 +312,18 @@ module CalibreHub
       unless q
         isbns.each { |isbn| providers.each { |_, p| ask.call(-> { p.by_isbn(isbn) }) } }
       end
+      all = check.call(all)
       ranked = Meta::Score.rank(all, guesses, languages, trusted)
       unless ranked.any?(&.sure)
         searches = q ? [Meta::Guess.new(q, [] of String)] : guesses.first(2)
         searches.each do |g|
           next if g.title.empty?
-          providers.each { |_, p| ask.call(-> { p.search(g.title, g.authors.first?) }) }
+          author = g.authors.first? || (q ? guesses.first?.try(&.authors.first?) : nil)
+          query = Meta::Query.new(g.title, author, languages, book.publisher || info.try(&.record.publisher))
+          providers.each { |_, p| ask.call(-> { p.search(query) }) }
         end
         seen = Set(String).new
-        all = all.select { |c| c.url.nil? || seen.add?("#{c.source} #{c.url}") }
+        all = check.call(all.select { |c| c.url.nil? || seen.add?("#{c.source} #{c.url}") })
         ranked = Meta::Score.rank(all, q ? searches + guesses : guesses, languages, trusted)
       end
       {ranked, errors}
@@ -350,7 +402,7 @@ module CalibreHub
 
     # The other books with the same designation, as standards
     def editions(book : Book, norm : Meta::Norms::Norm) : Array({Book, Meta::Norms::Norm})
-      number = norm.designation[/\d+(?:-\d+)*\z/]
+      number = norm.number
       ids = @calibre.search(%(title:"#{Api.escape(number)}"), "id", true, 0, 1000).ids - [book.id]
       @calibre.books(ids, Calibre::DETAIL_FIELDS).compact_map do |b|
         n = Meta::Norms.parse(b) || next

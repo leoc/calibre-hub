@@ -1,0 +1,36 @@
+{
+ "data": {
+  "editions": [
+   {
+    "id": 7510672,
+    "title": "How the Way We Talk Can Change the Way We Work: Seven Languages for Transformation",
+    "subtitle": null,
+    "isbn_13": "9780787958664",
+    "isbn_10": "0787958662",
+    "release_date": "2001-01-01",
+    "publisher": {
+     "name": "John Wiley & Sons, Ltd."
+    },
+    "language": {
+     "code3": "eng"
+    },
+    "book": {
+     "id": 165373,
+     "slug": "how-the-way-we-talk-can-change-the-way-we-work",
+     "title": "How the Way We Talk Can Change the Way We Work: Seven Languages for Transformation",
+     "subtitle": "Seven Languages for Transformation",
+     "description": "Why is the gap so great between our hopes, our intentions, even our decisions-and what we are actually able to bring about? Even when we are able to make important changes-in our own lives or the groups we lead at work-why are the changes are so frequently short-lived and we are soon back to business as usual? What can we do to transform this troubling reality?   In this intensely practical book, Harvard psychologists Robert Kegan and Lisa Laskow Lahey take us on a carefully guided journey designed to help us answer these very questions. And not just generally, or in the abstract. They help each of us arrive at our own particular answers that can solve the puzzling gap between what we intend and what we are able to accomplish. How the Way We Talk Can Change the Way We Work provides you with the tools to create a powerful new build-it-yourself mental technology.",
+     "contributions": [
+      {
+       "author": {
+        "name": "Robert Kegan"
+       },
+       "contribution": "Author"
+      }
+     ],
+     "book_series": []
+    }
+   }
+  ]
+ }
+}

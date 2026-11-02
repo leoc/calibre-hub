@@ -145,7 +145,7 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
       const active = new Set(changes.filter((c) => !c.revertedAt).map((c) => c.bookId))
       return HttpResponse.json({
         enabled: true,
-        sources: ["file", "openlibrary", "dnb"],
+        sources: ["file", "hardcover", "dnb", "openlibrary"],
         model: "qwen2.5:3b",
         nightly: "03:30",
         running: lastRun?.status === "running",

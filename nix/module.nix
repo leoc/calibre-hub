@@ -277,24 +277,48 @@ in
       enable = mkEnableOption ''
         metadata cleanup: titles and authors broken by file names are fixed,
         missing ISBN, publisher, date, language, description, series and
-        cover are filled from the book file, Open Library and the DNB, and
-        author spellings are unified. Every changed book gets the tag
+        cover are filled from the book file, Hardcover (English books, with
+        a token), the DNB (German books) and Open Library, and author
+        spellings are unified. Every changed book gets the tag
         `auto-metadaten`; each change is logged and can be reverted
       '';
       sources = mkOption {
         type = types.listOf (
           types.enum [
             "file"
-            "openlibrary"
+            "hardcover"
             "dnb"
+            "openlibrary"
           ]
         );
         default = [
           "file"
-          "openlibrary"
+          "hardcover"
           "dnb"
+          "openlibrary"
         ];
-        description = "Sources in order of preference; the book file is always read first when listed.";
+        description = ''
+          Sources asked; the book file is always read first when listed.
+          Which source wins a field is fixed per field (see the README);
+          hardcover is skipped without hardcoverTokenFile.
+        '';
+      };
+      hardcoverTokenFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        example = "/run/secrets/hardcover-token";
+        description = ''
+          File with the Hardcover API token (https://hardcover.app/account/api,
+          with or without "Bearer "). Passed as a systemd credential. null:
+          the source hardcover is skipped. A rejected token pauses the
+          source and calls alertCommand once a day, as does a token (JWT)
+          expiring within 14 days.
+        '';
+      };
+      hardcoverUrl = mkOption {
+        type = types.str;
+        default = "https://api.hardcover.app/v1/graphql";
+        description = "GraphQL endpoint of Hardcover.";
       };
       nightly = mkOption {
         type = types.nullOr (types.strMatching "[0-9]{2}:[0-9]{2}");
@@ -509,6 +533,10 @@ in
         CALIBRE_HUB_OPENLIBRARY_URL = cfg.metadata.openLibraryUrl;
         CALIBRE_HUB_OPENLIBRARY_COVERS_URL = cfg.metadata.openLibraryCoversUrl;
         CALIBRE_HUB_DNB_URL = cfg.metadata.dnbUrl;
+        CALIBRE_HUB_HARDCOVER_URL = cfg.metadata.hardcoverUrl;
+        CALIBRE_HUB_HARDCOVER_TOKEN_FILE = lib.optionalString (
+          cfg.metadata.hardcoverTokenFile != null
+        ) "%d/hardcover-token";
         CALIBRE_HUB_FRONTEND =lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";
@@ -528,7 +556,10 @@ in
           "login-password:${cfg.login.passwordFile}"
           "session-key:${cfg.sessionKeyFile}"
         ]
-        ++ lib.imap0 (i: file: "${tokenCred i}:${file}") cfg.apiTokenFiles;
+        ++ lib.imap0 (i: file: "${tokenCred i}:${file}") cfg.apiTokenFiles
+        ++ lib.optional (
+          cfg.metadata.hardcoverTokenFile != null
+        ) "hardcover-token:${toString cfg.metadata.hardcoverTokenFile}";
         Restart = "on-failure";
         RestartSec = 5;
 

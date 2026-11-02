@@ -115,6 +115,29 @@ private class FakeSources
       end
       q = r.query_params
       case r.path
+      when "/hc"
+        if r.headers["Authorization"]? != "Bearer hc-token"
+          ctx.response.status_code = 401
+          ctx.response.print %({"error":"invalid_token","error_description":"Token is not associated with a user"})
+          next
+        end
+        body = JSON.parse(r.body.try(&.gets_to_end) || "{}")
+        @requests << "hc #{body["variables"].to_json}"
+        query = body["query"].as_s
+        vars = body["variables"]
+        ctx.response.print(
+          if query.includes?("search(")
+            vars["q"].as_s.starts_with?("Effortless") ? fixture("hardcover_search_effortless.json") : %({"data":{"search":{"results":{"hits":[]}}}})
+          elsif query.includes?("books(where")
+            fixture("hardcover_books_effortless.json")
+          else
+            case vars["isbn"].as_s
+            when "9780593135648" then fixture("hardcover_isbn_effortless.json")
+            when "9780787958664" then fixture("hardcover_isbn_kegan.json")
+            when "9783608938289" then fixture("hardcover_isbn_ringe.json")
+            else                      %({"data":{"editions":[]}})
+            end
+          end)
       when "/ol/api/books"
         ctx.response.print(q["bibkeys"] == "ISBN:9783608938289" ? fixture("openlibrary_isbn.json") : "{}")
       when "/ol/search.json"
@@ -130,6 +153,8 @@ private class FakeSources
         when "num=9783608938289"  then fixture("dnb_isbn.xml")
         when "num=9783596164530"  then fixture("dnb_isbn_schwarm.xml")
         when /tit="Der Schwarm"/i then fixture("dnb_search.xml")
+        when "num=9780787958664"  then fixture("dnb_isbn_kegan.xml")
+        when /tit="Effortless"/   then fixture("dnb_search_effortless.xml")
         else                           %(<searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/"><numberOfRecords>0</numberOfRecords></searchRetrieveResponse>)
         end
       when %r{\A/covers/b/id/\d+-L.jpg\z}
@@ -159,10 +184,12 @@ private def book(title = "Dune", authors = ["Frank Herbert"], author_sort : Stri
     languages: languages, comments: comments, custom: {} of String => JSON::Any)
 end
 
-private def setup(read_file : CalibreHub::Metadata::FileReader? = nil, sources = %w(file openlibrary dnb))
+private def setup(read_file : CalibreHub::Metadata::FileReader? = nil, sources = %w(file openlibrary dnb),
+                   hardcover_token : String? = nil, alert : CalibreHub::Meta::Hardcover::Alert? = nil)
   library = FakeLibrary.new
   web = FakeSources.new
   http = CalibreHub::Meta::Http.new(Time::Span.zero, 5.seconds)
+  hardcover = CalibreHub::Meta::Hardcover.new(http, hardcover_token, "#{web.url}/hc", alert)
   writer = CalibreHub::Writer.new(library.calibre, nil, nil, nil)
   db = DB.open("sqlite3://#{File.tempname("hub-metadata", ".sqlite")}?max_pool_size=1")
   db.exec "create table if not exists meta (key text primary key, value text)"
@@ -170,7 +197,7 @@ private def setup(read_file : CalibreHub::Metadata::FileReader? = nil, sources =
   m = CalibreHub::Metadata.new(library.calibre, writer, CalibreHub::MetaLog.new(db), sources,
     CalibreHub::Meta::OpenLibrary.new(http, "#{web.url}/ol", "#{web.url}/covers"),
     CalibreHub::Meta::Dnb.new(http, "#{web.url}/dnb"), http, nil,
-    read_file || ->(_b : CalibreHub::Book) { nil.as(CalibreHub::Meta::FileMeta::Info?) })
+    read_file || ->(_b : CalibreHub::Book) { nil.as(CalibreHub::Meta::FileMeta::Info?) }, hardcover: hardcover)
   jobs = CalibreHub::MetadataJobs.new(db, library.calibre, writer, m)
   {library, web, m, jobs, db}
 end
@@ -608,6 +635,23 @@ describe CalibreHub::Meta::Norms do
     {"[DIN EN 62304 2016-10] -- Medizingeräte-Software - Software-Lebenszyklus-Prozesse - Part 1 General", ["Unknown"]} =>
       {"DIN EN 62304:2016-10 – General",
        "Medizingeräte-Software – Software-Lebenszyklus-Prozesse – Part 1: General", nil, nil, nil, %w(Norm)},
+    # live books 53, 94, 90, 97 (02.11.): a prestandard "DIN V ENV", an
+    # amendment "A1", a numbered corrigendum, "Fassung" cut off
+    {"[DIN V ENV 13606-2 2000-09] -- Medizinische Informatik - Kommunikation von Patientendaten in elektronischer Form", ["Teil 2 Liste der Benennungen für Anwendungen Englische Fassung E"]} =>
+      {"DIN V ENV 13606-2:2000-09 – Liste der Benennungen für Anwendungen",
+       "Medizinische Informatik – Kommunikation von Patientendaten in elektronischer Form – Teil 2: Liste der Benennungen für Anwendungen",
+       "eng", "DIN V ENV 13606", 2.0, %w(Norm)},
+    {"[DIN V ENV 13606-4 2000-09] -- Medizinische Informatik - Kommunikation von Patientendaten in elektronischer Form", ["Teil 4 Nachrichten für den Informationsaustausch Englische Fassu"]} =>
+      {"DIN V ENV 13606-4:2000-09 – Nachrichten für den Informationsaustausch",
+       "Medizinische Informatik – Kommunikation von Patientendaten in elektronischer Form – Teil 4: Nachrichten für den Informationsaustausch",
+       "eng", "DIN V ENV 13606", 4.0, %w(Norm)},
+    {"[DIN EN ISO 14971 A1 Entwurf 2003-01] -- Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte Änderung 1 Begründung der Anforderungen (ISO 14971 2000 FDAM 1 2002) Deutsche Fa", ["Unknown"]} =>
+      {"DIN EN ISO 14971/A1:2003-01 (Entwurf) – Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte Änderung 1 Begründung der Anforderungen",
+       "Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte Änderung 1 Begründung der Anforderungen",
+       "deu", nil, nil, %w(Norm Entwurf)},
+    {"[DIN EN ISO 14971 Berichtigung 1 2007-10] -- Medizinprodukte", ["Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007) Deutsche Fassung EN ISO 14971 2007, Berichtigungen zu DIN EN I"]} =>
+      {"DIN EN ISO 14971:2007-10 (Berichtigung) – Anwendung des Risikomanagements auf Medizinprodukte",
+       "Medizinprodukte – Anwendung des Risikomanagements auf Medizinprodukte", "deu", nil, nil, %w(Norm Berichtigung)},
   }.each do |(title, authors), (want_title, full, language, series, index, tags)|
     it "reads #{title[0, 60].inspect}" do
       n = CalibreHub::Meta::Norms.parse(title, authors).not_nil!
@@ -654,6 +698,12 @@ describe CalibreHub::Meta::Norms do
     b = book(n.title, ["DIN"], publisher: "Beuth", pubdate: Time.utc(2013, 7, 1, 12), series: "DIN EN ISO 11073",
       tags: ["Norm", "Entwurf"], comments: "<p>x</p>", identifiers: {"din" => "DIN EN ISO 11073-10102:2013-07"})
     CalibreHub::Meta::Norms.plan(b, again).should be_empty
+    # the amendment and the prestandard too
+    {"DIN EN ISO 14971/A1:2003-01 (Entwurf) – Änderung 1" => {"DIN EN ISO 14971/A1", true, "14971"},
+     "DIN V ENV 13606-2:2000-09 – Liste der Benennungen"  => {"DIN V ENV 13606-2", false, "13606-2"}}.each do |t, (designation, draft, number)|
+      x = CalibreHub::Meta::Norms.parse(t, ["DIN"], "Beuth").not_nil!
+      {x.title, x.designation, x.draft, x.number, x.scheme}.should eq({t, designation, draft, number, "din"})
+    end
   end
 
   it "takes a standard's designation as title only from an issuing body" do
@@ -719,10 +769,10 @@ describe CalibreHub::Metadata do
     entries = m.run(1)
     b = library.books[1]
     b["title"].should eq("Der Herr der Ringe")
-    b["authors"].should eq(JSON.parse(%(["J.R.R. Tolkien"])))
-    b["author_sort"].should eq("Tolkien, J.R.R.")
+    b["authors"].should eq(JSON.parse(%(["J. R. R. Tolkien"])))
+    b["author_sort"].should eq("Tolkien, J. R. R.")
     b["identifiers"].should eq(JSON.parse(%({"isbn": "9783608938289"})))
-    b["publisher"].should eq("Klett-Cotta Verlag")
+    b["publisher"].should eq("Klett-Cotta")
     b["pubdate"].as_s.should start_with("2009-08-01")
     b["languages"].should eq(JSON.parse(%(["deu"])))
     b["tags"].should eq(JSON.parse(%(["auto-metadaten"])))
@@ -941,5 +991,280 @@ describe "metadata routes" do
     sure["url"].should eq("https://d-nb.info/99386712X")
     call("GET", "/api/books/99/metadata/candidates")[0].should eq(404)
     m.log.changed_books.should eq(0)
+  end
+end
+
+private def hc_query(title, author, languages = [] of String, publisher = nil)
+  CalibreHub::Meta::Query.new(title, author, languages, publisher)
+end
+
+# A JWT-shaped token with this expiry (not signed: only exp is read)
+private def jwt(exp : Time) : String
+  payload = Base64.urlsafe_encode(%({"exp": #{exp.to_unix}}), padding: false)
+  "eyJhbGciOiJIUzI1NiJ9.#{payload}.signature"
+end
+
+describe CalibreHub::Meta::Hardcover do
+  it "reads an edition by ISBN: title, subtitle, author (not the translator), publisher, description" do
+    data = JSON.parse(fixture("hardcover_isbn_effortless.json"))["data"]
+    c = CalibreHub::Meta::Hardcover.parse_editions(data, "9780593135648").first
+    f = c.fields
+    {c.source, c.by_isbn, c.url}.should eq({"hardcover", "9780593135648", "https://hardcover.app/books/effortless"})
+    {f.title, f.subtitle, f.authors}.should eq({"Effortless", "Make It Easier to Do What Matters Most", ["Greg McKeown"]})
+    {f.isbn, f.publisher, f.languages}.should eq({"9780593135648", "Crown Currency", ["eng"]})
+    # "2021-01-01" is a year, not a day
+    f.pubdate.should eq("2021")
+    f.comments.not_nil!.should start_with("<p>NEW YORK TIMES BESTSELLER")
+  end
+
+  it "searches only very similar title and author, no summary, no placeholder" do
+    data = JSON.parse(fixture("hardcover_search_effortless.json"))["data"]
+    # "Summary: Effortless by Greg McKeown" (Meaningful Publishing) is not the book
+    CalibreHub::Meta::Hardcover.hits(data, hc_query("Effortless", "Greg Mckeown", ["eng"])).should eq([427508_i64, 2789518_i64])
+    CalibreHub::Meta::Hardcover.hits(data, hc_query("Effortless", "Daniel Pink", ["eng"])).should be_empty
+    CalibreHub::Meta::Hardcover.hits(data, hc_query("Effortless Living", "Greg McKeown", ["eng"])).should be_empty
+    untitled = JSON.parse(%({"search": {"results": {"hits": [{"document": {"id": "1", "title": "Untitled", "author_names": ["Rebecca Yarros"]}}]}}}))
+    CalibreHub::Meta::Hardcover.hits(untitled, hc_query("Untitled", "Rebecca Yarros")).should be_empty
+  end
+
+  it "takes a searched work only with an edition in the book's language (Effortless: English, not the German one)" do
+    data = JSON.parse(fixture("hardcover_books_effortless.json"))["data"]
+    ids = [427508_i64, 2789518_i64]
+    english = CalibreHub::Meta::Hardcover.parse_books(data, hc_query("Effortless", "Greg Mckeown", ["eng"], "Crown"), ids)
+    english.map(&.url).should eq(["https://hardcover.app/books/effortless"])
+    # the only edition of the book's publisher: its ISBN and publisher
+    c = english.first
+    c.edition.should be_true
+    {c.fields.isbn, c.fields.publisher, c.fields.languages}.should eq({"9780593135648", "Crown Currency", ["eng"]})
+    # without a publisher it isn't clear which of the English editions
+    unclear = CalibreHub::Meta::Hardcover.parse_books(data, hc_query("Effortless", "Greg Mckeown", ["eng"]), ids).first
+    {unclear.edition, unclear.fields.isbn, unclear.fields.publisher}.should eq({false, nil, nil})
+    # unknown language and an English title: English
+    CalibreHub::Meta::Hardcover.parse_books(data, hc_query("Effortless", "Greg Mckeown"), ids).map(&.url).should eq(["https://hardcover.app/books/effortless"])
+    german = CalibreHub::Meta::Hardcover.parse_books(data, hc_query("Effortless", "Greg McKeown", ["deu"]), ids)
+    german.map(&.fields.languages).should eq([["deu"]])
+  end
+
+  it "pauses on a rejected token and alerts once a day" do
+    db = DB.open("sqlite3://#{File.tempname("hub-alert", ".sqlite")}?max_pool_size=1")
+    dir = File.tempname("hub-alert")
+    Dir.mkdir(dir)
+    log = File.join(dir, "alerts.log")
+    script = File.join(dir, "alert")
+    File.write(script, "#!/bin/sh\necho \"$1|$2\" >> #{log}\n")
+    File.chmod(script, 0o755)
+    alert = CalibreHub::DailyAlert.new(db, [script])
+    web = FakeSources.new
+    http = CalibreHub::Meta::Http.new(Time::Span.zero, 5.seconds)
+    hc = CalibreHub::Meta::Hardcover.new(http, "Bearer wrong", "#{web.url}/hc", alert.proc)
+    hc.enabled?.should be_true
+    hc.by_isbn("9780593135648").should be_empty
+    hc.available?.should be_false
+    hc.paused_until.not_nil!.should be > Time.utc + 50.minutes
+    # paused: no more requests
+    hc.search(hc_query("Effortless", "Greg McKeown", ["eng"])).should be_empty
+    web.requests.count("/hc").should eq(1)
+    # a new instance (restart) with the same state DB: no second alert today
+    CalibreHub::Meta::Hardcover.new(http, "wrong", "#{web.url}/hc", alert.proc).by_isbn("9780593135648")
+    lines = File.read_lines(log)
+    lines.size.should eq(1)
+    lines.first.should start_with("calibre-hub: Hardcover-Token abgelaufen oder ungültig|")
+    alert.call("hardcover-token", "s", "t", Time.utc + 25.hours).should be_true
+    # with the right token ("Bearer " from the token page is fine)
+    ok = CalibreHub::Meta::Hardcover.new(http, "Bearer hc-token\n", "#{web.url}/hc", alert.proc)
+    ok.by_isbn("9780593135648").first.fields.title.should eq("Effortless")
+  end
+
+  it "warns 14 days before a JWT token expires" do
+    sent = [] of {String, String, String}
+    alert = ->(k : String, s : String, t : String) { sent << {k, s, t}; nil }
+    http = CalibreHub::Meta::Http.new(Time::Span.zero, 5.seconds)
+    now = Time.utc
+    CalibreHub::Meta::Hardcover.new(http, jwt(now + 30.days), "http://127.0.0.1:9/hc", alert).available?(now).should be_true
+    CalibreHub::Meta::Hardcover.new(http, "opaque-token", "http://127.0.0.1:9/hc", alert).available?(now).should be_true
+    sent.should be_empty
+    CalibreHub::Meta::Hardcover.new(http, "Bearer #{jwt(now + 10.days)}", "http://127.0.0.1:9/hc", alert).available?(now).should be_true
+    sent.map(&.[0]).should eq(["hardcover-token-expiry"])
+    sent.first[1].should eq("calibre-hub: Hardcover-Token läuft bald ab")
+    CalibreHub::Meta::Hardcover.expiry(jwt(Time.unix(1_900_000_000))).should eq(Time.unix(1_900_000_000))
+    CalibreHub::Meta::Hardcover.expiry("a.b.c").should be_nil
+  end
+end
+
+describe "stricter DNB" do
+  it "searches by title only for German books, always with author and language" do
+    CalibreHub::Meta::Dnb.cql(hc_query("Effortless", "Greg Mckeown", ["eng"])).should be_nil
+    # unknown language: only a German-looking title
+    CalibreHub::Meta::Dnb.cql(hc_query("Effortless", "Greg Mckeown")).should be_nil
+    CalibreHub::Meta::Dnb.cql(hc_query("Der Schwarm", nil, ["deu"])).should be_nil
+    CalibreHub::Meta::Dnb.cql(hc_query("Der Schwarm", "Frank Schätzing")).should eq(%(tit="Der Schwarm" and per="Schätzing" and spr=ger))
+    CalibreHub::Meta::Dnb.cql(hc_query("Psychokybernetik", "Maxwell Maltz", ["deu"])).should eq(%(tit="Psychokybernetik" and per="Maltz" and spr=ger))
+  end
+
+  it "rejects the German translations of an English book (live: Effortless, REDLINE)" do
+    list = CalibreHub::Meta::Dnb.parse(fixture("dnb_search_effortless.xml"))
+    list.size.should eq(4)
+    list.all?(&.translation).should be_true
+    list.all? { |c| c.fields.languages == ["deu"] }.should be_true
+    list.each do |c|
+      CalibreHub::Meta::Match.reject(c, ["eng"], "Effortless", [] of String).should eq("translation")
+      # unknown language, English title: not German, so no translation either
+      CalibreHub::Meta::Match.reject(c, [] of String, "Effortless", [] of String).should eq("translation")
+      # a German book may be a translation
+      CalibreHub::Meta::Match.reject(c, ["deu"], "Effortless", [] of String).should be_nil
+    end
+    # found by the book's own ISBN it is this edition
+    own = list.first.tap { |c| c.by_isbn = c.fields.isbn }
+    CalibreHub::Meta::Match.reject(own, ["eng"], "Effortless", [own.fields.isbn.not_nil!]).should be_nil
+  end
+
+  it "compares the volume of a multi-volume work (live: Baden Powell, Songbook Vol. 1/2/3)" do
+    list = CalibreHub::Meta::Dnb.parse(fixture("dnb_search_songbook.xml"))
+    list.map { |c| {c.fields.title, c.volume} }.should eq([
+      {"Songbook. Vol. 3", "3"}, {"Songbook. Vol. 2", "2"}, {"Songbook. Vol. 1", "1"}, {"Songbook. Vol. 2", "2"},
+    ])
+    keep = ->(title : String) { list.select { |c| CalibreHub::Meta::Match.reject(c, ["deu"], title, [] of String).nil? }.map(&.volume) }
+    keep.call("Songbook, Vol. 1 (Guitar Scores)").should eq(["1"])
+    keep.call("Songbook, Vol. 2 (Guitar Scores)").should eq(["2", "2"])
+    keep.call("Songbook").should eq(["3", "2", "1", "2"])
+    CalibreHub::Meta::Text.volume("Der Herr der Ringe, Band II").should eq("2")
+    CalibreHub::Meta::Text.volume("Teil 3: Die Rückkehr").should eq("3")
+    CalibreHub::Meta::Text.volume("Volume IV").should eq("4")
+    CalibreHub::Meta::Text.volume("Dune").should be_nil
+  end
+
+  it "reads a co-author from a DNB record (live: Kegan & Lahey)" do
+    c = CalibreHub::Meta::Dnb.parse(fixture("dnb_isbn_kegan.xml")).first
+    c.fields.authors.should eq(["Robert Kegan", "Lisa Laskow Lahey"])
+    c.fields.languages.should eq(["eng"])
+    c.translation.should be_false
+  end
+end
+
+describe "merge precedence (#8449)" do
+  sure = ->(c : CalibreHub::Meta::Candidate, isbn : String) { c.by_isbn = isbn; c.sure = true; c.score = 1.0; c }
+
+  it "adds Hardcover's subtitle and description and the DNB's co-author (live: Kegan)" do
+    isbn = "9780787958664"
+    hc = sure.call(CalibreHub::Meta::Hardcover.parse_editions(JSON.parse(fixture("hardcover_isbn_kegan.json"))["data"], isbn).first, isbn)
+    dnb = sure.call(CalibreHub::Meta::Dnb.parse(fixture("dnb_isbn_kegan.xml")).first, isbn)
+    ol = CalibreHub::Meta::Candidate.new("openlibrary", record(title: "How the Way We Talk Can Change the Way We Work", comments: "<p>OL</p>"))
+    ol.score = 0.9
+    b = book("How the Way We Talk Can Change the Way We Work", ["Robert Kegan"], isbn: isbn, languages: ["eng"],
+      publisher: "John Wiley & Sons", pubdate: Time.utc(2001, 1, 1, 12, 0, 0))
+    changes = CalibreHub::Meta::Merge.plan(b, nil, nil, [ol, dnb, hc]).to_h { |c| {c.field, {c.new, c.source}} }
+    changes["title"].should eq({JSON::Any.new("How the Way We Talk Can Change the Way We Work: Seven Languages for Transformation"), "hardcover"})
+    changes["authors"].should eq({JSON.parse(%(["Robert Kegan", "Lisa Laskow Lahey"])), "dnb"})
+    changes["comments"][1].should eq("hardcover")
+    changes.has_key?("publisher").should be_false
+    changes.has_key?("pubdate").should be_false
+  end
+
+  it "never takes Hardcover's year, publisher or language over the book's (live: Essentialism 2014, $100M Offers)" do
+    isbn = "9780593135648"
+    hc = sure.call(CalibreHub::Meta::Candidate.new("hardcover", record(title: "Essentialism", authors: ["Greg McKeown"],
+      isbn: isbn, publisher: "Random House", pubdate: "2011", languages: ["deu"], comments: "<p>HC</p>")), isbn)
+    b = book("Essentialism", ["Greg McKeown"], isbn: isbn, publisher: "Ebury Publishing", languages: ["eng"],
+      pubdate: Time.utc(2014, 4, 1, 12, 0, 0))
+    CalibreHub::Meta::Merge.plan(b, nil, nil, [hc]).map(&.field).should eq(["comments"])
+    # an empty field it fills, after the edition sources
+    dnb = sure.call(CalibreHub::Meta::Candidate.new("dnb", record(title: "Essentialism", publisher: "Ebury", pubdate: "2014")), isbn)
+    empty = book("Essentialism", ["Greg McKeown"], isbn: isbn, languages: ["eng"])
+    changes = CalibreHub::Meta::Merge.plan(empty, nil, nil, [hc, dnb]).to_h { |c| {c.field, {c.new.raw, c.source}} }
+    changes["publisher"].should eq({"Ebury", "dnb"})
+    changes["pubdate"].should eq({"2014", "dnb"})
+    CalibreHub::Meta::Merge.plan(empty, nil, nil, [hc]).find! { |c| c.field == "publisher" }.source.should eq("hardcover")
+  end
+
+  it "takes descriptions Hardcover first, then DNB, then Open Library" do
+    mk = ->(source : String, text : String) do
+      c = CalibreHub::Meta::Candidate.new(source, record(title: "Dune", authors: ["Frank Herbert"], comments: text))
+      c.score = 0.95
+      c
+    end
+    list = [mk.call("openlibrary", "<p>OL</p>"), mk.call("dnb", "<p>DNB</p>"), mk.call("hardcover", "<p>HC</p>")]
+    CalibreHub::Meta::Merge.plan(book, nil, nil, list).find! { |c| c.field == "comments" }.new.should eq("<p>HC</p>")
+    CalibreHub::Meta::Merge.plan(book, nil, nil, list[0, 2]).find! { |c| c.field == "comments" }.new.should eq("<p>DNB</p>")
+  end
+
+  it "uses the year and publisher of a \"(1974, Tonos)\" title suffix for empty fields" do
+    title = "Baden Powell - Baden Powell. Songbook, Vol. 2 (Guitar Scores) (1974, Tonos)"
+    g = CalibreHub::Meta::Clean.guesses(title, ["libgen.lc"])[0].first
+    {g.title, g.authors, g.publisher, g.pubdate}.should eq({"Songbook, Vol. 2 (Guitar Scores)", ["Baden Powell"], "Tonos", "1974"})
+    changes = CalibreHub::Meta::Merge.plan(book(title, ["libgen.lc"]), g, nil, [] of CalibreHub::Meta::Candidate).to_h { |c| {c.field, {c.new.raw, c.source}} }
+    changes["publisher"].should eq({"Tonos", "rules"})
+    changes["pubdate"].should eq({"1974", "rules"})
+    # a date already there stays
+    dated = book(title, ["libgen.lc"], pubdate: Time.utc(2003, 1, 1, 12, 0, 0))
+    CalibreHub::Meta::Merge.plan(dated, g, nil, [] of CalibreHub::Meta::Candidate).map(&.field).should_not contain("pubdate")
+    h = CalibreHub::Meta::Clean.guesses("Brian Hodel - The Brazilian Masters (Guitar Scores) (, TRO Hollis Music, Inc.)", ["libgen.lc"])[0].first
+    {h.publisher, h.pubdate}.should eq({"TRO Hollis Music, Inc.", nil})
+  end
+end
+
+describe "Mc and Mac" do
+  {
+    "GREG MCKEOWN"     => "Greg McKeown",
+    "greg mckeown"     => "Greg McKeown",
+    "Greg Mckeown"     => "Greg McKeown",
+    "Greg McKeown"     => "Greg McKeown",
+    "RAMSAY MACDONALD" => "Ramsay MacDonald",
+    "Ramsay MacDonald" => "Ramsay MacDonald",
+    # written so on purpose: only all caps or lower case get the Mac rule
+    "John A. Macdonald" => "John A. Macdonald",
+    "JOHN MACK"         => "John Mack",
+    "MACY GRAY"         => "Macy Gray",
+    "ROSE MACAULAY"     => "Rose Macaulay",
+    "ANTONIO MACHADO"   => "Antonio Machado",
+    "MARIA MACIAS"      => "Maria Macias",
+  }.each do |name, want|
+    it "writes #{name.inspect} as #{want.inspect}" do
+      CalibreHub::Meta::Clean.authors([name]).should eq([want])
+    end
+  end
+
+  it "makes a book with \"Mckeown\" messy and prefers \"McKeown\" when unifying" do
+    CalibreHub::Meta::Clean.messy?(book("Effortless", ["Greg Mckeown"])).should be_true
+    CalibreHub::Meta::Clean.messy?(book("Effortless", ["Greg McKeown"])).should be_false
+    CalibreHub::Meta::Authors.groups({"Greg Mckeown" => 3, "Greg McKeown" => 1}).should eq([{"Greg McKeown", ["Greg Mckeown"]}])
+    # a source's "McKeown" is the better spelling
+    CalibreHub::Meta::Merge.better_form?("Greg McKeown", "Greg Mckeown").should be_true
+    CalibreHub::Meta::Merge.better_form?("Greg Mckeown", "Greg McKeown").should be_false
+  end
+end
+
+describe "metadata run with Hardcover" do
+  it "takes the English Effortless from Hardcover and doesn't ask the DNB" do
+    library, web, m, _, _ = setup(sources: %w(file hardcover dnb openlibrary), hardcover_token: "hc-token")
+    library.add(23, "Effortless", ["Greg Mckeown"], publisher: "Crown", languages: ["eng"])
+    m.run(23)
+    b = library.books[23]
+    b["title"].should eq("Effortless: Make It Easier to Do What Matters Most")
+    b["authors"].should eq(JSON.parse(%(["Greg McKeown"])))
+    b["pubdate"].as_s.should start_with("2021")
+    b["identifiers"].should eq(JSON.parse(%({"isbn": "9780593135648"})))
+    b["publisher"].should eq("Crown")
+    b["languages"].should eq(JSON.parse(%(["eng"])))
+    b["comments"].as_s.should start_with("<p>NEW YORK TIMES BESTSELLER")
+    sources = m.log.list(23).to_h { |e| {e.field, e.source} }
+    sources.should eq({"title" => "hardcover", "authors" => "rules", "isbn" => "hardcover", "pubdate" => "hardcover", "comments" => "hardcover"})
+    web.requests.none?(&.includes?("query=tit")).should be_true
+    m.log.status(23).should eq("done")
+  end
+
+  it "goes on without Hardcover when the token is rejected" do
+    sent = [] of String
+    alert = ->(k : String, _s : String, _t : String) { sent << k; nil }
+    file = CalibreHub::Meta::FileMeta::Info.new(record, ["9783608938289"])
+    library, _, m, _, _ = setup(->(_b : CalibreHub::Book) { file.as(CalibreHub::Meta::FileMeta::Info?) },
+      %w(file hardcover dnb openlibrary), hardcover_token: "expired", alert: alert)
+    library.add(1, "Der Herr der Ringe", ["Tolkien"])
+    m.run(1)
+    library.books[1]["publisher"].should eq("Klett-Cotta")
+    sent.should eq(["hardcover-token"])
+    # not a failed source: the book isn't retried for it
+    m.log.status(1).should eq("done")
+    m.active_sources.should eq(%w(file hardcover dnb openlibrary))
+    setup(sources: %w(file hardcover dnb openlibrary))[2].active_sources.should eq(%w(file dnb openlibrary))
   end
 end

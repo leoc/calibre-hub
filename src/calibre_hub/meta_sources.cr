@@ -1,4 +1,5 @@
 require "log"
+require "base64"
 require "compress/zip"
 require "http/client"
 require "html"
@@ -135,6 +136,11 @@ module CalibreHub
     class SourceError < Exception
     end
 
+    # What a title search knows about the book. languages: the book's (or
+    # the file's), empty when unknown
+    record Query, title : String, author : String?, languages : Array(String) = [] of String,
+      publisher : String? = nil
+
     # GET with timeouts, a User-Agent and a minimum interval per host, so a
     # run over 10,000 books stays polite
     class Http
@@ -154,6 +160,26 @@ module CalibreHub
         return nil if r.status_code == 404
         raise SourceError.new("#{uri.host}: HTTP #{r.status_code}") unless r.success?
         r.body
+      rescue ex : IO::Error | Socket::Error | OpenSSL::Error
+        raise SourceError.new("#{uri.try(&.host)}: #{ex.message}")
+      ensure
+        client.try &.close
+      end
+
+      # POST of a JSON body: {status, body}; the caller decides what a
+      # status means
+      def post(url : String, body : String, headers = HTTP::Headers.new) : {Int32, String}
+        uri = URI.parse(url)
+        wait(uri.host.to_s)
+        client = HTTP::Client.new(uri)
+        client.connect_timeout = 5.seconds
+        client.read_timeout = @timeout
+        headers = headers.dup
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json"
+        headers["User-Agent"] = "calibre-hub/0.1 (private library)"
+        r = client.post(uri.request_target, headers: headers, body: body)
+        {r.status_code, r.body}
       rescue ex : IO::Error | Socket::Error | OpenSSL::Error
         raise SourceError.new("#{uri.try(&.host)}: #{ex.message}")
       ensure
@@ -207,9 +233,9 @@ module CalibreHub
         OpenLibrary.parse_books(body, isbn, @base, @covers)
       end
 
-      def search(title : String, author : String?) : Array(Candidate)
-        params = {"title" => title, "fields" => "key,title,author_name,publisher,first_publish_year,language,isbn,cover_i", "limit" => "5"}
-        author.try { |a| params["author"] = a }
+      def search(q : Query) : Array(Candidate)
+        params = {"title" => q.title, "fields" => "key,title,author_name,publisher,first_publish_year,language,isbn,cover_i", "limit" => "5"}
+        q.author.try { |a| params["author"] = a }
         body = @http.get("#{@base}/search.json?" + URI::Params.encode(params)) || return [] of Candidate
         OpenLibrary.parse_search(body, @base, @covers)
       end
@@ -284,7 +310,10 @@ module CalibreHub
     end
 
     # Deutsche Nationalbibliothek over SRU, MARC21-xml, no API key. Good
-    # for German books; publisher series (Taschenbuch numbers) are dropped.
+    # for German books, but it has English books mostly as their German
+    # translations: a title search only for German books, always with the
+    # author and the language. Publisher series (Taschenbuch numbers) are
+    # dropped.
     class Dnb
       NAME = "dnb"
 
@@ -296,10 +325,18 @@ module CalibreHub
         query("num=#{isbn}").tap(&.each { |c| c.by_isbn = isbn })
       end
 
-      def search(title : String, author : String?) : Array(Candidate)
-        q = %(tit="#{title.gsub('"', "")}")
-        author.try { |a| q += %( and per="#{a.gsub('"', "")}") }
-        query(q)
+      # nil when the DNB isn't asked: not a German book, or no author
+      def self.cql(q : Query) : String?
+        author = q.author.presence || return nil
+        return nil unless Lang.german?(q.languages, q.title)
+        # per= with the surname finds "McKeown, Greg" and "Greg McKeown"
+        per = author.split(/\s+/).last.gsub('"', "")
+        %(tit="#{q.title.gsub('"', "")}" and per="#{per}" and spr=#{Lang.marc("deu")})
+      end
+
+      def search(q : Query) : Array(Candidate)
+        cql = Dnb.cql(q) || return [] of Candidate
+        query(cql)
       end
 
       private def query(cql : String) : Array(Candidate)
@@ -318,8 +355,11 @@ module CalibreHub
             rec.xpath_nodes("*[local-name()='datafield'][@tag='#{tag}']/*[local-name()='subfield'][@code='#{code}']").map { |n| clean(n.content) }.reject(&.empty?)
           end
           title = sub.call("245", "a").first? || next
-          parts = sub.call("245", "n") + sub.call("245", "p")
+          # "Vol. 2. / Aufgeschrieben, rev. u. ...": the statement of
+          # responsibility after " / " goes
+          parts = (sub.call("245", "n") + sub.call("245", "p")).map { |x| clean(x.split(" / ", 2).first).rstrip(".").strip }.reject(&.empty?)
           title = ([title] + parts).join(". ") unless parts.empty?
+          volume = parts.compact_map { |x| Text.volume(x) || x[/\A\d+\z/]? }.first?
           authors = sub.call("100", "a")
           rec.xpath_nodes("*[local-name()='datafield'][@tag='700']").each do |f|
             roles = f.xpath_nodes("*[local-name()='subfield'][@code='4']").map(&.content)
@@ -339,6 +379,10 @@ module CalibreHub
           if series && (index.try { |i| i >= 100 } || (publisher && !(Text.tokens(series).to_set & Text.tokens(publisher).to_set).empty?))
             series = index = nil
           end
+          # a translation: the original's language (041 h), its title (240)
+          # or a translator (700 $4 trl)
+          translation = !sub.call("041", "h").empty? || !sub.call("240", "a").empty? ||
+                        rec.xpath_nodes("*[local-name()='datafield'][@tag='700']/*[local-name()='subfield'][@code='4']").any? { |n| n.content.strip == "trl" }
           id = rec.xpath_string("string(*[local-name()='controlfield'][@tag='001'])").presence
           r = Record.new(
             title: title,
@@ -351,13 +395,238 @@ module CalibreHub
             series: series,
             series_index: series ? index : nil,
           )
-          Candidate.new(NAME, r, id.try { |i| "https://d-nb.info/#{i}" })
+          Candidate.new(NAME, r, id.try { |i| "https://d-nb.info/#{i}" }).tap do |c|
+            c.translation = translation
+            c.volume = volume
+          end
         end
       end
 
       # non-sorting markers (U+0098/U+009C), trailing ISBD punctuation
       private def self.clean(s : String) : String
         s.delete("\u0098\u009C").unicode_normalize.strip.rstrip(" /:;,=").strip
+      end
+    end
+
+    # Hardcover (GraphQL, a personal API token), for English books. An
+    # edition by ISBN; a title search only with the author, both very
+    # similar, and only when the work has an edition in the book's
+    # language. Good for descriptions, subtitles and author spellings; weak
+    # for years and publishers, so the work's release_year is never used
+    # and the publisher only comes from an edition. A rejected token pauses
+    # the source for an hour (the rest of a run) and raises an alert.
+    class Hardcover
+      NAME = "hardcover"
+      URL  = "https://api.hardcover.app/v1/graphql"
+      # after a rejected token
+      PAUSE = 1.hour
+      # alert this long before a JWT token expires
+      EXPIRY_WARNING = 14.days
+
+      # key, subject, text; the receiver sends each key at most once a day
+      alias Alert = Proc(String, String, String, Nil)
+
+      EDITION      = "id title subtitle isbn_13 isbn_10 release_date publisher { name } language { code3 }"
+      BOOK         = "id slug title subtitle description contributions { author { name } contribution } book_series { position series { name } }"
+      ISBN_QUERY   = "query($isbn: String!) { editions(where: {_or: [{isbn_13: {_eq: $isbn}}, {isbn_10: {_eq: $isbn}}]}, limit: 5) { #{EDITION} book { #{BOOK} } } }"
+      SEARCH_QUERY = %(query($q: String!) { search(query: $q, query_type: "Book", per_page: 10, page: 1) { results } })
+      BOOKS_QUERY  = "query($ids: [Int!]) { books(where: {id: {_in: $ids}}) { #{BOOK} editions(order_by: {users_count: desc}, limit: 50) { #{EDITION} } } }"
+      # placeholder entries for announced books ("Untitled" by Rebecca Yarros)
+      PLACEHOLDERS = Set{"untitled", "unknown", "tba", "tbd", "titletbd", "untitlednovel", "book"}
+      # books about a book: summaries, workbooks, study guides
+      COMPANIONS = /\b(?:summary|summaries|workbook|study guide|analysis|companion|key takeaways)\b/i
+
+      getter paused_until : Time?
+
+      def initialize(@http : Http, token : String?, @url = URL, @alert : Alert? = nil)
+        @url = @url.rstrip('/')
+        # the token page shows it as "Bearer ..."
+        @token = token.try(&.strip.sub(/\ABearer\s+/i, "").presence).as(String?)
+        @expiry_checked = nil.as(Time?)
+      end
+
+      def enabled? : Bool
+        !@token.nil?
+      end
+
+      # a token, not paused; warns once a day when the token expires soon
+      def available?(now = Time.utc) : Bool
+        return false unless @token
+        check_expiry(now)
+        (p = @paused_until).nil? || now >= p
+      end
+
+      def by_isbn(isbn : String) : Array(Candidate)
+        return [] of Candidate unless available?
+        data = request(ISBN_QUERY, {"isbn" => isbn}) || return [] of Candidate
+        Hardcover.parse_editions(data, isbn)
+      end
+
+      def search(q : Query) : Array(Candidate)
+        return [] of Candidate unless available? && q.author.presence
+        found = request(SEARCH_QUERY, {"q" => "#{q.title} #{q.author}"}) || return [] of Candidate
+        ids = Hardcover.hits(found, q).first(3)
+        return [] of Candidate if ids.empty?
+        data = request(BOOKS_QUERY, {"ids" => ids}) || return [] of Candidate
+        Hardcover.parse_books(data, q, ids)
+      end
+
+      private def request(query : String, variables) : JSON::Any?
+        token = @token || return nil
+        status, body = @http.post(@url, {query: query, variables: variables}.to_json,
+          HTTP::Headers{"Authorization" => "Bearer #{token}"})
+        if status.in?(401, 403)
+          rejected("HTTP #{status}")
+          return nil
+        end
+        raise SourceError.new("hardcover: HTTP #{status}") unless 200 <= status < 300
+        json = JSON.parse(body)
+        if errors = json["errors"]?.try(&.as_a?)
+          message = errors.compact_map { |e| e["message"]?.try(&.as_s?) }.join("; ")
+          if message.matches?(/jwt|token|unauthori[sz]ed|access[- ]denied/i)
+            rejected(message)
+            return nil
+          end
+          raise SourceError.new("hardcover: #{message}")
+        end
+        json["data"]?
+      end
+
+      private def rejected(reason : String)
+        @paused_until = Time.utc + PAUSE
+        STDERR.puts "metadata: hardcover rejected the token (#{reason}), source paused for #{PAUSE.total_minutes.to_i} minutes"
+        @alert.try &.call("hardcover-token", "calibre-hub: Hardcover-Token abgelaufen oder ungültig",
+          "Hardcover lehnt den API-Token ab (#{reason}). Die Metadaten-Quelle Hardcover ist ausgesetzt, " \
+          "die anderen Quellen laufen weiter. Neuen Token unter https://hardcover.app/account/api holen, " \
+          "in die Datei von services.calibre-hub.metadata.hardcoverTokenFile schreiben und calibre-hub neu starten.")
+      end
+
+      private def check_expiry(now : Time)
+        return if (c = @expiry_checked) && now - c < 1.hour
+        @expiry_checked = now
+        exp = @token.try { |t| Hardcover.expiry(t) } || return
+        return if exp - now > EXPIRY_WARNING
+        day = exp.in(Time::Location.load_local).to_s("%d.%m.%Y")
+        text = exp > now ? "läuft am #{day} ab" : "ist am #{day} abgelaufen"
+        @alert.try &.call("hardcover-token-expiry", "calibre-hub: Hardcover-Token #{exp > now ? "läuft bald ab" : "abgelaufen"}",
+          "Der Hardcover-API-Token #{text}. Neuen Token unter https://hardcover.app/account/api holen, " \
+          "in die Datei von services.calibre-hub.metadata.hardcoverTokenFile schreiben und calibre-hub neu starten.")
+      end
+
+      # exp of a JWT token, read without verifying; nil for other tokens
+      def self.expiry(token : String) : Time?
+        parts = token.split('.')
+        return nil unless parts.size == 3
+        payload = parts[1] + "=" * ((4 - parts[1].size % 4) % 4)
+        exp = JSON.parse(Base64.decode_string(payload))["exp"]?
+        exp.try { |e| e.as_i64? || e.as_f?.try(&.to_i64) }.try { |e| Time.unix(e) }
+      rescue Base64::Error | JSON::ParseException | ArgumentError | TypeCastError
+        nil
+      end
+
+      # Search hits worth a look: very similar title, the same author, no
+      # placeholder or book about the book; their ids, best first
+      def self.hits(data : JSON::Any, q : Query) : Array(Int64)
+        author = q.author || return [] of Int64
+        hits = data["search"]?.try(&.["results"]?).try(&.["hits"]?).try(&.as_a?) || return [] of Int64
+        hits.compact_map do |h|
+          doc = h["document"]? || next
+          title = doc["title"]?.try(&.as_s?) || next
+          next if PLACEHOLDERS.includes?(Text.key(Text.main_title(title)))
+          next if title.matches?(COMPANIONS) && !q.title.matches?(COMPANIONS)
+          next if Text.similarity(q.title, title) < 0.9
+          names = doc["author_names"]?.try(&.as_a?.try(&.compact_map(&.as_s?))) || [] of String
+          next if names.empty? || Score.authors([author], names) < 0.8
+          id = doc["id"]?
+          id.try { |i| i.as_s?.try(&.to_i64?) || i.as_i64? }
+        end.uniq
+      end
+
+      def self.parse_editions(data : JSON::Any, isbn : String) : Array(Candidate)
+        editions = data["editions"]?.try(&.as_a?) || return [] of Candidate
+        editions.compact_map do |e|
+          book = e["book"]?
+          next unless book && book.as_h?
+          Candidate.new(NAME, record(book, e), url(book), by_isbn: isbn)
+        end.uniq(&.url).first(1)
+      end
+
+      # The works of the search hits with an edition in the book's language
+      # (unknown: German for a German-looking title, else English). The
+      # edition's ISBN, publisher and date only when it is clear which one
+      # it is: the only one, or the only one of the book's publisher.
+      def self.parse_books(data : JSON::Any, q : Query, ids : Array(Int64)) : Array(Candidate)
+        books = data["books"]?.try(&.as_a?) || return [] of Candidate
+        wanted = q.languages.presence || (Lang.german_title?(q.title) ? ["deu"] : ["eng"])
+        books = books.sort_by { |b| ids.index(b["id"]?.try(&.as_i64?) || 0_i64) || ids.size }
+        books.compact_map do |b|
+          editions = b["editions"]?.try(&.as_a?) || [] of JSON::Any
+          own = editions.select { |e| !(edition_languages(e) & wanted).empty? }
+          next if own.empty?
+          with_isbn = own.select { |e| isbn(e) }
+          same_publisher = q.publisher.try { |p| with_isbn.select { |e| publisher(e).try { |x| Text.similarity(x, p) >= 0.5 } } } || [] of JSON::Any
+          edition = same_publisher.size == 1 ? same_publisher.first : (with_isbn.size == 1 ? with_isbn.first : nil)
+          r = record(b, edition || own.first)
+          unless edition
+            r.isbn = r.publisher = r.pubdate = nil
+          end
+          Candidate.new(NAME, r, url(b), edition: !edition.nil?)
+        end
+      end
+
+      def self.record(book : JSON::Any, edition : JSON::Any) : Record
+        title = str(book, "title") || str(edition, "title")
+        series = book["book_series"]?.try(&.as_a?).try(&.first?)
+        Record.new(
+          title: title.try { |t| Text.main_title(t) },
+          subtitle: str(book, "subtitle"),
+          authors: authors(book).presence,
+          isbn: isbn(edition),
+          publisher: publisher(edition),
+          # "2021-01-01" stands for an edition of 2021
+          pubdate: str(edition, "release_date").try { |d| Dates.normalize(d) }.try { |d| d.ends_with?("-01-01") ? d[0, 4] : d },
+          languages: edition_languages(edition).presence,
+          comments: str(book, "description").try { |d| description(d) },
+          series: series.try { |s| s["series"]?.try { |x| str(x, "name") } },
+          series_index: series.try { |s| s["position"]?.try { |p| p.as_f? || p.as_i64?.try(&.to_f) } },
+        )
+      end
+
+      # contributions without a role or as "Author" (not translators)
+      def self.authors(book : JSON::Any) : Array(String)
+        (book["contributions"]?.try(&.as_a?) || [] of JSON::Any).compact_map do |c|
+          role = c["contribution"]?.try(&.as_s?)
+          next unless role.nil? || role.empty? || role == "Author"
+          c["author"]?.try { |a| str(a, "name") }
+        end.uniq
+      end
+
+      # plain text, lines become paragraphs
+      def self.description(text : String) : String?
+        paragraphs = text.split(/\r?\n/).map { |p| p.strip.gsub(/\s+/, " ") }.reject(&.empty?)
+        return nil if paragraphs.empty?
+        paragraphs.map { |p| "<p>#{HTML.escape(p)}</p>" }.join
+      end
+
+      private def self.url(book : JSON::Any) : String?
+        str(book, "slug").try { |s| "https://hardcover.app/books/#{s}" }
+      end
+
+      private def self.isbn(e : JSON::Any) : String?
+        (str(e, "isbn_13") || str(e, "isbn_10")).try { |i| Isbn.normalize(i) }
+      end
+
+      private def self.publisher(e : JSON::Any) : String?
+        e["publisher"]?.try { |p| p.as_h? ? str(p, "name") : nil }
+      end
+
+      private def self.edition_languages(e : JSON::Any) : Array(String)
+        code = e["language"]?.try { |l| l.as_h? ? str(l, "code3") : nil }
+        code ? Lang.list([code]) : [] of String
+      end
+
+      private def self.str(o : JSON::Any, key : String) : String?
+        o.as_h? ? o[key]?.try(&.as_s?).try(&.strip).presence : nil
       end
     end
   end

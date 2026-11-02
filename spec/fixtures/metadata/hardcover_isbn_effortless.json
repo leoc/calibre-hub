@@ -1,0 +1,56 @@
+{
+ "data": {
+  "editions": [
+   {
+    "id": 17001670,
+    "title": "Effortless: Make It Easier to Do What Matters Most",
+    "subtitle": null,
+    "isbn_13": "9780593135648",
+    "isbn_10": "0593135644",
+    "release_date": "2021-01-01",
+    "publisher": {
+     "name": "Crown Currency"
+    },
+    "language": {
+     "code3": "eng"
+    },
+    "contributions": [
+     {
+      "author": {
+       "name": "Uğur Gülsün"
+      },
+      "contribution": "Translator"
+     },
+     {
+      "author": {
+       "name": "Greg McKeown"
+      },
+      "contribution": "Author"
+     }
+    ],
+    "book": {
+     "id": 427508,
+     "slug": "effortless",
+     "title": "Effortless: Make It Easier to Do What Matters Most",
+     "subtitle": "Make It Easier to Do What Matters Most",
+     "description": "NEW YORK TIMES BESTSELLER • A Times (UK) Best Book of the Year • From the author of the million-copy-selling Essentialism comes an empowering guide to achieving your goals. It all starts with a simple principle: Not everything has to be so hard. “In a world beset by burnout, Greg McKeown’s work is essential.”—Daniel H. Pink, author of When, Drive, and To Sell Is Human “At a time when fear, uncertainty, and our ever-growing list of responsibilities have come to feel like much too much to handle, Effortless couldn’t be timelier, or more necessary.”—Eve Rodsky, author of Fair Play Do you ever feel like: • You’re teetering right on the edge of burnout? • You want to make a higher contribution, but lack the energy? • You’re running faster but not moving closer to your goals? • Everything is so much harder than it used to be? As high achievers, we’ve been conditioned to believe that the path to success is paved with relentless work. That if we want to overachieve, we have to overexert, overthink, and overdo. That if we aren’t perpetually exhausted, we’re not doing enough. But lately, working hard is more exhausting than ever. And the more depleted we get, the more effort it takes to make progress. Stuck in an endless loop of “Zoom, eat, sleep, repeat,” we’re often working twice as hard to achieve half as much. Getting ahead doesn’t have to be as hard as we make it. No matter what challenges or obstacles we face, there is a better way: instead of pushing ourselves harder, we can find an easier path. Effortless offers actionable advice for making the most essential activities the easiest ones, so you can achieve the results you want, without burning out. Effortless teaches you how to: • Turn tedious tasks into enjoyable rituals • Prevent frustration by solving problems before they arise • Set a sustainable pace instead of powering through • Make one-time choices that eliminate many future decisions • Simplify your processes by removing unnecessary steps • Make relationships easier to maintain and manage • And much more The effortless way isn't the lazy way. It's the smart way. It may even be the only way. Not every hard thing in life can be made easy. But we can make it easier to do more of what matters most.",
+     "contributions": [
+      {
+       "author": {
+        "name": "Greg McKeown"
+       },
+       "contribution": "Author"
+      },
+      {
+       "author": {
+        "name": "Uğur Gülsün"
+       },
+       "contribution": "Translator"
+      }
+     ],
+     "book_series": []
+    }
+   }
+  ]
+ }
+}
