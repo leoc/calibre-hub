@@ -336,6 +336,11 @@ module CalibreHub
       def self.guesses(title : String, authors : Array(String), pubdate_year : Int32? = nil) : {Array(Guess), Bool}
         year = pubdate_year
         raw_title = title
+        # "(1974, Tonos)" at the end: year and publisher from the download site
+        if m = raw_title.match(/\s*\(((?:1[5-9]|20)\d\d),\s*[^()]+\)\s*\z/)
+          year ||= m[1].to_i
+          raw_title = raw_title.sub(m[0], "")
+        end
         if m = raw_title.match(/\s*[\(\[]((?:1[5-9]|20)\d\d)[\)\]]\s*/)
           year ||= m[1].to_i
           raw_title = raw_title.sub(m[0], " ")
@@ -387,7 +392,17 @@ module CalibreHub
       end
 
       private def self.guess(title, authors, year, series = nil, index = nil) : Guess
-        Guess.new(fix_title_case(title.strip), authors, series.try(&.strip), index, year)
+        Guess.new(fix_title_case(without_author(title.strip, authors)), authors, series.try(&.strip), index, year)
+      end
+
+      # "Baden Powell. Songbook, Vol. 2" by Baden Powell -> "Songbook, Vol. 2"
+      def self.without_author(title : String, authors : Array(String)) : String
+        authors.each do |a|
+          if (m = title.match(/\A#{Regex.escape(a)}\s*[.:]\s+(.+)\z/i)) && m[1].size >= 3
+            return m[1]
+          end
+        end
+        title
       end
 
       # The title or authors need the rules (or the model)

@@ -273,6 +273,10 @@ describe CalibreHub::Meta::Clean do
     {"Guidance", ["CDRH CBER"]}                                            => {"Guidance", ["CDRH CBER"], nil, nil, false},
     {"Erdsee", ["Le Guin, Ursula K."]}                                     => {"Erdsee", ["Ursula K. Le Guin"], nil, nil, false},
     {"Hundert Jahre Einsamkeit", ["Garcia Marquez, Gabriel"]}              => {"Hundert Jahre Einsamkeit", ["Gabriel Garcia Marquez"], nil, nil, false},
+    {"Baden Powell - Baden Powell. Songbook, Vol. 2 (Guitar Scores) (1974, Tonos)", ["libgen.lc"]} =>
+      {"Songbook, Vol. 2 (Guitar Scores)", ["Baden Powell"], nil, nil, false},
+    {"Applied Software Project Management (2005, O'Reilly Media)", ["Andrew Stellman", "Jennifer Greene"]} =>
+      {"Applied Software Project Management", ["Andrew Stellman", "Jennifer Greene"], nil, nil, false},
     {"Guidance", ["FDA/CDER"]}                                             => {"Guidance", ["FDA/CDER"], nil, nil, false},
     {"ISO/IEC 42001:2023", ["ISO"]}                                        => {"ISO/IEC 42001:2023", ["ISO"], nil, nil, false},
     {"\u{FEFF}ISO/IEC 42001:2023\u{FEFF}", ["ISO"]}                       => {"ISO/IEC 42001:2023", ["ISO"], nil, nil, false},
