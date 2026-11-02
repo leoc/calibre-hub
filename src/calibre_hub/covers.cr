@@ -130,19 +130,12 @@ module CalibreHub
       end
     end
 
-    # Online cover search, modelled on Calibre-Web-Automated's metadata
-    # providers (Google Books, DNB) plus Open Library. Sources that fail or
-    # time out are skipped.
+    # Online cover search: Open Library, plus DNB by ISBN (German books).
+    # Both need no API key. Sources that fail or time out are skipped.
     def self.search(book : Book, q : String? = nil) : Array(Hit)
-      isbn = book.identifiers["isbn"]?.try(&.gsub(/[^0-9Xx]/, "")).presence
-      text = q.presence || [book.title, book.authors.first?].compact.join(' ')
-      sources = [
-        ->{ google(q.presence ? text : (isbn ? "isbn:#{isbn}" : google_query(book))) },
-        ->{ open_library(text, q.presence ? nil : isbn) },
-      ]
-      sources << ->{ dnb(isbn.not_nil!) } if isbn && !q.presence
+      srcs = sources(book, q)
       channel = Channel(Array(Hit)).new
-      sources.each do |source|
+      srcs.each do |_, source|
         spawn do
           hits = begin
             source.call
@@ -153,24 +146,18 @@ module CalibreHub
           channel.send(hits)
         end
       end
-      hits = sources.map { channel.receive }.flatten
+      hits = srcs.map { channel.receive }.flatten
       seen = Set(String).new
       hits.select { |h| seen.add?(h.url) }
     end
 
-    def self.google_query(book : Book) : String
-      parts = [%(intitle:#{book.title})]
-      book.authors.first?.try { |a| parts << %(inauthor:#{a}) }
-      parts.join(' ')
-    end
-
-    def self.google(query : String) : Array(Hit)
-      body = get_json("https://www.googleapis.com/books/v1/volumes?" + URI::Params.encode({"q" => query, "maxResults" => "10"}))
-      (body["items"]?.try(&.as_a) || [] of JSON::Any).compact_map do |item|
-        thumb = item.dig?("volumeInfo", "imageLinks", "thumbnail").try(&.as_s?) || next
-        # like CWA: no page curl, ask for a larger rendition, https
-        Hit.new(thumb.gsub("&edge=curl", "").sub("http://", "https://") + "&fife=w800-h900", "Google Books")
-      end
+    # {name, lookup}; the user's own query searches by text only
+    def self.sources(book : Book, q : String? = nil) : Array({String, Proc(Array(Hit))})
+      isbn = book.identifiers["isbn"]?.try(&.gsub(/[^0-9Xx]/, "")).presence
+      text = q.presence || [book.title, book.authors.first?].compact.join(' ')
+      list = [{"Open Library", ->{ open_library(text, q.presence ? nil : isbn) }}]
+      list << {"DNB", ->{ dnb(isbn.not_nil!) }} if isbn && !q.presence
+      list
     end
 
     def self.open_library(text : String, isbn : String?) : Array(Hit)

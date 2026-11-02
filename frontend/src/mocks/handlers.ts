@@ -181,7 +181,7 @@ export const writeHandlers = [
   http.get("/api/books/:id/cover/search", async () => {
     await delay(600)
     return HttpResponse.json(
-      ["Open Library", "Google Books", "Open Library"].map((source, i) => ({
+      ["Open Library", "DNB", "Open Library"].map((source, i) => ({
         url: `https://covers.example/${source.replace(" ", "").toLowerCase()}/${i}.jpg`, source, width: 600 + i * 100, height: 900 + i * 120,
       })),
     )

@@ -25,4 +25,18 @@ describe CalibreHub::Covers do
     expect_raises(CalibreHub::Covers::FetchError, "not allowed") { CalibreHub::Covers.fetch("http://localhost/") }
     expect_raises(CalibreHub::Covers::FetchError, "not allowed") { CalibreHub::Covers.fetch("http://[::1]/") }
   end
+
+  it "searches Open Library, and DNB by ISBN, without API keys" do
+    book = ->(isbn : String?) do
+      CalibreHub::Book.new(id: 1_i64, title: "T", authors: ["A"], author_sort: nil, tags: [] of String,
+        series: nil, series_index: nil, formats: [] of String, last_modified: Time::UNIX_EPOCH,
+        timestamp: nil, pubdate: nil, rating: nil, publisher: nil,
+        identifiers: isbn ? {"isbn" => isbn} : {} of String => String,
+        languages: [] of String, comments: nil, custom: {} of String => JSON::Any)
+    end
+    CalibreHub::Covers.sources(book.call("978-3-16-148410-0")).map(&.[0]).should eq(["Open Library", "DNB"])
+    CalibreHub::Covers.sources(book.call(nil)).map(&.[0]).should eq(["Open Library"])
+    # the user's own query: text search only
+    CalibreHub::Covers.sources(book.call("9783161484100"), "other").map(&.[0]).should eq(["Open Library"])
+  end
 end
