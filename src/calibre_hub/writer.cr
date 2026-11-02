@@ -160,11 +160,15 @@ module CalibreHub
 end
 
 module CalibreHub
-  # Bulk edits run as background jobs, one after another. Jobs live in
-  # memory only; after a restart their ids are unknown (404).
+  # Bulk edits run as background jobs, one after another, in the order they
+  # were submitted. Jobs live in the state DB, which is also the queue: a job
+  # still running when the hub stopped is resumed on start with the book it
+  # was at. Re-applying that book is harmless, every bulk change is
+  # idempotent per book.
   class Jobs
-    CHANGES = %w(addTags removeTags kategorie series)
-    KEEP    = 50
+    CHANGES = %w(addTags removeTags kategorie series numberSeries)
+    # finished jobs kept for GET /api/jobs/:id
+    KEEP = 50
 
     class Job
       include JSON::Serializable
@@ -179,20 +183,42 @@ module CalibreHub
       @[JSON::Field(ignore: true)]
       getter changes : Hash(String, JSON::Any)
 
-      def initialize(@ids, @changes)
-        @id = Random::Secure.hex(8)
+      def initialize(@ids, @changes, @id = Random::Secure.hex(8), @status = "running", @done = 0,
+                     @errors = [] of NamedTuple(bookId: Int64, error: String))
         @total = @ids.size
+      end
+
+      # The changes for the book at index i: numberSeries becomes that
+      # book's seriesIndex (1..n in the order of the ids)
+      def changes_for(index : Int32) : Hash(String, JSON::Any)
+        return @changes unless @changes["numberSeries"]?.try(&.as_bool?)
+        c = @changes.dup
+        c.delete("numberSeries")
+        c["seriesIndex"] = JSON::Any.new((index + 1).to_i64)
+        c
       end
     end
 
-    def initialize(@calibre : Calibre, @writer : Writer, @category_column : String?)
-      @jobs = {} of String => Job
-      @queue = Channel(Job).new(100)
-      spawn { loop { run(@queue.receive) } }
+    def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer, @category_column : String?)
+      @db.exec <<-SQL
+        create table if not exists jobs (
+          id text primary key,
+          status text not null,
+          done integer not null default 0,
+          ids text not null,
+          changes text not null,
+          errors text not null default '[]',
+          created_at integer not null
+        )
+        SQL
+      @wake = Channel(Nil).new(1)
+      spawn { work }
     end
 
     def []?(id : String) : Job?
-      @jobs[id]?
+      @db.query_one?("select id, status, done, ids, changes, errors from jobs where id = ?", id) do |rs|
+        Jobs.read(rs)
+      end
     end
 
     # body: {target: {ids: [...]} | {query: {...}}, changes: {...}}
@@ -202,12 +228,24 @@ module CalibreHub
       if bad = changes.keys.find { |k| !CHANGES.includes?(k) }
         raise Edit::Invalid.new(bad, "not allowed in bulk edits")
       end
+      if number = changes.delete("numberSeries")
+        raise Edit::Invalid.new("numberSeries", "true or false expected") if number.as_bool?.nil?
+        if number.as_bool
+          raise Edit::Invalid.new("numberSeries", "needs a series") unless changes["series"]?.try(&.as_s?).try(&.strip.presence)
+          raise Edit::Invalid.new("numberSeries", "needs a list of ids, their order is the numbering") unless body["target"]?.try(&.as_h?).try(&.["ids"]?)
+          changes["numberSeries"] = number
+        end
+        raise Edit::Invalid.new("changes", "nothing to change") if changes.empty?
+      end
       # type errors now rather than once per book
-      Edit.changes(changes, Jobs.blank, @category_column)
+      Edit.changes(changes.dup.tap(&.delete("numberSeries")), Jobs.blank, @category_column)
       job = Job.new(ids(body["target"]?), changes)
-      @jobs[job.id] = job
-      @jobs.shift? if @jobs.size > KEEP
-      @queue.send(job)
+      @db.exec "insert into jobs (id, status, done, ids, changes, created_at) values (?, ?, 0, ?, ?, ?)",
+        job.id, job.status, job.ids.to_json, job.changes.to_json, Time.utc.to_unix
+      select
+      when @wake.send(nil)
+      else
+      end
       job
     end
 
@@ -229,18 +267,56 @@ module CalibreHub
       end
     end
 
-    private def run(job : Job)
-      job.ids.each do |id|
+    # Runs queued jobs, oldest first, then waits for the next submit
+    private def work
+      loop do
         begin
-          @writer.update(id, job.changes)
+          while job = next_job
+            STDERR.puts "resuming job #{job.id} at #{job.done}/#{job.total}" if job.done > 0
+            run(job)
+          end
+        rescue ex
+          # the state DB failed; try again later instead of spinning
+          STDERR.puts "bulk jobs: #{ex.message}"
+          sleep 10.seconds
+          next
+        end
+        @wake.receive
+      end
+    end
+
+    private def next_job : Job?
+      @db.query_one?("select id, status, done, ids, changes, errors from jobs where status = 'running' order by created_at, rowid limit 1") do |rs|
+        Jobs.read(rs)
+      end
+    end
+
+    # Progress is saved after every book
+    private def run(job : Job)
+      (job.done...job.total).each do |i|
+        id = job.ids[i]
+        begin
+          @writer.update(id, job.changes_for(i))
         rescue Writer::NotFound
           job.errors << {bookId: id, error: "not found"}
         rescue ex
           job.errors << {bookId: id, error: ex.message || ex.class.name}
         end
-        job.done += 1
+        job.done = i + 1
+        @db.exec "update jobs set done = ?, errors = ? where id = ?", job.done, job.errors.to_json, job.id
       end
       job.status = job.errors.size == job.total && job.total > 0 ? "failed" : "done"
+      @db.exec "update jobs set status = ? where id = ?", job.status, job.id
+      @db.exec <<-SQL, KEEP
+        delete from jobs where status != 'running' and rowid not in (
+          select rowid from jobs where status != 'running' order by created_at desc, rowid desc limit ?)
+        SQL
+    end
+
+    protected def self.read(rs) : Job
+      id, status, done, ids, changes, errors = rs.read(String, String, Int32, String, String, String)
+      Job.new(Array(Int64).from_json(ids), Hash(String, JSON::Any).from_json(changes), id, status, done,
+        Array(NamedTuple(bookId: Int64, error: String)).from_json(errors))
     end
 
     def self.blank : Book

@@ -132,7 +132,7 @@ module CalibreHub
   end
 
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
-                  fast_tags = [] of String, writer : Writer? = nil)
+                  fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -201,8 +201,8 @@ module CalibreHub
       }.to_json
     end
 
-    if w = writer
-      write_routes(w, Jobs.new(calibre, w, kategorie))
+    if (w = writer) && (j = jobs)
+      write_routes(w, j)
     end
 
     # OPDS for reader apps; its links point to /opds/* and /get/*

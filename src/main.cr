@@ -222,8 +222,9 @@ module CalibreHub
     use UnavailableHandler.new
     config.frontend.try { |dir| use FrontendHandler.new(dir) }
     use auth_handler
+    writer = Writer.new(calibre, detector, wake, config.category_column)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      Writer.new(calibre, detector, wake, config.category_column))
+      writer, Jobs.new(db, calibre, writer, config.category_column))
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

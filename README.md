@@ -20,6 +20,11 @@ header `X-Calibre-Hub: 1`. Field names are camelCase, missing values `null`.
 | `GET /api/books/:id/cover[?size=thumb]` | cover image |
 | `GET /api/books/:id/download/:format` | book file |
 | `GET /api/categories` | `kategorie` tree with counts, `tags`, `authors`, `series`, `languages` |
+| `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart) |
+| `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}}` (filters as in `GET /api/books`); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids); returns 202 `{jobId, total}` |
+| `GET /api/jobs/:id` | `{id, status: running\|done\|failed, done, total, errors: [{bookId, error}]}`; jobs are kept in the state DB, a running job resumes after a restart, the last 50 finished ones stay |
+| `PUT /api/books/:id/cover`, `POST .../cover/from-file`, `POST .../cover/from-url` | set the cover from an image, a book file, a URL |
+| `GET /api/books/:id/cover/search[?q=]` | cover candidates from Open Library and, by ISBN, DNB (no API keys) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `GET /healthz` | no auth |
 
@@ -28,7 +33,8 @@ calibre-server down: 502 with a JSON body.
 ## Events and handlers
 
 calibre-server stays the only writer. Triggers in `metadata.db` (installed
-by `calibre-hub install-triggers` in calibre-server's preStart) log every
+by `calibre-hub-triggers` in calibre-server's preStart, a package of its own
+so a hub update doesn't restart calibre-server) log every
 change to a book, its links and renamed tags/authors/series into
 `hub_changelog`; the hub only reads it. Writes the hub makes itself (inbox)
 emit events right away. A cheap reconcile (`id`, `last_modified`) runs on
@@ -105,7 +111,7 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CALIBRE_PASSWORD_FILE` | required | without trailing newline |
 | `CALIBRE_HUB_LIBRARY_ID` | server default | |
 | `CALIBRE_HUB_CUSTOM_COLUMNS` | none | comma separated, e.g. `kategorie` |
-| `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot and event queue |
+| `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot, event queue, bulk jobs |
 | `CALIBRE_HUB_HOST`, `CALIBRE_HUB_PORT` | `127.0.0.1`, `8084` | |
 | `CALIBRE_HUB_LIBRARY` | none | library path: changelog in `metadata.db`, read-only |
 | `CALIBRE_HUB_SCAN_INTERVAL` | `900` | reconcile interval when triggers are missing |

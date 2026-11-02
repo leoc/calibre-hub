@@ -6,7 +6,7 @@ pkgs.testers.runNixOSTest {
   name = "calibre-hub";
 
   nodes.machine =
-    { pkgs, ... }:
+    { pkgs, lib, ... }:
     {
       imports = [ module ];
       virtualisation.memorySize = 2048;
@@ -49,6 +49,14 @@ pkgs.testers.runNixOSTest {
           "90-fail" = pkgs.writeShellScript "fail" ''! ${pkgs.jq}/bin/jq -e '.book.title == "Kaputt"' >/dev/null'';
         };
       };
+      # a hub "update": another store path for the hub, nothing else changed
+      specialisation.hub-update.configuration.services.calibre-hub.package = lib.mkForce (
+        pkgs.symlinkJoin {
+          name = "calibre-hub-update";
+          paths = [ (pkgs.callPackage ./package.nix { }) ];
+          meta.mainProgram = "calibre-hub";
+        }
+      );
       systemd.tmpfiles.rules = [
         "d /srv/books/library 2775 calibre-server calibre-hub -"
         "d /srv/books/inbox 2775 root calibre-hub -"
@@ -174,8 +182,8 @@ pkgs.testers.runNixOSTest {
         machine.succeed("echo x > /tmp/evil.exe")
         assert api("POST", "/api/books", extra="-F file=@/tmp/evil.exe")[0] == 415
 
-    def wait_job(job_id):
-        for _ in range(60):
+    def wait_job(job_id, seconds=60):
+        for _ in range(seconds):
             status, j = api("GET", f"/api/jobs/{job_id}")
             assert status == 200, (status, j)
             if j["status"] != "running":
@@ -197,6 +205,33 @@ pkgs.testers.runNixOSTest {
         assert "Stapel" not in b["tags"] and b["custom"]["kategorie"] == "Bulk" and b["series"] == "Serie", b
         assert api("POST", "/api/books/bulk", {"target": {"ids": [1]}, "changes": {"title": "x"}})[0] == 400
         assert api("GET", "/api/jobs/unknown")[0] == 404
+        # series numbered in the order of the ids
+        status, r = api("POST", "/api/books/bulk", {"target": {"ids": [uid, 1]}, "changes": {"series": "Nummern", "numberSeries": True}})
+        assert status == 202 and r["total"] == 2, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["errors"] == [], j
+        b = api("GET", f"/api/books/{uid}")[1]
+        assert b["series"] == "Nummern" and b["seriesIndex"] == 1, b
+        b = api("GET", "/api/books/1")[1]
+        assert b["series"] == "Nummern" and b["seriesIndex"] == 2, b
+        status, e = api("POST", "/api/books/bulk", {"target": {"query": {"tag": "Roman"}}, "changes": {"series": "S", "numberSeries": True}})
+        assert status == 400 and e["field"] == "numberSeries", (status, e)
+        status, e = api("POST", "/api/books/bulk", {"target": {"ids": [1]}, "changes": {"numberSeries": True}})
+        assert status == 400 and e["field"] == "numberSeries", (status, e)
+
+    with subtest("bulk job survives a hub restart"):
+        # mostly unknown ids, so the job runs long enough to be cut off
+        ids = list(range(1000, 2500)) + [uid]
+        status, r = api("POST", "/api/books/bulk", {"target": {"ids": ids}, "changes": {"addTags": ["Neustart"]}})
+        assert status == 202 and r["total"] == len(ids), (status, r)
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/jobs/{r['jobId']} | jq -e '.done > 0'", timeout=30)
+        machine.systemctl("restart calibre-hub.service")
+        machine.wait_for_open_port(8084)
+        machine.succeed(f"journalctl -u calibre-hub -o cat | grep -q 'resuming job {r['jobId']} at '")
+        j = wait_job(r["jobId"], 180)
+        assert j["status"] == "done" and j["done"] == len(ids), {k: v for k, v in j.items() if k != "errors"}
+        assert len(j["errors"]) == len(ids) - 1 and uid not in [e["bookId"] for e in j["errors"]], len(j["errors"])
+        assert "Neustart" in api("GET", f"/api/books/{uid}")[1]["tags"]
 
     with subtest("cover"):
         machine.succeed(f"curl -sf -b /tmp/jar -o /tmp/c.jpg {H}/api/books/{uid}/cover")
@@ -233,6 +268,24 @@ pkgs.testers.runNixOSTest {
         machine.sleep(10)
         after = machine.succeed("wc -l < /var/lib/calibre-hub/events.log").strip()
         assert before == after, (before, after)
+
+    with subtest("hub restart and update leave calibre-server running"):
+        def invocation(unit):
+            return machine.succeed(f"systemctl show -p InvocationID --value {unit}").strip()
+        server, hub = invocation("calibre-server.service"), invocation("calibre-hub.service")
+        machine.systemctl("restart calibre-hub.service")
+        machine.wait_for_open_port(8084)
+        assert invocation("calibre-server.service") == server
+        assert invocation("calibre-hub.service") != hub
+        hub = invocation("calibre-hub.service")
+        machine.succeed("/run/current-system/specialisation/hub-update/bin/switch-to-configuration test")
+        machine.wait_for_open_port(8084)
+        machine.succeed("systemctl show -p ExecStart calibre-hub.service | grep -q calibre-hub-update")
+        assert invocation("calibre-hub.service") != hub, "hub not restarted by the update"
+        assert invocation("calibre-server.service") == server, "calibre-server restarted by a hub update"
+        n = machine.succeed("sqlite3 /srv/books/library/metadata.db \"select count(*) from sqlite_master where type = 'trigger' and name like 'hub_%'\"").strip()
+        assert int(n) > 10, n
+        assert code(f"-b /tmp/jar {H}/api/books") == "200"
 
     with subtest("opds with basic auth"):
         assert code(f"{H}/opds") == "401"
