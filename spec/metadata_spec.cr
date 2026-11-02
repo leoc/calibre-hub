@@ -598,7 +598,7 @@ describe CalibreHub::Meta::Norms do
     # edge cases: a corrigendum, an ISO standard without "Teil", parts in English, nur auf CD-R
     {"[DIN EN ISO 14971 2009-10] -- Medizinprodukte", ["Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007), Berichtigungen zu DIN EN I"]} =>
       {"DIN EN ISO 14971:2009-10 (Berichtigung) – Anwendung des Risikomanagements auf Medizinprodukte",
-       "Medizinprodukte – Anwendung des Risikomanagements auf Medizinprodukte", nil, nil, nil, %w(Norm)},
+       "Medizinprodukte – Anwendung des Risikomanagements auf Medizinprodukte", nil, nil, nil, %w(Norm Berichtigung)},
     {"[ISO IEC 27001 2013-10] -- Information technology - Security techniques", ["Information security management systems - Requirements"]} =>
       {"ISO IEC 27001:2013-10 – Requirements",
        "Information technology – Security techniques – Information security management systems – Requirements", nil, nil, nil, %w(Norm)},

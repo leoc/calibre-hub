@@ -805,8 +805,9 @@ module CalibreHub
       TAG      = "Norm"
       DRAFT    = "Entwurf"
       REPLACED = "ersetzt"
+      CORRIGENDUM = "Berichtigung"
       # the tags the rules manage (the change log's "tags")
-      TAGS = [TAG, DRAFT, REPLACED]
+      TAGS = [TAG, DRAFT, REPLACED, CORRIGENDUM]
       BODY = "(?:DIN|EN|ISO|IEC|IEEE|VDE|VDI|CEN|CENELEC|ETSI)"
       # "DIN EN ISO 11073-10404", "ISO/IEC 42001", "DIN SPEC 91020"
       DESIGNATION = "#{BODY}(?:[ /](?:#{BODY}|TS|TR|PAS|SPEC))*\\s+\\d+(?:-\\d+)*"
@@ -1059,6 +1060,7 @@ module CalibreHub
         have = Merge.value(book, "tags").as_a.map(&.as_s)
         want = [TAG]
         want << DRAFT if norm.draft
+        want << CORRIGENDUM if norm.corrigendum
         want << REPLACED if replaced
         set.call("tags", JSON.parse(TAGS.select { |t| have.includes?(t) || want.includes?(t) }.to_json))
         changes
