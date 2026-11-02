@@ -35,9 +35,11 @@ module CalibreHub
 
       def self.epub(path : String) : Info?
         Compress::Zip::File.open(path) do |zip|
-          container = zip["META-INF/container.xml"]?.try { |e| e.open(&.gets_to_end) } || return nil
+          # any encoding in, valid UTF-8 out: regexes raise on invalid UTF-8
+          text_of = ->(e : Compress::Zip::File::Entry, html : Bool) { Charset.decode(e.open(&.getb_to_end), html) }
+          container = zip["META-INF/container.xml"]?.try { |e| text_of.call(e, false) } || return nil
           opf_path = XML.parse(container).xpath_string("string(//*[local-name()='rootfile']/@full-path)").presence || return nil
-          opf_xml = zip[opf_path]?.try { |e| e.open(&.gets_to_end) } || return nil
+          opf_xml = zip[opf_path]?.try { |e| text_of.call(e, false) } || return nil
           record = opf(opf_xml)
           base = File.dirname(opf_path)
           pages = spine(opf_xml).map { |href| base == "." ? href : "#{base}/#{href}" }
@@ -45,7 +47,7 @@ module CalibreHub
           text = String.build do |io|
             pages.each do |p|
               entry = zip[URI.decode(p)]? || zip[p]? || next
-              io << strip_tags(entry.open(&.gets_to_end)) << '\n'
+              io << strip_tags(text_of.call(entry, true)) << '\n'
               break if io.bytesize > MAX_TEXT
             end
           end
@@ -103,7 +105,7 @@ module CalibreHub
       end
 
       def self.pdf(path : String) : Info?
-        info = run("pdfinfo", [path]) || return nil
+        info = run("pdfinfo", ["-enc", "UTF-8", path]) || return nil
         text = run("pdftotext", ["-l", "6", "-enc", "UTF-8", path, "-"]) || ""
         Info.new(pdf_info(info), Isbn.scan(text[0, MAX_TEXT]? || text), text.split('\f', 2).first.presence)
       end
@@ -126,7 +128,8 @@ module CalibreHub
       private def self.run(cmd : String, args : Array(String)) : String?
         output = IO::Memory.new
         status = Process.run(cmd, args, output: output, error: Process::Redirect::Close)
-        status.success? ? output.to_s : nil
+        # broken PDFs can still yield invalid UTF-8, which regexes reject
+        status.success? ? output.to_s.scrub : nil
       rescue File::NotFoundError | IO::Error
         nil
       end

@@ -196,6 +196,91 @@ module CalibreHub
       end
     end
 
+    # Encodings of the text files in a book (XHTML, OPF, NCX): what they
+    # declare and how legacy ones (Latin-1, Windows-1252, ...) become UTF-8.
+    # Shared by the EPUB fixer and the file metadata reader.
+    module Charset
+      DECL     = /\A\s*(<\?xml\b[^?>]*\?>)/
+      META     = /<meta\b[^>]*?charset\s*=\s*["']?\s*([\w.:-]+)/i
+      XML_DECL = %(<?xml version="1.0" encoding="utf-8"?>)
+      BOM      = Bytes[0xEF, 0xBB, 0xBF]
+      # labels that mean Windows-1252 in practice (as in browsers)
+      LATIN = {"ISO-8859-1", "ISO8859-1", "LATIN1", "LATIN-1", "US-ASCII", "ASCII", "CP1252", "WINDOWS-1252"}
+
+      def self.utf8?(enc : String) : Bool
+        enc.downcase.in?("utf-8", "utf8")
+      end
+
+      # the encoding a file that isn't UTF-8 is read in: what it declares,
+      # Windows-1252 when that is Latin-1/ASCII or nothing
+      def self.legacy(declared : String?) : String
+        declared.nil? || declared.upcase.in?(LATIN) ? "WINDOWS-1252" : declared
+      end
+
+      # the XML declaration and its encoding; the text must be valid UTF-8
+      def self.declaration(text : String) : {String, String?}?
+        decl = text.match(DECL) || return nil
+        {decl[1], decl[1].match(/encoding\s*=\s*["']([^"']+)["']/).try(&.[1])}
+      end
+
+      def self.set_declared(text : String, decl : String) : String
+        fixed = if decl.matches?(/encoding\s*=/)
+                  decl.sub(/encoding\s*=\s*(["'])[^"']*\1/, %(encoding="utf-8"))
+                else
+                  decl.sub(/\s*\?>\z/, %( encoding="utf-8"?>))
+                end
+        text.sub(decl, fixed)
+      end
+
+      def self.meta_charset(text : String) : String?
+        head = text[0, Math.min(text.size, 4096)]
+        head.match(META).try(&.[1])
+      end
+
+      def self.set_meta_charset(text : String) : String
+        text.sub(/(<meta\b[^>]*?charset\s*=\s*["']?\s*)([\w.:-]+)/i) { "#{$1}utf-8" }
+      end
+
+      # A text file as valid UTF-8 for reading, whatever it is in: UTF-8 as
+      # is, otherwise decoded from its declared encoding (XML declaration,
+      # HTML meta charset) or Windows-1252, with the declarations set to
+      # utf-8 so an XML parser doesn't decode it a second time. Files that
+      # mix UTF-8 and legacy bytes are scrubbed (U+FFFD), as is anything
+      # that still isn't valid. Never raises.
+      def self.decode(data : Bytes, html = false) : String
+        if data.size >= 2 && ((data[0] == 0xFF && data[1] == 0xFE) || (data[0] == 0xFE && data[1] == 0xFF))
+          text = String.new(data, "UTF-16", invalid: :skip) rescue String.new(data).scrub
+          text = text.lchop('﻿')
+          return declaration(text).try { |d| set_declared(text, d[0]) } || text
+        end
+        body = data.size >= 3 && data[0, 3] == BOM ? data[3..] : data
+        raw = String.new(body)
+        probe = raw.valid_encoding? ? raw : raw.scrub
+        declared = declaration(probe).try(&.[1])
+        text = if raw.valid_encoding?
+                 raw
+               elsif (declared.nil? || utf8?(declared)) && probe.each_char.any? { |c| c.ord > 0x7F && c != Char::REPLACEMENT }
+                 # valid UTF-8 sequences besides invalid bytes: mixed encodings
+                 probe
+               else
+                 from = declared && !utf8?(declared) ? declared : (html ? meta_charset(probe) : nil)
+                 from = nil if from && utf8?(from)
+                 begin
+                   String.new(body, legacy(from), invalid: :skip)
+                 rescue ArgumentError
+                   # an encoding iconv doesn't know
+                   String.new(body, "WINDOWS-1252", invalid: :skip)
+                 end
+               end
+        text = text.scrub unless text.valid_encoding?
+        if (d = declaration(text)) && (enc = d[1]) && !utf8?(enc)
+          text = set_declared(text, d[0])
+        end
+        text = set_meta_charset(text) if html && (c = meta_charset(text)) && !utf8?(c)
+        text
+      end
+    end
+
     # Cleaning rules for titles and authors that came from file names
     module Clean
       UNKNOWN = Set{"unbekannt", "unknown", "unknown author", "autor unbekannt", "n a", "na", "none", "admin",

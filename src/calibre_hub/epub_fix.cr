@@ -256,8 +256,7 @@ module CalibreHub
           end
           from = declared && !utf8?(declared) ? declared : (html ? meta_charset(probe) : nil)
           from = nil if from && utf8?(from)
-          source = from || "WINDOWS-1252"
-          source = "WINDOWS-1252" if source.upcase.in?("ISO-8859-1", "LATIN1", "ISO8859-1", "LATIN-1", "US-ASCII", "ASCII")
+          source = Meta::Charset.legacy(from)
           text = begin
             String.new(body, source)
           rescue ArgumentError
@@ -273,7 +272,7 @@ module CalibreHub
       end
 
       private def utf8?(enc : String) : Bool
-        enc.downcase.in?("utf-8", "utf8")
+        Meta::Charset.utf8?(enc)
       end
 
       private def join(bom : Bool, text : String) : Bytes
@@ -285,23 +284,15 @@ module CalibreHub
       end
 
       private def set_declared(text : String, decl : String) : String
-        fixed = if decl.matches?(/encoding\s*=/)
-                  decl.sub(/encoding\s*=\s*(["'])[^"']*\1/, %(encoding="utf-8"))
-                else
-                  decl.sub(/\s*\?>\z/, %( encoding="utf-8"?>))
-                end
-        text.sub(decl, fixed)
+        Meta::Charset.set_declared(text, decl)
       end
 
-      META_CHARSET = /<meta\b[^>]*?charset\s*=\s*["']?\s*([\w.:-]+)/i
-
       private def meta_charset(text : String) : String?
-        head = text[0, Math.min(text.size, 4096)]
-        head.match(META_CHARSET).try(&.[1])
+        Meta::Charset.meta_charset(text)
       end
 
       private def set_meta_charset(text : String) : String
-        text.sub(/(<meta\b[^>]*?charset\s*=\s*["']?\s*)([\w.:-]+)/i) { "#{$1}utf-8" }
+        Meta::Charset.set_meta_charset(text)
       end
 
       record ManifestItem, id : String, href : String, path : String?, media_type : String, properties : String

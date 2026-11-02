@@ -221,14 +221,14 @@ private def call(method, path, body = nil)
   {response.status_code, JSON.parse(response.body)}
 end
 
-private def epub(opf : String, pages = {} of String => String) : String
+private def epub(opf : String | Bytes, pages = {} of String => String | Bytes) : String
   path = File.tempname("meta", ".epub")
   File.open(path, "w") do |f|
     Compress::Zip::Writer.open(f) do |zip|
       zip.add("mimetype", "application/epub+zip")
       zip.add("META-INF/container.xml", %(<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>))
-      zip.add("OEBPS/content.opf", opf)
-      pages.each { |name, html| zip.add("OEBPS/#{name}", html) }
+      zip.add("OEBPS/content.opf", opf.to_slice)
+      pages.each { |name, html| zip.add("OEBPS/#{name}", html.to_slice) }
     end
   end
   path
@@ -446,6 +446,58 @@ describe "metadata sources" do
     info.isbns.should eq(["9783608938289"])
   ensure
     path.try { |p| File.delete?(p) }
+  end
+
+  it "reads an EPUB in Latin-1, declared or not (#8399)" do
+    latin1 = ->(s : String) { s.encode("ISO-8859-1") }
+    opf = ->(decl : String) { <<-XML }
+      #{decl}
+      <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">
+        <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+          <dc:title>Die Größe der Wälder</dc:title>
+          <dc:creator opf:role="aut">Jürgen Müßig</dc:creator>
+          <dc:publisher>Verlag Ärger &amp; Söhne</dc:publisher>
+          <dc:language>de</dc:language>
+        </metadata>
+        <manifest><item id="c1" href="text/c1.xhtml" media-type="application/xhtml+xml"/></manifest>
+        <spine><itemref idref="c1"/></spine>
+      </package>
+      XML
+    page = %(<html><head><meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"/></head>) +
+           %(<body><p>Größe © 2009, ISBN 978-3-608-93828-9</p></body></html>)
+    [%(<?xml version="1.0" encoding="ISO-8859-1"?>), %(<?xml version="1.0" encoding="windows-1252"?>), %(<?xml version="1.0"?>), ""].each do |decl|
+      path = epub(latin1.call(opf.call(decl)), {"text/c1.xhtml" => latin1.call(page)} of String => String | Bytes)
+      begin
+        info = CalibreHub::Meta::FileMeta.read(path, "EPUB").not_nil!
+        info.record.title.should eq("Die Größe der Wälder")
+        info.record.authors.should eq(["Jürgen Müßig"])
+        info.record.publisher.should eq("Verlag Ärger & Söhne")
+        info.isbns.should eq(["9783608938289"])
+      ensure
+        File.delete?(path)
+      end
+    end
+  end
+
+  it "decodes book text files to valid UTF-8 whatever their encoding" do
+    decode = ->(s : String, enc : String) { CalibreHub::Meta::Charset.decode(s.encode(enc)) }
+    decode.call(%(<?xml version="1.0" encoding="iso-8859-1"?><a>Größe</a>), "ISO-8859-1").should eq(%(<?xml version="1.0" encoding="utf-8"?><a>Größe</a>))
+    # Windows-1252 only: the euro sign and typographic quotes
+    decode.call(%(<a>„Größe“ 5 €</a>), "WINDOWS-1252").should eq(%(<a>„Größe“ 5 €</a>))
+    decode.call(%(<?xml version="1.0" encoding="utf-8"?><a>Größe</a>), "UTF-8").should eq(%(<?xml version="1.0" encoding="utf-8"?><a>Größe</a>))
+    utf16 = IO::Memory.new
+    utf16.write(Bytes[0xFF, 0xFE])
+    utf16.write(%(<a>Größe</a>).encode("UTF-16LE"))
+    CalibreHub::Meta::Charset.decode(utf16.to_slice).should eq("<a>Größe</a>")
+    # an encoding iconv doesn't know: Windows-1252
+    decode.call(%(<?xml version="1.0" encoding="x-bogus"?><a>Größe</a>), "ISO-8859-1").should eq(%(<?xml version="1.0" encoding="utf-8"?><a>Größe</a>))
+    # UTF-8 with a stray Latin-1 byte: the UTF-8 stays, the byte is replaced
+    stray = IO::Memory.new
+    stray << "Größe "
+    stray.write(Bytes[0xE4])
+    mixed = CalibreHub::Meta::Charset.decode(stray.to_slice)
+    mixed.should eq("Größe \uFFFD")
+    mixed.valid_encoding?.should be_true
   end
 
   it "skips a file whose zip entries have an invalid DOS date" do
