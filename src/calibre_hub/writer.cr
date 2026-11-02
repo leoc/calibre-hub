@@ -217,9 +217,10 @@ module CalibreHub
 
     COLUMNS = "id, status, done, ids, changes, errors, error"
 
-    # book ids of a reading list for {query: {list: id}}; raises when the
-    # list is unknown
-    property list_members : Proc(Int64, Array(Int64))?
+    # book ids of a reading list for {query: {list: id}} or {query:
+    # {listPath: "A/B"}} (with direct, listOwner: Api.list_members); raises
+    # when the list is unknown
+    property list_members : Proc(HTTP::Params, Array(Int64))?
 
     # table: the queue, one per kind of job (jobs run one after another
     # within a queue, queues in parallel)
@@ -311,9 +312,9 @@ module CalibreHub
           (v.as_a? || [v]).each { |x| params.add(k, x.as_s? || x.to_s) }
         end
         # the books of a reading list, filtered further by the rest
-        if list = params["list"]?.presence
-          members = list_members.try(&.call(list.to_i64? || raise Edit::Invalid.new("target", "unknown list"))) ||
-                    raise Edit::Invalid.new("target", "unknown list")
+        if Api.list_query?(params)
+          raise Edit::Invalid.new("target", "unknown list") if (l = params["list"]?.presence) && l.to_i64?.nil?
+          members = list_members.try(&.call(params)) || raise Edit::Invalid.new("target", "unknown list")
           q = Api.query(params, @category_column)
           return members if q.empty?
           found = @calibre.search(q, "id", true, 0, 1_000_000).ids.to_set

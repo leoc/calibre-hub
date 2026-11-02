@@ -61,6 +61,54 @@ describe CalibreHub::Lists do
     end
   end
 
+  it "nests lists by their path and renames sublists along" do
+    with_lists do |lists, db|
+      {"/Urlaub", "Urlaub/", "Urlaub//2026", " / "}.each do |bad|
+        expect_raises(CalibreHub::Edit::Invalid, "no empty level") { lists.create("arthur", body(%({"name": #{bad.to_json}}))) }
+      end
+      sub = lists.create("arthur", body(%({"name": " Urlaub / 2026 "})))
+      sub.name.should eq("Urlaub/2026")
+      sub.parent.should eq("Urlaub")
+      sub.leaf.should eq("2026")
+      # the levels above keep their spelling
+      lists.create("arthur", body(%({"name": "urlaub/2025"}))).name.should eq("Urlaub/2025")
+      parent = lists.create("arthur", body(%({"name": "Urlaub", "favorite": true})))
+      parent.parent.should be_nil
+      deep = lists.create("arthur", body(%({"name": "Urlaub/2026/Juli"})))
+      lists.create("arthur", body(%({"name": "Urlaubsziele"})))
+      lists.add(parent.id, "arthur", [1_i64])
+      lists.add(sub.id, "arthur", [1_i64, 2_i64])
+      lists.add(deep.id, "arthur", [3_i64])
+      json = JSON.parse(lists.all("arthur").to_json).as_a.to_h { |l| {l["name"].as_s, l} }
+      json["Urlaub"]["count"].should eq(1)
+      json["Urlaub"]["totalCount"].should eq(3)
+      json["Urlaub/2026"]["totalCount"].should eq(3)
+      json["Urlaub/2026"]["parent"].should eq("Urlaub")
+      json["Urlaubsziele"]["totalCount"].should eq(0)
+      lists[parent.id, "arthur"].total_count.should eq(3)
+
+      expect_raises(CalibreHub::Edit::Invalid, "below itself") { lists.update(parent.id, "arthur", body(%({"name": "Urlaub/alt"}))) }
+      expect_raises(CalibreHub::Lists::Taken) { lists.update(parent.id, "arthur", body(%({"name": "Urlaubsziele"}))) }
+      before = events(db).size
+      lists.update(parent.id, "arthur", body(%({"name": "Reisen/Sommer"}))).name.should eq("Reisen/Sommer")
+      lists.all("arthur").map(&.name).sort.should eq(["Reisen/Sommer", "Reisen/Sommer/2025", "Reisen/Sommer/2026",
+                                                       "Reisen/Sommer/2026/Juli", "Urlaubsziele"])
+      e = events(db)[before..]
+      e.map { |x| {x["previous"]["name"].as_s, x["list"]["name"].as_s} }.sort.should eq([
+        {"Urlaub", "Reisen/Sommer"}, {"Urlaub/2025", "Reisen/Sommer/2025"},
+        {"Urlaub/2026", "Reisen/Sommer/2026"}, {"Urlaub/2026/Juli", "Reisen/Sommer/2026/Juli"},
+      ])
+      # a sublist moves alone; the target's levels keep their spelling
+      lists.update(deep.id, "arthur", body(%({"name": "reisen/Juli"}))).name.should eq("Reisen/Juli")
+      lists[sub.id, "arthur"].total_count.should eq(2)
+
+      # deleting a parent leaves the sublists, the node stays without a list
+      lists.delete(parent.id, "arthur")
+      lists.all("arthur").map(&.name).sort.should eq(["Reisen/Juli", "Reisen/Sommer/2025", "Reisen/Sommer/2026", "Urlaubsziele"])
+      lists.node("arthur", "reisen/sommer", "arthur").map(&.name).should eq(["Reisen/Sommer/2025", "Reisen/Sommer/2026"])
+    end
+  end
+
   it "keeps others' private lists hidden and read-only lists unchanged" do
     with_lists do |lists|
       mine = lists.create("arthur", body(%({"name": "Privat"})))
@@ -202,11 +250,38 @@ describe "list routes" do
       l = lists.create("arthur", body(%({"name": "L"})))
       lists.add(l.id, "arthur", [1_i64, 2_i64, 3_i64])
       calibre = CalibreHub::Calibre.new("http://127.0.0.1:1", "x", "x")
-      page = ->(q : String) { CalibreHub::Api.list_page(lists, calibre, l.id, "arthur", HTTP::Params.parse(q), nil, 0, 2) }
+      page = ->(q : String) { CalibreHub::Api.list_page(lists, calibre, "arthur", HTTP::Params.parse("list=#{l.id}&#{q}"), nil, 0, 2) }
       page.call("").should eq({3, [3_i64, 2_i64]})
       page.call("order=asc").should eq({3, [1_i64, 2_i64]})
       expect_raises(CalibreHub::Edit::Invalid) { page.call("sort=rating") }
-      expect_raises(CalibreHub::Lists::NotFound) { CalibreHub::Api.list_page(lists, calibre, l.id, "tilli", HTTP::Params.new, nil, 0, 2) }
+      expect_raises(CalibreHub::Lists::NotFound) { CalibreHub::Api.list_page(lists, calibre, "tilli", HTTP::Params.parse("list=#{l.id}"), nil, 0, 2) }
+    end
+  end
+
+  it "pages a node with its sublists, the direct books, and a node without a list" do
+    with_lists do |lists|
+      urlaub = lists.create("arthur", body(%({"name": "Urlaub"})))
+      y2026 = lists.create("arthur", body(%({"name": "Urlaub/2026"})))
+      meer = lists.create("arthur", body(%({"name": "Reise/Meer"})))
+      lists.create("tilli", body(%({"name": "Reise/Berge", "visibility": "readable"})))
+      lists.add(urlaub.id, "arthur", [1_i64])
+      sleep 2.milliseconds
+      lists.add(y2026.id, "arthur", [1_i64, 2_i64])
+      lists.add(meer.id, "arthur", [5_i64])
+      calibre = CalibreHub::Calibre.new("http://127.0.0.1:1", "x", "x")
+      page = ->(q : String) { CalibreHub::Api.list_page(lists, calibre, "arthur", HTTP::Params.parse(q), nil, 0, 10) }
+      # book 1 is in both, once, by its newest addition
+      page.call("list=#{urlaub.id}").should eq({2, [2_i64, 1_i64]})
+      page.call("list=#{urlaub.id}&direct=1").should eq({1, [1_i64]})
+      page.call("list=#{y2026.id}").should eq({2, [2_i64, 1_i64]})
+      page.call("listPath=urlaub").should eq({2, [2_i64, 1_i64]})
+      # Reise has no list of its own
+      page.call("listPath=Reise").should eq({1, [5_i64]})
+      page.call("listPath=Reise&direct=1").should eq({0, [] of Int64})
+      page.call("listPath=Reise&listOwner=tilli").should eq({0, [] of Int64})
+      expect_raises(CalibreHub::Lists::NotFound) { page.call("listPath=Nirgends") }
+      expect_raises(CalibreHub::Lists::NotFound) { page.call("listPath=Reise&listOwner=niemand") }
+      expect_raises(CalibreHub::Lists::NotFound) { page.call("listPath=Urlaub/2026/x") }
     end
   end
 end
@@ -335,5 +410,76 @@ describe CalibreHub::Leseliste do
         end
       end
     end
+  end
+
+  it "nests the folders of sublists and takes them along with a synced parent" do
+    with_library do |library|
+      with_lists do |lists, db, state|
+        target = File.tempname("leseliste-target")
+        begin
+          env = {"LESELISTE_TARGET" => target, "CALIBRE_HUB_LIBRARY" => library, "CALIBRE_HUB_STATE_DB" => state}
+          last = -> { db.query_one("select payload from events order by id desc limit 1", as: String) }
+          run = ->(event : String) { CalibreHub::Leseliste.run(env, IO::Memory.new(event)).should eq(0) }
+          lists.migrate("arthur", "leseliste", [] of Int64)
+          sub = lists.create("arthur", body(%({"name": "Urlaub/2026"})))
+          lists.add(sub.id, "arthur", [2_i64])
+          # not synced yet: an add to it doesn't concern the reader
+          CalibreHub::Leseliste.relevant?(JSON.parse(last.call), Set(Int64).new).should be_false
+
+          parent = lists.create("arthur", body(%({"name": "Urlaub", "sync": true})))
+          lists.add(parent.id, "arthur", [1_i64])
+          run.call("")
+          files(target).should eq([
+            "Urlaub/2026/Lovelace, Ada - Dune 02 - Zweites.epub",
+            "Urlaub/Lovelace, Ada - Erstes.epub",
+          ])
+
+          # the sublist isn't synced itself, its parent is
+          lists.remove(sub.id, "arthur", [2_i64])
+          synced = CalibreHub::Leseliste.synced_lists(db).not_nil!
+          synced.map { |l| {l.name, l.own} }.should eq([{"Leseliste", true}, {"Urlaub/2026", false}, {"Urlaub", true}])
+          CalibreHub::Leseliste.relevant?(JSON.parse(last.call), Set{1_i64}, synced).should be_true
+          run.call(last.call)
+          files(target).should eq(["Urlaub/Lovelace, Ada - Erstes.epub"])
+          lists.add(sub.id, "arthur", [2_i64])
+          run.call(last.call)
+
+          # renaming the parent moves the folder with the sublist's inside
+          File.write(File.join(target, "Urlaub", "2026", "notiz.txt"), "bleibt bis zum Abgleich")
+          lists.update(parent.id, "arthur", body(%({"name": "Reisen/Sommer"})))
+          payloads = [] of String
+          db.query_each("select payload from events order by id desc limit 2") { |rs| payloads << rs.read(String) }
+          CalibreHub::Leseliste.rename(JSON.parse(payloads[1]), target, CalibreHub::Leseliste.synced_lists(db).not_nil!)
+          File.exists?(File.join(target, "Reisen", "Sommer", "2026", "notiz.txt")).should be_true
+          payloads.reverse_each { |p| run.call(p) }
+          files(target).should eq([
+            "Reisen/Sommer/2026/Lovelace, Ada - Dune 02 - Zweites.epub",
+            "Reisen/Sommer/Lovelace, Ada - Erstes.epub",
+          ])
+
+          # a sublist moved out of the synced parent leaves the reader
+          lists.update(sub.id, "arthur", body(%({"name": "Archiv"})))
+          event = JSON.parse(last.call)
+          CalibreHub::Leseliste.relevant?(event, Set(Int64).new, CalibreHub::Leseliste.synced_lists(db).not_nil!).should be_true
+          run.call(last.call)
+          files(target).should eq(["Reisen/Sommer/Lovelace, Ada - Erstes.epub"])
+
+          # without the synced parent its sublist stays, not synced
+          lists.update(sub.id, "arthur", body(%({"name": "Reisen/Sommer/2026"})))
+          run.call(last.call)
+          lists.delete(parent.id, "arthur")
+          run.call(last.call)
+          files(target).should be_empty
+          lists.all("arthur").map(&.name).should contain("Reisen/Sommer/2026")
+        ensure
+          FileUtils.rm_rf(target)
+        end
+      end
+    end
+  end
+
+  it "cleans each level of a folder path" do
+    CalibreHub::Leseliste.folder("Urlaub: Meer/2026?").should eq("Urlaub_ Meer/2026_")
+    CalibreHub::Leseliste.folder("/").should eq("_")
   end
 end

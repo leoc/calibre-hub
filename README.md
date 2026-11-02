@@ -18,11 +18,11 @@ to the cookie. Field names are camelCase, missing values `null`.
 |---|---|
 | `POST /api/session` `{user, password}` | login, sets `hub_session` (30 days, renewed on use); 429 after 5 failures in 15 min |
 | `GET /api/session`, `DELETE /api/session` | current user, logout |
-| `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in). With `list=<id>` only the books of that list, `sort` then listAdded (default, newest first), title, author or series |
+| `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in). With `list=<id>` only the books of that list and its sublists (`direct=1`: only its own), `sort` then listAdded (default, newest first), title, author or series; `listPath=Urlaub` (`listOwner`, default the user) does the same for a level that may have no list of its own (404 when nothing is below it) |
 | `GET /api/books/:id` | one book incl. `comments` and `lists` |
-| `GET /api/lists` | the reading lists the user sees (own ones first, favorites first, by name): `[{id, name, description, owner, visibility, sync, favorite, isDefault, count, coverBookIds, createdAt, updatedAt, lastUsedAt, editable}]`; `coverBookIds`: the 4 most recently added books |
-| `POST /api/lists` `{name, description?, visibility?, sync?, favorite?, isDefault?}` | creates a list (201); `visibility`: private (default), readable, editable; names are unique per owner, ignoring case (409) |
-| `GET /api/lists/:id`, `PATCH /api/lists/:id`, `DELETE /api/lists/:id` | one list; change any of the fields above (one default list per owner: `isDefault: true` takes it from the other); delete returns `{list}` (owner only, 403) |
+| `GET /api/lists` | the reading lists the user sees (own ones first, favorites first, by name): `[{id, name, description, owner, visibility, sync, favorite, isDefault, count, totalCount, parent, leaf, coverBookIds, createdAt, updatedAt, lastUsedAt, editable}]`; `coverBookIds`: the 4 most recently added books; nested lists: `parent` the path above (`"Urlaub"` for `"Urlaub/2026"`, null at the top), `leaf` the last level, `totalCount` the distinct books incl. the sublists the user sees |
+| `POST /api/lists` `{name, description?, visibility?, sync?, favorite?, isDefault?}` | creates a list (201); `visibility`: private (default), readable, editable; names are unique per owner, ignoring case (409); a name is a path, `"Urlaub/2026"` (levels trimmed, no empty level: 400 for `a//b`, `/a`, `a/`; existing levels keep their spelling) |
+| `GET /api/lists/:id`, `PATCH /api/lists/:id`, `DELETE /api/lists/:id` | one list; change any of the fields above (one default list per owner: `isDefault: true` takes it from the other); a new name renames the sublists along (one `updated` event each; 409 when one of the new names is taken, 400 below itself); delete returns `{list}` (owner only, 403) and leaves the sublists |
 | `POST /api/lists/:id/books` `{bookIds}` or `{target}` | adds books (`target` as in bulk edits; unknown ids are left out); returns `{list, added}` with the ids that were new |
 | `POST /api/lists/:id/books/remove` `{bookIds}` or `{target}` | removes books; returns `{list, removed}` |
 | `PUT`, `DELETE /api/lists/:id/books/:bookId` | adds (404 for an unknown book) or removes one book; `{list, added}` / `{list, removed}` |
@@ -96,6 +96,8 @@ mirrors every reading list with `sync` into a folder of its own below
 epub, else pdf, else converted). A book in two synced lists is in both
 folders; a book that leaves a list (or is deleted) loses its file, a
 renamed list renames its folder, a list no longer synced loses its folder.
+Nested lists nest their folders (`<target>/Urlaub/2026/…`); a synced list
+takes its sublists along, unsynced ones too.
 It reads the lists from the state DB, read-only.
 
 ## Reading lists
@@ -106,6 +108,13 @@ editable; matters once there is more than one user), sync to the reader,
 favorite (shown in the sidebar), default list (the bookmark on the cover)
 and the books with the time they were added. A deleted book leaves its
 lists and goes back into them when it is restored from the trash.
+
+Nested lists: the name is the path, `Urlaub/2026` is the sublist `2026`
+of `Urlaub`. A level without a list of that name (`Reise` above
+`Reise/Meer`) is just a folder in the tree; with one it has books of its
+own. A list's page shows its books and those of its sublists (like
+categories), "nur direkt" only its own. Renaming a list renames its
+sublists (and moves their reader folders); deleting it leaves them.
 
 Migration: on the first start the books with the tag `leseliste.tag`
 (default `leseliste`) become the list "Leseliste", synced, favorite and
@@ -261,7 +270,10 @@ hub edit 12 --comments-file - < text.html
 hub tag add 12 13 14 sf
 hub tag rm 12 sf
 hub list ls                              # reading lists; a list by id or name
+hub list ls --tree                       # nested lists indented, levels without a list end in /
 hub list show Leseliste --sort title
+hub list show Urlaub/2026 --direct       # a sublist; --direct: without its sublists' books
+
 hub list create Urlaub --description 'Für den Strand' --sync --favorite --visibility private
 hub list add Leseliste 12 13
 hub list rm leseliste 12

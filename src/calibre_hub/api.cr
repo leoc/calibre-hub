@@ -39,13 +39,14 @@ module CalibreHub
 
     # Books of a list, filtered and sorted: {total, ids of the page}.
     # sort: listAdded (default, newest first), title, author, series; the
-    # other filters of GET /api/books apply too.
-    def self.list_page(lists : Lists, calibre : Calibre, list_id : Int64, user : String, p : HTTP::Params,
+    # other filters of GET /api/books apply too. The list's sublists count
+    # in, unless direct=1. Without a list id: listPath (and listOwner,
+    # default the user) names a node, also one without a list of its own.
+    def self.list_page(lists : Lists, calibre : Calibre, user : String, p : HTTP::Params,
                        kategorie : String?, offset : Int32, limit : Int32) : {Int32, Array(Int64)}
-      lists[list_id, user]
       sort = p["sort"]?.presence || "listAdded"
       raise Edit::Invalid.new("sort", "one of #{Lists::SORTS.join(", ")}") unless Lists::SORTS.includes?(sort)
-      members = lists.book_ids(list_id)
+      members = list_members(lists, user, p)
       query = query(p, kategorie)
       ids = if sort == "listAdded"
               ordered = p["order"]? == "asc" ? members.reverse : members
@@ -60,6 +61,27 @@ module CalibreHub
               calibre.search(query, SORTS[sort], p["order"]? != "desc", 0, 1_000_000).ids.select { |id| set.includes?(id) }
             end
       {ids.size, ids[offset, limit]? || [] of Int64}
+    end
+
+    # list or listPath given (GET /api/books, bulk targets)
+    def self.list_query?(p : HTTP::Params) : Bool
+      !!(p["list"]?.presence || p["listPath"]?.presence)
+    end
+
+    # The books of list=<id> or listPath=<path>[&listOwner=], most recently
+    # added first, with the sublists unless direct=1
+    def self.list_members(lists : Lists, user : String, p : HTTP::Params) : Array(Int64)
+      direct = {"1", "true"}.includes?(p["direct"]?)
+      node = if id = p["list"]?.presence
+               l = lists[id.to_i64? || raise(Lists::NotFound.new), user]
+               lists.node(l.owner, l.name, user, direct)
+             else
+               path = Lists.levels(p["listPath"]? || "").join(Lists::SEPARATOR).presence || raise Lists::NotFound.new
+               all = lists.node(p["listOwner"]?.presence || user, path, user)
+               raise Lists::NotFound.new if all.empty?
+               direct ? all.select { |x| Lists.same?(x.name, path) } : all
+             end
+      lists.book_ids(node.map(&.id))
     end
 
     # Adds the ids of the user's lists to each book
@@ -218,10 +240,9 @@ module CalibreHub
       p = env.params.query
       offset = (p["offset"]?.try(&.to_i?) || 0).clamp(0, Int32::MAX)
       limit = (p["limit"]?.try(&.to_i?) || Api::DEFAULT_LIMIT).clamp(1, Api::MAX_LIMIT)
-      if (l = lists) && (list_param = p["list"]?.presence)
+      if (l = lists) && Api.list_query?(p)
         next write_errors(env) do
-          list_id = list_param.to_i64? || raise Lists::NotFound.new
-          total, ids = Api.list_page(l, calibre, list_id, auth.user, p, kategorie, offset, limit)
+          total, ids = Api.list_page(l, calibre, auth.user, p, kategorie, offset, limit)
           {total: total, offset: offset, limit: limit, books: Api.with_lists(calibre.books(ids), lists, auth.user)}.to_json
         end
       end

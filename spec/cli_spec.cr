@@ -368,6 +368,41 @@ describe "hub CLI" do
     end
   end
 
+  it "shows nested lists as a tree and by path" do
+    with_stub do |s|
+      l = ->(id : Int32, name : String, count : Int32, total : Int32, owner : String) do
+        {id: id, name: name, description: "", owner: owner, visibility: owner == "arthur" ? "private" : "readable",
+         sync: false, favorite: false, isDefault: false, count: count, totalCount: total, editable: owner == "arthur"}
+      end
+      s.on("GET", "/api/lists", [l.call(1, "Urlaub", 1, 3, "arthur"), l.call(2, "Urlaub/2026", 2, 2, "arthur"),
+                                 l.call(3, "Reise/Meer", 1, 1, "arthur"), l.call(4, "Krimis", 0, 0, "tilli")])
+      s.on("GET", "/api/config", {categoryColumn: "kategorie"})
+      code, stdo, _ = cli(s, "list", "ls", "--tree")
+      code.should eq(0)
+      stdo.lines[1..].map(&.rstrip).should eq([
+        "-   Reise/          -      -      -",
+        "3    Meer           1      1      -",
+        "1   Urlaub          1      3      -",
+        "2    2026           2      2      -",
+        "4   Krimis (tilli)  0      0      readable, read-only",
+      ])
+
+      s.on("GET", "/api/books", {total: 1, offset: 0, limit: 50, books: [book]})
+      code, stdo, _ = cli(s, "list", "show", "urlaub / 2026", "--direct")
+      code.should eq(0)
+      stdo.lines[0].should eq("Urlaub/2026 (#2, 2 books)")
+      HTTP::Params.parse(s.requests.reverse.find! { |r| r.resource.starts_with?("/api/books?") }.resource.partition('?')[2]).to_s.should eq("list=2&direct=1")
+      code, stdo, _ = cli(s, "list", "show", "Urlaub")
+      stdo.lines[0].should eq("Urlaub (#1, 1 book, 3 with sublists (shown))")
+      # a level without a list of its own
+      code, stdo, _ = cli(s, "list", "show", "reise")
+      code.should eq(0)
+      stdo.lines[0].should eq("Reise/ (no list of its own, the books of its sublists)")
+      HTTP::Params.parse(s.requests.reverse.find! { |r| r.resource.starts_with?("/api/books?") }.resource.partition('?')[2]).to_s.should eq("listPath=Reise&listOwner=arthur")
+      cli(s, "list", "show", "Rei")[0].should eq(2)
+    end
+  end
+
   it "downloads a book file" do
     dir = File.tempname("download")
     Dir.mkdir(dir)

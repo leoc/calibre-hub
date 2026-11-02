@@ -320,7 +320,7 @@ module CalibreHub
     use auth_handler
     writer = Writer.new(calibre, detector, wake, config.category_column)
     lists = lists(config, calibre, db, wake)
-    members = ->(id : Int64) { lists[id, config.login_user]; lists.book_ids(id) }
+    members = ->(p : HTTP::Params) { Api.list_members(lists, config.login_user, p) }
     metadata_jobs = metadata(config, calibre, writer, db)
     classify_jobs = classify(config, calibre, writer, db, metadata_jobs)
     jobs = Jobs.new(db, calibre, writer, config.category_column)

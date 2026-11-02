@@ -299,6 +299,29 @@ pkgs.testers.runNixOSTest {
         assert api("DELETE", f"/api/lists/{u['id']}")[0] == 200
         machine.wait_until_succeeds("! test -e /srv/books/boox/Sommer", timeout=30)
         machine.wait_until_succeeds("grep -q '\"list\",0,' /var/lib/calibre-hub/events.log", timeout=30)
+        # nested lists: a synced parent takes its sublists along, in nested folders
+        status, sub = api("POST", "/api/lists", {"name": "Reise / 2026"})
+        assert status == 201 and sub["name"] == "Reise/2026" and sub["parent"] == "Reise", (status, sub)
+        assert api("POST", "/api/lists", {"name": "Reise//x"})[0] == 400
+        assert api("PUT", f"/api/lists/{sub['id']}/books/1")[0] == 200
+        status, page = api("GET", "/api/books?listPath=Reise")
+        assert status == 200 and page["total"] == 1, (status, page)
+        assert api("GET", "/api/books?listPath=Reise&direct=1")[1]["total"] == 0
+        status, parent = api("POST", "/api/lists", {"name": "Reise", "sync": True})
+        assert status == 201 and parent["totalCount"] == 1 and parent["count"] == 0, (status, parent)
+        assert api("GET", f"/api/books?list={parent['id']}")[1]["total"] == 1
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Reise/2026/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        # renaming the parent renames the sublist and moves the folders
+        status, parent = api("PATCH", f"/api/lists/{parent['id']}", {"name": "Fahrt"})
+        assert status == 200 and api("GET", f"/api/lists/{sub['id']}")[1]["name"] == "Fahrt/2026"
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Fahrt/2026/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        machine.wait_until_succeeds("test ! -e /srv/books/boox/Reise", timeout=30)
+        # deleting the parent leaves the sublist, no longer synced
+        assert api("DELETE", f"/api/lists/{parent['id']}")[0] == 200
+        assert api("GET", f"/api/lists/{sub['id']}")[0] == 200
+        machine.wait_until_succeeds("! test -e /srv/books/boox/Fahrt", timeout=30)
+        assert api("GET", "/api/books?listPath=Fahrt")[1]["total"] == 1
+        assert api("DELETE", f"/api/lists/{sub['id']}")[0] == 200
         # each list is an OPDS catalog, with Basic auth like /opds
         assert code(f"{H}/opds/lists/{lid}") == "401"
         nav = machine.succeed(f"curl -sf -u arthur:login-secret {H}/opds/lists")
@@ -319,6 +342,13 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("test -f '/srv/books/boox/Krimis/Lovelace, Ada - Testbuch.epub'", timeout=30)
         shown = json.loads(machine.succeed(f"{CLI} hub list show Krimis --json"))
         assert shown["books"]["total"] == 1 and shown["list"]["sync"] is True, shown
+        machine.succeed(f"{CLI} hub list create Krimis/Klassiker")
+        tree = machine.succeed(f"{CLI} hub list ls --tree")
+        assert "Klassiker" in tree and "Krimis" in tree, tree
+        shown = json.loads(machine.succeed(f"{CLI} hub list show Krimis/Klassiker --json"))
+        assert shown["list"]["name"] == "Krimis/Klassiker" and shown["books"]["total"] == 0, shown
+        assert json.loads(machine.succeed(f"{CLI} hub list show Krimis --json"))["books"]["total"] == 1
+        machine.succeed(f"{CLI} hub list delete Krimis/Klassiker --yes")
         machine.succeed(f"{CLI} hub list delete Krimis --yes")
         machine.wait_until_succeeds("! test -e /srv/books/boox/Krimis", timeout=30)
         status, r = api("DELETE", f"/api/lists/{lid}/books/1")

@@ -17,12 +17,19 @@ module CalibreHub
   #    "bookId": 0, "listId": 3, "list": {...}, "previous": {...}?,
   #    "bookIds": [...], "at": ...}
   # previous: the list before an update (name, sync, ...).
+  #
+  # Nested lists: the name is a path, "Urlaub/2026" is the sublist 2026 of
+  # Urlaub (per owner). A level without a list of that name is just a folder.
+  # The books of a list include those of its sublists unless asked for the
+  # direct ones only; renaming a list renames its sublists too (one updated
+  # event each), deleting one leaves its sublists.
   class Lists
     VISIBILITIES = %w(private readable editable)
     SORTS        = %w(listAdded title author series)
     MAX_NAME     = 120
     MAX_DESC     = 5000
     MAX_BOOKS    = 10_000
+    SEPARATOR    = '/'
     # the tag the reading list was before lists existed
     MIGRATED_NAME = "Leseliste"
 
@@ -61,10 +68,40 @@ module CalibreHub
       getter last_used_at : Time?
       # may the asking user change it (owner or visibility editable)
       getter editable : Bool
+      # the path above it ("Urlaub" for "Urlaub/2026"), nil at the top
+      getter parent : String?
+      # the last level of the name ("2026")
+      getter leaf : String
+      # distinct books incl. the sublists the user sees
+      @[JSON::Field(key: "totalCount")]
+      property total_count : Int64
 
       def initialize(@id, @name, @description, @owner, @visibility, @sync, @favorite, @is_default, @count,
                      @cover_book_ids, @created_at, @updated_at, @last_used_at, @editable)
+        @parent = Lists.parent(@name)
+        @leaf = Lists.levels(@name).last? || @name
+        @total_count = @count
       end
+    end
+
+    # "Urlaub/2026" -> ["Urlaub", "2026"]
+    def self.levels(path : String) : Array(String)
+      path.split(SEPARATOR).map(&.strip).reject(&.empty?)
+    end
+
+    def self.parent(path : String) : String?
+      l = levels(path)
+      l.size > 1 ? l[0...-1].join(SEPARATOR) : nil
+    end
+
+    # the same path, ignoring case
+    def self.same?(a : String, b : String) : Bool
+      a.compare(b, case_insensitive: true) == 0
+    end
+
+    # name lies below path ("Urlaub/2026" below "Urlaub")
+    def self.below?(path : String, name : String) : Bool
+      name.size > path.size + 1 && name[path.size] == SEPARATOR && same?(name[0, path.size], path)
     end
 
     COLUMNS = "id, owner, name, description, visibility, sync, favorite, is_default, created_at, updated_at, last_used_at"
@@ -133,17 +170,44 @@ module CalibreHub
                       order by owner != ?, favorite desc, name collate nocase, id", user, user) do |rs|
         rows << read(rs, user)
       end
-      rows.map { |l| with_counts(l) }
+      with_totals(rows.map { |l| with_counts(l) }, user)
     end
 
     def [](id : Int64, user : String) : List
       visible(id, user)
     end
 
+    # The lists of the owner at a path and below it that the user sees
+    # (direct: only the list at the path), without counts. Empty: no such
+    # node.
+    def node(owner : String, path : String, user : String, direct = false) : Array(List)
+      found = [] of List
+      @db.query_each("select #{COLUMNS} from lists where owner = ? and (owner = ? or visibility != 'private') order by name collate nocase, id",
+        owner, user) do |rs|
+        l = read(rs, user)
+        found << l if Lists.same?(l.name, path) || (!direct && Lists.below?(path, l.name))
+      end
+      found
+    end
+
+    # Book ids of several lists (a node), the most recently added first; a
+    # book in more than one counts once, by its newest addition
+    def book_ids(ids : Array(Int64)) : Array(Int64)
+      return [] of Int64 if ids.empty?
+      return book_ids(ids.first) if ids.size == 1
+      result = [] of Int64
+      @db.query_each("select book_id, max(added_at) a, max(rowid) r from list_items where list_id in (#{ids.join(",")})
+                      group by book_id order by a desc, r desc") do |rs|
+        result << rs.read(Int64)
+      end
+      result
+    end
+
     def create(user : String, body : Hash(String, JSON::Any)) : List
       name = name!(body["name"]?) || raise Edit::Invalid.new("name", "name expected")
       now = Time.utc
       id = @mutex.synchronize do
+        name = canonical(user, name, nil)
         raise Taken.new("a list named #{name} exists") if taken?(user, name, nil)
         @db.transaction do |tx|
           c = tx.connection
@@ -159,21 +223,39 @@ module CalibreHub
       list
     end
 
+    # A new name renames the sublists along ("Urlaub/2026" -> "Sommer/2026"),
+    # also those the user doesn't see: they belong to the owner's tree
     def update(id : Int64, user : String, body : Hash(String, JSON::Any)) : List
       before = editable(id, user)
+      moved = [] of List
       @mutex.synchronize do
+        renames = {} of Int64 => String
         if n = name!(body["name"]?)
-          raise Taken.new("a list named #{n} exists") if taken?(before.owner, n, id)
+          n = canonical(before.owner, n, id)
+          renames[id] = n
+          unless n == before.name
+            raise Edit::Invalid.new("name", "a list can't move below itself") if Lists.below?(before.name, n)
+            moved = subtree(before.owner, before.name)
+            moved.each { |s| renames[s.id] = n + s.name[before.name.size..] }
+          end
+          renames.each do |rid, rn|
+            raise Edit::Invalid.new("name", "at most #{MAX_NAME} characters") if rn.size > MAX_NAME
+            raise Taken.new("a list named #{rn} exists") if taken?(before.owner, rn, rid, renames.keys)
+          end
         end
         @db.transaction do |tx|
           c = tx.connection
-          c.exec "update lists set name = ? where id = ?", name!(body["name"]?), id if body["name"]?
+          now = Time.utc.to_unix
+          renames.each do |rid, rn|
+            c.exec "update lists set name = ?, updated_at = ? where id = ?", rn, now, rid
+          end
           apply(c, id, before.owner, body.reject("name"))
-          c.exec "update lists set updated_at = ? where id = ?", Time.utc.to_unix, id
+          c.exec "update lists set updated_at = ? where id = ?", now, id
         end
       end
       list = visible(id, user)
       emit("updated", list, previous: before)
+      moved.each { |s| find(s.id).try { |l| emit("updated", l, previous: s) } }
       list
     end
 
@@ -365,7 +447,7 @@ module CalibreHub
     private def visible(id : Int64, user : String) : List
       list = find(id, user) || raise NotFound.new
       raise NotFound.new unless list.owner == user || list.visibility != "private"
-      list
+      with_totals([list] + node(list.owner, list.name, user).reject { |l| l.id == list.id }, user).first
     end
 
     private def editable(id : Int64, user : String) : List
@@ -380,9 +462,39 @@ module CalibreHub
       end.try { |l| with_counts(l) }
     end
 
-    private def taken?(owner : String, name : String, except : Int64?) : Bool
-      !@db.query_one?("select id from lists where owner = ? and name = ? collate nocase and id != ?",
-        owner, name, except || 0_i64, as: Int64).nil?
+    # renamed: lists renamed in the same step give their names up
+    private def taken?(owner : String, name : String, except : Int64?, renamed = [] of Int64) : Bool
+      ids = [] of Int64
+      @db.query_each("select id from lists where owner = ? and name = ? collate nocase and id != ?",
+        owner, name, except || 0_i64) { |rs| ids << rs.read(Int64) }
+      !(ids - renamed).empty?
+    end
+
+    # all lists of the owner below the path, also private ones, without
+    # counts
+    private def subtree(owner : String, path : String) : Array(List)
+      found = [] of List
+      @db.query_each("select #{COLUMNS} from lists where owner = ? order by id", owner) do |rs|
+        l = read(rs, nil)
+        found << l if Lists.below?(path, l.name)
+      end
+      found
+    end
+
+    # The levels above take the spelling they have already: "urlaub/2026"
+    # next to "Urlaub" becomes "Urlaub/2026"
+    private def canonical(owner : String, name : String, except : Int64?) : String
+      levels = Lists.levels(name)
+      return name if levels.size < 2
+      known = [] of Array(String)
+      @db.query_each("select name from lists where owner = ? and id != ?", owner, except || 0_i64) do |rs|
+        known << Lists.levels(rs.read(String))
+      end
+      (0...levels.size - 1).each do |i|
+        match = known.find { |k| k.size > i && (0..i).all? { |j| Lists.same?(k[j], levels[j]) } }
+        levels[i] = match[i] if match
+      end
+      levels.join(SEPARATOR)
     end
 
     private def name!(value : JSON::Any?) : String?
@@ -391,7 +503,10 @@ module CalibreHub
       raise Edit::Invalid.new("name", "name expected") if name.empty?
       raise Edit::Invalid.new("name", "at most #{MAX_NAME} characters") if name.size > MAX_NAME
       raise Edit::Invalid.new("name", "no control characters") if name.matches?(/[\x00-\x1f]/)
-      name
+      # "Urlaub / 2026" -> "Urlaub/2026"; no empty level ("a//b", "/a", "a/")
+      levels = name.split(SEPARATOR).map(&.strip)
+      raise Edit::Invalid.new("name", "no empty level in a path (a/b)") if levels.any?(&.empty?)
+      levels.join(SEPARATOR)
     end
 
     # description, visibility, sync, favorite, isDefault
@@ -428,6 +543,19 @@ module CalibreHub
       List.new(id, name, desc, owner, vis, sync == 1, fav == 1, default == 1, 0_i64, [] of Int64,
         Time.unix(created), Time.unix(updated), used.try { |u| Time.unix(u) },
         user.nil? || owner == user || vis == "editable")
+    end
+
+    # totalCount: the distinct books of a list and its sublists among the
+    # given ones (those the user sees)
+    private def with_totals(lists : Array(List), user : String) : Array(List)
+      lists.map do |l|
+        below = lists.select { |s| s.owner == l.owner && Lists.below?(l.name, s.name) }
+        unless below.empty?
+          ids = ([l] + below).map(&.id).join(",")
+          l.total_count = @db.query_one("select count(distinct book_id) from list_items where list_id in (#{ids})", as: Int64)
+        end
+        l
+      end
     end
 
     private def with_counts(l : List) : List

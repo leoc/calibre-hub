@@ -57,8 +57,15 @@ describe CalibreHub::Jobs do
     with_state do |db, _|
       j = jobs(db)
       expect_raises(CalibreHub::Edit::Invalid, "unknown list") { j.ids(JSON.parse(%({"query": {"list": "3"}}))) }
-      j.list_members = ->(id : Int64) { id == 3 ? [6_i64, 5_i64] : raise CalibreHub::Lists::NotFound.new }
+      j.list_members = ->(p : HTTP::Params) do
+        case {p["list"]?, p["listPath"]?}
+        when {"3", nil}      then [6_i64, 5_i64]
+        when {nil, "Urlaub"} then [7_i64]
+        else                      raise CalibreHub::Lists::NotFound.new
+        end
+      end
       j.ids(JSON.parse(%({"query": {"list": "3"}}))).should eq([6_i64, 5_i64])
+      j.ids(JSON.parse(%({"query": {"listPath": "Urlaub", "direct": true}}))).should eq([7_i64])
       expect_raises(CalibreHub::Lists::NotFound) { j.ids(JSON.parse(%({"query": {"list": 4}}))) }
     end
   end

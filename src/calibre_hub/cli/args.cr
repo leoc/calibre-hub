@@ -105,7 +105,9 @@ module CalibreHub
         Flag.new("yes", short: 'y', help: "don't ask for confirmation"),
       ]),
       Command.new("list", "list ls|show|create|add|rm|delete [list] [ids...] [options]",
-        "reading lists: ls, show <list>, create <name>, add|rm <list> <id...>, delete <list> (list: id or name)", [
+        "reading lists: ls, show <list>, create <name>, add|rm <list> <id...>, delete <list> (list: id or name; nested as a path, Urlaub/2026)", [
+        Flag.new("tree", help: "ls: the lists as a tree, sublists indented"),
+        Flag.new("direct", help: "show: only the list's own books, not those of its sublists"),
         Flag.new("description", "TEXT", "create: description"),
         Flag.new("sync", help: "create: mirror the list to the reader"),
         Flag.new("favorite", help: "create: show it in the sidebar first"),

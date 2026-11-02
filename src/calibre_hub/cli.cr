@@ -368,17 +368,29 @@ module CalibreHub
           lists = client.get("/api/lists")
           return @out.puts lists.to_json if @json
           return @out.puts "no lists" if lists.as_a.empty?
-          Output.table(@out, ["ID", "Name", "Books", "Flags"], lists.as_a.map { |l| [l["id"].to_s, l["name"].as_s, l["count"].to_s, Runner.list_flags(l)] }, [nil, 50])
+          if args.flag?("tree")
+            Output.table(@out, ["ID", "Name", "Books", "Total", "Flags"], Runner.list_tree(lists.as_a), [nil, 50])
+          else
+            Output.table(@out, ["ID", "Name", "Books", "Flags"], lists.as_a.map { |l| [l["id"].to_s, l["name"].as_s, l["count"].to_s, Runner.list_flags(l)] }, [nil, 50])
+          end
         when "show"
           raise Usage.new("one list expected", "list") unless rest.size == 1
-          l = find_list(rest[0])
-          params = HTTP::Params{"list" => l["id"].to_s}
+          l, path, owner = find_node(rest[0])
+          params = l ? HTTP::Params{"list" => l["id"].to_s} : HTTP::Params{"listPath" => path, "listOwner" => owner}
+          params["direct"] = "1" if args.flag?("direct")
           {"sort", "order"}.each { |k| args[k]?.presence.try { |v| params[k] = v } }
           {"limit", "offset"}.each { |k| args[k]?.try { |v| params[k] = Runner.int(k, v, min: 0).to_s } }
           page = client.get("/api/books", params)
-          return @out.puts({list: l, books: page}.to_json) if @json
-          @out.puts "#{l["name"].as_s} (##{l["id"]}, #{l["count"]} #{l["count"] == 1 ? "book" : "books"}#{(f = Runner.list_flags(l)) == "-" ? "" : ", #{f}"})"
-          l["description"].as_s.presence.try { |d| @out.puts d }
+          return @out.puts({list: l, path: path, books: page}.to_json) if @json
+          if l
+            n = l["count"].as_i64
+            total = l["totalCount"]?.try(&.as_i64?) || n
+            with_sub = total == n ? "" : ", #{total} with sublists#{args.flag?("direct") ? "" : " (shown)"}"
+            @out.puts "#{l["name"].as_s} (##{l["id"]}, #{n} #{n == 1 ? "book" : "books"}#{with_sub}#{(f = Runner.list_flags(l)) == "-" ? "" : ", #{f}"})"
+            l["description"].as_s.presence.try { |d| @out.puts d }
+          else
+            @out.puts "#{path}/ (no list of its own, the books of its sublists)"
+          end
           books = page["books"].as_a
           @out.puts
           books.empty? ? @out.puts("no books") : Output.books(@out, books, category)
@@ -418,12 +430,60 @@ module CalibreHub
         end
       end
 
-      # a list by id or name (ignoring case)
+      # a list by id or name/path (ignoring case, "Urlaub / 2026" is
+      # "Urlaub/2026")
       private def find_list(ref : String) : JSON::Any
+        find_list?(client.get("/api/lists").as_a, ref) || raise Failure.new(NOT_FOUND, "list #{ref} not found")
+      end
+
+      private def find_list?(lists : Array(JSON::Any), ref : String) : JSON::Any?
+        path = Runner.list_path(ref)
+        ref.to_i64?.try { |id| lists.find { |l| l["id"].as_i64 == id } } ||
+          lists.find { |l| Runner.list_path(l["name"].as_s).downcase == path.downcase }
+      end
+
+      # A list, or a path with sublists but no list of its own: {nil, path,
+      # owner} (own lists come first)
+      private def find_node(ref : String) : {JSON::Any?, String, String}
         lists = client.get("/api/lists").as_a
-        found = ref.to_i64?.try { |id| lists.find { |l| l["id"].as_i64 == id } } ||
-                lists.find { |l| l["name"].as_s.downcase == ref.downcase }
-        found || raise Failure.new(NOT_FOUND, "list #{ref} not found")
+        if l = find_list?(lists, ref)
+          return {l, l["name"].as_s, l["owner"].as_s}
+        end
+        path = Runner.list_path(ref)
+        below = lists.find { |x| Runner.list_path(x["name"].as_s).downcase.starts_with?("#{path.downcase}/") }
+        raise Failure.new(NOT_FOUND, "list #{ref} not found") unless below && !path.empty?
+        {nil, Runner.list_path(below["name"].as_s)[0, path.size], below["owner"].as_s}
+      end
+
+      def self.list_path(name : String) : String
+        name.split('/').map(&.strip).reject(&.empty?).join('/')
+      end
+
+      # ls --tree: one row per level, indented; a level without a list of
+      # its own ends in "/". Others' trees carry the owner.
+      def self.list_tree(lists : Array(JSON::Any)) : Array(Array(String))
+        rows = [] of Array(String)
+        groups = lists.group_by { |l| l["owner"]?.try(&.as_s?) || "" }
+        first = groups.keys.first?
+        groups.each do |owner, ls|
+          named = ls.to_h { |l| {list_path(l["name"].as_s).downcase, l} }
+          paths = {} of String => Array(String)
+          ls.each do |l|
+            levels = list_path(l["name"].as_s).split('/')
+            levels.size.times { |i| paths[levels[0..i].join('/').downcase] ||= levels[0..i] }
+          end
+          paths.values.sort_by(&.map(&.downcase)).each do |levels|
+            l = named[levels.join('/').downcase]?
+            name = "#{"  " * (levels.size - 1)}#{levels.last}#{l ? "" : "/"}"
+            name += " (#{owner})" if levels.size == 1 && owner != first
+            rows << if l
+              [l["id"].to_s, name, l["count"].to_s, (l["totalCount"]? || l["count"]).to_s, list_flags(l)]
+            else
+              ["-", name, "-", "-", "-"]
+            end
+          end
+        end
+        rows
       end
 
       def self.list_flags(l : JSON::Any) : String
