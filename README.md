@@ -20,10 +20,10 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /api/session`, `DELETE /api/session` | current user, logout |
 | `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in). With `list=<id>` only the books of that list and its sublists (`direct=1`: only its own), `sort` then listAdded (default, newest first), title, author or series; `listPath=Urlaub` (`listOwner`, default the user) does the same for a level that may have no list of its own (404 when nothing is below it) |
 | `GET /api/books/:id` | one book incl. `comments` and `lists` |
-| `GET /api/lists` | the reading lists the user sees (own ones first, favorites first, by name): `[{id, name, description, owner, visibility, sync, favorite, isDefault, count, totalCount, parent, leaf, coverBookIds, createdAt, updatedAt, lastUsedAt, editable}]`; `coverBookIds`: the 4 most recently added books; nested lists: `parent` the path above (`"Urlaub"` for `"Urlaub/2026"`, null at the top), `leaf` the last level, `totalCount` the distinct books incl. the sublists the user sees |
-| `POST /api/lists` `{name, description?, visibility?, sync?, favorite?, isDefault?}` | creates a list (201); `visibility`: private (default), readable, editable; names are unique per owner, ignoring case (409); a name is a path, `"Urlaub/2026"` (levels trimmed, no empty level: 400 for `a//b`, `/a`, `a/`; existing levels keep their spelling) |
+| `GET /api/lists` | the reading lists the user sees (own ones first, favorites first, by name): `[{id, name, description, owner, visibility, sync, favorite, isDefault, count, totalCount, parent, leaf, coverBookIds, createdAt, updatedAt, lastUsedAt, editable, rule, query, queryError}]`; `coverBookIds`: the 4 most recently added books; nested lists: `parent` the path above (`"Urlaub"` for `"Urlaub/2026"`, null at the top), `leaf` the last level, `totalCount` the distinct books incl. the sublists the user sees; `rule`/`query`: a magic shelf's rule and its calibre search (null for a list with books of its own), `queryError` when that search failed (count 0) |
+| `POST /api/lists` `{name, description?, visibility?, sync?, favorite?, isDefault?, rule?}` | creates a list (201), with `rule` a magic shelf (see below); `visibility`: private (default), readable, editable; names are unique per owner, ignoring case (409); a name is a path, `"Urlaub/2026"` (levels trimmed, no empty level: 400 for `a//b`, `/a`, `a/`; existing levels keep their spelling) |
 | `GET /api/lists/:id`, `PATCH /api/lists/:id`, `DELETE /api/lists/:id` | one list; change any of the fields above (one default list per owner: `isDefault: true` takes it from the other); a new name renames the sublists along (one `updated` event each; 409 when one of the new names is taken, 400 below itself); delete returns `{list}` (owner only, 403) and leaves the sublists |
-| `POST /api/lists/:id/books` `{bookIds}` or `{target}` | adds books (`target` as in bulk edits; unknown ids are left out); returns `{list, added}` with the ids that were new |
+| `POST /api/lists/:id/books` `{bookIds}` or `{target}` | adds books (`target` as in bulk edits; unknown ids are left out); returns `{list, added}` with the ids that were new; 400 for a magic shelf (also removing) |
 | `POST /api/lists/:id/books/remove` `{bookIds}` or `{target}` | removes books; returns `{list, removed}` |
 | `PUT`, `DELETE /api/lists/:id/books/:bookId` | adds (404 for an unknown book) or removes one book; `{list, added}` / `{list, removed}` |
 | `GET /api/books/:id/lists` | the lists the book is in |
@@ -294,6 +294,29 @@ of `Urlaub`. A level without a list of that name (`Reise` above
 own. A list's page shows its books and those of its sublists (like
 categories), "nur direkt" only its own. Renaming a list renames its
 sublists (and moves their reader folders); deleting it leaves them.
+
+Magic shelves: a list with a `rule` instead of books of its own, a saved
+search shown like a list (sidebar, overview, palette, `?list=`, OPDS). The
+rule is conditions joined by AND (`match: "all"`) or OR (`"any"`), each one
+`{field, value, not?}` over `tag`, `kategorie` (incl. the categories below
+it, `A/B` or `A.B`), `author`, `series`, `language` (calibre's code, `deu`)
+or `text` (calibre search syntax, like `q`); at most 20:
+
+```json
+{"match": "all", "conditions": [{"field": "tag", "value": "Krimi"},
+  {"field": "language", "value": "deu", "not": true}]}
+```
+
+The hub turns it into one calibre search (`(tags:"=Krimi") and (not
+(languages:"=deu"))`, returned as `query`) and checks it with calibre when
+it is saved (400 when calibre can't search it). Its books and count come
+from that search on every read, so they follow the library; most recently
+added to the library first, the other list sorts apply. A shelf has no
+books of its own: adding or removing is a 400, it is never the default list
+and never synced to the reader (the reader folders skip it, also below a
+synced list). In a node with lists and shelves the lists' books come first,
+then the shelves' ones not among them. Only a shelf takes a new `rule`; a
+list doesn't become a shelf or the other way round.
 
 Migration: on the first start the books with the tag `leseliste.tag`
 (default `leseliste`) become the list "Leseliste", synced, favorite and

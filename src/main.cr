@@ -355,7 +355,12 @@ module CalibreHub
   # once (retried until calibre-server answers)
   def self.lists(config : Config, calibre : Calibre, db : DB::Database, wake : Channel(Nil)) : Lists
     exists = ->(ids : Array(Int64)) { calibre.books(ids, ["title"]).map(&.id) }
-    lists = Lists.new(db, exists, wake)
+    # magic shelves: newest in the library first
+    search = ->(q : String, limit : Int32) do
+      r = calibre.search(q, "timestamp", false, 0, limit)
+      {r.total.to_i64, r.ids}
+    end
+    lists = Lists.new(db, exists, wake, search, config.category_column)
     lists.watch_events
     unless lists.migrated?
       spawn do

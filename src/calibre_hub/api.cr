@@ -83,7 +83,7 @@ module CalibreHub
                raise Lists::NotFound.new if all.empty?
                direct ? all.select { |x| Lists.same?(x.name, path) } : all
              end
-      lists.book_ids(node.map(&.id))
+      lists.members(node)
     end
 
     # Adds the ids of the user's lists to each book
@@ -404,7 +404,7 @@ module CalibreHub
         env.response.status_code = 404
         next "not found"
       end
-      ids = lists.book_ids(list.id)
+      ids = lists.members([list])
       offset = (env.params.query["offset"]?.try(&.to_i?) || 0).clamp(0, Int32::MAX)
       page = ids[offset, Opds::PAGE_SIZE]? || [] of Int64
       books = calibre ? calibre.books(page, Calibre::DETAIL_FIELDS) : [] of Book

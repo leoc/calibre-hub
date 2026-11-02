@@ -427,6 +427,28 @@ pkgs.testers.runNixOSTest {
         status, r = api("DELETE", f"/api/lists/{lid}/books/1")
         machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
 
+    with subtest("magic shelves"):
+        inbox = api("GET", "/api/books?q=title:Inboxbuch")[1]["books"][0]["id"]
+        # OR: the Roman category (incl. Roman.Krimi) or Ada Lovelace's book
+        rule = {"match": "any", "conditions": [{"field": "kategorie", "value": "Roman"}, {"field": "author", "value": "Ada Lovelace"}]}
+        status, s = api("POST", "/api/lists", {"name": "Regal", "favorite": True, "rule": rule})
+        assert status == 201 and s["count"] == 2 and s["rule"]["match"] == "any" and s["queryError"] is None, (status, s)
+        status, page = api("GET", f"/api/books?list={s['id']}&sort=title")
+        assert status == 200 and page["total"] == 2, (status, page)
+        # AND with a negated condition
+        rule = {"match": "all", "conditions": [{"field": "kategorie", "value": "Roman"}, {"field": "author", "value": "Ada Lovelace", "not": True}]}
+        status, s = api("PATCH", f"/api/lists/{s['id']}", {"rule": rule})
+        assert status == 200 and s["count"] == 1 and s["coverBookIds"] == [inbox], (status, s)
+        assert [b["id"] for b in api("GET", f"/api/books?list={s['id']}")[1]["books"]] == [inbox]
+        # calibre rejects the search: 400, nothing stored
+        status, r = api("POST", "/api/lists", {"name": "Kaputt", "rule": {"conditions": [{"field": "text", "value": "(title:x"}]}})
+        assert status == 400 and r["field"] == "rule", (status, r)
+        assert api("PUT", f"/api/lists/{s['id']}/books/1")[0] == 400
+        assert api("PATCH", f"/api/lists/{s['id']}", {"sync": True})[0] == 400
+        feed = machine.succeed(f"curl -sf -u arthur:login-secret {H}/opds/lists/{s['id']}")
+        assert "<title>Inboxbuch</title>" in feed, feed
+        assert api("DELETE", f"/api/lists/{s['id']}")[0] == 200
+
     with subtest("edit"):
         assert code(f"-b /tmp/jar -X PATCH -d '{{}}' {H}/api/books/1") == "403"
         n = int(machine.succeed("grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log").strip())

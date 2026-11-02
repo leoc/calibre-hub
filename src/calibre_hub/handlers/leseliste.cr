@@ -84,12 +84,13 @@ module CalibreHub
       0
     end
 
-    # The synced lists and the sublists of synced lists (same owner); nil
+    # The synced lists and the sublists of synced lists (same owner), no
+    # magic shelves (their books come from a search, not the list); nil
     # until the lists exist (migration done)
     def self.synced_lists(state) : Array(SyncedList)?
       return nil if state.query_one?("select value from meta where key = 'lists_migrated'", as: String).nil?
       all = [] of SyncedList
-      state.query_each("select id, name, owner, sync from lists order by id") do |rs|
+      state.query_each("select id, name, owner, sync from lists where rule is null order by id") do |rs|
         all << SyncedList.new(rs.read(Int64), rs.read(String), [] of Int64, rs.read(String), rs.read(Int64) == 1)
       end
       roots = all.select(&.own)

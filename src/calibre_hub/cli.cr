@@ -488,6 +488,7 @@ module CalibreHub
 
       def self.list_flags(l : JSON::Any) : String
         flags = [] of String
+        flags << "shelf" if (r = l["rule"]?) && !r.raw.nil?
         flags << "default" if l["isDefault"]?.try(&.as_bool?)
         flags << "sync" if l["sync"]?.try(&.as_bool?)
         flags << "favorite" if l["favorite"]?.try(&.as_bool?)

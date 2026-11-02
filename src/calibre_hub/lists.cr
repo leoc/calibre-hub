@@ -2,6 +2,7 @@ require "db"
 require "json"
 require "./calibre"
 require "./edit"
+require "./shelf"
 
 module CalibreHub
   # Reading lists, like playlists: named lists of books in the state DB
@@ -23,11 +24,16 @@ module CalibreHub
   # The books of a list include those of its sublists unless asked for the
   # direct ones only; renaming a list renames its sublists too (one updated
   # event each), deleting one leaves its sublists.
+  #
+  # Magic shelves (shelf.cr): a list with a rule has no books of its own;
+  # its books are those the rule's calibre search finds, counted live on
+  # every read. Books can't be added to or removed from it, and it is
+  # never the default list or synced to the reader.
   class Lists
     VISIBILITIES = %w(private readable editable)
     SORTS        = %w(listAdded title author series)
-    MAX_NAME     = 120
-    MAX_DESC     = 5000
+    MAX_NAME     =    120
+    MAX_DESC     =   5000
     MAX_BOOKS    = 10_000
     SEPARATOR    = '/'
     # the tag the reading list was before lists existed
@@ -75,6 +81,13 @@ module CalibreHub
       # distinct books incl. the sublists the user sees
       @[JSON::Field(key: "totalCount")]
       property total_count : Int64
+      # magic shelf: the rule (Shelf.parse) and its calibre search; nil for
+      # a list with books of its own
+      property rule : JSON::Any? = nil
+      property query : String? = nil
+      # the search failed (calibre rejected it or is down); count is 0 then
+      @[JSON::Field(key: "queryError")]
+      property query_error : String? = nil
 
       def initialize(@id, @name, @description, @owner, @visibility, @sync, @favorite, @is_default, @count,
                      @cover_book_ids, @created_at, @updated_at, @last_used_at, @editable)
@@ -104,14 +117,18 @@ module CalibreHub
       name.size > path.size + 1 && name[path.size] == SEPARATOR && same?(name[0, path.size], path)
     end
 
-    COLUMNS = "id, owner, name, description, visibility, sync, favorite, is_default, created_at, updated_at, last_used_at"
+    COLUMNS = "id, owner, name, description, visibility, sync, favorite, is_default, created_at, updated_at, last_used_at, rule"
     COVERS  = 4
 
     # exists: which of these book ids are in the library (calibre-server);
     # nil skips the check
     alias Exists = Proc(Array(Int64), Array(Int64))
+    # search: a calibre search -> {total, ids of the first `limit` books, most
+    # recently added to the library first}; nil: shelves find nothing
+    alias Search = Proc(String, Int32, {Int64, Array(Int64)})
 
-    def initialize(@db : DB::Database, @exists : Exists? = nil, @wake : Channel(Nil)? = nil)
+    def initialize(@db : DB::Database, @exists : Exists? = nil, @wake : Channel(Nil)? = nil,
+                   @search : Search? = nil, @kategorie_column : String? = nil)
       @mutex = Mutex.new
       @db.exec "create table if not exists meta (key text primary key, value text)"
       @db.exec <<-SQL
@@ -130,6 +147,10 @@ module CalibreHub
         )
         SQL
       @db.exec "create unique index if not exists lists_owner_name on lists (owner, name collate nocase)"
+      # magic shelves (added later)
+      columns = [] of String
+      @db.query_each("pragma table_info(lists)") { |rs| rs.read(Int64); columns << rs.read(String) }
+      @db.exec "alter table lists add column rule text" unless columns.includes?("rule")
       # added_at in milliseconds; ties (bulk adds) keep the insert order
       @db.exec <<-SQL
         create table if not exists list_items (
@@ -190,6 +211,31 @@ module CalibreHub
       found
     end
 
+    # Book ids of several lists (a node): those of the lists with books of
+    # their own (most recently added first, a book in more than one by its
+    # newest addition), then those of the shelves not among them yet (most
+    # recently added to the library first)
+    def members(lists : Array(List)) : Array(Int64)
+      shelves, own = lists.partition(&.rule)
+      ids = book_ids(own.map(&.id))
+      return ids if shelves.empty?
+      seen = ids.to_set
+      shelves.each do |sh|
+        shelf_ids(sh).each { |b| ids << b if seen.add?(b) }
+      end
+      ids
+    end
+
+    # The books a shelf's search finds, all of them; none when the search
+    # fails
+    def shelf_ids(list : List) : Array(Int64)
+      q = list.query || return [] of Int64
+      search = @search || return [] of Int64
+      search.call(q, 1_000_000)[1]
+    rescue Calibre::Error
+      [] of Int64
+    end
+
     # Book ids of several lists (a node), the most recently added first; a
     # book in more than one counts once, by its newest addition
     def book_ids(ids : Array(Int64)) : Array(Int64)
@@ -205,16 +251,17 @@ module CalibreHub
 
     def create(user : String, body : Hash(String, JSON::Any)) : List
       name = name!(body["name"]?) || raise Edit::Invalid.new("name", "name expected")
+      rule = body["rule"]?.try { |r| r.raw.nil? ? nil : rule!(r) }
       now = Time.utc
       id = @mutex.synchronize do
         name = canonical(user, name, nil)
         raise Taken.new("a list named #{name} exists") if taken?(user, name, nil)
         @db.transaction do |tx|
           c = tx.connection
-          c.exec "insert into lists (owner, name, description, visibility, sync, favorite, is_default, created_at, updated_at)
-                  values (?, ?, '', 'private', 0, 0, 0, ?, ?)", user, name, now.to_unix, now.to_unix
+          c.exec "insert into lists (owner, name, description, visibility, sync, favorite, is_default, created_at, updated_at, rule)
+                  values (?, ?, '', 'private', 0, 0, 0, ?, ?, ?)", user, name, now.to_unix, now.to_unix, rule.try(&.to_json)
           new_id = c.scalar("select last_insert_rowid()").as(Int64)
-          apply(c, new_id, user, body.reject("name"))
+          apply(c, new_id, user, body.reject("name", "rule"), !rule.nil?)
           new_id
         end.not_nil!
       end
@@ -227,6 +274,11 @@ module CalibreHub
     # also those the user doesn't see: they belong to the owner's tree
     def update(id : Int64, user : String, body : Hash(String, JSON::Any)) : List
       before = editable(id, user)
+      rule = body["rule"]?.try do |r|
+        raise Edit::Invalid.new("rule", "only a magic shelf has a rule") unless before.rule
+        raise Edit::Invalid.new("rule", "a magic shelf needs a rule") if r.raw.nil?
+        rule!(r)
+      end
       moved = [] of List
       @mutex.synchronize do
         renames = {} of Int64 => String
@@ -249,7 +301,8 @@ module CalibreHub
           renames.each do |rid, rn|
             c.exec "update lists set name = ?, updated_at = ? where id = ?", rn, now, rid
           end
-          apply(c, id, before.owner, body.reject("name"))
+          apply(c, id, before.owner, body.reject("name", "rule"), !before.rule.nil?)
+          c.exec "update lists set rule = ? where id = ?", rule.to_json, id if rule
           c.exec "update lists set updated_at = ? where id = ?", now, id
         end
       end
@@ -276,7 +329,7 @@ module CalibreHub
     # Adds books (unknown ids are left out); returns the list and the ids
     # added (those already in the list aren't added again)
     def add(id : Int64, user : String, ids : Array(Int64)) : {List, Array(Int64)}
-      editable(id, user)
+      no_shelf!(editable(id, user))
       ids = ids.uniq
       raise Edit::Invalid.new("bookIds", "at most #{MAX_BOOKS} books at once") if ids.size > MAX_BOOKS
       known = @exists.try { |e| e.call(ids).to_set }
@@ -297,7 +350,7 @@ module CalibreHub
     end
 
     def remove(id : Int64, user : String, ids : Array(Int64)) : {List, Array(Int64)}
-      editable(id, user)
+      no_shelf!(editable(id, user))
       removed = [] of Int64
       @db.transaction do |tx|
         c = tx.connection
@@ -450,6 +503,25 @@ module CalibreHub
       with_totals([list] + node(list.owner, list.name, user).reject { |l| l.id == list.id }, user).first
     end
 
+    private def no_shelf!(list : List)
+      raise Edit::Invalid.new("bookIds", "a magic shelf has no books of its own, its rule finds them") if list.rule
+    end
+
+    # A checked rule; calibre has to understand its search
+    private def rule!(value : JSON::Any) : JSON::Any
+      rule = Shelf.parse(value, @kategorie_column)
+      if search = @search
+        begin
+          search.call(Shelf.query(rule, @kategorie_column), 1)
+        rescue ex : Calibre::Unavailable
+          raise ex
+        rescue ex : Calibre::Error
+          raise Edit::Invalid.new("rule", "calibre can't search this: #{ex.message}")
+        end
+      end
+      rule
+    end
+
     private def editable(id : Int64, user : String) : List
       list = visible(id, user)
       raise Forbidden.new("list is read-only") unless list.editable
@@ -510,7 +582,7 @@ module CalibreHub
     end
 
     # description, visibility, sync, favorite, isDefault
-    private def apply(c, id : Int64, owner : String, body : Hash(String, JSON::Any))
+    private def apply(c, id : Int64, owner : String, body : Hash(String, JSON::Any), shelf = false)
       body.each do |key, value|
         case key
         when "description"
@@ -524,10 +596,12 @@ module CalibreHub
         when "sync", "favorite"
           b = value.as_bool?
           raise Edit::Invalid.new(key, "true or false expected") if b.nil?
+          raise Edit::Invalid.new(key, "a magic shelf isn't synced to the reader") if b && shelf && key == "sync"
           c.exec "update lists set #{key} = ? where id = ?", b ? 1 : 0, id
         when "isDefault"
           b = value.as_bool?
           raise Edit::Invalid.new(key, "true or false expected") if b.nil?
+          raise Edit::Invalid.new(key, "a magic shelf can't be the default list") if b && shelf
           # one default list per owner
           c.exec "update lists set is_default = 0 where owner = ?", owner if b
           c.exec "update lists set is_default = ? where id = ?", b ? 1 : 0, id
@@ -538,11 +612,17 @@ module CalibreHub
     end
 
     private def read(rs, user : String?) : List
-      id, owner, name, desc, vis, sync, fav, default, created, updated, used =
-        rs.read(Int64, String, String, String, String, Int64, Int64, Int64, Int64, Int64, Int64?)
-      List.new(id, name, desc, owner, vis, sync == 1, fav == 1, default == 1, 0_i64, [] of Int64,
+      id, owner, name, desc, vis, sync, fav, default, created, updated, used, rule =
+        rs.read(Int64, String, String, String, String, Int64, Int64, Int64, Int64, Int64, Int64?, String?)
+      l = List.new(id, name, desc, owner, vis, sync == 1, fav == 1, default == 1, 0_i64, [] of Int64,
         Time.unix(created), Time.unix(updated), used.try { |u| Time.unix(u) },
         user.nil? || owner == user || vis == "editable")
+      if rule
+        r = JSON.parse(rule)
+        l.rule = r
+        l.query = Shelf.query(r, @kategorie_column)
+      end
+      l
     end
 
     # totalCount: the distinct books of a list and its sublists among the
@@ -550,7 +630,9 @@ module CalibreHub
     private def with_totals(lists : Array(List), user : String) : Array(List)
       lists.map do |l|
         below = lists.select { |s| s.owner == l.owner && Lists.below?(l.name, s.name) }
-        unless below.empty?
+        if !below.empty? && (l.rule || below.any?(&.rule))
+          l.total_count = members([l] + below).size.to_i64
+        elsif !below.empty?
           ids = ([l] + below).map(&.id).join(",")
           l.total_count = @db.query_one("select count(distinct book_id) from list_items where list_id in (#{ids})", as: Int64)
         end
@@ -559,13 +641,29 @@ module CalibreHub
     end
 
     private def with_counts(l : List) : List
-      count = @db.query_one("select count(*) from list_items where list_id = ?", l.id, as: Int64)
+      error = nil
+      count = 0_i64
       covers = [] of Int64
-      @db.query_each("select book_id from list_items where list_id = ? order by added_at desc, rowid desc limit ?", l.id, COVERS) do |rs|
-        covers << rs.read(Int64)
+      if q = l.query
+        if search = @search
+          begin
+            count, covers = search.call(q, COVERS)
+          rescue ex : Calibre::Error
+            error = ex.message || "search failed"
+          end
+        end
+      else
+        count = @db.query_one("select count(*) from list_items where list_id = ?", l.id, as: Int64)
+        @db.query_each("select book_id from list_items where list_id = ? order by added_at desc, rowid desc limit ?", l.id, COVERS) do |rs|
+          covers << rs.read(Int64)
+        end
       end
-      List.new(l.id, l.name, l.description, l.owner, l.visibility, l.sync, l.favorite, l.is_default, count,
-        covers, l.created_at, l.updated_at, l.last_used_at, l.editable)
+      n = List.new(l.id, l.name, l.description, l.owner, l.visibility, l.sync, l.favorite, l.is_default, count,
+        covers.first(COVERS), l.created_at, l.updated_at, l.last_used_at, l.editable)
+      n.rule = l.rule
+      n.query = l.query
+      n.query_error = error
+      n
     end
 
     private def emit(action : String, list : List, book_ids = [] of Int64, previous : List? = nil)

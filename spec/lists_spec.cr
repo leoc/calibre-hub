@@ -192,6 +192,159 @@ describe CalibreHub::Lists do
   end
 end
 
+# A calibre search stand-in for magic shelves: tags:"=Krimi" finds 5, 4, 3
+# (newest first), languages:"=deu" finds 4 and 9, "kaputt" is rejected
+private def fake_search(searched = [] of String) : CalibreHub::Lists::Search
+  ->(q : String, limit : Int32) do
+    searched << q
+    raise CalibreHub::Calibre::Error.new("calibre-server /ajax/search: HTTP 400") if q.includes?("kaputt")
+    ids = [] of Int64
+    ids.concat([5_i64, 4_i64, 3_i64]) if q.includes?(%(tags:"=Krimi"))
+    ids.concat([4_i64, 9_i64]) if q.includes?(%(languages:"=deu"))
+    ids = ids.uniq
+    {ids.size.to_i64, ids.first(limit)}
+  end
+end
+
+private def with_shelves(searched = [] of String, &)
+  path = File.tempname("hub-shelves", ".sqlite")
+  db = DB.open("sqlite3://#{path}?max_pool_size=1")
+  yield CalibreHub::Lists.new(db, nil, nil, fake_search(searched), "kategorie"), db
+ensure
+  db.try &.close
+  File.delete?(path) if path
+end
+
+describe CalibreHub::Shelf do
+  it "checks a rule and turns it into one calibre search" do
+    rule = CalibreHub::Shelf.parse(JSON.parse(%({"match": "any", "conditions": [
+      {"field": "tag", "value": " Krimi "},
+      {"field": "kategorie", "value": "Roman / Krimi"},
+      {"field": "author", "value": "Agatha \\"Christie\\""},
+      {"field": "language", "value": "deu", "not": true},
+      {"field": "text", "value": "rating:>3", "not": false}]})), "kategorie")
+    rule["conditions"][0]["value"].should eq("Krimi")
+    rule["conditions"][1]["value"].should eq("Roman.Krimi")
+    rule["conditions"][4]["not"]?.should be_nil
+    CalibreHub::Shelf.query(rule, "kategorie").should eq(
+      %((tags:"=Krimi") or (#kategorie:"=.Roman.Krimi") or (authors:"=Agatha \\"Christie\\"") or (not (languages:"=deu")) or ((rating:>3))))
+    one = CalibreHub::Shelf.parse(JSON.parse(%({"conditions": [{"field": "series", "value": "Dune"}]})), nil)
+    one["match"].should eq("all")
+    CalibreHub::Shelf.query(one, nil).should eq(%(series:"=Dune"))
+
+    bad = ->(json : String) { CalibreHub::Shelf.parse(JSON.parse(json), nil) }
+    expect_raises(CalibreHub::Edit::Invalid, "at least one condition") { bad.call(%({"conditions": []})) }
+    expect_raises(CalibreHub::Edit::Invalid, "match") { bad.call(%({"match": "some", "conditions": [{"field": "tag", "value": "a"}]})) }
+    expect_raises(CalibreHub::Edit::Invalid, "field: one of") { bad.call(%({"conditions": [{"field": "rating", "value": "3"}]})) }
+    expect_raises(CalibreHub::Edit::Invalid, "value expected") { bad.call(%({"conditions": [{"field": "tag", "value": " "}]})) }
+    expect_raises(CalibreHub::Edit::Invalid, "no category column") { bad.call(%({"conditions": [{"field": "kategorie", "value": "A"}]})) }
+    expect_raises(CalibreHub::Edit::Invalid, "unknown field") { bad.call(%({"conditions": [{"field": "tag", "value": "a", "op": "x"}]})) }
+    expect_raises(CalibreHub::Edit::Invalid) { bad.call(%(["tag"])) }
+  end
+end
+
+describe "magic shelves" do
+  it "finds their books by the rule, counted live, and keeps them read-only" do
+    searched = [] of String
+    with_shelves(searched) do |lists, db|
+      krimi = %({"conditions": [{"field": "tag", "value": "Krimi"}]})
+      s = lists.create("arthur", body(%({"name": "Krimis", "favorite": true, "rule": #{krimi}})))
+      s.rule.not_nil!["match"].should eq("all")
+      s.query.should eq(%(tags:"=Krimi"))
+      s.count.should eq(3)
+      s.cover_book_ids.should eq([5_i64, 4_i64, 3_i64])
+      s.favorite.should be_true
+      json = JSON.parse(s.to_json)
+      json["rule"]["conditions"][0]["field"].should eq("tag")
+      json["query"].should eq(%(tags:"=Krimi"))
+      json["queryError"].raw.should be_nil
+
+      # a plain list has none of it
+      plain = lists.create("arthur", body(%({"name": "Leseliste", "rule": null})))
+      plain.rule.should be_nil
+      JSON.parse(plain.to_json)["rule"].raw.should be_nil
+
+      expect_raises(CalibreHub::Edit::Invalid, "no books of its own") { lists.add(s.id, "arthur", [1_i64]) }
+      expect_raises(CalibreHub::Edit::Invalid, "no books of its own") { lists.remove(s.id, "arthur", [5_i64]) }
+      expect_raises(CalibreHub::Edit::Invalid, "default list") { lists.update(s.id, "arthur", body(%({"isDefault": true}))) }
+      expect_raises(CalibreHub::Edit::Invalid, "synced") { lists.create("arthur", body(%({"name": "X", "sync": true, "rule": #{krimi}}))) }
+      expect_raises(CalibreHub::Edit::Invalid, "only a magic shelf") { lists.update(plain.id, "arthur", body(%({"rule": #{krimi}}))) }
+      expect_raises(CalibreHub::Edit::Invalid, "needs a rule") { lists.update(s.id, "arthur", body(%({"rule": null}))) }
+      # calibre has to understand the search
+      expect_raises(CalibreHub::Edit::Invalid, "calibre can't search this") do
+        lists.create("arthur", body(%({"name": "Y", "rule": {"conditions": [{"field": "text", "value": "kaputt"}]}})))
+      end
+      lists.all("arthur").map(&.name).should eq(["Krimis", "Leseliste"])
+
+      # OR over two conditions; the count follows the library
+      either = %({"match": "any", "conditions": [{"field": "tag", "value": "Krimi"}, {"field": "language", "value": "deu"}]})
+      u = lists.update(s.id, "arthur", body(%({"rule": #{either}, "name": "Krimis oder Deutsch"})))
+      u.query.should eq(%((tags:"=Krimi") or (languages:"=deu")))
+      u.count.should eq(4)
+      lists.members([u]).should eq([5_i64, 4_i64, 3_i64, 9_i64])
+      events(db).map(&.["action"].as_s).should eq(%w(created created updated))
+
+      # a broken stored search shows as an error, not a failed list
+      db.exec "update lists set rule = ? where id = ?", %({"match":"all","conditions":[{"field":"text","value":"kaputt"}]}), s.id
+      broken = lists[s.id, "arthur"]
+      broken.count.should eq(0)
+      broken.query_error.not_nil!.should contain("HTTP 400")
+      lists.members([broken]).should be_empty
+    end
+  end
+
+  it "nests shelves below lists and counts them into the node" do
+    with_shelves do |lists, db|
+      urlaub = lists.create("arthur", body(%({"name": "Urlaub"})))
+      lists.add(urlaub.id, "arthur", [1_i64, 4_i64])
+      lists.create("arthur", body(%({"name": "Urlaub/Krimis", "rule": {"conditions": [{"field": "tag", "value": "Krimi"}]}})))
+      lists[urlaub.id, "arthur"].total_count.should eq(4)
+      calibre = CalibreHub::Calibre.new("http://127.0.0.1:1", "x", "x")
+      page = ->(q : String) { CalibreHub::Api.list_page(lists, calibre, "arthur", HTTP::Params.parse(q), nil, 0, 10) }
+      # the list's own books first, then the shelf's not among them
+      page.call("list=#{urlaub.id}").should eq({4, [4_i64, 1_i64, 5_i64, 3_i64]})
+      page.call("list=#{urlaub.id}&direct=1").should eq({2, [4_i64, 1_i64]})
+      page.call("listPath=Urlaub/Krimis").should eq({3, [5_i64, 4_i64, 3_i64]})
+    end
+  end
+
+  it "keeps shelves out of the reader folders" do
+    with_shelves do |lists, db|
+      lists.migrate("arthur", "leseliste", [] of Int64)
+      parent = lists.create("arthur", body(%({"name": "Urlaub", "sync": true})))
+      lists.create("arthur", body(%({"name": "Urlaub/Krimis", "rule": {"conditions": [{"field": "tag", "value": "Krimi"}]}})))
+      CalibreHub::Leseliste.synced_lists(db).not_nil!.map(&.name).should eq(["Leseliste", "Urlaub"])
+      parent.sync.should be_true
+    end
+  end
+
+  it "serves shelves through the list API" do
+    with_shelves do |lists|
+      auth = CalibreHub::Auth.new("arthur", "pw", Bytes.new(32))
+      # the routes of the other list spec use another store
+      reset_routes
+      CalibreHub.list_routes(lists, auth, nil)
+      status, l = call("POST", "/api/lists", %({"name": "Krimis", "rule": {"conditions": [{"field": "tag", "value": "Krimi"}]}}))
+      status.should eq(201)
+      id = l.not_nil!["id"].as_i64
+      l.not_nil!["count"].should eq(3)
+      call("POST", "/api/lists", %({"name": "Leer", "rule": {"conditions": []}}))[0].should eq(400)
+      call("POST", "/api/lists/#{id}/books", %({"bookIds": [1]}))[0].should eq(400)
+      call("PUT", "/api/lists/#{id}/books/1")[0].should eq(400)
+      status, l = call("PATCH", "/api/lists/#{id}", %({"rule": {"conditions": [{"field": "language", "value": "deu"}]}}))
+      status.should eq(200)
+      l.not_nil!["count"].should eq(2)
+      call("GET", "/api/lists")[1].not_nil!.as_a.first["query"].should eq(%(languages:"=deu"))
+    end
+  end
+end
+
+# list_routes on a fresh router (each spec has its own store)
+private def reset_routes
+  Kemal::RouteHandler::INSTANCE.routes = Radix::Tree(Kemal::Route).new
+  Kemal::RouteHandler::INSTANCE.cached_routes = Kemal::LRUCache(String, Radix::Result(Kemal::Route)).new(Kemal.config.max_route_cache_size)
+end
+
 private def call(method, path, body = nil)
   io = IO::Memory.new
   request = HTTP::Request.new(method, path, HTTP::Headers{"X-Calibre-Hub" => "1"}, body)
@@ -206,6 +359,7 @@ describe "list routes" do
   it "serves the list API" do
     with_lists(->(ids : Array(Int64)) { ids.reject { |i| i == 999 } }) do |lists|
       auth = CalibreHub::Auth.new("arthur", "pw", Bytes.new(32))
+      reset_routes
       CalibreHub.list_routes(lists, auth, nil)
 
       status, l = call("POST", "/api/lists", %({"name": "Leseliste", "sync": true}))
