@@ -174,6 +174,30 @@ pkgs.testers.runNixOSTest {
         machine.succeed("echo x > /tmp/evil.exe")
         assert api("POST", "/api/books", extra="-F file=@/tmp/evil.exe")[0] == 415
 
+    def wait_job(job_id):
+        for _ in range(60):
+            status, j = api("GET", f"/api/jobs/{job_id}")
+            assert status == 200, (status, j)
+            if j["status"] != "running":
+                return j
+            machine.sleep(1)
+        raise Exception("job still running")
+
+    with subtest("bulk"):
+        status, r = api("POST", "/api/books/bulk", {"target": {"ids": [1, uid, 999]}, "changes": {"addTags": ["Stapel"], "series": "Serie"}})
+        assert status == 202 and r["total"] == 3, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["done"] == 3 and [e["bookId"] for e in j["errors"]] == [999], j
+        assert "Stapel" in api("GET", f"/api/books/{uid}")[1]["tags"]
+        status, r = api("POST", "/api/books/bulk", {"target": {"query": {"tag": "Stapel"}}, "changes": {"removeTags": ["stapel"], "kategorie": "Bulk"}})
+        assert status == 202 and r["total"] == 2, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["errors"] == [], j
+        b = api("GET", "/api/books/1")[1]
+        assert "Stapel" not in b["tags"] and b["custom"]["kategorie"] == "Bulk" and b["series"] == "Serie", b
+        assert api("POST", "/api/books/bulk", {"target": {"ids": [1]}, "changes": {"title": "x"}})[0] == 400
+        assert api("GET", "/api/jobs/unknown")[0] == 404
+
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/x.txt /tmp/kaputt.epub --title Kaputt --authors Niemand")

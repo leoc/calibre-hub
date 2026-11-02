@@ -154,3 +154,96 @@ module CalibreHub
     end
   end
 end
+
+module CalibreHub
+  # Bulk edits run as background jobs, one after another. Jobs live in
+  # memory only; after a restart their ids are unknown (404).
+  class Jobs
+    CHANGES = %w(addTags removeTags kategorie series)
+    KEEP    = 50
+
+    class Job
+      include JSON::Serializable
+
+      getter id : String
+      property status : String = "running"
+      property done : Int32 = 0
+      getter total : Int32
+      getter errors = [] of NamedTuple(bookId: Int64, error: String)
+      @[JSON::Field(ignore: true)]
+      getter ids : Array(Int64)
+      @[JSON::Field(ignore: true)]
+      getter changes : Hash(String, JSON::Any)
+
+      def initialize(@ids, @changes)
+        @id = Random::Secure.hex(8)
+        @total = @ids.size
+      end
+    end
+
+    def initialize(@calibre : Calibre, @writer : Writer, @category_column : String?)
+      @jobs = {} of String => Job
+      @queue = Channel(Job).new(100)
+      spawn { loop { run(@queue.receive) } }
+    end
+
+    def []?(id : String) : Job?
+      @jobs[id]?
+    end
+
+    # body: {target: {ids: [...]} | {query: {...}}, changes: {...}}
+    def submit(body : Hash(String, JSON::Any)) : Job
+      changes = body["changes"]?.try(&.as_h?) || raise Edit::Invalid.new("changes", "object expected")
+      raise Edit::Invalid.new("changes", "nothing to change") if changes.empty?
+      if bad = changes.keys.find { |k| !CHANGES.includes?(k) }
+        raise Edit::Invalid.new(bad, "not allowed in bulk edits")
+      end
+      # type errors now rather than once per book
+      Edit.changes(changes, Jobs.blank, @category_column)
+      job = Job.new(ids(body["target"]?), changes)
+      @jobs[job.id] = job
+      @jobs.shift? if @jobs.size > KEEP
+      @queue.send(job)
+      job
+    end
+
+    def ids(target : JSON::Any?) : Array(Int64)
+      t = target.try(&.as_h?) || raise Edit::Invalid.new("target", "object expected")
+      if list = t["ids"]?
+        (list.as_a? || raise Edit::Invalid.new("target", "ids must be a list")).map do |v|
+          v.as_i64? || raise Edit::Invalid.new("target", "ids must be numbers")
+        end.uniq
+      elsif query = t["query"]?.try(&.as_h?)
+        params = HTTP::Params.new
+        query.each do |k, v|
+          raise Edit::Invalid.new("target", "offset/limit not allowed") if {"offset", "limit", "sort", "order"}.includes?(k)
+          (v.as_a? || [v]).each { |x| params.add(k, x.as_s? || x.to_s) }
+        end
+        @calibre.search(Api.query(params, @category_column), "id", true, 0, 1_000_000).ids
+      else
+        raise Edit::Invalid.new("target", "ids or query expected")
+      end
+    end
+
+    private def run(job : Job)
+      job.ids.each do |id|
+        begin
+          @writer.update(id, job.changes)
+        rescue Writer::NotFound
+          job.errors << {bookId: id, error: "not found"}
+        rescue ex
+          job.errors << {bookId: id, error: ex.message || ex.class.name}
+        end
+        job.done += 1
+      end
+      job.status = job.errors.size == job.total && job.total > 0 ? "failed" : "done"
+    end
+
+    def self.blank : Book
+      Book.new(id: 0_i64, title: "", authors: [] of String, author_sort: nil, tags: [] of String,
+        series: nil, series_index: nil, formats: [] of String, last_modified: Time::UNIX_EPOCH,
+        timestamp: nil, pubdate: nil, rating: nil, publisher: nil, identifiers: {} of String => String,
+        languages: [] of String, comments: nil, custom: {} of String => JSON::Any)
+    end
+  end
+end

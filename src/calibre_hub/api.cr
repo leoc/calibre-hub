@@ -202,7 +202,7 @@ module CalibreHub
     end
 
     if w = writer
-      write_routes(w)
+      write_routes(w, Jobs.new(calibre, w, kategorie))
     end
 
     # OPDS for reader apps; its links point to /opds/* and /get/*
@@ -214,7 +214,21 @@ module CalibreHub
     end
   end
 
-  def self.write_routes(writer : Writer)
+  def self.write_routes(writer : Writer, jobs : Jobs)
+    # before /api/books/:id so "bulk" isn't taken for an id
+    post "/api/books/bulk" do |env|
+      write_errors(env) do
+        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        job = jobs.submit(body)
+        env.response.status_code = 202
+        {jobId: job.id, total: job.total}.to_json
+      end
+    end
+
+    get "/api/jobs/:id" do |env|
+      jobs[env.params.url["id"]]?.try(&.to_json) || fail(env, 404, {error: "not found"})
+    end
+
     patch "/api/books/:id" do |env|
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
