@@ -3,9 +3,11 @@ import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Sug
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
+import { dropFromLists, listBookIds, listHandlers, seedLists, withLists } from "./lists"
 
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
+seedLists(books)
 let loggedIn = true
 
 const SORT_KEY: Record<string, (b: Book) => string | number> = {
@@ -42,7 +44,9 @@ const cover = (b: Book) => {
 
 function filterBooks(p: URLSearchParams) {
   const k = p.get("kategorie")
+  const inList = p.get("list") ? new Set(listBookIds(Number(p.get("list"))) ?? []) : null
   return books.filter((b) => {
+    if (inList && !inList.has(b.id)) return false
     const cat = b.custom.kategorie as string | null
     if (k && !(cat === k || cat?.startsWith(`${k}.`))) return false
     if (p.getAll("tag").some((t) => !b.tags.includes(t))) return false
@@ -73,6 +77,7 @@ const trash: { entry: TrashEntry; book: Book }[] = []
 
 function moveToTrash(b: Book) {
   books.splice(books.indexOf(b), 1)
+  dropFromLists(b.id)
   trash.unshift({ entry: { id: b.id, title: b.title, authors: b.authors, formats: b.formats, deletedAt: new Date().toISOString() }, book: b })
 }
 
@@ -138,18 +143,26 @@ export const readHandlers = [
     const denied = auth()
     if (denied) return denied
     const p = new URL(request.url).searchParams
+    const listId = p.get("list")
+    if (listId && !listBookIds(Number(listId))) return HttpResponse.json({ error: "not found" }, { status: 404 })
     let list = filterBooks(p)
-    const key = SORT_KEY[p.get("sort") ?? "title"]
-    if (!key) return HttpResponse.json({ error: "unknown sort" }, { status: 400 })
     const dir = p.get("order") === "desc" ? -1 : 1
-    list = [...list].sort((a, b) => (key(a) < key(b) ? -dir : key(a) > key(b) ? dir : 0))
+    if (listId && (p.get("sort") ?? "listAdded") === "listAdded") {
+      // newest first, like the hub
+      const order = listBookIds(Number(listId))!
+      list = [...list].sort((a, b) => (order.indexOf(a.id) - order.indexOf(b.id)) * (p.get("order") === "asc" ? -1 : 1))
+    } else {
+      const key = SORT_KEY[p.get("sort") ?? "title"]
+      if (!key || (listId && !["title", "author", "series"].includes(p.get("sort")!))) return HttpResponse.json({ error: "unknown sort" }, { status: 400 })
+      list = [...list].sort((a, b) => (key(a) < key(b) ? -dir : key(a) > key(b) ? dir : 0))
+    }
     const offset = Number(p.get("offset") ?? 0)
     const limit = Math.min(Number(p.get("limit") ?? 50), 500)
-    return HttpResponse.json({ total: list.length, offset, limit, books: list.slice(offset, offset + limit).map(({ comments: _c, ...b }) => b) })
+    return HttpResponse.json({ total: list.length, offset, limit, books: list.slice(offset, offset + limit).map(({ comments: _c, ...b }) => withLists(b)) })
   }),
   http.get("/api/books/:id", ({ params }) => {
     const b = books.find((x) => x.id === Number(params.id))
-    return auth() ?? (b ? HttpResponse.json(b) : HttpResponse.json({ error: "not found" }, { status: 404 }))
+    return auth() ?? (b ? HttpResponse.json(withLists(b)) : HttpResponse.json({ error: "not found" }, { status: 404 }))
   }),
   http.get("/api/books/:id/cover", ({ params }) => {
     const custom = customCovers.get(Number(params.id))
@@ -381,4 +394,6 @@ export const setLoggedIn = (v: boolean) => {
   loggedIn = v
 }
 
-export const handlers = [...writeHandlers, ...metadata, ...readHandlers]
+const listMocks = listHandlers(books, (target) => ("ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query))))
+
+export const handlers = [...listMocks, ...writeHandlers, ...metadata, ...readHandlers]

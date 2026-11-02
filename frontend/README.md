@@ -26,21 +26,21 @@ the lockfile (v9) works with 10 to 12.
 
 ## Design
 
-- Library state lives in the URL (`?q=&kategorie=&unsorted=&tag=&author=&series=&lang=&sort=&order=&page=&book=`),
+- Library state lives in the URL (`?q=&kategorie=&unsorted=&tag=&author=&series=&lang=&list=&sort=&order=&page=&book=`),
   plain query strings with repeated `tag`. Pages of 60 instead of infinite
   scroll (one redraw per page on E-Ink).
 - Categories are shown and typed as paths (`Sachbuch/Geschichte`) but stored,
   in URLs and the API, with dots as calibre does (`src/lib/kategorie.ts`).
   `?unsorted` lists books without a category (`#kategorie:false`); saving a
   category there opens the next one in the form.
-- Desktop (≥ 1024 px): sidebar with fast tags, category tree, authors,
+- Desktop (≥ 1024 px): sidebar with reading lists, category tree, authors,
   series, tags, languages; book detail as a side panel (`?book=`). Smaller
   screens: sidebar as drawer, detail as its own view. `/books/:id` is a
   permanent link.
 - Search and command palette, specified in `e2e/features/search.feature`:
   wide screens (≥ 640 px) search the library live from the header; a prefix
-  at the start (`a ` author, `s ` series, `t ` tag, `k ` category, `b `
-  books, `>` commands) hands over to the palette, as do the command button
+  at the start (`a ` author, `s ` series, `t ` tag, `k ` category, `l `
+  lists, `b ` books, `>` commands) hands over to the palette, as do the command button
   and Ctrl+K. Narrow screens open the palette full screen from the
   search bar, with scope chips instead of typed prefixes.
 - Keyboard control, specified in `e2e/features/keyboard.feature`
@@ -113,5 +113,21 @@ the lockfile (v9) works with 10 to 12.
   ISBN, publisher, date; Open Library times out for `id % 53`), reverts
   restore the fields and drop the `auto-metadaten` tag with the last active
   change, candidates exist for every book (search "nichts" finds none).
-- Fast tags and the category column come from `GET /api/config`
-  (`services.calibre-hub.fastTags`); toggling them follows in Phase 4.
+- Reading lists (`e2e/features/lists.feature`), like playlists: the
+  sidebar section "Listen" (favorites first, "Neue Liste"), a list's page
+  is the library with `?list=` (cover mosaic of the books added last,
+  description, count, favorite, "Liste bearbeiten" with name, description,
+  favorite, default list, sync to the reader, visibility and delete; sorts:
+  Zuletzt hinzugefügt, Titel, Autor, Serie). The bookmark on covers and
+  list rows saves to the default list; a long press or right click opens
+  "In Listen speichern" (a checkbox per list, "Neue Liste" with its name
+  typed in place), as does "Speichern" in the detail, which also offers the
+  default list and the list used last ("In Urlaub"). Bulk: "Zu Liste",
+  "Aus Liste" (in a list: "Aus dieser Liste"). Palette: `l ` lists the
+  lists, `> Zu Liste: …` / `Aus Liste: …` for the open book, "Zu Liste …"
+  opens the dialog, `> Neue Liste: Name` (or a new name after `l `) creates
+  one. They replace the fast tags; `fastTags` in `GET /api/config` is
+  ignored. The mocks start with "Leseliste" (default, favorite, synced, the
+  books tagged `leseliste`), "Urlaub" (favorite, used last, books 11–13)
+  and an empty "Klassiker".
+- The category column comes from `GET /api/config`.

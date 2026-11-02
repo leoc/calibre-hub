@@ -31,8 +31,8 @@ test("Back closes the palette and the drawer, then works as usual", async ({ pag
 
     // a link in the drawer replaces the drawer's entry: one Back returns
     await page.getByRole("button", { name: "Menü" }).click()
-    await page.getByRole("link", { name: /^leseliste/i }).click()
-    await expect(page).toHaveURL(/tag=leseliste/)
+    await page.getByRole("dialog", { name: "Bibliothek" }).getByRole("link", { name: /^Urlaub/ }).click()
+    await expect(page).toHaveURL(/list=2/)
     await page.goBack()
     await expect(page).toHaveURL(start)
   }

@@ -1,8 +1,8 @@
 import type { CategoryNode, Named } from "./api"
 
-export type Scope = "all" | "authors" | "series" | "tags" | "kategorie" | "books" | "actions"
+export type Scope = "all" | "authors" | "series" | "tags" | "kategorie" | "lists" | "books" | "actions"
 
-const PREFIXES: Record<string, Scope> = { a: "authors", s: "series", t: "tags", k: "kategorie", b: "books" }
+const PREFIXES: Record<string, Scope> = { a: "authors", s: "series", t: "tags", k: "kategorie", l: "lists", b: "books" }
 
 // "a pratchett" -> authors, "> theme" / ">theme" -> actions, else everything.
 export function parseInput(input: string): { scope: Scope; text: string } {

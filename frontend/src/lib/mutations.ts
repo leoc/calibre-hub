@@ -2,16 +2,12 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { ApiError, write, type Book, type BookPage, type BookPatch, type ClassifyTarget, type MetadataTarget } from "./api"
 
 // Put a changed book into every cached list and its detail entry.
+// Writes answer without the book's lists; those stay as cached.
 export function storeBook(qc: QueryClient, book: Book) {
-  qc.setQueryData<Book>(["book", book.id], (old) => ({ ...book, comments: book.comments ?? old?.comments }))
+  qc.setQueryData<Book>(["book", book.id], (old) => ({ ...book, comments: book.comments ?? old?.comments, lists: book.lists ?? old?.lists }))
   qc.setQueriesData<BookPage>({ queryKey: ["books"] }, (page) =>
-    page && { ...page, books: page.books.map((b) => (b.id === book.id ? { ...book, comments: undefined } : b)) },
+    page && { ...page, books: page.books.map((b) => (b.id === book.id ? { ...book, comments: undefined, lists: book.lists ?? b.lists } : b)) },
   )
-}
-
-function patchCached(qc: QueryClient, id: number, fn: (b: Book) => Book) {
-  qc.setQueryData<Book>(["book", id], (b) => b && fn(b))
-  qc.setQueriesData<BookPage>({ queryKey: ["books"] }, (page) => page && { ...page, books: page.books.map((b) => (b.id === id ? fn(b) : b)) })
 }
 
 export class ConflictError extends Error {
@@ -35,27 +31,6 @@ export function useUpdateBook(id: number) {
       storeBook(qc, book)
       // lists may be sorted or filtered by what changed
       qc.invalidateQueries({ queryKey: ["books"] })
-      qc.invalidateQueries({ queryKey: ["categories"] })
-    },
-  })
-}
-
-// Fast tags: optimistic, only add/remove so concurrent edits survive.
-export function useToggleTag() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ book, tag, on }: { book: Book; tag: string; on: boolean }) =>
-      write.patchBook(book.id, on ? { addTags: [tag] } : { removeTags: [tag] }),
-    onMutate: async ({ book, tag, on }) => {
-      await qc.cancelQueries({ queryKey: ["book", book.id] })
-      const toggle = (b: Book) => ({ ...b, tags: on ? [...new Set([...b.tags, tag])] : b.tags.filter((t) => t !== tag) })
-      patchCached(qc, book.id, toggle)
-    },
-    onError: (_e, { book, tag, on }) => {
-      patchCached(qc, book.id, (b) => ({ ...b, tags: on ? b.tags.filter((t) => t !== tag) : [...b.tags, tag] }))
-    },
-    onSuccess: (book) => storeBook(qc, book),
-    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["categories"] })
     },
   })

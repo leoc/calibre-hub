@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, LayoutGrid, List, ListChecks, X } from "lucide-react"
 import { selection, useSelection } from "@/lib/selection"
-import { SORTS, type Sort } from "@/lib/api"
-import { defaultOrder, effectiveSort, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
+import type { Sort } from "@/lib/api"
+import { defaultOrder, effectiveSort, sortsFor, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
 import { setView, useView } from "@/lib/prefs"
 import { categoryLabel } from "@/lib/kategorie"
 import { useGoLibrary } from "@/lib/use-library"
@@ -42,7 +42,7 @@ export function LibraryToolbar({ search, total, page = 1, pages = 1 }: { search:
               }}
               className="h-9 min-w-0 rounded-md border bg-background px-2 text-sm max-sm:w-full eink:h-12 touch:h-11 eink:border-2 eink:text-base"
             >
-              {SORTS.map((s) => (
+              {sortsFor(search).map((s) => (
                 <option key={s} value={s}>
                   {t(`sort.${s}`)}
                 </option>

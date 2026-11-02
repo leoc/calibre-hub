@@ -17,9 +17,9 @@ test("edit a book and save", async ({ page }) => {
   await expect(page.locator("article").getByText("neuer-tag")).toBeVisible()
 })
 
-test("fast tag toggles optimistically", async ({ page, isMobile }) => {
+test("the default list toggles optimistically", async ({ page, isMobile }) => {
   await page.goto("/?book=5")
-  const btn = page.getByRole("button", { name: "leseliste", exact: true })
+  const btn = page.getByRole("button", { name: "Leseliste", exact: true })
   const before = await btn.getAttribute("aria-pressed")
   await btn.click()
   await expect(btn).toHaveAttribute("aria-pressed", before === "true" ? "false" : "true")

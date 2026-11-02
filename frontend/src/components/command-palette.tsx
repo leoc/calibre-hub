@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
-import { ArrowDownUp, Bookmark, Keyboard, ListChecks, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
-import { api, coverUrl, DEFAULT_CONFIG, SORTS, type Book, type Sort } from "@/lib/api"
+import { ArrowDownUp, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
+import { api, coverUrl, DEFAULT_CONFIG, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
-import { useToggleTag } from "@/lib/mutations"
+import { inList, lastUsedList, listsQuery, saveDialog, useCreateList, useListMembership } from "@/lib/lists"
 import { matchNamed, parseInput, type Scope } from "@/lib/palette"
 import { categorySuggestions } from "@/lib/kategorie"
-import { defaultOrder, toBookQuery, toggleTag, withFilter } from "@/lib/search"
+import { defaultOrder, sortsFor, toBookQuery, toggleTag, withFilter } from "@/lib/search"
 import { useLibrarySearch } from "@/lib/use-library"
 import { setView } from "@/lib/prefs"
 import { requestBulk, useSelection, type BulkAction } from "@/lib/selection"
@@ -34,6 +34,9 @@ function useDebounced<T>(value: T, ms: number) {
   }, [value, ms])
   return v
 }
+
+// "Zu Liste: Urlaub" is found by "zu liste urlaub" too
+const plain = (s: string) => s.toLowerCase().replace(/[:…]/g, " ").replace(/\s+/g, " ").trim()
 
 interface Action {
   id: string
@@ -72,19 +75,28 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const go = (s: Parameters<typeof withFilter>[0]) => closeThen(() => navigate({ to: "/", search: s }))
 
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
-  const toggleFast = useToggleTag()
+  const { data: lists } = useQuery({ ...listsQuery, enabled: open })
+  const membership = useListMembership()
+  const createList = useCreateList()
   // the book open in the detail, if any
   const openBook = search.book != null ? queryClient.getQueryData<Book>(["book", search.book]) : undefined
+  const editableLists = lists?.filter((l) => l.editable) ?? []
+  const last = lastUsedList(lists)
   const bookActions: Action[] = openBook
     ? [
-        ...config.fastTags.map((tag) => {
-          const on = openBook.tags.includes(tag)
+        ...(last && !inList(openBook, last.id)
+          ? [{ id: "list-last", label: t("list.quick", { name: last.name }), icon: <BookmarkPlus />, run: () => (membership.mutate({ list: last, bookIds: [openBook.id], on: true }), close()) }]
+          : []),
+        { id: "list-dialog", label: t("list.addToMenu"), icon: <ListPlus />, run: () => closeThen(() => saveDialog.open(openBook)) },
+        // "Zu Liste: Urlaub", found by typing part of the name
+        ...editableLists.map((l) => {
+          const on = inList(openBook, l.id)
           return {
-            id: `fast-${tag}`,
-            label: on ? t("fast.remove", { tag }) : t("fast.add", { tag }),
-            icon: <Bookmark />,
+            id: `list-${l.id}`,
+            label: on ? t("list.removeFrom", { name: l.name }) : t("list.addTo", { name: l.name }),
+            icon: on ? <BookmarkMinus /> : <Bookmark />,
             run: () => {
-              toggleFast.mutate({ book: openBook, tag, on: !on })
+              membership.mutate({ list: l, bookIds: [openBook.id], on: !on })
               close()
             },
           }
@@ -92,6 +104,22 @@ export function CommandPalette({ initialInput, onClose }: Props) {
         { id: "edit", label: `${t("book.edit")}: ${openBook.title}`, icon: <Pencil />, run: () => go({ ...search, edit: true }) },
       ]
     : []
+  // "Neue Liste: <Name>": creates it (with the open book) and opens it
+  const newList = (name: string): Action => ({
+    id: "list-new",
+    label: t("list.newNamed", { name }),
+    icon: <ListPlus />,
+    run: () =>
+      createList.mutate(
+        { name },
+        {
+          onSuccess: (l) => {
+            if (openBook) membership.mutate({ list: l, bookIds: [openBook.id], on: true })
+            go(withFilter({}, { list: l.id }))
+          },
+        },
+      ),
+  })
 
   // with books selected (bulk mode in the library): the bulk commands, with the count
   const sel = useSelection()
@@ -124,7 +152,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       ...MODES.map((m) => ({ id: `keys-${m}`, label: `${t("keys.label")}: ${t(`keys.${m}`)}`, icon: <Keyboard />, run: () => (keyboard.setMode(m), close()) })),
       { id: "keys-help", label: t("keys.help"), icon: <Keyboard />, run: () => closeThen(() => keyboard.setPanel("help")) },
       { id: "keys-settings", label: t("keys.settings"), icon: <Keyboard />, run: () => closeThen(() => keyboard.setPanel("settings")) },
-      ...SORTS.map((s: Sort) => ({
+      ...sortsFor(search).map((s: Sort) => ({
         id: `sort-${s}`,
         label: `${t("sort.label")}: ${t(`sort.${s}`)}`,
         icon: <ArrowDownUp />,
@@ -151,10 +179,16 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const tags = cats && wants("tags") ? matchNamed(cats.tags, text, limit) : []
   // shown and matched as "A/B"
   const kategorien = cats && wants("kategorie") ? matchNamed(categorySuggestions(cats.kategorie), text, limit) : []
-  const matchedActions =
-    scope === "actions" || (scope === "all" && text)
-      ? [...bulkActions, ...bookActions, ...actions].filter((a) => a.label.toLowerCase().includes(text.toLowerCase())).slice(0, scope === "all" ? 4 : undefined)
-      : []
+  const listItems = lists && wants("lists") ? matchNamed(lists.map((l) => ({ ...l, name: l.name, count: l.count })), text, limit) : []
+  // typed in the lists scope, or as "> Neue Liste: Name"
+  const newName = scope === "lists" ? text : scope === "actions" ? (/^neue liste:?\s+(.+)$/i.exec(text)?.[1]?.trim() ?? "") : ""
+  const offerNew = !!newName && !lists?.some((l) => l.name.toLowerCase() === newName.toLowerCase())
+  const matchedActions = [
+    ...(offerNew ? [newList(newName)] : []),
+    ...(scope === "actions" || (scope === "all" && text)
+      ? [...bulkActions, ...bookActions, ...actions].filter((a) => plain(a.label).includes(plain(text))).slice(0, scope === "all" ? 4 : undefined)
+      : []),
+  ]
   const showFulltext = (scope === "all" || scope === "books") && text.length > 0
 
   const fulltext = (
@@ -236,6 +270,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
             {!!series.length && <CommandGroup heading={t("palette.series")}>{named(series, <BookText />, (i) => go(withFilter({}, { series: i.name })), "s")}</CommandGroup>}
             {!!kategorien.length && <CommandGroup heading={t("palette.kategorie")}>{named(kategorien, <FolderTree />, (i) => go(withFilter({}, { kategorie: i.path })), "k")}</CommandGroup>}
             {!!tags.length && <CommandGroup heading={t("palette.tags")}>{named(tags, <Tag />, (i) => go(toggleTag({}, i.name)), "t")}</CommandGroup>}
+            {!!listItems.length && <CommandGroup heading={t("palette.lists")}>{named(listItems, <ListIcon />, (i) => go(withFilter({}, { list: i.id })), "l")}</CommandGroup>}
             {!!matchedActions.length && (
               <CommandGroup heading={t("palette.actions")}>
                 {matchedActions.map((a) => (
@@ -260,6 +295,7 @@ const SCOPES: { scope: Scope; prefix: string; label: MessageKey }[] = [
   { scope: "series", prefix: "s ", label: "palette.series" },
   { scope: "tags", prefix: "t ", label: "palette.tags" },
   { scope: "kategorie", prefix: "k ", label: "palette.kategorie" },
+  { scope: "lists", prefix: "l ", label: "palette.lists" },
   { scope: "actions", prefix: ">", label: "palette.actions" },
 ]
 

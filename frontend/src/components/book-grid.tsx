@@ -1,7 +1,7 @@
 import type { Book } from "@/lib/api"
 import type { LibrarySearch } from "@/lib/search"
 import { BookCover } from "./book-cover"
-import { FastTagToggles } from "./fast-tags"
+import { QuickListToggle } from "./lists"
 import { BookItem } from "./book-item"
 import { t } from "@/i18n"
 import { cn } from "@/lib/utils"
@@ -39,7 +39,7 @@ export function BookGrid({ books, search, showIndex }: { books: Book[]; search: 
             <p className="truncate text-xs text-muted-foreground eink:text-sm eink:text-black">{b.authors.join(", ")}</p>
             {!showIndex && seriesLabel(b) && <p className="truncate text-xs text-muted-foreground italic eink:text-sm eink:text-black">{seriesLabel(b)}</p>}
           </BookItem>
-          <FastTagToggles book={b} className="absolute top-1.5 right-1.5" onCover />
+          <QuickListToggle book={b} className="absolute top-1.5 right-1.5" onCover />
         </li>
       ))}
     </ul>

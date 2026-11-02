@@ -18,7 +18,38 @@ export interface Book {
   languages: string[]
   comments?: string | null
   custom: Record<string, unknown>
+  // ids of the reading lists the book is in (older hubs: missing)
+  lists?: number[]
 }
+
+export const VISIBILITIES = ["private", "readable", "editable"] as const
+export type Visibility = (typeof VISIBILITIES)[number]
+
+// A reading list, like a playlist (GET /api/lists)
+export interface ReadingList {
+  id: number
+  name: string
+  description: string
+  owner: string
+  visibility: Visibility
+  // mirrored to the reader (leseliste handler)
+  sync: boolean
+  // shown in the sidebar first
+  favorite: boolean
+  // the bookmark on the cover saves to it
+  isDefault: boolean
+  count: number
+  // the most recently added books, for the cover mosaic
+  coverBookIds: number[]
+  createdAt: string
+  updatedAt: string
+  // last time books were added
+  lastUsedAt: string | null
+  // the user may change it
+  editable: boolean
+}
+
+export type ListPatch = Partial<Pick<ReadingList, "name" | "description" | "visibility" | "sync" | "favorite" | "isDefault">>
 
 export interface BookPage {
   total: number
@@ -48,7 +79,8 @@ export interface Categories {
 }
 
 export interface HubConfig {
-  fastTags: string[]
+  // replaced by favorite lists; still sent for older web apps
+  fastTags?: string[]
   categoryColumn: string | null
   // category suggestions from a local model (services.calibre-hub.classify)
   classify?: boolean
@@ -146,7 +178,10 @@ export interface ClassifyStatus {
 export type ClassifyTarget = "unsorted" | { ids: number[] }
 
 export const SORTS = ["title", "author", "added", "modified", "published", "series", "rating"] as const
-export type Sort = (typeof SORTS)[number]
+// inside a list: the time a book was added to it first, no manual order
+export const LIST_SORTS = ["listAdded", "title", "author", "series"] as const
+export const ALL_SORTS = [...SORTS, "listAdded"] as const
+export type Sort = (typeof ALL_SORTS)[number]
 
 export interface BookQuery {
   q?: string
@@ -154,6 +189,8 @@ export interface BookQuery {
   tag?: string[]
   author?: string
   series?: string
+  // books of a reading list
+  list?: number
   sort?: Sort
   order?: "asc" | "desc"
   offset?: number
@@ -217,6 +254,8 @@ export const api = {
   // q: own search text instead of the book's title and author
   metadataCandidates: (bookId: number, q?: string) =>
     request<{ candidates: MetadataCandidate[] }>(`/api/books/${bookId}/metadata/candidates${q ? `?${new URLSearchParams({ q })}` : ""}`),
+  lists: () => request<ReadingList[]>("/api/lists"),
+  list: (id: number) => request<ReadingList>(`/api/lists/${id}`),
   // not every hub has /api/config yet (#8391); fall back to the defaults
   config: () =>
     request<HubConfig>("/api/config").catch((e) => {
@@ -293,7 +332,21 @@ export type UploadResult = { status: "added"; book: Book } | { status: "duplicat
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
+// books to add to or remove from a list
+export type ListBooks = { bookIds: number[] } | { target: BulkTarget }
+// the list afterwards and the books that were new in it, or left it
+export interface ListChange {
+  list: ReadingList
+  added?: number[]
+  removed?: number[]
+}
+
 export const write = {
+  createList: (list: ListPatch & { name: string }) => request<ReadingList>("/api/lists", { method: "POST", ...json(list) }),
+  updateList: (id: number, patch: ListPatch) => request<ReadingList>(`/api/lists/${id}`, { method: "PATCH", ...json(patch) }),
+  deleteList: (id: number) => request<{ list: ReadingList }>(`/api/lists/${id}`, { method: "DELETE" }),
+  addToList: (id: number, books: ListBooks) => request<ListChange>(`/api/lists/${id}/books`, { method: "POST", ...json(books) }),
+  removeFromList: (id: number, books: ListBooks) => request<ListChange>(`/api/lists/${id}/books/remove`, { method: "POST", ...json(books) }),
   patchBook: (id: number, patch: BookPatch) => request<Book>(`/api/books/${id}`, { method: "PATCH", ...json(patch) }),
   // into calibre's trash; returns the book as it was
   deleteBook: (id: number) => request<{ book: Book }>(`/api/books/${id}`, { method: "DELETE" }),
@@ -361,7 +414,7 @@ export function uploadBook(file: File, opts: UploadOptions, onProgress: (fractio
   })
 }
 
-export const DEFAULT_CONFIG: HubConfig = { fastTags: ["leseliste"], categoryColumn: "kategorie", classify: false, metadata: false }
+export const DEFAULT_CONFIG: HubConfig = { categoryColumn: "kategorie", classify: false, metadata: false }
 
 export const coverUrl = (id: number, thumb = true, version?: string) =>
   `/api/books/${id}/cover${thumb ? "?size=thumb" : ""}${version ? `${thumb ? "&" : "?"}v=${encodeURIComponent(version)}` : ""}`

@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query"
 import { Keyboard, Settings2 } from "lucide-react"
 import { DEFAULT_CONFIG, downloadUrl, type Book } from "@/lib/api"
 import { configQuery } from "@/lib/queries"
-import { useToggleTag } from "@/lib/mutations"
+import { defaultList, inList, listsQuery, saveDialog, useListMembership } from "@/lib/lists"
 import { eventToken, KeyEngine, MODES, type Action } from "@/lib/keymap"
 import { activateWhenLoaded, bookElement, focusActive, keyboard, registerList, runListAction, useKeyboard } from "@/lib/keyboard"
 import type { LibrarySearch } from "@/lib/search"
@@ -290,11 +290,12 @@ interface ListProps {
 export function useListKeys(props: ListProps): ReactNode {
   const navigate = useNavigate()
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
-  const toggleTag = useToggleTag()
+  const { data: lists } = useQuery(listsQuery)
+  const membership = useListMembership()
   const [deleting, setDeleting] = useState<{ book: Book; next: number | null } | null>(null)
-  const latest = useRef({ ...props, config, toggleTag })
+  const latest = useRef({ ...props, config, lists, membership })
   useEffect(() => {
-    latest.current = { ...props, config, toggleTag }
+    latest.current = { ...props, config, lists, membership }
   })
   // ending the selection (bulk bar X) ends visual mode too
   const { active: selecting } = useSelection()
@@ -305,7 +306,7 @@ export function useListKeys(props: ListProps): ReactNode {
   useEffect(
     () =>
       registerList((action, count) => {
-        const { books, search, page, pages, config, toggleTag } = latest.current
+        const { books, search, page, pages, lists, membership } = latest.current
         const detailOpen = search.book != null
         // the edit form owns the keys
         if (search.edit) return false
@@ -420,10 +421,13 @@ export function useListKeys(props: ListProps): ReactNode {
             navigate({ to: "/", search: { ...search, book: book.id, edit: true } })
             return true
           case "toggleList": {
-            // the reading list is the first fast tag
-            const tag = config.fastTags[0]
-            if (!tag) return false
-            toggleTag.mutate({ book, tag, on: !book.tags.includes(tag) })
+            // the default reading list; without one the save dialog
+            const list = defaultList(lists)
+            if (!list) {
+              saveDialog.open(book)
+              return true
+            }
+            membership.mutate({ list, bookIds: [book.id], on: !inList(book, list.id) })
             return true
           }
           case "delete":

@@ -9,7 +9,7 @@ import { LibraryLink } from "./library-link"
 import { formatDate, t } from "@/i18n"
 import { BookCover } from "./book-cover"
 import { ArrowDown, ArrowUp } from "lucide-react"
-import { FastTagSpacer, FastTagToggles } from "./fast-tags"
+import { QuickListSpacer, QuickListToggle } from "./lists"
 import { BookItem } from "./book-item"
 import { formatIndex } from "./book-grid"
 
@@ -34,10 +34,10 @@ export function BookList({ books, search }: { books: Book[]; search: LibrarySear
           </span>
           <span>{t("book.kategorie")}</span>
           <span className="flex justify-end">
-            <SortHeader search={search} sort="added" label={t("sort.added")} />
+            <SortHeader search={search} sort={search.list != null ? "listAdded" : "added"} label={t("sort.added")} />
           </span>
         </div>
-        <FastTagSpacer className="shrink-0 px-2" />
+        <QuickListSpacer className="shrink-0 px-2" />
       </div>
       <ul className="divide-y eink:divide-y-2 eink:divide-black">
       {books.map((b) => (
@@ -66,7 +66,7 @@ export function BookList({ books, search }: { books: Book[]; search: LibrarySear
               {b.added && formatDate(b.added)}
             </p>
           </BookItem>
-          <FastTagToggles book={b} className="shrink-0 px-2" />
+          <QuickListToggle book={b} className="shrink-0 px-2" />
         </li>
       ))}
       </ul>

@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { SORTS, type BookQuery } from "./api"
+import { ALL_SORTS, LIST_SORTS, SORTS, type BookQuery, type Sort } from "./api"
 
 export const PAGE_SIZE = 60
 
@@ -24,7 +24,9 @@ export const librarySearchSchema = z.object({
   lang: z.string().optional().catch(undefined),
   // books without a category ("Ohne Kategorie")
   unsorted: flag,
-  sort: z.enum(SORTS).optional().catch(undefined),
+  // a reading list: its page, with description and covers
+  list: z.coerce.number().int().optional().catch(undefined),
+  sort: z.enum(ALL_SORTS).optional().catch(undefined),
   order: z.enum(["asc", "desc"]).optional().catch(undefined),
   page: z.coerce.number().int().min(1).optional().catch(undefined),
   // book opened in the detail panel (desktop) or as a page (small screens)
@@ -34,22 +36,26 @@ export const librarySearchSchema = z.object({
 
 export type LibrarySearch = z.infer<typeof librarySearchSchema>
 
-const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang", "unsorted"] as const
+const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang", "unsorted", "list"] as const
 
 export function hasFilters(s: LibrarySearch) {
   return FILTER_KEYS.some((k) => (Array.isArray(s[k]) ? s[k].length > 0 : !!s[k]))
 }
 
+// The sorts offered: inside a list only those a list knows
+export const sortsFor = (s: LibrarySearch): readonly Sort[] => (s.list != null ? LIST_SORTS : SORTS)
+
 // Effective sort: explicit choice, otherwise series order inside a series,
-// otherwise newest first.
+// otherwise newest first (in a list: most recently added to it).
 export function effectiveSort(s: LibrarySearch): Pick<BookQuery, "sort" | "order"> {
-  if (s.sort) return { sort: s.sort, order: s.order ?? defaultOrder(s.sort) }
+  if (s.sort && sortsFor(s).includes(s.sort)) return { sort: s.sort, order: s.order ?? defaultOrder(s.sort) }
+  if (s.list != null) return { sort: "listAdded", order: s.sort === "listAdded" ? (s.order ?? "desc") : "desc" }
   if (s.series) return { sort: "series", order: "asc" }
   return { sort: "added", order: "desc" }
 }
 
 export function defaultOrder(sort: BookQuery["sort"]): "asc" | "desc" {
-  return sort === "added" || sort === "modified" || sort === "published" || sort === "rating" ? "desc" : "asc"
+  return sort === "added" || sort === "listAdded" || sort === "modified" || sort === "published" || sort === "rating" ? "desc" : "asc"
 }
 
 const quote = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
@@ -71,6 +77,7 @@ export function toBookQuery(s: LibrarySearch, categoryColumn: string | null = nu
     tag: s.tag,
     author: s.author,
     series: s.series,
+    list: s.list,
     ...effectiveSort(s),
     offset: ((s.page ?? 1) - 1) * PAGE_SIZE,
     limit: PAGE_SIZE,

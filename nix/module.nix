@@ -229,7 +229,7 @@ in
     fastTags = mkOption {
       type = types.listOf types.str;
       default = [ "leseliste" ];
-      description = "Tags the web app offers as one-click toggles (GET /api/config).";
+      description = "Deprecated: the web app saves to reading lists now; still sent in GET /api/config for older web apps.";
     };
 
     frontend.package = mkOption {

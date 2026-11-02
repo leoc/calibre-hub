@@ -11,7 +11,8 @@ import { formatIndex } from "./book-grid"
 import { ErrorMessage } from "./error-view"
 import { Button, buttonVariants } from "./ui/button"
 import { BookEdit } from "./book-edit"
-import { FastTagButtons } from "./fast-tags"
+import { ListButtons } from "./lists"
+import { listsQuery } from "@/lib/lists"
 import { DeleteBookButton } from "./delete-book"
 import { SuggestionBox } from "./suggestion-box"
 import { Badge } from "./ui/badge"
@@ -51,6 +52,8 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const kategorie = categoryOf(book, config.categoryColumn)
   const formats = sortFormats(book.formats)
+  const { data: lists } = useQuery(listsQuery)
+  const inLists = lists?.filter((l) => book.lists?.includes(l.id)) ?? []
   // E-Ink: links become 44 px tall tap targets
   const link = "underline-offset-2 hover:underline eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center eink:underline"
 
@@ -97,7 +100,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
                 <Pencil /> {t("book.edit")}
               </Button>
             )}
-            <FastTagButtons book={book} />
+            <ListButtons book={book} />
             {onDeleted && <DeleteBookButton book={book} onDeleted={onDeleted} />}
           </div>
         </div>
@@ -106,6 +109,17 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
       <SuggestionBox book={book} />
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm eink:text-base">
+        {inLists.length > 0 && (
+          <Row label={t("list.inLists")}>
+            <span className="flex flex-wrap gap-1.5">
+              {inLists.map((l) => (
+                <LibraryLink key={l.id} search={withFilter({}, { list: l.id })} onClick={onNavigate} className="eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center">
+                  <Badge variant="outline">{l.name}</Badge>
+                </LibraryLink>
+              ))}
+            </span>
+          </Row>
+        )}
         {kategorie && (
           <Row label={t("book.kategorie")}>
             <Breadcrumb path={kategorie} onNavigate={onNavigate} />
@@ -116,7 +130,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
             <span className="flex flex-wrap gap-1.5">
               {book.tags.map((tag) => (
                 <LibraryLink key={tag} search={toggleTag({}, tag)} onClick={onNavigate} className="eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center">
-                  <Badge variant={config.fastTags.includes(tag) ? "default" : "secondary"}>{tag}</Badge>
+                  <Badge variant="secondary">{tag}</Badge>
                 </LibraryLink>
               ))}
             </span>

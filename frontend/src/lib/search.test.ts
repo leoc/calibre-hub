@@ -31,6 +31,15 @@ describe("library search", () => {
     })
   })
 
+  it("sorts a list by the time books were added to it, and only by what a list knows", () => {
+    expect(toBookQuery({ list: 3 })).toMatchObject({ list: 3, sort: "listAdded", order: "desc" })
+    expect(toBookQuery({ list: 3, sort: "listAdded", order: "asc" })).toMatchObject({ sort: "listAdded", order: "asc" })
+    expect(toBookQuery({ list: 3, sort: "author" })).toMatchObject({ sort: "author", order: "asc" })
+    // a library sort a list doesn't have falls back
+    expect(toBookQuery({ list: 3, sort: "rating" })).toMatchObject({ sort: "listAdded", order: "desc" })
+    expect(librarySearchSchema.parse({ list: "7" }).list).toBe(7)
+  })
+
   it("resets page and detail when filters change", () => {
     expect(withFilter({ page: 4, book: 7 }, { author: "A" })).toEqual({ author: "A", page: undefined, book: undefined })
     expect(toggleTag({ tag: ["a"] }, "a").tag).toBeUndefined()

@@ -15,6 +15,7 @@ import { Sidebar } from "./sidebar"
 import { CommandPalette } from "./command-palette"
 import { EinkSuggestion } from "./theme-switch"
 import { UploadButton, UploadHost } from "./upload"
+import { SaveDialogHost } from "./lists"
 import { LibraryLink, ReplaceHistory } from "@/components/library-link"
 import { KeyboardHost } from "./keyboard"
 import { activateWhenLoaded, focusActive, focusSearch, registerSearchFocus } from "@/lib/keyboard"
@@ -103,6 +104,7 @@ export function AppShell() {
         </main>
       </div>
       <UploadHost />
+      <SaveDialogHost />
       {/* mounted only while open, so the input starts empty each time */}
       {palette !== null && <CommandPalette initialInput={palette} onClose={closePalette} />}
       {/* "/" focuses the wide search bar (phones: opens the palette), ">" the palette's commands */}

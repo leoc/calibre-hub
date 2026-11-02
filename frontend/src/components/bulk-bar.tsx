@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, CircleAlert, Loader2, Trash2, X } from "lucide-react"
-import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget } from "@/lib/api"
+import { CheckCircle2, CircleAlert, ListMinus, ListPlus, Loader2, Trash2, X } from "lucide-react"
+import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget, type ReadingList } from "@/lib/api"
+import { listsQuery, useBulkList } from "@/lib/lists"
+import { NewListInline } from "./lists"
 import { categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { categoriesQuery, configQuery } from "@/lib/queries"
 import { toBookQuery, type LibrarySearch } from "@/lib/search"
@@ -25,9 +27,15 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const [action, setAction] = useState<Action | null>(null)
   const [job, setJob] = useState<StartedJob | null>(null)
+  const [listAction, setListAction] = useState<"add" | "remove" | null>(null)
+  // the outcome of a list change, shown until the search changes
+  const [listResult, setListResult] = useState<{ text: string; key: string } | null>(null)
+  const bulkList = useBulkList()
   const count = sel.all ? total : sel.ids.size
   // "all matches" belongs to one search
   const key = JSON.stringify({ ...search, page: undefined, book: undefined, edit: undefined })
+  const listDone = listResult?.key === key ? listResult.text : null
+  const setListDone = (text: string | null) => setListResult(text ? { text, key } : null)
   useEffect(() => {
     if (sel.all) selection.clear()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -66,7 +74,14 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
           </Button>
         )}
       </div>
-      {job ? (
+      {listDone ? (
+        <span className="flex items-center gap-2 text-sm" role="status">
+          <CheckCircle2 className="size-4 shrink-0" /> {listDone}
+          <Button variant="ghost" size="sm" onClick={() => setListDone(null)}>
+            OK
+          </Button>
+        </span>
+      ) : job ? (
         // no overflow here: the error list opens above the bar
         <div className="flex flex-wrap items-center gap-2">
           <JobProgress job={job} onClose={() => setJob(null)} onRestart={setJob} />
@@ -78,13 +93,102 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
               {t(`bulk.${a}`)}
             </Button>
           ))}
+          <Button variant="outline" size="sm" disabled={!count} onClick={() => setListAction("add")}>
+            <ListPlus /> {t("bulk.addToList")}
+          </Button>
+          {search.list != null ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!count || bulkList.isPending}
+              onClick={() =>
+                bulkList.mutate(
+                  { listId: search.list!, target, remove: true },
+                  { onSuccess: (r) => (setListDone(t("bulk.listRemoved", { count: formatNumber(r.removed?.length ?? 0), name: r.list.name })), selection.clear()) },
+                )
+              }
+            >
+              <ListMinus /> {t("bulk.removeFromThis")}
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" disabled={!count} onClick={() => setListAction("remove")}>
+              <ListMinus /> {t("bulk.removeFromList")}
+            </Button>
+          )}
           <Button variant="outline" size="sm" disabled={!count} onClick={() => setAction("delete")}>
             <Trash2 /> {t("bulk.delete")}
           </Button>
         </div>
       )}
       {action && <BulkDialog action={action} count={count} target={target} onClose={() => setAction(null)} onStarted={setJob} />}
+      {listAction && <BulkListDialog remove={listAction === "remove"} count={count} target={target} onClose={() => setListAction(null)} onDone={setListDone} />}
     </div>
+  )
+}
+
+// Adds the selection to a list (or a new one), or removes it from one
+function BulkListDialog({
+  remove,
+  count,
+  target,
+  onClose,
+  onDone,
+}: {
+  remove: boolean
+  count: number
+  target: BulkTarget
+  onClose: () => void
+  onDone: (message: string) => void
+}) {
+  const { data: lists } = useQuery(listsQuery)
+  const bulkList = useBulkList()
+  const [picked, setPicked] = useState<number | null>(null)
+  const editable = lists?.filter((l) => l.editable) ?? []
+  const run = (list: ReadingList) =>
+    bulkList.mutate(
+      { listId: list.id, target, remove },
+      {
+        onSuccess: (r) => {
+          const n = formatNumber((r.added ?? r.removed ?? []).length)
+          onDone(t(remove ? "bulk.listRemoved" : "bulk.listAdded", { count: n, name: r.list.name }))
+          onClose()
+        },
+      },
+    )
+  const list = editable.find((l) => l.id === picked)
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent aria-describedby={undefined} className="sm:max-w-sm">
+        <DialogTitle className="text-lg font-semibold">
+          {t(remove ? "bulk.removeFromList" : "bulk.addToList")} · {t("bulk.selected", { count: formatNumber(count) })}
+        </DialogTitle>
+        <ul role="radiogroup" aria-label={t("bulk.listPick")} className="-mx-2 max-h-[50vh] overflow-y-auto">
+          {editable.map((l) => (
+            <li key={l.id}>
+              <label className="flex min-h-9 cursor-pointer items-center gap-3 rounded-sm px-2 py-1 hover:bg-accent eink:min-h-12 touch:min-h-11">
+                <input type="radio" name="bulk-list" checked={picked === l.id} onChange={() => setPicked(l.id)} className="size-4 eink:size-6" />
+                <span className="min-w-0 flex-1 truncate">{l.name}</span>
+                <span className="text-xs text-muted-foreground tabular-nums eink:text-black">{formatNumber(l.count)}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+        {!remove && <NewListInline onCreated={run} />}
+        {bulkList.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {bulkList.error instanceof ApiError ? bulkList.error.message : String(bulkList.error)}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>
+            {t("edit.cancel")}
+          </Button>
+          <Button onClick={() => list && run(list)} disabled={!list || bulkList.isPending}>
+            {t("bulk.apply")}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 

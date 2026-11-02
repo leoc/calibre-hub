@@ -21,6 +21,8 @@ import { useSelection } from "@/lib/selection"
 import { LibraryLink } from "@/components/library-link"
 import { useListKeys } from "@/components/keyboard"
 import { activateWhenLoaded, focusActive, keyboard, usePendingActivation } from "@/lib/keyboard"
+import { ListHeader } from "@/components/lists"
+import { listQuery } from "@/lib/lists"
 
 const route = getRouteApi("/_app/")
 
@@ -40,6 +42,9 @@ export function LibraryPage() {
   const setEdit = (on: boolean) => navigate({ to: "/", search: { ...search, edit: on || undefined }, replace: !on })
   const deleted = () => navigate({ to: "/", search: { ...search, book: undefined, edit: undefined }, replace: true })
   const placeholder = data?.books.find((b) => b.id === search.book)
+  const { data: list, error: listError } = useQuery({ ...listQuery(search.list ?? 0), enabled: search.list != null })
+  // a list's page without further filters: an empty list says how to fill it
+  const listOnly = search.list != null && !hasFilters({ ...search, list: undefined })
 
   // keyboard: moving, selecting, opening; after a search or a page change
   // the first new book becomes the active one
@@ -85,15 +90,18 @@ export function LibraryPage() {
 
   return (
     <div className="mx-auto max-w-[110rem] space-y-5 p-4 lg:p-6">
+      {search.list != null && list && <ListHeader list={list} />}
       <LibraryToolbar search={search} total={data?.total} page={page} pages={pages} />
-      {error && !data ? (
+      {search.list != null && listError ? (
+        <ErrorMessage error={listError} />
+      ) : error && !data ? (
         <ErrorMessage error={error} onRetry={() => refetch()} />
       ) : !data ? (
         <LoadingBooks view={view} />
       ) : data.books.length === 0 ? (
         <div className="space-y-4 py-12 text-center">
-          <p className="text-lg">{t("results.none")}</p>
-          {hasFilters(search) && (
+          <p className="text-lg">{listOnly ? t("list.empty") : t("results.none")}</p>
+          {hasFilters(search) && !listOnly && (
             <LibraryLink search={{}} className={buttonVariants({ variant: "outline" })}>
               {t("results.reset")}
             </LibraryLink>
