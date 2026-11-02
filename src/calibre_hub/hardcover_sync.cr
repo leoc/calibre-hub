@@ -22,6 +22,13 @@ module CalibreHub
   #   "Paused", "Did Not Finish" and "Ignored" are left alone. Ratings,
   #   reviews and lists are never written.
   #
+  # A book with one of the private tags ("Private", "privat") is left out:
+  # nothing about it is sent, not even for matching. Tagged after it was
+  # synced, what the hub added on Hardcover is deleted again (a user book
+  # it created, reads it added); a user book that was there before (e.g.
+  # imported) is kept and set private instead, its earlier privacy is
+  # restored when the tag goes again. Then the book syncs as usual.
+  #
   # Without write it is a dry run: the planned writes are logged once per
   # progress change, nothing is sent; switched to write, they are planned
   # again and sent.
@@ -37,10 +44,13 @@ module CalibreHub
     READING_FROM = 0.02
     # a book not found is looked up again after
     RECHECK = 30.days
+    # privacy_settings: 1 Public, 2 Followers only, 3 Private
+    PRIVATE = 3
 
     record Match, book : Int64?, edition : Int64?, pages : Int32?, method : String
     record Read, id : Int64, started_at : String?, finished_at : String?, pages : Int32?
-    record UserBook, id : Int64, book : Int64, status : Int32, edition : Int64?, pages : Int32?, reads : Array(Read)
+    record UserBook, id : Int64, book : Int64, status : Int32, edition : Int64?, pages : Int32?, reads : Array(Read),
+      privacy : Int32? = nil
     # one mutation; text for the log
     record Action, query : String, variables : Hash(String, JSON::Any), text : String
     # a book of the user's Hardcover library, for matching
@@ -49,17 +59,22 @@ module CalibreHub
     EDITION_QUERY = "query($isbn: String!) { editions(where: {_or: [{isbn_13: {_eq: $isbn}}, {isbn_10: {_eq: $isbn}}]}, limit: 5) { id pages book { id pages } } }"
     BOOKS_QUERY   = "query($ids: [Int!]) { books(where: {id: {_in: $ids}}) { id pages editions(order_by: {users_count: desc}, limit: 50) { id pages language { code3 } } } }"
     OWN_QUERY     = "query { me { user_books(order_by: {id: asc}) { book_id edition { id pages isbn_13 isbn_10 } book { title pages contributions { author { name } contribution } } } } }"
-    USER_BOOKS    = "query($ids: [Int!]) { me { user_books(where: {book_id: {_in: $ids}}) { id book_id status_id edition { id pages } book { pages } " \
+    USER_BOOKS    = "query($ids: [Int!]) { me { user_books(where: {book_id: {_in: $ids}}) { id book_id status_id privacy_setting_id edition { id pages } book { pages } " \
                     "user_book_reads(order_by: {id: desc}) { id started_at finished_at progress_pages } } } }"
     INSERT_USER_BOOK = "mutation($object: UserBookCreateInput!) { insert_user_book(object: $object) { id error } }"
     UPDATE_USER_BOOK = "mutation($id: Int!, $object: UserBookUpdateInput!) { update_user_book(id: $id, object: $object) { id error } }"
     INSERT_READ      = "mutation($id: Int!, $read: DatesReadInput!) { insert_user_book_read(user_book_id: $id, user_book_read: $read) { id error } }"
     UPDATE_READ      = "mutation($id: Int!, $read: DatesReadInput!) { update_user_book_read(id: $id, object: $read) { id error } }"
+    DELETE_USER_BOOK = "mutation($id: Int!) { delete_user_book(id: $id) { id } }"
+    DELETE_READ      = "mutation($id: Int!) { delete_user_book_read(id: $id) { id error } }"
 
     getter? write : Bool
+    @private_tags : Set(String)
 
     def initialize(@db : DB::Database, @calibre : Calibre, @progress : Progress, @hardcover : Meta::Hardcover,
-                   @user : String, @write = false, @read_at = 0.98, @batch = 100, @interval = 15.minutes)
+                   @user : String, @write = false, @read_at = 0.98, @batch = 100, @interval = 15.minutes,
+                   private_tags : Array(String) = %w(Private privat))
+      @private_tags = private_tags.map(&.strip.downcase).to_set
       @db.exec <<-SQL
         create table if not exists hardcover_books (
           book_id integer primary key,
@@ -79,6 +94,28 @@ module CalibreHub
           pages integer,
           progress_at integer not null,
           synced_at integer not null,
+          dry_run integer not null
+        )
+        SQL
+      # what the hub added on Hardcover (kind user_book or read), so a
+      # private book can be taken back without touching the rest
+      @db.exec <<-SQL
+        create table if not exists hardcover_created (
+          kind text not null,
+          hc_id integer not null,
+          book_id integer not null,
+          primary key (kind, hc_id)
+        )
+        SQL
+      # private books taken back (or planned in a dry run); privacy: the
+      # user book's setting before it was set private
+      @db.exec <<-SQL
+        create table if not exists hardcover_private (
+          book_id integer primary key,
+          hc_book_id integer,
+          user_book_id integer,
+          privacy integer,
+          at integer not null,
           dry_run integer not null
         )
         SQL
@@ -103,7 +140,10 @@ module CalibreHub
     def run(now = Time.utc) : {Int32, Int32}
       return {0, 0} unless @hardcover.available?(now)
       @own = nil
-      books = @calibre.list("", %w(title authors identifiers languages)).index_by(&.id)
+      all = @calibre.list("", %w(title authors identifiers languages tags)).index_by(&.id)
+      books = all.reject { |_, b| private?(b) }
+      take_back(all.values.select { |b| private?(b) })
+      release(books)
       synced = sync_progress(books, now)
       mapped = 0
       due(books, now).first(@batch).each do |b|
@@ -136,6 +176,100 @@ module CalibreHub
       books.values.sort_by(&.id).reverse!.select do |b|
         k = known[b.id]?
         k.nil? || k[0] != HardcoverSync.key(b) || (!k[1] && now.to_unix - k[2] >= RECHECK.total_seconds)
+      end
+    end
+
+    def private?(book : Book) : Bool
+      book.tags.any? { |t| @private_tags.includes?(t.strip.downcase) }
+    end
+
+    # Private books with something written to Hardcover: delete what the
+    # hub created, set a user book that was there before private
+    private def take_back(books : Array(Book))
+      return if books.empty?
+      written = Set(Int64).new
+      @db.query_each("select book_id from hardcover_sync where dry_run = 0 union select book_id from hardcover_created") { |rs| written << rs.read(Int64) }
+      done = {} of Int64 => Bool
+      @db.query_each("select book_id, dry_run from hardcover_private") { |rs| done[rs.read(Int64)] = rs.read(Int64) == 1 }
+      books.each do |b|
+        next unless written.includes?(b.id)
+        next if done.has_key?(b.id) && !(done[b.id] && @write)
+        take_back(b)
+      rescue ex : Meta::SourceError
+        log "#{b.id} private, taking it back failed: #{ex.message}"
+      end
+    end
+
+    private def take_back(book : Book)
+      hc = @db.query_one?("select hc_book_id from hardcover_sync where book_id = ?", book.id, as: Int64) ||
+           @db.query_one?("select hc_book_id from hardcover_books where book_id = ?", book.id, as: Int64?)
+      created_ub = Set(Int64).new
+      created_reads = Set(Int64).new
+      @db.query_each("select kind, hc_id from hardcover_created where book_id = ?", book.id) do |rs|
+        (rs.read(String) == "user_book" ? created_ub : created_reads) << rs.read(Int64)
+      end
+      ub = hc ? fetch_user_books([hc])[hc]? : nil
+      label = "#{book.id} (private, Hardcover #{hc})"
+      actions = HardcoverSync.take_back_actions(ub, created_ub, created_reads)
+      privacy = ub && !created_ub.includes?(ub.id) ? ub.privacy : nil
+      if @write
+        actions.each { |a| apply(a, label) }
+        @db.exec "delete from hardcover_created where book_id = ?", book.id
+        @db.exec "delete from hardcover_sync where book_id = ?", book.id
+      else
+        actions.each { |a| log "dry run: #{label}: would #{a.text}" }
+      end
+      log "#{label}: nothing on Hardcover to take back" if actions.empty?
+      # set private already (an earlier run): keep the privacy from before
+      if privacy == PRIVATE
+        privacy = @db.query_one?("select privacy from hardcover_private where book_id = ?", book.id, as: Int64?).try(&.to_i32)
+      end
+      @db.exec "insert or replace into hardcover_private (book_id, hc_book_id, user_book_id, privacy, at, dry_run) values (?, ?, ?, ?, ?, ?)",
+        book.id, hc, ub.try(&.id), privacy, Time.utc.to_unix, @write ? 0 : 1
+    end
+
+    # reads the hub added, then a user book it created; a user book that
+    # was there before is set private
+    def self.take_back_actions(ub : UserBook?, created_ub : Set(Int64), created_reads : Set(Int64)) : Array(Action)
+      ub || return [] of Action
+      if created_ub.includes?(ub.id)
+        ub.reads.map { |r| Action.new(DELETE_READ, {"id" => JSON::Any.new(r.id)}, "delete read #{r.id}") } +
+          [Action.new(DELETE_USER_BOOK, {"id" => JSON::Any.new(ub.id)}, "delete user book #{ub.id} (added by the hub)")]
+      else
+        actions = ub.reads.select { |r| created_reads.includes?(r.id) }.map do |r|
+          Action.new(DELETE_READ, {"id" => JSON::Any.new(r.id)}, "delete read #{r.id} (added by the hub)")
+        end
+        unless ub.privacy == PRIVATE
+          actions << Action.new(UPDATE_USER_BOOK, {"id" => JSON::Any.new(ub.id), "object" => JSON::Any.new({"privacy_setting_id" => JSON::Any.new(PRIVATE.to_i64)})},
+            "set user book #{ub.id} private (it was there before the hub)")
+        end
+        actions
+      end
+    end
+
+    # Books no longer private: an earlier privacy restored, then they sync
+    # as usual
+    private def release(books : Hash(Int64, Book))
+      rows = [] of {Int64, Int64?, Int64?, Int64?, Bool}
+      @db.query_each("select book_id, hc_book_id, user_book_id, privacy, dry_run from hardcover_private") do |rs|
+        rows << {rs.read(Int64), rs.read(Int64?), rs.read(Int64?), rs.read(Int64?), rs.read(Int64) == 1}
+      end
+      rows.each do |id, hc, ub_id, privacy, dry|
+        book = books[id]? || next
+        label = "#{id} \"#{book.title}\" (no longer private, Hardcover #{hc})"
+        if ub_id && privacy && privacy != PRIVATE && !dry
+          a = Action.new(UPDATE_USER_BOOK, {"id" => JSON::Any.new(ub_id), "object" => JSON::Any.new({"privacy_setting_id" => JSON::Any.new(privacy)})},
+            "restore privacy #{privacy} of user book #{ub_id}")
+          if @write
+            apply(a, label)
+          else
+            log "dry run: #{label}: would #{a.text}"
+            next
+          end
+        end
+        @db.exec "delete from hardcover_private where book_id = ?", id
+      rescue ex : Meta::SourceError
+        log "#{id} no longer private, restoring failed: #{ex.message}"
       end
     end
 
@@ -289,7 +423,8 @@ module CalibreHub
           Read.new(rid, str(r, "started_at"), str(r, "finished_at"), int(r, "progress_pages").try(&.to_i32))
         end
         pages = e.try { |x| int(x, "pages") } || b.try { |x| int(x, "pages") }
-        UserBook.new(id, book, int(ub, "status_id").try(&.to_i32) || 0, e.try { |x| int(x, "id") }, pages.try(&.to_i32), reads)
+        UserBook.new(id, book, int(ub, "status_id").try(&.to_i32) || 0, e.try { |x| int(x, "id") }, pages.try(&.to_i32), reads,
+          int(ub, "privacy_setting_id").try(&.to_i32))
       end
     end
 
@@ -303,6 +438,7 @@ module CalibreHub
       status = HardcoverSync.status_action(ub, m, desired)
       if status && @write
         id = apply(status, label)
+        created(book.id, "user_book", id) if status.query == INSERT_USER_BOOK
         # Hardcover may add a read itself for a new status
         ub = fetch_user_books([hc])[hc]? || id.try { |i| UserBook.new(i, hc, desired.not_nil!, m.edition, pages, [] of Read) }
       elsif status
@@ -313,7 +449,8 @@ module CalibreHub
         if status || CHANGEABLE.includes?(ub.status)
           if read = HardcoverSync.read_action(ub, desired, progress_pages, ub.edition || m.edition, date)
             if @write
-              apply(read, label)
+              rid = apply(read, label)
+              created(book.id, "read", rid) if read.query == INSERT_READ
             else
               log "dry run: #{label}: would #{read.text}"
             end
@@ -324,6 +461,10 @@ module CalibreHub
       end
       @db.exec "insert or replace into hardcover_sync (book_id, hc_book_id, status, pages, progress_at, synced_at, dry_run) values (?, ?, ?, ?, ?, ?, ?)",
         book.id, hc, desired, progress_pages, e.updated_at.to_unix_ms, Time.utc.to_unix, @write ? 0 : 1
+    end
+
+    private def created(book_id : Int64, kind : String, id : Int64?)
+      id.try { |i| @db.exec "insert or replace into hardcover_created (kind, hc_id, book_id) values (?, ?, ?)", kind, i, book_id }
     end
 
     # the mutation's id; raises on an error, so the book is tried again

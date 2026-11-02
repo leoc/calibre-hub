@@ -157,8 +157,12 @@ pkgs.testers.runNixOSTest {
               ub = next((u for u in HC.values() if u["id"] == v["id"] or any(r["id"] == v["id"] for r in u["reads"])), None)
               if ub is None:
                   return {"id": None, "error": "not found"}
-              if name == "update_user_book":
-                  ub["status_id"] = v["object"]["status_id"]
+              if name == "delete_user_book":
+                  del HC[next(b for b, u in HC.items() if u is ub)]
+              elif name == "delete_user_book_read":
+                  ub["reads"] = [r for r in ub["reads"] if r["id"] != v["id"]]
+              elif name == "update_user_book":
+                  ub.update(v["object"])
               elif name == "insert_user_book_read":
                   ub["reads"].append(dict(v["read"], id=next_id()))
               elif name == "update_user_book_read":
@@ -804,11 +808,13 @@ pkgs.testers.runNixOSTest {
         assert api("GET", "/api/metadata/status")[1]["changedBooks"] == 0
 
     with subtest("hardcover sync"):
+        # the hub writes every 2 s here: wait for its lock
+        SQL = f"sqlite3 -cmd '.timeout 5000' {STATE}"
         # a book with the ISBN the stub knows (Hardcover book 900000)
         hid = add_book("Gelesen")
         status, b = api("PATCH", f"/api/books/{hid}", {"identifiers": {"isbn": "9783608938289"}})
         assert status == 200, (status, b)
-        machine.wait_until_succeeds(f"test \"$(sqlite3 {STATE} 'select hc_book_id from hardcover_books where book_id = {hid}')\" = 900000", timeout=60)
+        machine.wait_until_succeeds(f"test \"$({SQL} 'select hc_book_id from hardcover_books where book_id = {hid}')\" = 900000", timeout=60)
         status, r = api("PUT", f"/api/books/{hid}/progress", {"format": "epub", "position": "epubcfi(/6/4)", "fraction": 0.4, "device": "vm"})
         assert status == 200, (status, r)
         stub = "journalctl -u sources-stub -o cat"
@@ -821,9 +827,28 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"{stub} | grep 'MUTATION update_user_book_read' | grep -q finished_at", timeout=30)
         n = machine.succeed(f"{stub} | grep -c MUTATION").strip()
         assert n == "4", n
-        row = machine.succeed(f"sqlite3 {STATE} 'select status, dry_run from hardcover_sync where book_id = {hid}'").strip()
+        row = machine.succeed(f"{SQL} 'select status, dry_run from hardcover_sync where book_id = {hid}'").strip()
         assert row == "3|0", row
         machine.succeed("journalctl -u calibre-hub -o cat | grep -q 'hardcover sync: progress of arthur every 2 s, writing'")
+
+        # tagged private after the sync: what the hub created is deleted again
+        status, b = api("PATCH", f"/api/books/{hid}", {"addTags": ["Private"]})
+        assert status == 200, (status, b)
+        machine.wait_until_succeeds(f"{stub} | grep -q 'MUTATION delete_user_book {{\"id\": 1001}}'", timeout=60)
+        machine.succeed(f"{stub} | grep -q 'MUTATION delete_user_book_read'")
+        machine.wait_until_succeeds(f"test $({SQL} 'select dry_run from hardcover_private where book_id = {hid}') = 0", timeout=30)
+        assert machine.succeed(f"{SQL} 'select count(*) from hardcover_sync where book_id = {hid}'").strip() == "0"
+
+        # private from the start: never matched or synced
+        machine.succeed(f"{DB} add --tags privat --isbn 9780593135648 {epub('Geheim')}")
+        gid = book_by_title("Geheim")["id"]
+        status, r = api("PUT", f"/api/books/{gid}/progress", {"format": "epub", "position": "epubcfi(/6/4)", "fraction": 0.5, "device": "vm"})
+        assert status == 200, (status, r)
+        machine.sleep(8)
+        assert machine.succeed(f"{SQL} 'select count(*) from hardcover_books where book_id = {gid}'").strip() == "0"
+        assert machine.succeed(f"{SQL} 'select count(*) from hardcover_sync where book_id = {gid}'").strip() == "0"
+        n = machine.succeed(f"{stub} | grep -c MUTATION").strip()
+        assert n == "6", n
 
     def library_file(book_id, fmt):
         rel = machine.succeed(f"sqlite3 /srv/books/library/metadata.db \"select b.path || '/' || d.name from books b join data d on d.book = b.id where b.id = {book_id} and d.format = '{fmt.upper()}'\"").strip()

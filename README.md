@@ -508,6 +508,16 @@ metadata source (same pause and alerts; requests share
    Ratings, reviews, lists and "Want to Read" are never written; nothing
    comes back from Hardcover.
 
+**Private books**: a book tagged with one of `hardcoverSync.privateTags`
+(`Private`, `privat`; any case) is never sent to Hardcover, neither for
+matching (no title or ISBN) nor its progress. Tagged after it was synced,
+the hub takes back what it wrote: reads it added and a user book it created
+are deleted (`delete_user_book_read`, `delete_user_book`; what the hub
+created is kept in `hardcover_created`), a user book that was there before
+(e.g. from an import) is kept with its history and set private
+(`privacy_setting_id` 3). Without the tag again, that user book gets its
+earlier privacy back and the book syncs as usual on the next run.
+
 Without `hardcoverSync.write` (default) it is a dry run: matching runs, the
 planned writes are logged once per progress change
 (`journalctl -u calibre-hub | grep 'hardcover sync: dry run'`), nothing is
@@ -595,7 +605,8 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
       hardcoverTokenFile = "/run/secrets/hardcover-token";  # null: no Hardcover
     };
     # with metadata.hardcoverTokenFile; dry run until write = true
-    # hardcoverSync = { enable = true; write = false; interval = 900; batch = 100; readAt = 0.98; };
+    # hardcoverSync = { enable = true; write = false; interval = 900; batch = 100; readAt = 0.98;
+    #   privateTags = [ "Private" "privat" ]; };
     # embed = { enable = true; delay = 60; };  # the defaults
     convert = { enable = true; target = "EPUB"; ignore = [ "PDF" "CBZ" "CBR" ]; };
     # duplicates.threshold = 0.85;  # the default
@@ -660,3 +671,4 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_HARDCOVER_TOKEN_FILE`, `_HARDCOVER_TOKEN` | none | Hardcover API token (file first); none: source skipped |
 | `CALIBRE_HUB_HARDCOVER_SYNC`, `_SYNC_WRITE`, `_SYNC_USER` | `false`, `false`, `CALIBRE_HUB_LOGIN_USER` | Hardcover sync, write (else dry run), whose progress |
 | `CALIBRE_HUB_HARDCOVER_SYNC_INTERVAL`, `_SYNC_BATCH`, `_SYNC_READ_AT` | `900`, `100`, `0.98` | seconds between runs, books looked up per run, progress counted as read |
+| `CALIBRE_HUB_HARDCOVER_SYNC_PRIVATE_TAGS` | `Private,privat` | tags that keep a book off Hardcover |

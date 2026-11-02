@@ -21,12 +21,13 @@ private class FakeCalibre
     spawn { @server.listen }
   end
 
-  def add(id : Int64, title : String, authors : Array(String), isbn : String? = nil, languages = [] of String)
+  def add(id : Int64, title : String, authors : Array(String), isbn : String? = nil, languages = [] of String, tags = [] of String)
     @books[id] = {
       "title"       => JSON::Any.new(title),
       "authors"     => JSON.parse(authors.to_json),
       "identifiers" => JSON.parse((isbn ? {"isbn" => isbn} : {} of String => String).to_json),
       "languages"   => JSON.parse(languages.to_json),
+      "tags"        => JSON.parse(tags.to_json),
     }
   end
 
@@ -41,6 +42,8 @@ private class FakeHardcover
   getter url : String
   getter mutations = [] of {String, JSON::Any}
   getter queries = [] of String
+  # every request body, to see what was sent
+  getter bodies = [] of String
   # book id -> user book {id, status_id, edition_id, reads: [{id, started_at, finished_at, progress_pages}]}
   getter user_books = {} of Int64 => Hash(String, JSON::Any)
   # isbn -> {edition id, pages, book id}
@@ -53,7 +56,9 @@ private class FakeHardcover
 
   def initialize
     @server = HTTP::Server.new do |ctx|
-      body = JSON.parse(ctx.request.body.not_nil!.gets_to_end)
+      raw = ctx.request.body.not_nil!.gets_to_end
+      @bodies << raw
+      body = JSON.parse(raw)
       query = body["query"].as_s
       vars = body["variables"]
       ctx.response.content_type = "application/json"
@@ -80,7 +85,7 @@ private class FakeHardcover
       ids = vars["ids"].as_a.map(&.as_i64)
       {me: [{user_books: @user_books.select { |b, _| ids.includes?(b) }.map { |b, ub|
         pages = editions.values.find { |e| e[0] == ub["edition_id"].as_i64? }.try(&.[1]) || 200
-        {id: ub["id"], book_id: b, status_id: ub["status_id"], edition: {id: ub["edition_id"], pages: pages}, book: {pages: nil},
+        {id: ub["id"], book_id: b, status_id: ub["status_id"], privacy_setting_id: ub["privacy"]? || 1, edition: {id: ub["edition_id"], pages: pages}, book: {pages: nil},
          user_book_reads: ub["reads"].as_a.reverse}
       }}]}
     elsif query.includes?("editions(where")
@@ -107,7 +112,8 @@ private class FakeHardcover
       {id: id, error: nil}
     when "update_user_book"
       ub = @user_books.values.find { |u| u["id"] == vars["id"] }.not_nil!
-      ub["status_id"] = vars["object"]["status_id"]
+      vars["object"]["status_id"]?.try { |v| ub["status_id"] = v }
+      vars["object"]["privacy_setting_id"]?.try { |v| ub["privacy"] = v }
       {id: vars["id"], error: nil}
     when "insert_user_book_read"
       ub = @user_books.values.find { |u| u["id"] == vars["id"] }.not_nil!
@@ -117,6 +123,12 @@ private class FakeHardcover
     when "update_user_book_read"
       ub = @user_books.values.find { |u| u["reads"].as_a.any? { |r| r["id"] == vars["id"] } }.not_nil!
       ub["reads"] = JSON::Any.new(ub["reads"].as_a.map { |r| r["id"] == vars["id"] ? JSON::Any.new(r.as_h.merge(vars["read"].as_h)) : r })
+      {id: vars["id"], error: nil}
+    when "delete_user_book"
+      @user_books.reject! { |_, u| u["id"] == vars["id"] }
+      {id: vars["id"]}
+    when "delete_user_book_read"
+      @user_books.each_value { |u| u["reads"] = JSON::Any.new(u["reads"].as_a.reject { |r| r["id"] == vars["id"] }) }
       {id: vars["id"], error: nil}
     else
       raise "unexpected mutation #{name}"
@@ -130,6 +142,10 @@ private class FakeHardcover
   def reads(book : Int64) : Array(JSON::Any)
     @user_books[book]["reads"].as_a
   end
+end
+
+private def privacy(hc, book : Int64) : Int64
+  hc.user_books[book]["privacy"]?.try(&.as_i64) || 1_i64
 end
 
 private def with_sync(write = false, &)
@@ -296,6 +312,87 @@ describe CalibreHub::HardcoverSync do
       hc.reads(900000).size.should eq(1)
       # Did Not Finish stays
       hc.status(427508).should eq(5)
+    end
+  end
+  it "plans taking back: delete what the hub created, set an older entry private" do
+    reads = [Sync::Read.new(70_i64, "2026-11-01", nil, 20), Sync::Read.new(60_i64, nil, "2019-01-01", nil)]
+    created = Sync.take_back_actions(ub(2, reads), Set{7_i64}, Set(Int64).new)
+    created.map(&.query).should eq([Sync::DELETE_READ, Sync::DELETE_READ, Sync::DELETE_USER_BOOK])
+    older = Sync.take_back_actions(ub(2, reads), Set(Int64).new, Set{70_i64})
+    older.map(&.text).should eq(["delete read 70 (added by the hub)", "set user book 7 private (it was there before the hub)"])
+    older.last.variables["object"].should eq(JSON.parse(%({"privacy_setting_id": 3})))
+    Sync.take_back_actions(nil, Set(Int64).new, Set(Int64).new).should be_empty
+  end
+
+  it "never sends a private book, not even for matching" do
+    with_sync do |sync, calibre, hc, progress|
+      calibre.add(2, "Der Herr der Ringe", ["J.R.R. Tolkien"], isbn: "9783608938289", tags: ["PRIVATE"])
+      calibre.add(3, "Tagebuch", ["Arthur"], tags: ["privat"])
+      hc.editions["9783608938289"] = {900001_i64, 1200, 900000_i64}
+      now = Time.utc
+      read_at(0.5, progress, 2, now)
+      read_at(0.5, progress, 3, now)
+      sync.call(true).run(now).should eq({0, 0})
+      hc.mutations.should be_empty
+      hc.bodies.none? { |b| b.includes?("9783608938289") || b.includes?("Ringe") || b.includes?("Tagebuch") }.should be_true
+    end
+  end
+
+  it "takes back what it synced when a book becomes private, and syncs it again without the tag" do
+    with_sync do |sync, calibre, hc, progress, db|
+      calibre.add(2, "Der Herr der Ringe", ["J.R.R. Tolkien"], isbn: "9783608938289")
+      hc.editions["9783608938289"] = {900001_i64, 1200, 900000_i64}
+      now = Time.utc
+      read_at(0.25, progress, 2, now)
+      w = sync.call(true)
+      w.run(now)
+      hc.status(900000).should eq(2)
+
+      calibre.add(2, "Der Herr der Ringe", ["J.R.R. Tolkien"], isbn: "9783608938289", tags: ["Private"])
+      # a dry run only logs
+      sync.call(false).run(now + 1.minute)
+      hc.status(900000).should eq(2)
+      db.query_one("select dry_run from hardcover_private where book_id = 2", as: Int64).should eq(1)
+      count = hc.mutations.size
+      w.run(now + 2.minutes)
+      hc.mutations[count..].map(&.[0]).should eq(%w(delete_user_book_read delete_user_book))
+      hc.user_books.has_key?(900000).should be_false
+      # more progress while private: nothing
+      read_at(0.5, progress, 2, now + 3.minutes)
+      w.run(now + 3.minutes)
+      hc.mutations.size.should eq(count + 2)
+
+      calibre.add(2, "Der Herr der Ringe", ["J.R.R. Tolkien"], isbn: "9783608938289")
+      w.run(now + 4.minutes)
+      hc.status(900000).should eq(2)
+      hc.reads(900000).first["progress_pages"].should eq(600)
+    end
+  end
+
+  it "keeps an older Hardcover entry, sets it private and restores it later" do
+    with_sync do |sync, calibre, hc, progress|
+      calibre.add(2, "Der Herr der Ringe", ["J.R.R. Tolkien"], isbn: "9783608938289")
+      hc.editions["9783608938289"] = {900001_i64, 1200, 900000_i64}
+      old_read = {"id" => 40_i64, "started_at" => nil, "finished_at" => "2019-03-01", "progress_pages" => nil}
+      hc.user_books[900000_i64] = {"id" => JSON::Any.new(77_i64), "status_id" => JSON::Any.new(1_i64),
+                                   "edition_id" => JSON::Any.new(900001_i64), "reads" => JSON.parse([old_read].to_json)}
+      now = Time.utc
+      read_at(0.25, progress, 2, now)
+      w = sync.call(true)
+      w.run(now)
+      hc.mutations.map(&.[0]).should eq(%w(update_user_book insert_user_book_read))
+      hc.reads(900000).size.should eq(2)
+
+      calibre.add(2, "Der Herr der Ringe", ["J.R.R. Tolkien"], isbn: "9783608938289", tags: ["privat"])
+      w.run(now + 1.minute)
+      hc.mutations.last(2).map(&.[0]).should eq(%w(delete_user_book_read update_user_book))
+      hc.user_books.has_key?(900000).should be_true
+      hc.reads(900000).map(&.["id"]).should eq([40])
+      privacy(hc, 900000).should eq(3)
+
+      calibre.add(2, "Der Herr der Ringe", ["J.R.R. Tolkien"], isbn: "9783608938289")
+      w.run(now + 2.minutes)
+      privacy(hc, 900000).should eq(1)
     end
   end
 end

@@ -399,6 +399,20 @@ in
         default = 0.98;
         description = "Progress from which a book counts as read.";
       };
+      privateTags = mkOption {
+        type = types.listOf types.str;
+        default = [
+          "Private"
+          "privat"
+        ];
+        description = ''
+          Books with one of these tags (any case) are never sent to Hardcover,
+          not even their title or ISBN for matching. Tagged after a sync, what
+          the hub added on Hardcover is deleted again, and a user book that was
+          there before (e.g. imported) is set private; removing the tag
+          restores its privacy and the book syncs again.
+        '';
+      };
     };
 
     embed = {
@@ -669,6 +683,7 @@ in
         CALIBRE_HUB_HARDCOVER_SYNC_INTERVAL = toString cfg.hardcoverSync.interval;
         CALIBRE_HUB_HARDCOVER_SYNC_BATCH = toString cfg.hardcoverSync.batch;
         CALIBRE_HUB_HARDCOVER_SYNC_READ_AT = toString cfg.hardcoverSync.readAt;
+        CALIBRE_HUB_HARDCOVER_SYNC_PRIVATE_TAGS = lib.concatStringsSep "," cfg.hardcoverSync.privateTags;
         CALIBRE_HUB_EMBED = lib.boolToString cfg.embed.enable;
         CALIBRE_HUB_EMBED_DELAY = toString cfg.embed.delay;
         CALIBRE_HUB_CONVERT = lib.boolToString cfg.convert.enable;

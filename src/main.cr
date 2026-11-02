@@ -90,6 +90,8 @@ module CalibreHub
     # repair the EPUBs of added books; keep the file before the first repair as ORIGINAL_EPUB
     getter epub_fix_on_import : Bool = env("CALIBRE_HUB_EPUB_FIX_ON_IMPORT", "false") == "true"
     getter epub_fix_keep_original : Bool = env("CALIBRE_HUB_EPUB_FIX_KEEP_ORIGINAL", "true") != "false"
+    # books with one of these tags (any case) are never sent to Hardcover
+    getter hardcover_sync_private_tags : Array(String) = env("CALIBRE_HUB_HARDCOVER_SYNC_PRIVATE_TAGS", "Private,privat").split(',', remove_empty: true).map(&.strip)
 
     # read only by serve, so scan works without them
     def login_password : String
@@ -379,7 +381,8 @@ module CalibreHub
       return nil
     end
     sync = HardcoverSync.new(db, calibre, progress, hardcover, config.hardcover_sync_user, config.hardcover_sync_write,
-      config.hardcover_sync_read_at, config.hardcover_sync_batch, config.hardcover_sync_interval)
+      config.hardcover_sync_read_at, config.hardcover_sync_batch, config.hardcover_sync_interval,
+      config.hardcover_sync_private_tags)
     sync.start
     puts "hardcover sync: progress of #{config.hardcover_sync_user} every #{config.hardcover_sync_interval.total_seconds.to_i} s, " \
          "#{config.hardcover_sync_write ? "writing" : "dry run (planned writes only logged)"}"
