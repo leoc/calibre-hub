@@ -274,6 +274,65 @@ in
       };
     };
 
+    metadata = {
+      enable = mkEnableOption ''
+        metadata cleanup: titles and authors broken by file names are fixed,
+        missing ISBN, publisher, date, language, description, series and
+        cover are filled from the book file, Open Library and the DNB, and
+        author spellings are unified. Every changed book gets the tag
+        `auto-metadaten`; each change is logged and can be reverted
+      '';
+      sources = mkOption {
+        type = types.listOf (
+          types.enum [
+            "file"
+            "openlibrary"
+            "dnb"
+          ]
+        );
+        default = [
+          "file"
+          "openlibrary"
+          "dnb"
+        ];
+        description = "Sources in order of preference; the book file is always read first when listed.";
+      };
+      nightly = mkOption {
+        type = types.nullOr (types.strMatching "[0-9]{2}:[0-9]{2}");
+        default = null;
+        example = "03:15";
+        description = "Local time of a nightly run over the incomplete books (plus author unification); null for none.";
+      };
+      useModel = mkOption {
+        type = types.bool;
+        default = cfg.classify.enable;
+        defaultText = lib.literalExpression "config.services.calibre-hub.classify.enable";
+        description = ''
+          Ask the classify model (classify.endpoint, classify.model) to clean
+          up title and author when the rules can't tell them apart. Only
+          title and authors are sent.
+        '';
+      };
+      openLibraryUrl = mkOption {
+        type = types.str;
+        default = "https://openlibrary.org";
+      };
+      openLibraryCoversUrl = mkOption {
+        type = types.str;
+        default = "https://covers.openlibrary.org";
+      };
+      dnbUrl = mkOption {
+        type = types.str;
+        default = "https://services.dnb.de/sru/dnb";
+        description = "SRU endpoint of the Deutsche Nationalbibliothek.";
+      };
+      requestInterval = mkOption {
+        type = types.ints.unsigned;
+        default = 1000;
+        description = "Milliseconds between two requests to the same source.";
+      };
+    };
+
     leseliste = {
       enable = mkEnableOption "the reading list handler (mirror tagged books into a folder)";
       tag = mkOption {
@@ -401,11 +460,14 @@ in
         "calibre-server.service"
       ]
       # a model on the same host is up before the first run
-      ++ lib.optional (cfg.classify.enable && config.services.ollama.enable) "ollama.service";
+      ++ lib.optional ((cfg.classify.enable || cfg.metadata.useModel) && config.services.ollama.enable) "ollama.service";
       wants = [ "calibre-server.service" ];
       unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable;
-      # ebook-convert for the reading list
-      path = [ calibre ];
+      # ebook-convert for the reading list, pdfinfo/pdftotext for metadata
+      path = [
+        calibre
+        pkgs.poppler-utils
+      ];
       environment = {
         HOME = "/var/lib/calibre-hub";
         QT_QPA_PLATFORM = "offscreen";
@@ -434,6 +496,14 @@ in
         CALIBRE_HUB_CLASSIFY_THRESHOLD = toString cfg.classify.autoApplyThreshold;
         CALIBRE_HUB_CLASSIFY_SCHEDULE = lib.optionalString (cfg.classify.schedule != null) cfg.classify.schedule;
         CALIBRE_HUB_CLASSIFY_TIMEOUT = toString cfg.classify.timeout;
+        CALIBRE_HUB_METADATA = lib.boolToString cfg.metadata.enable;
+        CALIBRE_HUB_METADATA_SOURCES = lib.concatStringsSep "," cfg.metadata.sources;
+        CALIBRE_HUB_METADATA_NIGHTLY = lib.optionalString (cfg.metadata.nightly != null) cfg.metadata.nightly;
+        CALIBRE_HUB_METADATA_MODEL = lib.boolToString cfg.metadata.useModel;
+        CALIBRE_HUB_METADATA_INTERVAL = toString cfg.metadata.requestInterval;
+        CALIBRE_HUB_OPENLIBRARY_URL = cfg.metadata.openLibraryUrl;
+        CALIBRE_HUB_OPENLIBRARY_COVERS_URL = cfg.metadata.openLibraryCoversUrl;
+        CALIBRE_HUB_DNB_URL = cfg.metadata.dnbUrl;
         CALIBRE_HUB_FRONTEND =lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";

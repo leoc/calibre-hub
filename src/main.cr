@@ -51,6 +51,19 @@ module CalibreHub
     # nightly run over the unsorted books, local time HH:MM; empty: none
     getter classify_schedule : String = env("CALIBRE_HUB_CLASSIFY_SCHEDULE", "03:45")
     getter classify_timeout : Time::Span = env("CALIBRE_HUB_CLASSIFY_TIMEOUT", "300").to_i.seconds
+    # metadata cleanup: book file, Open Library, DNB; the classify model
+    # (endpoint, model) only cleans up names when the rules can't decide
+    getter metadata : Bool = env("CALIBRE_HUB_METADATA", "false") == "true"
+    getter metadata_sources : Array(String) = env("CALIBRE_HUB_METADATA_SOURCES", "file,openlibrary,dnb").split(',', remove_empty: true).map(&.strip)
+    getter metadata_model : Bool = env("CALIBRE_HUB_METADATA_MODEL", "false") == "true"
+    # nightly run over the incomplete books, local time HH:MM; empty: none
+    getter metadata_nightly : String = env("CALIBRE_HUB_METADATA_NIGHTLY", "")
+    getter openlibrary_url : String = env("CALIBRE_HUB_OPENLIBRARY_URL", "https://openlibrary.org")
+    getter openlibrary_covers_url : String = env("CALIBRE_HUB_OPENLIBRARY_COVERS_URL", "https://covers.openlibrary.org")
+    getter dnb_url : String = env("CALIBRE_HUB_DNB_URL", "https://services.dnb.de/sru/dnb")
+    # pause between two requests to the same source
+    getter metadata_interval : Time::Span = env("CALIBRE_HUB_METADATA_INTERVAL", "1000").to_i.milliseconds
+
     # read only by serve, so scan works without them
     def login_password : String
       secret("CALIBRE_HUB_LOGIN_PASSWORD_FILE")
@@ -229,7 +242,25 @@ module CalibreHub
     end
   end
 
-  def self.classify(config : Config, calibre : Calibre, writer : Writer, db : DB::Database) : ClassifyJobs?
+  def self.metadata(config : Config, calibre : Calibre, writer : Writer, db : DB::Database) : MetadataJobs?
+    return nil unless config.metadata
+    if bad = config.metadata_sources.find { |s| !Metadata::SOURCES.includes?(s) }
+      abort "CALIBRE_HUB_METADATA_SOURCES: unknown source #{bad}"
+    end
+    http = Meta::Http.new(config.metadata_interval)
+    ollama = config.metadata_model ? Ollama.new(config.classify_endpoint, config.classify_model, config.classify_timeout, 2, 2.seconds) : nil
+    m = Metadata.new(calibre, writer, MetaLog.new(db), config.metadata_sources,
+      Meta::OpenLibrary.new(http, config.openlibrary_url, config.openlibrary_covers_url),
+      Meta::Dnb.new(http, config.dnb_url), http, ollama, nightly: config.metadata_nightly.presence)
+    jobs = MetadataJobs.new(db, calibre, writer, m)
+    jobs.watch_events
+    config.metadata_nightly.presence.try { |at| jobs.schedule(at) }
+    puts "metadata: sources #{config.metadata_sources.join(", ")}#{ollama ? ", names cleaned with #{config.classify_model}" : ""}"
+    jobs
+  end
+
+  def self.classify(config : Config, calibre : Calibre, writer : Writer, db : DB::Database,
+                    metadata : MetadataJobs? = nil) : ClassifyJobs?
     return nil unless config.classify
     column = config.category_column || begin
       STDERR.puts "classify: needs a category column, off"
@@ -238,6 +269,8 @@ module CalibreHub
     ollama = Ollama.new(config.classify_endpoint, config.classify_model, config.classify_timeout)
     c = Classify.new(calibre, writer, column, Suggestions.new(db), ollama, config.classify_threshold)
     jobs = ClassifyJobs.new(db, calibre, writer, c)
+    # a new book is classified after its metadata run, on clean names
+    metadata.try { |m| jobs.ready = ->(event : Int64, book : Int64, at : Time) { m.ready_for_classify?(event, book, at) } }
     jobs.watch_events
     config.classify_schedule.presence.try { |at| jobs.schedule(at) }
     puts "classify: #{config.classify_model} at #{config.classify_endpoint}, auto-apply from #{config.classify_threshold}"
@@ -262,9 +295,10 @@ module CalibreHub
     config.frontend.try { |dir| use FrontendHandler.new(dir) }
     use auth_handler
     writer = Writer.new(calibre, detector, wake, config.category_column)
+    metadata_jobs = metadata(config, calibre, writer, db)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
       writer, Jobs.new(db, calibre, writer, config.category_column), Trash.new(calibre, writer, config.library, db),
-      classify(config, calibre, writer, db))
+      classify(config, calibre, writer, db, metadata_jobs), metadata_jobs)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

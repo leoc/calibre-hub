@@ -57,6 +57,13 @@ module CalibreHub
       books([id], DETAIL_FIELDS).first?
     end
 
+    # calibredb list's "cover" is the cover's path, null without one
+    def has_cover?(id : Int64) : Bool
+      result = cmd("list", [["cover"], "id", true, "id:#{id}", -1])
+      v = Calibre.unwrap(result["data"]["cover"]?.try(&.[id.to_s]?) || JSON::Any.new(nil))
+      !v.raw.nil? && v.raw != false
+    end
+
     # Cheap pass for reconciling: only id and last_modified of every book
     def last_modified : Hash(Int64, String)
       result = cmd("list", [["last_modified"], "id", true, "", -1])

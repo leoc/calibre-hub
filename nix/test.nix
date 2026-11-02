@@ -55,6 +55,15 @@ pkgs.testers.runNixOSTest {
           enable = true;
           model = "stub";
         };
+        # Open Library and DNB from recorded answers (sources-stub below)
+        metadata = {
+          enable = true;
+          useModel = false;
+          openLibraryUrl = "http://127.0.0.1:8095/ol";
+          openLibraryCoversUrl = "http://127.0.0.1:8095/covers";
+          dnbUrl = "http://127.0.0.1:8095/dnb";
+          requestInterval = 0;
+        };
         handlerAttempts = 2;
         alertCommand = "${pkgs.writeShellScript "alert" ''echo "$1: $2" >> /var/lib/calibre-hub/alerts.log''}";
         handlers = {
@@ -107,6 +116,50 @@ pkgs.testers.runNixOSTest {
                   self.wfile.write(data)
 
           HTTPServer(("127.0.0.1", 11434), Handler).serve_forever()
+        ''}";
+      };
+      # stands in for Open Library and the DNB: the recorded answers of the
+      # specs (spec/fixtures/metadata) for one ISBN, nothing for the rest
+      systemd.services.sources-stub = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${pkgs.writeText "sources-stub.py" ''
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          from urllib.parse import urlparse, parse_qs
+
+          FIXTURES = "${../spec/fixtures/metadata}"
+          EMPTY_SRU = '<searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/"><numberOfRecords>0</numberOfRecords></searchRetrieveResponse>'
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  url = urlparse(self.path)
+                  q = {k: v[0] for k, v in parse_qs(url.query).items()}
+                  print("GET", self.path, flush=True)
+                  if url.path == "/ol/api/books":
+                      if q.get("bibkeys") == "ISBN:9783608938289":
+                          return self.file("openlibrary_isbn.json", "application/json")
+                      return self.reply("{}", "application/json")
+                  if url.path == "/ol/search.json":
+                      return self.reply('{"docs": []}', "application/json")
+                  if url.path == "/dnb":
+                      if q.get("query") == "num=9783608938289":
+                          return self.file("dnb_isbn.xml", "application/xml")
+                      return self.reply(EMPTY_SRU, "application/xml")
+                  self.send_response(404)
+                  self.end_headers()
+
+              def file(self, name, ctype):
+                  with open(f"{FIXTURES}/{name}") as f:
+                      self.reply(f.read(), ctype)
+
+              def reply(self, text, ctype):
+                  data = text.encode()
+                  self.send_response(200)
+                  self.send_header("Content-Type", ctype)
+                  self.send_header("Content-Length", str(len(data)))
+                  self.end_headers()
+                  self.wfile.write(data)
+
+          HTTPServer(("127.0.0.1", 8095), Handler).serve_forever()
         ''}";
       };
       systemd.tmpfiles.rules = [
@@ -446,6 +499,55 @@ pkgs.testers.runNixOSTest {
         status, r = api("POST", "/api/suggestions/accept", {"bookIds": [other, 99999]})
         assert status == 200 and [e["bookId"] for e in r["errors"]] == [99999], r
         assert api("GET", f"/api/books/{other}")[1]["custom"]["kategorie"] == "Roman", r
+
+    with subtest("metadata"):
+        assert api("GET", "/api/config")[1]["metadata"] is True
+        status, st = api("GET", "/api/metadata/status")
+        assert status == 200 and st["enabled"] and st["sources"] == ["file", "openlibrary", "dnb"], st
+        machine.wait_for_open_port(8095)
+        # a book named from its file, with the ISBN only on its first page
+        machine.succeed("printf 'Der Herr der Ringe\\n\\nISBN 978-3-608-93828-9\\n\\nText\\n' > /tmp/ringe.txt")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/ringe.txt /tmp/ringe.epub --title 'tolkien - der herr der ringe (z-lib.org)' --authors Unbekannt")
+        machine.succeed(f"{DB} add /tmp/ringe.epub")
+        messy = book_by_title("tolkien - der herr der ringe (z-lib.org)")["id"]
+        # the added event starts a run: cleaned by the rules, completed by
+        # the ISBN from the text through the stubbed sources
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{messy} | jq -e '.title == \"Der Herr der Ringe\"'", timeout=90)
+        b = api("GET", f"/api/books/{messy}")[1]
+        assert b["authors"] == ["J.R.R. Tolkien"], b
+        assert b["identifiers"].get("isbn") == "9783608938289", b
+        # calibre may keep the date a day off (time zones)
+        assert b["publisher"] == "Klett-Cotta Verlag" and b["pubdate"].startswith("2009-08-0"), b
+        assert "auto-metadaten" in b["tags"], b
+        status, log = api("GET", f"/api/metadata/changes?bookId={messy}")
+        assert status == 200, (status, log)
+        by_field = {c["field"]: c for c in log["changes"]}
+        assert by_field["title"]["old"] == "tolkien - der herr der ringe (z-lib.org)" and by_field["title"]["source"] == "rules", by_field
+        assert by_field["authors"]["old"] == ["Unbekannt"] and by_field["isbn"]["source"] == "openlibrary", by_field
+        assert log["books"][0]["id"] == messy, log
+        # classified after the cleanup, on the clean title
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/suggestions/{messy} | jq -e '.status == \"none\"'", timeout=60)
+        machine.succeed("journalctl -u model-stub -o cat | grep -q 'asked about Der Herr der Ringe'")
+        machine.fail("journalctl -u model-stub -o cat | grep -q 'asked about tolkien'")
+
+        # a run over chosen books; nothing new for this one
+        status, r = api("POST", "/api/metadata/run", {"target": {"ids": [messy]}})
+        assert status == 202 and r["total"] == 1, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["errors"] == [], j
+        assert api("GET", "/api/metadata/status")[1]["lastRun"]["id"] == r["jobId"]
+        assert len(api("GET", f"/api/metadata/changes?bookId={messy}")[1]["changes"]) == len(log["changes"])
+
+        # revert one change, then the rest of the book
+        status, r = api("POST", f"/api/metadata/changes/{by_field['publisher']['id']}/revert")
+        assert status == 200 and r["book"]["publisher"] is None, (status, r)
+        status, r = api("POST", "/api/metadata/changes/revert", {"bookIds": [messy]})
+        assert status == 200 and r["errors"] == [], (status, r)
+        b = api("GET", f"/api/books/{messy}")[1]
+        assert b["title"] == "tolkien - der herr der ringe (z-lib.org)" and b["authors"] == ["Unbekannt"], b
+        assert "isbn" not in b["identifiers"] and not (b["pubdate"] or "").startswith("2009-08-0"), b
+        assert "auto-metadaten" not in b["tags"], b
+        assert api("GET", "/api/metadata/status")[1]["changedBooks"] == 0
 
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")

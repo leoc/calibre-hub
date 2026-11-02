@@ -29,7 +29,7 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart) |
 | `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}}` (filters as in `GET /api/books`); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids); returns 202 `{jobId, total}` |
 | `GET /api/jobs/:id` | `{id, status: running\|done\|failed, done, total, errors: [{bookId, error}], error?}`; jobs are kept in the state DB, a running job resumes after a restart, the last 50 finished ones stay; `error` when a job stopped early. Also finds classify runs |
-| `GET /api/config` | `{fastTags, categoryColumn, classify}` for the web app |
+| `GET /api/config` | `{fastTags, categoryColumn, classify, metadata}` for the web app |
 | `GET /api/classify/status` | `{enabled, model, threshold, categories, minCategories, pending, running, lastRun}`; only `{enabled: false}` when off |
 | `POST /api/classify` `{target}` | `target`: `"unsorted"` (default), `{ids: [...]}` or `{query: {...}}`; returns 202 `{jobId, total}`, 409 `{categories, minCategories}` while the tree is too small |
 | `GET /api/suggestions[?status=]` | latest suggestion per book with `book`: `[{bookId, category, confidence, reason, model, at, status, book}]`; `status`: pending, auto, applied, rejected, none |
@@ -37,6 +37,12 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `POST /api/suggestions/:bookId/accept` `[{category}]` | sets the suggested category, or `category` instead (`A/B` or `A.B`); status `applied` |
 | `POST /api/suggestions/:bookId/reject` | status `rejected`; the book isn't asked about again until the tree changes |
 | `POST /api/suggestions/accept` `{bookIds}` | bulk accept; returns `{accepted, errors: [{bookId, error}]}` |
+| `GET /api/metadata/status` | `{enabled, sources, model, nightly, running, changedBooks, lastRun}`; only `{enabled: false}` when off |
+| `POST /api/metadata/run` `{target}` | `target`: `"incomplete"` (default), `"all"`, `"authors"` (only the author unification), `{ids: [...]}` or `{query: {...}}`; returns 202 `{jobId, total}` (incomplete/all/authors end with the author pass, one more step in `total`) |
+| `GET /api/metadata/changes` | `bookId`, `since` (ISO 8601), `reverted` (true, false), `limit` (≤ 5000, default 500); returns `{changes: [{id, bookId, field, old, new, source, jobId, at, revertedAt}], books}`, newest first |
+| `POST /api/metadata/changes/:id/revert` | sets the old value again; 409 when the field changed since (or the change is reverted already); returns `{change, book}` |
+| `POST /api/metadata/changes/revert` `{bookIds?, changeIds?}` | bulk revert (by book: all its active changes); returns `{reverted, errors: [{changeId, bookId, error}]}` |
+| `GET /api/books/:id/metadata/candidates[?q=]` | for "Metadaten holen": `{candidates: [{source, score, sure, url, fields: {title, authors, isbn, publisher, pubdate, languages, comments, series, seriesIndex, coverUrl}}]}`, best first; applied through `PATCH /api/books/:id` and `.../cover/from-url` |
 | `PUT /api/books/:id/cover`, `POST .../cover/from-file`, `POST .../cover/from-url` | set the cover from an image, a book file, a URL |
 | `GET /api/books/:id/cover/search[?q=]` | cover candidates from Open Library and, by ISBN, DNB (no API keys) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
@@ -125,6 +131,64 @@ ollama pull qwen2.5:3b   # ~2 GB, ~5-20 s per book on a CPU
 
 The hub starts after `ollama.service` when both run on the same host.
 
+## Metadata cleanup
+
+`metadata.enable`: completes and cleans up the metadata of the whole
+library, so the category suggestions work on clean titles, authors and
+ISBNs. Everything is applied automatically; every changed book gets the tag
+`auto-metadaten`, and every field change is logged in the state DB with old
+and new value and can be reverted alone or per book ("Metadaten" in the web
+app, or the API). Categories and other tags are never touched.
+
+Per book (`src/calibre_hub/metadata.cr`, rules in `meta_rules.cr`, sources
+in `meta_sources.cr`):
+
+1. File: the EPUB's OPF (title, authors, ISBN, publisher, date, language,
+   description, series) and ISBNs in the text of its first and last pages;
+   a PDF's info dict and first pages (`pdfinfo`/`pdftotext`). The file is
+   downloaded through calibre-server.
+2. Rules: download-site junk (`(z-lib.org)`, `[libgen.li]`, hashes,
+   extensions, underscores), "Autor - Titel" or "Titel - Autor" in the
+   title, "Author - Series 03 - Title", "Unbekannt"/"Unknown" as author,
+   "Last, First", several authors in one field, all caps or all lower case,
+   a broken author sort (one that shares no name with the authors). When
+   the rules can't tell author from title (`Wolken - Atlas`) and
+   `metadata.useModel` is on, the classify model is asked, with title and
+   authors only; its answer is used only if every word in it was in the
+   input.
+3. Sources, in `metadata.sources` order: ISBNs first (calibre's, the
+   OPF's, the text's) at Open Library (books API) and the DNB (SRU,
+   MARC21); title and author search only when no ISBN gave a sure match.
+4. Score 0..1: title 60 %, authors 30 %, language and year 10 %. A match
+   by ISBN is **sure** when the ISBN is in calibre or the OPF, or when the
+   result also agrees with the book (score ≥ 0.5; an ISBN on an ad page
+   doesn't). A text match from 0.75 is **accepted**.
+5. Merge per field: rules' title and authors, then the file, then the
+   candidates, best first. Missing fields are filled from an accepted
+   candidate (ISBN, publisher and date only from one edition, not a work
+   with many); an existing value is replaced only when it is broken, by a
+   sure match that clearly differs (publisher, year, language, a
+   completely different title), or by the same value spelled better
+   (case, accents, "Le Guin" for "LeGuin", "J. R. R. Tolkien" for
+   "Tolkien"). Descriptions are only filled; a cover only for books
+   without one.
+6. One `PATCH` with `lastModified`; a book changed meanwhile is tried once
+   more, then on the next run.
+
+Author unification: a library-wide pass groups names by a key without
+case, accents, punctuation, spaces and "Last, First" and renames every
+variant to the best form: proper case, then confirmed by Open Library/DNB,
+then the most books. Logged and revertible like the rest.
+
+Runs are jobs in a queue of their own, resumed after a restart:
+`POST /api/metadata/run`, nightly at `metadata.nightly` (off by default;
+incomplete books plus the author pass) and for every added book. A new
+book is classified only after its metadata run is done or failed (at most
+30 minutes later). "incomplete": books missing ISBN, publisher, date,
+language or description, or with messy names; books checked in the last 30
+days without a failed source are skipped. Requests to a source are spaced
+by `metadata.requestInterval` ms.
+
 ## CLI
 
 `calibre-hub cli <command>`, or `hub <command>` (the package links it), talks
@@ -189,6 +253,12 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
       # defaults: endpoint = "http://127.0.0.1:11434"; model = "qwen2.5:3b";
       # autoApplyThreshold = 0.85; schedule = "03:45" (null: no nightly run); timeout = 300;
     };
+    metadata = {
+      enable = true;
+      # defaults: sources = [ "file" "openlibrary" "dnb" ]; nightly = null; useModel = classify.enable;
+      # openLibraryUrl, openLibraryCoversUrl, dnbUrl (the public services); requestInterval = 1000;
+      nightly = "03:15";
+    };
     alertCommand = "/run/current-system/sw/bin/notify-admin";
     handlers."20-log" = pkgs.writeShellScript "log" "cat >> /var/lib/calibre-hub/events.log";
   };
@@ -238,3 +308,6 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CLASSIFY` | `false` | `true` turns on category suggestions (needs `CALIBRE_HUB_CATEGORY_COLUMN`) |
 | `CALIBRE_HUB_CLASSIFY_ENDPOINT`, `_MODEL` | `http://127.0.0.1:11434`, `qwen2.5:3b` | Ollama API and model |
 | `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT` | `0.85`, `03:45`, `300` | auto-apply from, nightly run (empty: none), seconds per answer |
+| `CALIBRE_HUB_METADATA` | `false` | `true` turns on the metadata cleanup |
+| `CALIBRE_HUB_METADATA_SOURCES`, `_NIGHTLY`, `_MODEL`, `_INTERVAL` | `file,openlibrary,dnb`, none, `false`, `1000` | sources, nightly run, clean names with the classify model, ms between requests |
+| `CALIBRE_HUB_OPENLIBRARY_URL`, `_OPENLIBRARY_COVERS_URL`, `_DNB_URL` | the public services | base URLs (stubs in the VM test) |

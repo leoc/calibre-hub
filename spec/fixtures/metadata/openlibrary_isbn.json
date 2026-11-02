@@ -1,0 +1,64 @@
+{
+ "ISBN:9783608938289": {
+  "url": "http://openlibrary.org/books/OL37766386M/Der_Herr_der_Ringe_Erster_Teil_Die_Gefährten._Zweiter_Teil_Die_zwei_Türme._Dritter_Teil",
+  "key": "/books/OL37766386M",
+  "title": "Der Herr der Ringe : Erster Teil : Die Gefährten. Zweiter Teil : Die zwei Türme. Dritter Teil",
+  "subtitle": "Die Rückkehr des Königs",
+  "authors": [
+   {
+    "url": "http://openlibrary.org/authors/OL26320A/J.R.R._Tolkien",
+    "name": "J.R.R. Tolkien"
+   }
+  ],
+  "number_of_pages": 1295,
+  "identifiers": {
+   "goodreads": [
+    "6536598"
+   ],
+   "librarything": [
+    "1386651"
+   ],
+   "dnb": [
+    "99386712X"
+   ],
+   "isbn_10": [
+    "3608938281"
+   ],
+   "isbn_13": [
+    "9783608938289"
+   ],
+   "oclc": [
+    "1289624788"
+   ],
+   "openlibrary": [
+    "OL37766386M"
+   ]
+  },
+  "publishers": [
+   {
+    "name": "Klett-Cotta Verlag"
+   }
+  ],
+  "publish_date": "Aug 01, 2009",
+  "subjects": [
+   {
+    "name": "The Lord of the Rings",
+    "url": "https://openlibrary.org/subjects/the_lord_of_the_rings"
+   },
+   {
+    "name": "Fiction",
+    "url": "https://openlibrary.org/subjects/fiction"
+   },
+   {
+    "name": "Ficción",
+    "url": "https://openlibrary.org/subjects/ficción"
+   }
+  ],
+  "notes": "Source title: Der Herr der Ringe: Erster Teil: Die Gefährten. Zweiter Teil: Die zwei Türme. Dritter Teil: Die Rückkehr des Königs",
+  "cover": {
+   "small": "https://covers.openlibrary.org/b/id/13147175-S.jpg",
+   "medium": "https://covers.openlibrary.org/b/id/13147175-M.jpg",
+   "large": "https://covers.openlibrary.org/b/id/13147175-L.jpg"
+  }
+ }
+}

@@ -4,6 +4,7 @@ require "./auth"
 require "./writer"
 require "./trash"
 require "./classify"
+require "./metadata"
 
 module CalibreHub
   module Api
@@ -147,7 +148,7 @@ module CalibreHub
 
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
                   fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil,
-                  classify : ClassifyJobs? = nil)
+                  classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -168,7 +169,7 @@ module CalibreHub
 
     get "/api/session" { {user: auth.user}.to_json }
 
-    get "/api/config" { {fastTags: fast_tags, categoryColumn: kategorie, classify: !classify.nil?}.to_json }
+    get "/api/config" { {fastTags: fast_tags, categoryColumn: kategorie, classify: !classify.nil?, metadata: !metadata.nil?}.to_json }
 
     delete "/api/session" do |env|
       env.response.cookies << auth.expired_cookie
@@ -217,10 +218,11 @@ module CalibreHub
     end
 
     if (w = writer) && (j = jobs)
-      write_routes(w, j, classify)
+      write_routes(w, j, [classify, metadata].compact.map(&.as(Jobs)))
     end
     trash.try { |t| trash_routes(t) }
     classify_routes(classify, calibre)
+    metadata_routes(metadata, calibre)
 
     # OPDS for reader apps; its links point to /opds/* and /get/*
     {"/opds", "/opds/*", "/get/*"}.each do |route|
@@ -231,7 +233,7 @@ module CalibreHub
     end
   end
 
-  def self.write_routes(writer : Writer, jobs : Jobs, other_jobs : Jobs? = nil)
+  def self.write_routes(writer : Writer, jobs : Jobs, other_jobs = [] of Jobs)
     # before /api/books/:id so "bulk" isn't taken for an id
     post "/api/books/bulk" do |env|
       write_errors(env) do
@@ -279,7 +281,7 @@ module CalibreHub
 
     get "/api/jobs/:id" do |env|
       id = env.params.url["id"]
-      (jobs[id]? || other_jobs.try(&.[id]?)).try(&.to_json) || fail(env, 404, {error: "not found"})
+      (jobs[id]? || other_jobs.compact_map(&.[id]?).first?).try(&.to_json) || fail(env, 404, {error: "not found"})
     end
 
     patch "/api/books/:id" do |env|
@@ -405,6 +407,99 @@ module CalibreHub
         {jobId: job.id, total: job.total}.to_json
       rescue ex : Classify::TooFewCategories
         fail(env, 409, {error: ex.message, categories: ex.count, minCategories: Classifier::MIN_CATEGORIES})
+      end
+    end
+  end
+
+  # Metadata cleanup (metadata.cr). Only the status route exists while it
+  # is off.
+  def self.metadata_routes(jobs : MetadataJobs?, calibre : Calibre)
+    get "/api/metadata/status" do
+      next {enabled: false}.to_json unless jobs
+      m = jobs.metadata
+      last = jobs.last.try do |job, started|
+        JSON.parse(job.to_json).as_h.merge({"startedAt" => JSON::Any.new(started.to_rfc3339), "target" => JSON::Any.new(jobs.target(job))})
+      end
+      {
+        enabled: true, sources: m.sources, model: m.model, nightly: m.nightly, running: jobs.running?,
+        changedBooks: m.log.changed_books, lastRun: last,
+      }.to_json
+    end
+    return unless jobs
+    m = jobs.metadata
+
+    post "/api/metadata/run" do |env|
+      write_errors(env) do
+        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        job = jobs.submit_target(body["target"]?)
+        env.response.status_code = 202
+        {jobId: job.id, total: job.total}.to_json
+      end
+    end
+
+    get "/api/metadata/changes" do |env|
+      write_errors(env) do
+        p = env.params.query
+        book_id = p["bookId"]?.presence.try { |v| v.to_i64? || raise Edit::Invalid.new("bookId", "number expected") }
+        since = p["since"]?.presence.try do |v|
+          Time.parse_iso8601(v) rescue raise Edit::Invalid.new("since", "ISO 8601 time expected")
+        end
+        reverted = case p["reverted"]?
+                   when nil, ""      then nil
+                   when "true", "1"  then true
+                   when "false", "0" then false
+                   else                   raise Edit::Invalid.new("reverted", "true or false expected")
+                   end
+        limit = (p["limit"]?.try(&.to_i?) || 500).clamp(1, 5000)
+        changes = m.log.list(book_id, since, reverted, limit)
+        {changes: changes, books: calibre.books(changes.map(&.book_id).uniq)}.to_json
+      end
+    end
+
+    # before /api/metadata/changes/:id/revert so "revert" isn't taken for an id
+    post "/api/metadata/changes/revert" do |env|
+      write_errors(env) do
+        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        unless body.has_key?("bookIds") || body.has_key?("changeIds")
+          raise Edit::Invalid.new("bookIds", "bookIds or changeIds expected")
+        end
+        list = ->(key : String) do
+          (body[key]?.try { |v| v.as_a? || raise Edit::Invalid.new(key, "list of ids expected") } || [] of JSON::Any).map do |v|
+            v.as_i64? || raise Edit::Invalid.new(key, "list of ids expected")
+          end
+        end
+        ids = (list.call("changeIds") + m.revert_books(list.call("bookIds").uniq)).uniq
+        reverted = [] of MetaLog::Entry
+        errors = [] of NamedTuple(changeId: Int64, bookId: Int64?, error: String)
+        # newest first, so a field changed twice ends at its first value
+        ids.sort.reverse.each do |id|
+          reverted << m.revert(id)[0]
+        rescue ex : Calibre::Unavailable
+          raise ex
+        rescue ex
+          error = case ex
+                  when Writer::NotFound then "not found"
+                  when Writer::Conflict then "changed in the meantime"
+                  else                       ex.message || ex.class.name
+                  end
+          errors << {changeId: id, bookId: m.log[id]?.try(&.book_id), error: error}
+        end
+        {reverted: reverted, errors: errors}.to_json
+      end
+    end
+
+    post "/api/metadata/changes/:id/revert" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        change, book = m.revert(id)
+        {change: change, book: book}.to_json
+      end
+    end
+
+    get "/api/books/:id/metadata/candidates" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        {candidates: m.candidates(id, env.params.query["q"]?)}.to_json
       end
     end
   end

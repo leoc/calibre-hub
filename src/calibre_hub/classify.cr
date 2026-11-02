@@ -376,6 +376,9 @@ module CalibreHub
   # run doesn't hold up bulk edits.
   class ClassifyJobs < Jobs
     getter classify : Classify
+    # (event id, book id, event time) -> may the added book be classified
+    # yet; the metadata cleanup holds new books back until it has run
+    property ready : Proc(Int64, Int64, Time, Bool)?
 
     def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @classify : Classify)
       super(db, calibre, writer, @classify.column, "classify_jobs")
@@ -440,8 +443,16 @@ module CalibreHub
       cursor = @db.query_one("select value from meta where key = 'classify_event_seq'", as: String).to_i64
       ids = [] of Int64
       last = cursor
-      @db.query_each("select id, type, book_id, payload from events where id > ? order by id limit 500", cursor) do |rs|
-        last, type, book_id, payload = rs.read(Int64, String, Int64, String)
+      rows = [] of {Int64, String, Int64, String, Int64}
+      @db.query_each("select id, type, book_id, payload, created_at from events where id > ? order by id limit 500", cursor) do |rs|
+        rows << rs.read(Int64, String, Int64, String, Int64)
+      end
+      # read first: the readiness check queries the state DB, which has a
+      # single connection
+      rows.each do |id, type, book_id, payload, created_at|
+        # stops at the first book still waiting, the cursor stays before it
+        break if type == "added" && (r = @ready) && !r.call(id, book_id, Time.unix(created_at))
+        last = id
         next unless type == "added"
         book = JSON.parse(payload)["book"]?
         ids << book_id unless book.try(&.["custom"]?).try(&.[@classify.column]?).try(&.as_s?).presence

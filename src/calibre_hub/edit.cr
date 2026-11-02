@@ -14,7 +14,7 @@ module CalibreHub
       end
     end
 
-    FIELDS = %w(title authors series seriesIndex tags addTags removeTags kategorie comments
+    FIELDS = %w(title authors authorSort series seriesIndex tags addTags removeTags kategorie comments
       publisher pubdate languages rating identifiers lastModified)
     DATE = /\A\d{4}-\d{2}-\d{2}\z/
 
@@ -35,6 +35,8 @@ module CalibreHub
           list = strings(key, value)
           raise Invalid.new(key, "at least one author") if list.empty?
           result["authors"] = json(list)
+        when "authorSort"
+          result["author_sort"] = JSON::Any.new(text(key, value, required: true).not_nil!)
         when "series"
           result["series"] = JSON::Any.new(text(key, value))
         when "seriesIndex"

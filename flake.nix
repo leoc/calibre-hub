@@ -53,6 +53,7 @@
             sqlite
             curl
             jq
+            poppler-utils
           ];
           QT_QPA_PLATFORM = "offscreen";
         };

@@ -365,6 +365,23 @@ describe CalibreHub::ClassifyJobs do
   end
 end
 
+describe "classify after metadata" do
+  it "waits for books the metadata cleanup hasn't done yet" do
+    _, _, c, jobs, db = setup
+    jobs.watch_events(1.hour)
+    sleep 10.milliseconds
+    done = Set(Int64).new
+    jobs.ready = ->(_event : Int64, book : Int64, _at : Time) { done.includes?(book) }
+    db.exec %(insert into events (type, book_id, payload, created_at) values ('added', 2, '{"book": {"custom": {"kategorie": null}}}', 0))
+    jobs.follow_events
+    jobs.last.should be_nil
+    done << 2_i64
+    jobs.follow_events
+    wait_job(jobs, jobs.last.not_nil![0].id)
+    c.suggestions[2]?.not_nil!.status.should eq("pending")
+  end
+end
+
 describe "classify routes" do
   it "lists, accepts and rejects suggestions" do
     library, _, c, jobs, _ = setup
