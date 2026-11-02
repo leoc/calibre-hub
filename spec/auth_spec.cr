@@ -41,3 +41,29 @@ describe CalibreHub::Auth do
     a.basic_user("ip", nil).should be_nil
   end
 end
+
+private TOKEN = "t0ken-0123456789abcdef"
+
+describe "API tokens" do
+  it "accepts configured tokens only" do
+    a = auth(tokens: [TOKEN, "other-token-0123456789"])
+    a.bearer_user("ip", "Bearer #{TOKEN}").should eq("arthur")
+    a.bearer_user("ip", "Bearer other-token-0123456789").should eq("arthur")
+    a.bearer_user("ip", "Bearer #{TOKEN}x").should be_nil
+    a.bearer_user("ip", "Bearer ").should be_nil
+    a.bearer_user("ip", nil).should be_nil
+    a.bearer_user("ip", "Basic #{TOKEN}").should be_nil
+    auth.bearer_user("ip", "Bearer #{TOKEN}").should be_nil
+  end
+
+  it "rejects short tokens" do
+    expect_raises(ArgumentError, "shorter") { auth(tokens: ["short"]) }
+  end
+
+  it "rate limits wrong tokens" do
+    a = auth(tokens: [TOKEN], limiter: CalibreHub::RateLimiter.new(max_failures: 2))
+    a.bearer_user("ip", "Bearer wrong-wrong-wrong-1").should be_nil
+    a.bearer_user("ip", "Bearer wrong-wrong-wrong-2").should be_nil
+    expect_raises(CalibreHub::RateLimiter::Limited) { a.bearer_user("ip", "Bearer #{TOKEN}") }
+  end
+end

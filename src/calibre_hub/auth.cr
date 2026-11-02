@@ -2,6 +2,7 @@ require "base64"
 require "crypto/subtle"
 require "json"
 require "openssl/hmac"
+require "digest/sha256"
 require "http"
 
 module CalibreHub
@@ -13,11 +14,40 @@ module CalibreHub
     # Unsafe methods need this header; a cross-site form cannot set it.
     CSRF_HEADER = "X-Calibre-Hub"
 
-    getter user : String
+    # API tokens must be at least this long, so they can't be guessed
+    MIN_TOKEN = 16
 
+    getter user : String
+    @tokens : Array(Bytes)
+
+    # tokens: API tokens for the CLI and scripts, same rights as the user
     def initialize(@user : String, @password : String, @key : Bytes,
                    @lifetime : Time::Span = 30.days, @secure : Bool = true,
-                   @limiter : RateLimiter = RateLimiter.new)
+                   @limiter : RateLimiter = RateLimiter.new, tokens : Array(String) = [] of String)
+      if short = tokens.find { |t| t.size < MIN_TOKEN }
+        raise ArgumentError.new("API token shorter than #{MIN_TOKEN} characters (#{short.size})")
+      end
+      # digests, so the comparison takes the same time for any token length
+      @tokens = tokens.map { |t| Digest::SHA256.digest(t) }
+    end
+
+    # "Authorization: Bearer <token>" for the CLI; failures count like logins
+    def bearer_user(ip : String, header : String?) : String?
+      return nil unless Auth.bearer?(header)
+      raise RateLimiter::Limited.new if @limiter.blocked?(ip)
+      given = Digest::SHA256.digest(header.not_nil!.lchop("Bearer ").strip)
+      # compares all tokens, so the timing doesn't tell which one matched
+      ok = @tokens.reduce(false) { |found, t| Crypto::Subtle.constant_time_compare(t, given) | found }
+      if ok
+        @user
+      else
+        @limiter.fail(ip)
+        nil
+      end
+    end
+
+    def self.bearer?(header : String?) : Bool
+      !!header.try(&.starts_with?("Bearer "))
     end
 
     def check_password(user : String, password : String) : Bool

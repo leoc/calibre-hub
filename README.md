@@ -8,8 +8,11 @@ Status: backend, events and handlers (Phase 2). Spike notes: [docs/spike.md](doc
 
 ## API
 
-All `/api/*` routes need the session cookie; unsafe methods also need the
-header `X-Calibre-Hub: 1`. Field names are camelCase, missing values `null`.
+All `/api/*` routes need the session cookie or an API token
+(`Authorization: Bearer <token>`, see `apiTokenFiles`). Unsafe methods also
+need the header `X-Calibre-Hub: 1`, unless only a token is sent (a request
+with a cookie always needs it). A wrong token is a 401, without falling back
+to the cookie. Field names are camelCase, missing values `null`.
 
 | Route | |
 |---|---|
@@ -57,6 +60,46 @@ tags embedded in the file are dropped. Originals move to `_imported/<date>/`
 or `_duplicates/<date>/`, after 3 failures to `_failed/<date>/`. Folders the
 hub can't write are skipped.
 
+## CLI
+
+`calibre-hub cli <command>`, or `hub <command>` (the package links it), talks
+to a running hub with an API token. `CALIBRE_HUB_URL` (default
+`https://hub.nor.sh`); token from `CALIBRE_HUB_TOKEN`,
+`CALIBRE_HUB_TOKEN_FILE` or `~/.config/calibre-hub/token`.
+
+```sh
+hub search 'title:dune or tags:sf' --sort added --order desc --limit 20
+hub search --kategorie Fachbuch/Software --tag leseliste --json | jq '.books[].id'
+hub show 12
+hub download 12 --format pdf -o dune.pdf
+hub cover 12 -o cover.jpg
+hub categories kategorie
+hub edit 12 --title 'Dune' --authors 'Frank Herbert' --series Dune --index 1 \
+  --kategorie Roman/SF --pubdate 1965-08-01 --rating 8 --identifier isbn=9780441013593
+hub edit 12 --series ''                  # empty clears
+hub edit 12 --comments-file - < text.html
+hub tag add 12 13 14 leseliste
+hub tag rm 12 leseliste
+hub upload *.epub --tag neu --kategorie Roman/Krimi
+hub upload dune.pdf --add-format-to 12
+hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
+hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
+```
+
+Every command has `--help` and `--json` (the API's JSON; on errors
+`{error, exitCode, ...}`). Exit codes: 0 ok, 1 usage or invalid input, 2 not
+found, 3 conflict or duplicate, 4 not authorized, 5 server unavailable or
+failed. `edit` sends the `lastModified` it just read; if the book changed in
+between it writes nothing and shows read, current and wanted values (exit 3).
+`upload` lists the books calibre considers duplicates (`--force` adds
+anyway). `bulk` asks before changing unless `--yes` (required without a
+terminal) and waits for the job, listing books that failed.
+
+Completion: `hub completion fish | source`, `source <(hub completion bash)`;
+the package installs both. A Claude Code skill for the CLI is in
+[docs/skills/calibre-hub/SKILL.md](docs/skills/calibre-hub/SKILL.md)
+(copy it to `~/.claude/skills/calibre-hub/`).
+
 Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
 
 ## NixOS module
@@ -72,6 +115,7 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     categoryColumn = "kategorie";
     login.passwordFile = "/run/secrets/login";
     sessionKeyFile = "/run/secrets/session-key";
+    apiTokenFiles = [ "/run/secrets/hub-token-laptop" ];  # for the CLI
     calibre.servicePasswordFile = "/run/secrets/calibre-service";
     inbox.path = "/srv/books/inbox";
     leseliste = { enable = true; target = "/srv/books/reader"; };
@@ -120,3 +164,4 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_HANDLER_ATTEMPTS`, `_TIMEOUT` | `10`, `600` | |
 | `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
 | `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |
+| `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each |

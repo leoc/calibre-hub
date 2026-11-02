@@ -7,6 +7,7 @@ require "./calibre_hub/dispatcher"
 require "./calibre_hub/inbox"
 require "./calibre_hub/handlers/leseliste"
 require "./calibre_hub/frontend"
+require "./calibre_hub/cli"
 
 module CalibreHub
   VERSION = "0.1.0"
@@ -51,6 +52,13 @@ module CalibreHub
       Config.secret_bytes("CALIBRE_HUB_SESSION_KEY_FILE")
     end
 
+    # API tokens (Authorization: Bearer) for the CLI, one per file
+    def api_tokens : Array(String)
+      env("CALIBRE_HUB_API_TOKEN_FILES", "").split(',', remove_empty: true).map do |path|
+        Config.read_secret(path.strip)
+      end
+    end
+
     getter session_days : Int32 = env("CALIBRE_HUB_SESSION_DAYS", "30").to_i
     # "false" only for local development over plain http
     getter secure_cookies : Bool = env("CALIBRE_HUB_SECURE_COOKIES", "true") != "false"
@@ -67,7 +75,15 @@ module CalibreHub
 
     # byte-wise, so binary keys (not valid UTF-8) work too
     def self.secret_bytes(key) : Bytes
-      bytes = File.open(env(key), &.getb_to_end)
+      read_secret_bytes(env(key))
+    end
+
+    def self.read_secret(path) : String
+      String.new(read_secret_bytes(path))
+    end
+
+    def self.read_secret_bytes(path) : Bytes
+      bytes = File.open(path, &.getb_to_end)
       size = bytes.size
       while size > 0 && bytes[size - 1] == '\n'.ord
         size -= 1
@@ -217,7 +233,7 @@ module CalibreHub
     config.inbox.try { |dir| watch_inbox(Inbox.new(dir, calibre, detector, config.category_column, config.inbox_stable), wake) }
 
     auth = Auth.new(config.login_user, config.login_password, config.session_key,
-      lifetime: config.session_days.days, secure: config.secure_cookies)
+      lifetime: config.session_days.days, secure: config.secure_cookies, tokens: config.api_tokens)
     auth_handler = AuthHandler.new(auth, config.trusted_proxies)
     use UnavailableHandler.new
     config.frontend.try { |dir| use FrontendHandler.new(dir) }
@@ -238,11 +254,16 @@ module CalibreHub
       install-triggers <db>       create the changelog triggers in metadata.db
                                   (only while calibre-server is stopped)
       handler leseliste           mirror the reading list (event JSON on stdin)
+      cli <command>               command line client for a running hub (also as `hub`)
       --help, --version
     TXT
 
   def self.main(args)
+    # the package links the binary as `hub`, which is the CLI
+    exit Cli.run(args) if File.basename(PROGRAM_NAME) == "hub"
     case args.first?
+    when "cli"
+      exit Cli.run(args[1..])
     when "serve", nil
       serve(Config.new)
     when "scan"

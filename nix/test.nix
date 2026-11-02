@@ -6,7 +6,12 @@ pkgs.testers.runNixOSTest {
   name = "calibre-hub";
 
   nodes.machine =
-    { pkgs, lib, ... }:
+    {
+      config,
+      pkgs,
+      lib,
+      ...
+    }:
     {
       imports = [ module ];
       virtualisation.memorySize = 2048;
@@ -15,12 +20,15 @@ pkgs.testers.runNixOSTest {
         pkgs.curl
         pkgs.jq
         pkgs.sqlite
+        # the CLI, as calibre-hub cli and hub
+        config.services.calibre-hub.package
       ];
       environment.etc = {
         "hub/service".text = "service-secret";
         "hub/login".text = "login-secret\n";
         "hub/key".text = "0123456789abcdef0123456789abcdef";
         "hub/scripts".text = "scripts-secret";
+        "hub/token".text = "cli-token-0123456789abcdef\n";
       };
       services.calibre-hub = {
         enable = true;
@@ -34,6 +42,7 @@ pkgs.testers.runNixOSTest {
         sessionKeyFile = "/etc/hub/key";
         calibre.servicePasswordFile = "/etc/hub/service";
         calibre.extraUsers.scripts = "/etc/hub/scripts";
+        apiTokenFiles = [ "/etc/hub/token" ];
         inbox = {
           path = "/srv/books/inbox";
           stableSeconds = 2;
@@ -250,6 +259,25 @@ pkgs.testers.runNixOSTest {
         assert status == 400 and b["field"] == "url" and "not allowed" in b["error"], (status, b)
         status, hits = api("GET", "/api/books/1/cover/search")
         assert status == 200 and isinstance(hits, list), (status, hits)
+
+    with subtest("api token and cli"):
+        TOK = "-H 'Authorization: Bearer cli-token-0123456789abcdef'"
+        assert code(f"{TOK} {H}/api/books") == "200"
+        assert code(f"-H 'Authorization: Bearer wrong-token-0123456789' {H}/api/books") == "401"
+        # no CSRF header needed with a token alone, again once a cookie comes along
+        assert code(f"{TOK} -X PATCH -H 'Content-Type: application/json' -d '{{}}' {H}/api/books/{uid}") == "200"
+        assert code(f"{TOK} -b /tmp/jar -X PATCH -d '{{}}' {H}/api/books/{uid}") == "403"
+        CLI = "CALIBRE_HUB_URL=http://127.0.0.1:8084 CALIBRE_HUB_TOKEN_FILE=/etc/hub/token"
+        r = json.loads(machine.succeed(f"{CLI} calibre-hub cli search --json title:Hochgeladen"))
+        assert r["total"] >= 1 and all(b["title"] == "Hochgeladen" for b in r["books"]), r
+        machine.succeed(f"{CLI} hub tag add {uid} cli-tag")
+        assert "cli-tag" in api("GET", f"/api/books/{uid}")[1]["tags"]
+        j = json.loads(machine.succeed(f"{CLI} hub bulk --ids 1,{uid} --series CLI --number-series --yes --json"))
+        assert j["status"] == "done" and j["errors"] == [], j
+        b = api("GET", f"/api/books/{uid}")[1]
+        assert b["series"] == "CLI" and b["seriesIndex"] == 2, b
+        assert machine.execute(f"{CLI} hub show 99999")[0] == 2
+        assert machine.execute("CALIBRE_HUB_URL=http://127.0.0.1:8084 CALIBRE_HUB_TOKEN=wrong-token-0123456789 hub search")[0] == 4
 
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")

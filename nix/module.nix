@@ -20,6 +20,7 @@ let
   calibreUsers = { ${cfg.calibre.serviceUser} = cfg.calibre.servicePasswordFile; } // cfg.calibre.extraUsers;
   # LoadCredential ids, so the secret files can stay root-owned
   credId = name: "user-${name}";
+  tokenCred = i: "api-token-${toString i}";
 
   columnLines = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (label: c: "${label}|${c.name}|${c.type}") cfg.customColumns
@@ -149,6 +150,17 @@ in
     sessionKeyFile = mkOption {
       type = types.path;
       description = "Secret used to sign session cookies (at least 32 random bytes).";
+    };
+
+    apiTokenFiles = mkOption {
+      type = types.listOf types.path;
+      default = [ ];
+      example = [ "/run/secrets/calibre-hub-token-laptop" ];
+      description = ''
+        Files with one API token each (at least 16 characters, e.g.
+        `openssl rand -hex 32`). The CLI sends it as `Authorization: Bearer`;
+        a token has the rights of the login user. Passed as systemd credentials.
+      '';
     };
 
     sessionDays = mkOption {
@@ -379,6 +391,9 @@ in
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";
         CALIBRE_HUB_SESSION_KEY_FILE = "%d/session-key";
         CALIBRE_HUB_SESSION_DAYS = toString cfg.sessionDays;
+        CALIBRE_HUB_API_TOKEN_FILES = lib.concatStringsSep "," (
+          lib.imap0 (i: _: "%d/${tokenCred i}") cfg.apiTokenFiles
+        );
       };
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve";
@@ -389,7 +404,8 @@ in
           "calibre-password:${cfg.calibre.servicePasswordFile}"
           "login-password:${cfg.login.passwordFile}"
           "session-key:${cfg.sessionKeyFile}"
-        ];
+        ]
+        ++ lib.imap0 (i: file: "${tokenCred i}:${file}") cfg.apiTokenFiles;
         Restart = "on-failure";
         RestartSec = 5;
 

@@ -77,8 +77,9 @@ module CalibreHub
     end
   end
 
-  # Session for /api/*, Basic for the OPDS passthrough, CSRF header for
-  # unsafe methods. Re-issues the cookie on every authenticated API request.
+  # Session or API token for /api/*, Basic for the OPDS passthrough, CSRF
+  # header for unsafe methods unless only a token is sent. Re-issues the
+  # cookie on every request authenticated by the session.
   class AuthHandler
     include HTTP::Handler
 
@@ -98,8 +99,19 @@ module CalibreHub
         return deny(context, 401, "login required")
       end
 
-      unless {"GET", "HEAD", "OPTIONS"}.includes?(req.method) || req.headers[Auth::CSRF_HEADER]?
+      authorization = req.headers["Authorization"]?
+      bearer = Auth.bearer?(authorization)
+      # A browser never adds a bearer token on its own, so token requests
+      # need no CSRF header; once a cookie comes along they do again.
+      csrf_exempt = bearer && !req.headers.has_key?("Cookie")
+      unless {"GET", "HEAD", "OPTIONS"}.includes?(req.method) || req.headers[Auth::CSRF_HEADER]? || csrf_exempt
         return deny(context, 403, "missing #{Auth::CSRF_HEADER} header")
+      end
+
+      # a token is never mixed with the session: wrong token, no fallback
+      if bearer
+        return call_next(context) if @auth.bearer_user(client_ip(context), authorization)
+        return deny(context, 401, "invalid token")
       end
 
       return call_next(context) if path == "/api/session" && req.method == "POST"
