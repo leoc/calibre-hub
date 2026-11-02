@@ -122,6 +122,8 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       { id: "list", label: t("view.list"), icon: <List />, run: () => (setView("list"), close()) },
       ...THEMES.map((th) => ({ id: `theme-${th}`, label: `${t("theme.label")}: ${t(`theme.${th}`)}`, icon: <Palette />, run: () => (setTheme(th), close()) })),
       ...MODES.map((m) => ({ id: `keys-${m}`, label: `${t("keys.label")}: ${t(`keys.${m}`)}`, icon: <Keyboard />, run: () => (keyboard.setMode(m), close()) })),
+      { id: "keys-help", label: t("keys.help"), icon: <Keyboard />, run: () => closeThen(() => keyboard.setPanel("help")) },
+      { id: "keys-settings", label: t("keys.settings"), icon: <Keyboard />, run: () => closeThen(() => keyboard.setPanel("settings")) },
       ...SORTS.map((s: Sort) => ({
         id: `sort-${s}`,
         label: `${t("sort.label")}: ${t(`sort.${s}`)}`,

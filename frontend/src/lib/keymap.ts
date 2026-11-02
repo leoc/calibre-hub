@@ -31,6 +31,21 @@ export const ACTIONS = [
   "selectAll",
   "search",
   "commands",
+  "edit",
+  "toggleList",
+  "delete",
+  "copyLink",
+  "download",
+  "back",
+  "forward",
+  "goLibrary",
+  "goTrash",
+  "goMetadata",
+  "goSuggestions",
+  "goCategories",
+  "hints",
+  "hintsSelect",
+  "help",
 ] as const
 export type Action = (typeof ACTIONS)[number]
 
@@ -54,6 +69,11 @@ const APP: Bindings = {
   selectAll: ["<C-a>"],
   search: ["/"],
   commands: [">"],
+  edit: ["<F2>"],
+  delete: ["<Del>"],
+  back: ["<A-Left>"],
+  forward: ["<A-Right>"],
+  help: ["?"],
 }
 
 // on top of the app keys
@@ -69,7 +89,29 @@ const VIM: Bindings = {
   nextPage: ["]"],
   prevPage: ["["],
   visual: ["v"],
+  edit: ["e"],
+  toggleList: ["t"],
+  delete: ["dd"],
+  copyLink: ["y"],
+  download: ["D"],
+  back: ["H"],
+  forward: ["L"],
+  goLibrary: ["gl"],
+  goTrash: ["gt"],
+  goMetadata: ["gm"],
+  goSuggestions: ["gv"],
+  goCategories: ["gc"],
+  hints: ["f"],
+  hintsSelect: ["F"],
 }
+
+// For the help and the settings, in this order
+export const GROUPS: { title: "move" | "select" | "book" | "go"; actions: Action[] }[] = [
+  { title: "move", actions: ["down", "up", "left", "right", "first", "last", "halfDown", "halfUp", "nextPage", "prevPage"] },
+  { title: "select", actions: ["toggleSelect", "extendDown", "extendUp", "extendLeft", "extendRight", "visual", "selectAll"] },
+  { title: "book", actions: ["open", "edit", "toggleList", "delete", "copyLink", "download", "hints", "hintsSelect"] },
+  { title: "go", actions: ["search", "commands", "back", "forward", "goLibrary", "goTrash", "goMetadata", "goSuggestions", "goCategories", "help"] },
+]
 
 export function defaultBindings(mode: KeyMode): Bindings {
   if (mode === "app") return APP
@@ -81,6 +123,34 @@ export function defaultBindings(mode: KeyMode): Bindings {
 // Own bindings replace the defaults of the actions they name.
 export function withOverrides(base: Bindings, overrides: Bindings | null | undefined): Bindings {
   return { ...base, ...(overrides ?? {}) }
+}
+
+// Own bindings as stored: {"down": ["n", "j"], …}; anything else is dropped.
+export function parseOverrides(json: string | null): Bindings {
+  if (!json) return {}
+  try {
+    const raw: unknown = JSON.parse(json)
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+    const out: Bindings = {}
+    for (const [action, keys] of Object.entries(raw)) {
+      if ((ACTIONS as readonly string[]).includes(action) && Array.isArray(keys) && keys.every((k) => typeof k === "string" && k.length > 0)) {
+        out[action as Action] = keys
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+// Only what differs from the defaults is kept.
+export function diffOverrides(base: Bindings, wanted: Bindings): Bindings {
+  const out: Bindings = {}
+  for (const action of ACTIONS) {
+    const keys = wanted[action]
+    if (keys && keys.join(" ") !== (base[action] ?? []).join(" ")) out[action] = keys
+  }
+  return out
 }
 
 const NAMES: Record<string, string> = {

@@ -38,6 +38,9 @@ async function expectActiveAt(page: Page, index: number) {
 }
 
 const activeBefore = new WeakMap<Page, string | null>()
+// set up by "the … book is the active book": its index and reading list toggle
+const given = new WeakMap<Page, { index: number; listOn: string | null }>()
+const listToggle = (page: Page, index: number) => books(page).nth(index).locator("xpath=..").locator("button[aria-pressed]").first()
 
 // --- Given ------------------------------------------------------------------
 
@@ -47,7 +50,9 @@ Given("the library shows the grid with at least {int} rows of books", async ({ p
   expect(await books(page).count()).toBeGreaterThanOrEqual(cols * rows)
 })
 
-Given("keyboard mode is {string}", async ({ page }, mode: string) => {
+Given("keyboard mode is {string}", async ({ page, context }, mode: string) => {
+  // "y" copies a link
+  await context.grantPermissions(["clipboard-read", "clipboard-write"])
   await page.evaluate((m) => localStorage.setItem("hub.keys", m), mode)
   await page.reload()
   await expect(results(page)).toBeVisible()
@@ -59,6 +64,24 @@ Given("the {word} book is the active book", async ({ page }, word: string) => {
   await page.keyboard.press("Home")
   for (let i = 0; i < n; i++) await page.keyboard.press("ArrowRight")
   await expectActiveAt(page, n)
+  given.set(page, { index: n, listOn: await listToggle(page, n).getAttribute("aria-pressed") })
+})
+
+Given("I opened the trash page from the library", async ({ page }) => {
+  await page.getByRole("link", { name: "Papierkorb" }).click()
+  await expect(page).toHaveURL(/\/trash$/)
+})
+
+// action labels in the settings (src/i18n/de.ts, keys.a.*)
+const ACTION_LABELS: Record<string, string> = { "next book": "Nach unten (im Detail: nächstes Buch)" }
+
+Given("I bind {string} to {string} in the settings", async ({ page }, action: string, keys: string) => {
+  await page.getByRole("button", { name: "Tastenbelegung" }).click()
+  const dialog = page.getByRole("dialog", { name: /^Tastenbelegung/ })
+  const field = dialog.getByLabel(ACTION_LABELS[action], { exact: true })
+  await field.fill(`${await field.inputValue()} ${keys}`)
+  await dialog.getByRole("button", { name: "Speichern" }).click()
+  await expect(dialog).toBeHidden()
 })
 
 Given("I selected {int} books", async ({ page }, n: number) => {
@@ -214,4 +237,91 @@ Then("it is still {string} after a reload", async ({ page }, mode: string) => {
   await page.reload()
   await expect(results(page)).toBeVisible()
   await expect(page.getByRole("radiogroup", { name: "Tastatur" }).getByRole("radio", { name: mode, exact: false })).toHaveAttribute("aria-checked", "true")
+})
+
+// --- Phase 2 ------------------------------------------------------------------
+
+When("I type the hint of the {word} book", async ({ page }, word: string) => {
+  const id = (await bookIds(page))[ordinal(word)]
+  const label = await page.locator(`[data-hint-book="${id}"]`).getAttribute("data-hint")
+  expect(label).toBeTruthy()
+  await page.keyboard.type(label!)
+})
+
+Then("the library is shown", async ({ page }) => {
+  await expect(page).toHaveURL(/^[^?]*\/(\?.*)?$/)
+  await expect(results(page)).toBeVisible()
+})
+
+Then(/^the (trash|metadata|suggestions) page is shown$/, async ({ page }, name: string) => {
+  await expect(page).toHaveURL(new RegExp(`/${name}$`))
+})
+
+Then("the focus is in the category tree", async ({ page }) => {
+  await expect(page.locator('[role="tree"] a:focus')).toHaveCount(1)
+})
+
+Then("the library is filtered by the second category", async ({ page }) => {
+  await expect(page.getByRole("tree").getByRole("treeitem").nth(1)).toHaveAttribute("aria-selected", "true")
+  await expect(page).toHaveURL(/[?&]kategorie=/)
+})
+
+Then("every book and link shows a short hint label", async ({ page }) => {
+  const hints = page.locator("[data-hint]")
+  await expect(hints.first()).toBeVisible()
+  const labels = await hints.evaluateAll((els) => els.map((e) => e.getAttribute("data-hint")!))
+  expect(new Set(labels).size).toBe(labels.length)
+  for (const l of labels) expect(l.length).toBeLessThanOrEqual(2)
+  // the books on screen and the sidebar links
+  await expect(page.locator(`[data-hint-book="${(await bookIds(page))[0]}"]`)).toHaveCount(1)
+  expect(labels.length).toBeGreaterThan(await page.locator("main [data-hint-book]").count())
+})
+
+Then("the {word} book is selected", async ({ page }, word: string) => {
+  await expect(books(page).nth(ordinal(word))).toHaveAttribute("aria-checked", "true")
+})
+
+Then("the edit form of the {word} book is open", async ({ page }, word: string) => {
+  const id = (await bookIds(page))[ordinal(word)]
+  await expect(page).toHaveURL(new RegExp(`[?&]book=${id}(&|$)`))
+  await expect(page).toHaveURL(/[?&]edit=/)
+  await expect(page.getByRole("form", { name: "Buch bearbeiten" })).toBeVisible()
+})
+
+Then("the {word} book's reading list toggle flips", async ({ page }, word: string) => {
+  const before = given.get(page)!
+  expect(before.index).toBe(ordinal(word))
+  await expect(listToggle(page, before.index)).toHaveAttribute("aria-pressed", before.listOn === "true" ? "false" : "true")
+})
+
+Then("a delete confirmation for the {word} book opens", async ({ page }, word: string) => {
+  const title = await books(page).nth(ordinal(word)).locator("p").first().textContent()
+  const dialog = page.getByRole("dialog", { name: "Buch löschen?" })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText(title!)
+})
+
+Then("the link to the {word} book is in the clipboard", async ({ page }, word: string) => {
+  const id = (await bookIds(page))[ordinal(word)]
+  await expect(keyStatus(page)).toContainText("Link kopiert")
+  const text = await page.evaluate(() => navigator.clipboard.readText())
+  expect(text).toBe(new URL(`/books/${id}`, page.url()).href)
+})
+
+Then("an overlay lists the keys of the current mode", async ({ page }) => {
+  const dialog = page.getByRole("dialog", { name: "Tastenhilfe" })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText("Modus App")
+  await expect(dialog.getByRole("row", { name: /^Nach unten/ })).toContainText("↓")
+  // no Vim keys in App mode
+  await expect(dialog.getByRole("row", { name: /^Erstes Buch/ })).not.toContainText("g g")
+})
+
+Then("the overlay is closed", async ({ page }) => {
+  await expect(page.getByRole("dialog", { name: "Tastenhilfe" })).toBeHidden()
+})
+
+Then("the active book moves down by one row", async ({ page }) => {
+  const cols = await columns(page)
+  await expectActiveAt(page, given.get(page)!.index + cols)
 })

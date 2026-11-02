@@ -1,19 +1,25 @@
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { Keyboard } from "lucide-react"
-import type { Book } from "@/lib/api"
-import { defaultBindings, eventToken, KeyEngine, MODES } from "@/lib/keymap"
-import { activateWhenLoaded, bookElement, keyboard, registerList, runListAction, useKeyboard } from "@/lib/keyboard"
+import { useQuery } from "@tanstack/react-query"
+import { Keyboard, Settings2 } from "lucide-react"
+import { DEFAULT_CONFIG, downloadUrl, type Book } from "@/lib/api"
+import { configQuery } from "@/lib/queries"
+import { useToggleTag } from "@/lib/mutations"
+import { eventToken, KeyEngine, MODES, type Action } from "@/lib/keymap"
+import { activateWhenLoaded, bookElement, focusActive, keyboard, registerList, runListAction, useKeyboard } from "@/lib/keyboard"
 import type { LibrarySearch } from "@/lib/search"
-import { selection, useSelection } from "@/lib/selection"
+import { requestBulk, selection, useSelection } from "@/lib/selection"
 import { t } from "@/i18n"
 import { cn } from "@/lib/utils"
+import { sortFormats } from "./book-detail"
+import { DeleteBookDialog } from "./delete-book"
+import { collectHints, HelpPanel, HintLayer, SettingsPanel, type Hints } from "./keyboard-panels"
 
 // Keys only act outside text fields and while no dialog is open; the book
 // detail panel lets them through (j/k go to the next book there).
 const isTyping = (el: EventTarget | null) =>
   el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
-const dialogOpen = () => !!document.querySelector('[role="dialog"]:not([data-keys="pass"]), [role="alertdialog"]')
+export const dialogOpen = () => !!document.querySelector('[role="dialog"]:not([data-keys="pass"]), [role="alertdialog"]')
 // Enter and Space keep their own meaning on buttons and links, except on the books
 const ACTIVATING = new Set(["<Enter>", "<Space>"])
 const onControl = (el: EventTarget | null) =>
@@ -24,65 +30,219 @@ const onControl = (el: EventTarget | null) =>
 // The one keydown listener for the app: turns keys into actions, global
 // ones here, the list's in the library page (useListKeys).
 export function KeyboardHost({ onSearch, onCommands }: { onSearch: () => void; onCommands: () => void }) {
-  const { mode, visual, pending } = useKeyboard()
-  const engine = useMemo(() => new KeyEngine(defaultBindings(mode), mode === "vim"), [mode])
-  const handlers = useRef({ onSearch, onCommands })
+  const { mode, visual, pending, overrides, panel, flash } = useKeyboard()
+  const navigate = useNavigate()
+  const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  const engine = useMemo(
+    () => new KeyEngine(keyboard.bindings(mode), mode === "vim"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, overrides],
+  )
+  const [hints, setHints] = useState<Hints | null>(null)
+  const latest = useRef({ onSearch, onCommands, navigate, config, hints })
   useEffect(() => {
-    handlers.current = { onSearch, onCommands }
+    latest.current = { onSearch, onCommands, navigate, config, hints }
   })
 
+  // hint mode ends when the page moves under the labels
   useEffect(() => {
+    if (!hints) return
+    const cancel = () => setHints(null)
+    window.addEventListener("scroll", cancel, true)
+    window.addEventListener("resize", cancel)
+    return () => {
+      window.removeEventListener("scroll", cancel, true)
+      window.removeEventListener("resize", cancel)
+    }
+  }, [hints])
+
+  useEffect(() => {
+    const global = (action: Action, count: number | null, e: KeyboardEvent): boolean => {
+      const { navigate, config } = latest.current
+      switch (action) {
+        case "search":
+          latest.current.onSearch()
+          return true
+        case "commands":
+          latest.current.onCommands()
+          return true
+        case "help":
+          keyboard.setPanel("help")
+          return true
+        case "back":
+          history.back()
+          return true
+        case "forward":
+          history.forward()
+          return true
+        case "goLibrary":
+          navigate({ to: "/" })
+          return true
+        case "goTrash":
+          navigate({ to: "/trash" })
+          return true
+        case "goMetadata":
+          if (!config.metadata) return false
+          navigate({ to: "/metadata" })
+          return true
+        case "goSuggestions":
+          if (!config.classify) return false
+          navigate({ to: "/suggestions" })
+          return true
+        case "goCategories":
+          return focusTree()
+        case "hints":
+        case "hintsSelect": {
+          const list = collectHints()
+          if (!list.length) return false
+          setHints({ list, typed: "", select: action === "hintsSelect" })
+          return true
+        }
+        default:
+          return runListAction(action, count, e)
+      }
+    }
+
     const onKey = (e: KeyboardEvent) => {
+      if (latest.current.hints) return hintKey(e)
       if (e.defaultPrevented || e.isComposing || isTyping(e.target) || dialogOpen()) return
       const token = eventToken(e)
       if (!token) return
       if (ACTIVATING.has(token) && onControl(e.target)) return
       if (token === "<Esc>") {
-        // Escape drops a half-typed command first
+        // Escape drops a half-typed command first, then leaves the tree, then the list's turn
         const dropped = !!engine.pending
         engine.reset()
         keyboard.setPending("")
-        if (dropped || runListAction("escape", null, e)) e.preventDefault()
+        if (dropped || leaveTree(e.target) || runListAction("escape", null, e)) e.preventDefault()
         return
       }
       const r = engine.feed(token)
       keyboard.setPending(engine.pending)
       if (r.type === "pending") return e.preventDefault()
       if (r.type === "none") return
-      const done = (() => {
-        switch (r.action) {
-          case "search":
-            handlers.current.onSearch()
-            return true
-          case "commands":
-            handlers.current.onCommands()
-            return true
-          default:
-            return runListAction(r.action, r.count, e)
-        }
-      })()
+      const done = treeKey(r.action, e.target) || global(r.action, r.count, e)
       if (done) e.preventDefault()
     }
+
+    // Hint mode takes every key: letters narrow the labels down, Backspace
+    // takes one back, anything else (Escape) ends it.
+    const hintKey = (e: KeyboardEvent) => {
+      const h = latest.current.hints!
+      if (e.ctrlKey || e.metaKey || e.altKey || /^(Shift|Control|Alt|Meta|CapsLock)$/.test(e.key)) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === "Backspace") return setHints({ ...h, typed: h.typed.slice(0, -1) })
+      const typed = h.typed + e.key.toLowerCase()
+      const left = e.key.length === 1 ? h.list.filter((x) => x.label.startsWith(typed)) : []
+      if (!left.length) return setHints(null)
+      const hit = left.find((x) => x.label === typed)
+      if (!hit) return setHints({ ...h, typed })
+      setHints(null)
+      if (hit.book != null) {
+        keyboard.setActive(hit.book)
+        runListAction(h.select ? "toggleSelect" : "open", null, e)
+      } else if (h.select && hit.el instanceof HTMLAnchorElement && hit.el.href) {
+        window.open(hit.el.href, "_blank", "noopener")
+      } else {
+        hit.el.focus()
+        hit.el.click()
+      }
+    }
+
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [engine])
 
-  // drop a half-typed command when the mode changes
+  // drop a half-typed command when the bindings change
   useEffect(() => () => void keyboard.setPending(""), [engine])
 
-  if (mode !== "vim" || (!visual && !pending)) return null
-  return (
-    // top right under the header, clear of the bulk bar at the bottom
-    <div
-      role="status"
-      aria-label={t("keys.status")}
-      className="fixed top-[4.25rem] right-4 z-40 rounded-md border bg-background px-3 py-1.5 font-mono text-sm shadow-md eink:border-2 eink:border-black eink:text-base eink:shadow-none"
-    >
+  const status: ReactNode = hints ? (
+    <>
+      {t("keys.hints")} {hints.typed}
+    </>
+  ) : flash ? (
+    flash
+  ) : mode === "vim" && (visual || pending) ? (
+    <>
       {visual && <span className="font-semibold">{t("keys.visual")}</span>}
       {visual && pending && " "}
       {pending}
-    </div>
+    </>
+  ) : null
+
+  return (
+    <>
+      {status && (
+        // top right under the header, clear of the bulk bar at the bottom
+        <div
+          role="status"
+          aria-label={t("keys.status")}
+          className="fixed top-[4.25rem] right-4 z-40 rounded-md border bg-background px-3 py-1.5 font-mono text-sm shadow-md eink:top-[4.5rem] eink:border-2 eink:border-black eink:text-base eink:shadow-none"
+        >
+          {status}
+        </div>
+      )}
+      {hints && <HintLayer hints={hints} />}
+      {panel === "help" && <HelpPanel onClose={() => keyboard.setPanel(null)} onCustomize={() => keyboard.setPanel("settings")} />}
+      {panel === "settings" && <SettingsPanel onClose={() => keyboard.setPanel(null)} />}
+    </>
   )
+}
+
+// --- the category tree (gc) ---------------------------------------------------------
+
+const treeLinks = (tree: Element) => [...tree.querySelectorAll<HTMLElement>('[role="treeitem"] > div > a')]
+
+function focusTree(): boolean {
+  const tree = document.querySelector('[role="tree"]')
+  if (!tree || !(tree as HTMLElement).offsetParent) return false
+  const selected = tree.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"] > div > a')
+  const target = selected ?? treeLinks(tree)[0]
+  target?.focus()
+  return !!target
+}
+
+// j/k (arrows) go along the visible categories, l opens, h closes or goes up;
+// Enter follows the link as usual.
+function treeKey(action: Action, target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  const tree = target.closest('[role="tree"]')
+  const item = target.closest('[role="treeitem"]')
+  if (!tree || !item) return false
+  const links = treeLinks(tree)
+  const link = item.querySelector<HTMLElement>(":scope > div > a")
+  const i = link ? links.indexOf(link) : -1
+  const toggle = item.querySelector<HTMLElement>(":scope > div > button")
+  const go = (el: HTMLElement | undefined | null) => (el?.focus(), true)
+  switch (action) {
+    case "down":
+      return go(links[Math.min(links.length - 1, i + 1)])
+    case "up":
+      return go(links[Math.max(0, i - 1)])
+    case "first":
+      return go(links[0])
+    case "last":
+      return go(links[links.length - 1])
+    case "right":
+      if (item.getAttribute("aria-expanded") === "false") toggle?.click()
+      else if (item.getAttribute("aria-expanded") === "true") go(links[i + 1])
+      return true
+    case "left":
+      if (item.getAttribute("aria-expanded") === "true") {
+        toggle?.click()
+        return go(link)
+      }
+      return go(item.parentElement?.closest('[role="treeitem"]')?.querySelector<HTMLElement>(":scope > div > a"))
+    default:
+      return false
+  }
+}
+
+function leaveTree(target: EventTarget | null): boolean {
+  if (!(target instanceof Element) || !target.closest('[role="tree"]')) return false
+  if (!focusActive()) (target as HTMLElement).blur()
+  return true
 }
 
 // --- the library's keys -----------------------------------------------------------
@@ -109,6 +269,16 @@ function showActive() {
   })
 }
 
+function download(book: Book) {
+  const format = sortFormats(book.formats)[0]
+  if (!format) return false
+  const a = document.createElement("a")
+  a.href = downloadUrl(book.id, format)
+  a.download = ""
+  a.click()
+  return true
+}
+
 interface ListProps {
   books: Book[] | undefined
   search: LibrarySearch
@@ -116,11 +286,15 @@ interface ListProps {
   pages: number
 }
 
-export function useListKeys(props: ListProps) {
+// The library's part of the keys; returns the delete confirmation to render.
+export function useListKeys(props: ListProps): ReactNode {
   const navigate = useNavigate()
-  const latest = useRef(props)
+  const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  const toggleTag = useToggleTag()
+  const [deleting, setDeleting] = useState<{ book: Book; next: number | null } | null>(null)
+  const latest = useRef({ ...props, config, toggleTag })
   useEffect(() => {
-    latest.current = props
+    latest.current = { ...props, config, toggleTag }
   })
   // ending the selection (bulk bar X) ends visual mode too
   const { active: selecting } = useSelection()
@@ -131,7 +305,7 @@ export function useListKeys(props: ListProps) {
   useEffect(
     () =>
       registerList((action, count) => {
-        const { books, search, page, pages } = latest.current
+        const { books, search, page, pages, config, toggleTag } = latest.current
         const detailOpen = search.book != null
         // the edit form owns the keys
         if (search.edit) return false
@@ -177,6 +351,12 @@ export function useListKeys(props: ListProps) {
             selection.addPage(ids)
             showActive()
             return true
+          case "delete":
+            // with a selection: the bulk delete (it asks itself)
+            if (sel.active && (sel.ids.size || sel.all)) {
+              requestBulk("delete")
+              return true
+            }
         }
 
         // everything else starts from the active book; the first key press picks one
@@ -188,6 +368,7 @@ export function useListKeys(props: ListProps) {
           }
           return true
         }
+        const book = books[cur]
 
         // in the open detail the books follow one another: j/k is next/previous
         const { cols, rows } = detailOpen ? { cols: 1, rows: 2 } : layout()
@@ -233,11 +414,32 @@ export function useListKeys(props: ListProps) {
             activate(ids.length - 1)
             break
           case "open":
-            navigate({ to: "/", search: { ...search, book: ids[cur], edit: undefined } })
+            navigate({ to: "/", search: { ...search, book: book.id, edit: undefined } })
             return true
+          case "edit":
+            navigate({ to: "/", search: { ...search, book: book.id, edit: true } })
+            return true
+          case "toggleList": {
+            // the reading list is the first fast tag
+            const tag = config.fastTags[0]
+            if (!tag) return false
+            toggleTag.mutate({ book, tag, on: !book.tags.includes(tag) })
+            return true
+          }
+          case "delete":
+            setDeleting({ book, next: ids[cur + 1] ?? ids[cur - 1] ?? null })
+            return true
+          case "copyLink":
+            navigator.clipboard
+              .writeText(new URL(`/books/${book.id}`, location.origin).href)
+              .then(() => keyboard.flash(t("keys.linkCopied")))
+              .catch(() => keyboard.flash(t("keys.copyFailed")))
+            return true
+          case "download":
+            return download(book)
           case "toggleSelect":
             selection.start()
-            selection.toggle(ids[cur], false, ids)
+            selection.toggle(book.id, false, ids)
             showActive()
             return true
           case "visual":
@@ -246,15 +448,15 @@ export function useListKeys(props: ListProps) {
               return true
             }
             selection.start()
-            keyboard.setVisual({ anchor: ids[cur], base: [...sel.ids] })
-            selection.replace([...new Set([...sel.ids, ids[cur]])])
+            keyboard.setVisual({ anchor: book.id, base: [...sel.ids] })
+            selection.replace([...new Set([...sel.ids, book.id])])
             showActive()
             return true
           default:
             return false
         }
         if (action.startsWith("extend")) {
-          const anchor = sel.anchor != null && ids.includes(sel.anchor) ? sel.anchor : ids[cur]
+          const anchor = sel.anchor != null && ids.includes(sel.anchor) ? sel.anchor : book.id
           selection.start()
           selection.addRange(anchor, keyboard.get().active!, ids)
           showActive()
@@ -263,25 +465,52 @@ export function useListKeys(props: ListProps) {
       }),
     [navigate],
   )
+
+  if (!deleting) return null
+  return (
+    <DeleteBookDialog
+      book={deleting.book}
+      onClose={() => setDeleting(null)}
+      onDeleted={() => {
+        // the neighbour takes over; an open detail of the book closes
+        keyboard.setActive(deleting.next)
+        const { search } = latest.current
+        if (search.book === deleting.book.id) navigate({ to: "/", search: { ...search, book: undefined, edit: undefined }, replace: true })
+        else showActive()
+      }}
+    />
+  )
 }
 
-// Segmented like the theme switch: App or Vim keys, per device.
+// Segmented like the theme switch: App or Vim keys, per device; the gear
+// opens the own bindings.
 export function KeyboardSwitch({ className }: { className?: string }) {
   const { mode } = useKeyboard()
   return (
-    <div role="radiogroup" aria-label={t("keys.label")} className={cn("grid grid-cols-[auto_1fr_1fr] items-center gap-1 rounded-md border p-1 eink:border-2", className)}>
+    <div className={cn("grid grid-cols-[auto_1fr_auto] items-center gap-1 rounded-md border p-1 eink:border-2", className)}>
       <Keyboard className="mx-1.5 size-4" aria-hidden />
-      {MODES.map((m) => (
-        <button
-          key={m}
-          role="radio"
-          aria-checked={mode === m}
-          onClick={() => keyboard.setMode(m)}
-          className="rounded-sm px-1 py-1 text-xs hover:bg-accent aria-checked:bg-primary aria-checked:text-primary-foreground eink:min-h-12 touch:min-h-11 eink:text-sm"
-        >
-          {t(`keys.${m}`)}
-        </button>
-      ))}
+      <div role="radiogroup" aria-label={t("keys.label")} className="grid grid-cols-2 gap-1">
+        {MODES.map((m) => (
+          <button
+            key={m}
+            role="radio"
+            aria-checked={mode === m}
+            onClick={() => keyboard.setMode(m)}
+            className="rounded-sm px-1 py-1 text-xs hover:bg-accent aria-checked:bg-primary aria-checked:text-primary-foreground eink:min-h-12 touch:min-h-11 eink:text-sm"
+          >
+            {t(`keys.${m}`)}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => keyboard.setPanel("settings")}
+        aria-label={t("keys.settings")}
+        title={t("keys.settings")}
+        className="flex size-7 items-center justify-center rounded-sm hover:bg-accent eink:size-12 touch:size-11"
+      >
+        <Settings2 className="size-4" aria-hidden />
+      </button>
     </div>
   )
 }

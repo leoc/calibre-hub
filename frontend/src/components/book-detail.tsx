@@ -19,7 +19,7 @@ import { LibraryLink } from "@/components/library-link"
 
 // Order in which formats are offered; the first is the primary button.
 const FORMAT_ORDER = ["EPUB", "KEPUB", "AZW3", "MOBI", "PDF", "CBZ", "CBR", "DJVU", "TXT"]
-const sortFormats = (f: string[]) =>
+export const sortFormats = (f: string[]) =>
   [...f].sort((a, b) => (FORMAT_ORDER.indexOf(a) + 1 || 99) - (FORMAT_ORDER.indexOf(b) + 1 || 99))
 
 interface DetailProps {

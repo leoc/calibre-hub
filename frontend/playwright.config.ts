@@ -20,9 +20,8 @@ export default defineConfig({
   projects: [
     { name: "desktop", testDir: "e2e", testMatch: "*.spec.ts", use: desktop },
     { name: "phone", testDir: "e2e", testMatch: "*.spec.ts", use: phone },
-    // @phase2: specified, not built yet
-    { name: "bdd-wide", testDir: bdd("wide", "not @narrow and not @phase2"), use: desktop },
-    { name: "bdd-narrow", testDir: bdd("narrow", "not @wide and not @phase2"), use: phone },
+    { name: "bdd-wide", testDir: bdd("wide", "not @narrow"), use: desktop },
+    { name: "bdd-narrow", testDir: bdd("narrow", "not @wide"), use: phone },
   ],
   webServer: {
     command: `pnpm exec vite --mode mock --port ${port} --strictPort`,

@@ -43,7 +43,7 @@ export function LibraryPage() {
 
   // keyboard: moving, selecting, opening; after a search or a page change
   // the first new book becomes the active one
-  useListKeys({ books: data?.books, search, page, pages })
+  const keyDialog = useListKeys({ books: data?.books, search, page, pages })
   const pendingActivation = usePendingActivation()
   useEffect(() => {
     if (!pendingActivation || !data || isPlaceholderData || !pendingActivation.when(search)) return
@@ -109,6 +109,7 @@ export function LibraryPage() {
           <Pagination search={search} page={page} pages={pages} />
         </div>
       )}
+      {keyDialog}
       {sel.active && data && <BulkBar search={search} pageIds={data.books.map((b) => b.id)} total={data.total} />}
       {desktop && (
         <Sheet open={search.book != null} onOpenChange={(o) => !o && closeBook()}>

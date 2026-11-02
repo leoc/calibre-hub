@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react"
 import { load, save } from "./storage"
-import { MODES, type KeyMode } from "./keymap"
+import { defaultBindings, diffOverrides, MODES, parseOverrides, withOverrides, type Bindings, type KeyMode } from "./keymap"
 
 // Keyboard state shared by the key handler, the library and the settings:
 // the mode (per device), the active book, visual mode and what has been
@@ -14,11 +14,35 @@ export interface KeyState {
   visual: { anchor: number; base: number[] } | null
   // count or sequence typed so far ("3", "g")
   pending: string
+  // own bindings per mode (settings), on top of the defaults
+  overrides: Record<KeyMode, Bindings>
+  // help overlay or the bindings settings
+  panel: "help" | "settings" | null
+  // a short message in the status line ("Link kopiert")
+  flash: string | null
 }
 
 const MODE_KEY = "hub.keys"
+// own bindings: hub.keymap.app, hub.keymap.vim (JSON, see README)
+const mapKey = (mode: KeyMode) => `hub.keymap.${mode}`
+const loadOverrides = (mode: KeyMode) => {
+  try {
+    return parseOverrides(localStorage.getItem(mapKey(mode)))
+  } catch {
+    return {}
+  }
+}
 
-let state: KeyState = { mode: load(MODE_KEY, MODES, "app"), active: null, visual: null, pending: "" }
+let state: KeyState = {
+  mode: load(MODE_KEY, MODES, "app"),
+  active: null,
+  visual: null,
+  pending: "",
+  overrides: { app: loadOverrides("app"), vim: loadOverrides("vim") },
+  panel: null,
+  flash: null,
+}
+let flashTimer: ReturnType<typeof setTimeout> | undefined
 const listeners = new Set<() => void>()
 const set = (patch: Partial<KeyState>) => {
   state = { ...state, ...patch }
@@ -42,6 +66,19 @@ export const keyboard = {
   setActive: (active: number | null) => state.active !== active && set({ active }),
   setVisual: (visual: KeyState["visual"]) => set({ visual }),
   setPending: (pending: string) => state.pending !== pending && set({ pending }),
+  setPanel: (panel: KeyState["panel"]) => set({ panel }),
+  // what the keys of a mode do now: defaults plus own bindings
+  bindings: (mode: KeyMode = state.mode) => withOverrides(defaultBindings(mode), state.overrides[mode]),
+  setBindings(mode: KeyMode, wanted: Bindings) {
+    const overrides = diffOverrides(defaultBindings(mode), wanted)
+    save(mapKey(mode), JSON.stringify(overrides))
+    set({ overrides: { ...state.overrides, [mode]: overrides } })
+  },
+  flash(message: string) {
+    clearTimeout(flashTimer)
+    set({ flash: message })
+    flashTimer = setTimeout(() => set({ flash: null }), 2500)
+  },
 }
 
 export function useKeyboard(): KeyState {

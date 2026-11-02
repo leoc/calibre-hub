@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { defaultBindings, eventToken, formatKeys, KeyEngine, parseKeys } from "./keymap"
+import { defaultBindings, diffOverrides, eventToken, formatKeys, KeyEngine, parseKeys, parseOverrides, withOverrides } from "./keymap"
 
 const key = (k: string, mods: Partial<{ ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean }> = {}) => ({
   key: k,
@@ -82,5 +82,24 @@ describe("KeyEngine", () => {
   it("takes no counts in App mode", () => {
     const app = new KeyEngine(defaultBindings("app"), false)
     expect(app.feed("3")).toEqual({ type: "none" })
+  })
+})
+
+describe("own bindings", () => {
+  it("parses the stored JSON and drops what it does not know", () => {
+    expect(parseOverrides('{"down": ["n", "j"], "nope": ["x"], "up": "k", "left": []}')).toEqual({ down: ["n", "j"], left: [] })
+    expect(parseOverrides("not json")).toEqual({})
+    expect(parseOverrides(null)).toEqual({})
+  })
+  it("keeps only what differs from the defaults and replaces those actions", () => {
+    const base = defaultBindings("vim")
+    const diff = diffOverrides(base, { ...base, down: ["n", ...(base.down ?? [])] })
+    expect(diff).toEqual({ down: ["n", "j", "<Down>"] })
+    const engine = new KeyEngine(withOverrides(base, diff), true)
+    expect(engine.feed("n")).toEqual({ type: "action", action: "down", count: null })
+  })
+  it("can take a key away", () => {
+    const engine = new KeyEngine(withOverrides(defaultBindings("vim"), { down: ["<Down>"] }), true)
+    expect(engine.feed("j")).toEqual({ type: "none" })
   })
 })

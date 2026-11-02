@@ -46,20 +46,46 @@ the lockfile (v9) works with 10 to 12.
 - Keyboard control, specified in `e2e/features/keyboard.feature`
   (`src/lib/keymap.ts` bindings and key parser, `src/lib/keyboard.ts` state,
   `src/components/keyboard.tsx` the one keydown listener and the list's
-  keys). Two modes per device (`hub.keys`), switched in the sidebar footer
-  or with the palette commands "Tastatur: App" / "Tastatur: Vim". App:
-  arrows, Home/End, PageUp/PageDown, Enter opens, Space selects,
-  Shift+arrows extend, Ctrl+A selects the page. Vim: the same plus hjkl,
-  counts (`5j`), `gg`/`G`, Ctrl+D/U, `[`/`]` pages, `v` visual mode (shown
-  top right with a pending count or sequence). In the open detail j/k go to
-  the next/previous book. `/` puts the focus into the wide search bar
-  (phones: the palette); Enter searches and goes on in the list from the
-  first result, Escape returns to the list. `>` opens the palette's
-  commands, with books selected the bulk commands with the count
-  ("Tags hinzufügen (3)"). Selection uses the bulk store and turns
-  selection mode on. Keys do nothing in text fields and while a dialog is
-  open; the active book is a roving tab stop with real focus and a ring
-  (thick black in E-Ink).
+  keys, `keyboard-panels.tsx` hints, help and settings). Two modes per
+  device (`hub.keys`), switched in the sidebar footer or with the palette
+  commands "Tastatur: App" / "Tastatur: Vim"; `?` shows the keys of the
+  current mode.
+  - App: arrows, Home/End, PageUp/PageDown, Enter opens, Space selects,
+    Shift+arrows extend, Ctrl+A selects the page, F2 edits, Delete deletes
+    (asks; with a selection the bulk delete), Alt+←/→ go back and forward.
+  - Vim: the app keys plus hjkl, counts (`5j`), `gg`/`G`, Ctrl+D/U, `[`/`]`
+    pages, `v` visual mode, `H`/`L` back and forward, `gl` library, `gt`
+    trash, `gm` metadata, `gv` suggestions, `gc` category tree (j/k move,
+    l/h open and close, Enter filters, Escape back to the books), `f`/`F`
+    hints (letters on every book and link; `f` opens, `F` selects a book or
+    opens a link in a new tab), and on the active book `e` edit, `t`
+    reading list (the first fast tag), `dd` delete, `y` copy its link, `D`
+    download the first format. Visual mode, a pending count or sequence
+    and messages show top right.
+  - In the open detail j/k (arrows) go to the next/previous book. `/` puts
+    the focus into the wide search bar (phones: the palette); Enter
+    searches and goes on in the list from the first result, Escape returns
+    to the list. `>` opens the palette's commands, with books selected the
+    bulk commands with the count ("Tags hinzufügen (3)"). Selection uses the
+    bulk store and turns selection mode on.
+  - Keys do nothing in text fields and while a dialog is open; the active
+    book is a roving tab stop with real focus and a ring (thick black in
+    E-Ink).
+  - Own bindings (gear next to the mode switch, or "Tastenbelegung" in the
+    palette) are stored per device and mode in `localStorage` as
+    `hub.keymap.app` / `hub.keymap.vim`: a JSON object from action to a
+    list of keys, holding only the actions that differ from the defaults;
+    an action named there loses its default keys, `[]` unbinds it.
+    Keys are written like Vim: a printable character is itself (`j`, `G`,
+    `>`), other keys `<Name>` with optional `C-` (Ctrl/Cmd), `A-` (Alt),
+    `S-` (Shift): `<Down>`, `<S-Down>`, `<C-d>`, `<A-Left>`, `<Space>`,
+    `<Enter>`, `<Esc>`, `<Del>`, `<F2>`, `<PageDown>`; a sequence is the
+    keys in a row (`gg`, `dd`). Actions: `down up left right first last
+    halfDown halfUp nextPage prevPage open toggleSelect extendDown extendUp
+    extendLeft extendRight visual selectAll search commands edit toggleList
+    delete copyLink download back forward goLibrary goTrash goMetadata
+    goSuggestions goCategories hints hintsSelect help`. Example:
+    `{"down": ["n", "j", "<Down>"], "toggleList": []}`.
 - Themes: system, light, dark, E-Ink (black on white, no animations, larger
   targets), stored per device. Boox/Onyx user agents get a one-time prompt.
 - Category suggestions (`/suggestions`, sidebar entry with the open count,

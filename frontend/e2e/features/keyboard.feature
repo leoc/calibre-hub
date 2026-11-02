@@ -154,7 +154,6 @@ Feature: Keyboard control
 
   # --- Phase 2: global, extras ----------------------------------------------
 
-  @phase2
   Scenario Outline: History back and forward
     Given keyboard mode is "<mode>"
     And I opened the trash page from the library
@@ -168,7 +167,6 @@ Feature: Keyboard control
       | app  | Alt+ArrowLeft  | Alt+ArrowRight  |
       | vim  | Shift+H        | Shift+L         |
 
-  @phase2
   Scenario Outline: Goto sequences
     Given keyboard mode is "vim"
     When I type "<keys>"
@@ -181,7 +179,6 @@ Feature: Keyboard control
       | gv   | suggestions page |
       | gl   | library          |
 
-  @phase2
   Scenario: Category tree with the keyboard
     Given keyboard mode is "vim"
     When I type "gc"
@@ -190,7 +187,6 @@ Feature: Keyboard control
     And I press "Enter"
     Then the library is filtered by the second category
 
-  @phase2
   Scenario: Hint mode opens a target
     Given keyboard mode is "vim"
     When I type "f"
@@ -198,14 +194,12 @@ Feature: Keyboard control
     When I type the hint of the third book
     Then the detail of the third book is open
 
-  @phase2
   Scenario: Hint mode selects
     Given keyboard mode is "vim"
     When I type "F"
     And I type the hint of the second book
     Then the second book is selected
 
-  @phase2
   Scenario Outline: Direct keys on the active book
     Given keyboard mode is "vim"
     And the first book is the active book
@@ -219,16 +213,15 @@ Feature: Keyboard control
       | dd   | a delete confirmation for the first book opens |
       | y    | the link to the first book is in the clipboard |
 
-  @phase2
   Scenario: Help overlay
     When I type "?"
     Then an overlay lists the keys of the current mode
     When I press "Escape"
     Then the overlay is closed
 
-  @phase2
   Scenario: Own key bindings
     Given keyboard mode is "vim"
     And I bind "next book" to "n" in the settings
+    And the first book is the active book
     When I type "n"
     Then the active book moves down by one row
