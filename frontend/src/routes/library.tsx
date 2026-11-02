@@ -105,7 +105,7 @@ export function LibraryPage() {
         <LoadingBooks view={view} />
       ) : data.books.length === 0 ? (
         <div className="space-y-4 py-12 text-center">
-          <p className="text-lg">{listOnly ? t("list.empty") : t("results.none")}</p>
+          <p className="text-lg">{listOnly ? t(list?.rule ? "shelf.empty" : "list.empty") : t("results.none")}</p>
           {hasFilters(search) && !listOnly && (
             <LibraryLink search={{}} className={buttonVariants({ variant: "outline" })}>
               {t("results.reset")}

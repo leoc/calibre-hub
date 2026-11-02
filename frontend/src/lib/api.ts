@@ -26,6 +26,21 @@ export interface Book {
 export const VISIBILITIES = ["private", "readable", "editable"] as const
 export type Visibility = (typeof VISIBILITIES)[number]
 
+// Magic shelves: a list whose books come from a rule, AND ("all") or OR
+// ("any") over conditions; kategorie is stored with dots, language is
+// calibre's code ("deu"), text is calibre search syntax like ?q=
+export const SHELF_FIELDS = ["tag", "kategorie", "author", "series", "language", "text"] as const
+export type ShelfField = (typeof SHELF_FIELDS)[number]
+export interface ShelfCondition {
+  field: ShelfField
+  value: string
+  not?: boolean
+}
+export interface ShelfRule {
+  match: "all" | "any"
+  conditions: ShelfCondition[]
+}
+
 // A reading list, like a playlist (GET /api/lists)
 export interface ReadingList {
   id: number
@@ -54,6 +69,12 @@ export interface ReadingList {
   lastUsedAt: string | null
   // the user may change it
   editable: boolean
+  // a magic shelf: its rule and the calibre search the hub made of it; its
+  // books and count come from that search (older hubs: missing)
+  rule?: ShelfRule | null
+  query?: string | null
+  // the search failed, count is 0
+  queryError?: string | null
 }
 
 // A device's last reading position in a book (GET /api/books/:id/progress).
@@ -85,7 +106,7 @@ export interface ProgressSave {
   age?: number
 }
 
-export type ListPatch = Partial<Pick<ReadingList, "name" | "description" | "visibility" | "sync" | "favorite" | "isDefault">>
+export type ListPatch = Partial<Pick<ReadingList, "name" | "description" | "visibility" | "sync" | "favorite" | "isDefault">> & { rule?: ShelfRule }
 
 export interface BookPage {
   total: number

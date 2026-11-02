@@ -2,7 +2,9 @@ import { useMemo, useState, type FormEvent } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { Bookmark, BookmarkCheck, BookmarkPlus, ChevronRight, Folder, ListPlus, ListTree, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
-import { ApiError, coverUrl, VISIBILITIES, type Book, type ReadingList, type Visibility } from "@/lib/api"
+import { ApiError, coverUrl, VISIBILITIES, type Book, type ListPatch, type ReadingList, type ShelfRule, type Visibility } from "@/lib/api"
+import { fromForm, ruleComplete, toForm } from "@/lib/shelves"
+import { RuleEditor, RuleLine } from "./shelf"
 import { bookQuery, sessionQuery } from "@/lib/queries"
 import {
   buildListTree,
@@ -17,6 +19,7 @@ import {
   nodeTrail,
   type ListNode,
   saveDialog,
+  savableLists,
   useCreateList,
   useDeleteList,
   useListMembership,
@@ -140,6 +143,7 @@ function SaveDialog({ book, onClose }: { book: Book; onClose: () => void }) {
     membership.mutate({ list: l, bookIds: [book.id], on })
   }
   const editable = useMemo(() => lists?.filter((l) => l.editable) ?? [], [lists])
+  const editable = useMemo(() => savableLists(lists), [lists])
   const nodes = useMemo(() => flattenListTree(buildListTree(editable, session?.user)), [editable, session?.user])
   // the node a new sublist is typed under
   const [subOf, setSubOf] = useState<string | null>(null)
@@ -400,9 +404,11 @@ export function ListHeader({ list, node, tree, user, search }: { list: ReadingLi
         {node && tree && <ListTrail trail={nodeTrail(tree, node)} user={user} />}
         <h1 className="text-xl leading-tight font-semibold text-balance sm:text-2xl">{listLeaf(list)}</h1>
         {list.description && <p className="text-sm whitespace-pre-line text-muted-foreground eink:text-base eink:text-black">{list.description}</p>}
+        {list.rule && <RuleLine rule={list.rule} error={list.queryError} />}
         <p className="flex flex-wrap items-center gap-2 text-sm">
           <span className="tabular-nums">{list.count === 1 ? t("list.oneBook") : t("list.books", { count: formatNumber(list.count) })}</span>
           {hasSub && <span className="tabular-nums">{t("list.withSub", { count: formatNumber(total) })}</span>}
+          {list.rule && <Badge variant="secondary">{t("shelf.label")}</Badge>}
           {list.isDefault && <Badge variant="secondary">{t("list.defaultShort")}</Badge>}
           {list.sync && <Badge variant="secondary">{t("list.syncShort")}</Badge>}
           {list.visibility !== "private" && <Badge variant="outline">{t(`list.visibility.${list.visibility}`)}</Badge>}
@@ -422,7 +428,7 @@ export function ListHeader({ list, node, tree, user, search }: { list: ReadingLi
                   <Star className={cn(list.favorite && "fill-current")} /> {t("list.favoriteShort")}
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-                  <Pencil /> {t("list.edit")}
+                  <Pencil /> {t(list.rule ? "shelf.edit" : "list.edit")}
                 </Button>
               </>
             )}
@@ -460,24 +466,30 @@ export function ListEditDialog({
   const [favorite, setFavorite] = useState(list.favorite)
   const [isDefault, setDefault] = useState(list.isDefault)
   const [visibility, setVisibility] = useState<Visibility>(list.visibility)
+  // a magic shelf: its rule instead of default list and sync
+  const [rule, setRule] = useState<ShelfRule | null>(() => (list.rule ? toForm(list.rule) : null))
   const [confirmDelete, setConfirmDelete] = useState(startWithDelete)
   const { data: session } = useQuery(sessionQuery)
   // only the owner deletes a list
   const owner = session?.user === list.owner
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    update.mutate({ id: list.id, patch: { name: name.trim(), description, sync, favorite, isDefault, visibility } }, { onSuccess: onClose })
+    const patch: ListPatch = rule
+      ? { name: name.trim(), description, favorite, visibility, rule: fromForm(rule) }
+      : { name: name.trim(), description, sync, favorite, isDefault, visibility }
+    update.mutate({ id: list.id, patch }, { onSuccess: onClose })
   }
   const error = update.error ?? del.error
   const check = "flex items-center gap-3 text-sm eink:min-h-11 touch:min-h-11 eink:text-base"
+  const shelf = !!list.rule
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent {...(confirmDelete ? {} : { "aria-describedby": undefined })}>
-        <DialogTitle className="text-lg font-semibold">{confirmDelete ? t("list.delete") : t("list.edit")}</DialogTitle>
+      <DialogContent className={cn(shelf && !confirmDelete && "sm:max-w-xl")} {...(confirmDelete ? {} : { "aria-describedby": undefined })}>
+        <DialogTitle className="text-lg font-semibold">{confirmDelete ? t(shelf ? "shelf.delete" : "list.delete") : t(shelf ? "shelf.edit" : "list.edit")}</DialogTitle>
         {confirmDelete ? (
           <>
             <DialogDescription>
-              {t("list.deleteText", { name: listLabel(list) })}
+              {t(shelf ? "shelf.deleteText" : "list.deleteText", { name: listLabel(list) })}
               {hasSublists && ` ${t("list.deleteKeepsSub")}`}
             </DialogDescription>
             <div className="flex justify-end gap-2">
@@ -501,7 +513,7 @@ export function ListEditDialog({
                   })
                 }
               >
-                <Trash2 /> {t("list.deleteConfirm")}
+                <Trash2 /> {t(shelf ? "shelf.deleteConfirm" : "list.deleteConfirm")}
               </Button>
             </div>
           </>
@@ -522,19 +534,24 @@ export function ListEditDialog({
                 className="w-full rounded-md border bg-transparent px-3 py-2 text-sm eink:border-2 eink:text-base"
               />
             </label>
+            {rule && <RuleEditor rule={rule} onChange={setRule} />}
             <div className="space-y-1">
               <label className={check}>
                 <input type="checkbox" checked={favorite} onChange={(e) => setFavorite(e.target.checked)} className="size-4 eink:size-6" />
                 {t("list.favorite")}
               </label>
-              <label className={check}>
-                <input type="checkbox" checked={isDefault} onChange={(e) => setDefault(e.target.checked)} className="size-4 eink:size-6" />
-                {t("list.default")}
-              </label>
-              <label className={check}>
-                <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} className="size-4 eink:size-6" />
-                {t("list.sync")}
-              </label>
+              {!rule && (
+                <>
+                  <label className={check}>
+                    <input type="checkbox" checked={isDefault} onChange={(e) => setDefault(e.target.checked)} className="size-4 eink:size-6" />
+                    {t("list.default")}
+                  </label>
+                  <label className={check}>
+                    <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} className="size-4 eink:size-6" />
+                    {t("list.sync")}
+                  </label>
+                </>
+              )}
             </div>
             <label className="block space-y-1 text-sm">
               <span className="font-medium">{t("list.visibility")}</span>
@@ -566,7 +583,7 @@ export function ListEditDialog({
                 <Button type="button" variant="outline" onClick={onClose}>
                   {t("edit.cancel")}
                 </Button>
-                <Button type="submit" disabled={!name.trim() || update.isPending}>
+                <Button type="submit" disabled={!name.trim() || (!!rule && !ruleComplete(rule)) || update.isPending}>
                   {t("edit.save")}
                 </Button>
               </div>

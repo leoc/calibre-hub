@@ -1,6 +1,9 @@
-import { ArrowDown, ArrowUp, LayoutGrid, List, ListChecks, X } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
+import { ArrowDown, ArrowUp, LayoutGrid, List, ListChecks, ListFilter, X } from "lucide-react"
 import { selection, useSelection } from "@/lib/selection"
-import type { Sort } from "@/lib/api"
+import { DEFAULT_CONFIG, type Sort } from "@/lib/api"
+import { configQuery } from "@/lib/queries"
+import { nameFromRule, ruleFromSearch, shelfDialog } from "@/lib/shelves"
 import { defaultOrder, effectiveSort, sortsFor, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
 import { setView, useView } from "@/lib/prefs"
 import { categoryLabel } from "@/lib/kategorie"
@@ -81,6 +84,9 @@ export function LibraryToolbar({ search, total, page = 1, pages = 1 }: { search:
 }
 
 function ActiveFilters({ search }: { search: LibrarySearch }) {
+  const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  // the filters as a magic shelf (not on a list's page)
+  const rule = ruleFromSearch(search, config.categoryColumn)
   const chips: { key: string; label: string; value: string; next: LibrarySearch }[] = []
   if (search.q) chips.push({ key: "q", label: t("filter.q"), value: search.q, next: withFilter(search, { q: undefined }) })
   if (search.kategorie) chips.push({ key: "k", label: t("filter.kategorie"), value: categoryLabel(search.kategorie), next: withFilter(search, { kategorie: undefined }) })
@@ -91,7 +97,7 @@ function ActiveFilters({ search }: { search: LibrarySearch }) {
   if (search.lang) chips.push({ key: "l", label: t("filter.lang"), value: languageName(search.lang), next: withFilter(search, { lang: undefined }) })
   if (!chips.length) return null
   return (
-    <ul className="flex flex-wrap gap-2">
+    <ul className="flex flex-wrap items-center gap-2">
       {chips.map((c) => (
         <li key={c.key}>
           <LibraryLink search={c.next} className="block rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50" aria-label={t("filter.remove", { name: c.label ? `${c.label} ${c.value}` : c.value })}>
@@ -102,6 +108,13 @@ function ActiveFilters({ search }: { search: LibrarySearch }) {
           </LibraryLink>
         </li>
       ))}
+      {rule && (
+        <li>
+          <Button variant="ghost" size="sm" onClick={() => shelfDialog.open({ rule, name: nameFromRule(rule) })}>
+            <ListFilter /> {t("shelf.fromSearch")}
+          </Button>
+        </li>
+      )}
     </ul>
   )
 }

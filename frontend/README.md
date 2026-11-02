@@ -154,6 +154,20 @@ the lockfile (v9) works with 10 to 12.
   it as links, its books with those of its sublists, and "Nur direkt"
   (`?direct=1`) for its own only; "Aus dieser Liste" is offered only there
   or without sublists. Renaming a list (a new path) takes its sublists along.
+- Magic shelves (`e2e/features/shelves.feature`, `src/lib/shelves.ts`,
+  `src/components/shelf.tsx`): a list with a `rule` (AND/OR over Tag,
+  Kategorie, Autor, Serie, Sprache, Freitext), a saved search shown like a
+  list: sidebar (icon `ListFilter`, favorite by default), overview, palette
+  `l `, `?list=` with the rule as a line under the name. "Als Regal
+  speichern" next to the filter chips (and in the palette) turns the
+  library's filters into a rule; "Neues Regal" in the overview and the
+  palette starts an empty one; "Regal bearbeiten" edits name, description,
+  rule, favorite and visibility. A shelf is never offered to save a book to
+  (bookmark, "In Listen speichern", "Zu Liste", `s`), has no sync or default
+  list toggles and no "Aus dieser Liste". Counts follow the library:
+  `followShelves` reads the lists again after every invalidation of
+  `["books"]` or `["categories"]` while a shelf exists. The mocks evaluate
+  rules against the mock library (free text like the mock search).
 
 - Reader (`e2e/features/reading.feature`): `/read/:id[?format=]`, full
   screen outside the app shell (own keys, the library's keymap is not

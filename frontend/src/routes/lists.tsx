@@ -1,7 +1,9 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { ArrowLeft, Bookmark, ChevronRight, Folder, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
+import { ArrowLeft, Bookmark, ChevronRight, Folder, ListFilter, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
+import { emptyCondition, shelfDialog } from "@/lib/shelves"
+import { RuleLine } from "@/components/shelf"
 import { ApiError } from "@/lib/api"
 import { flattenListTree, listLabel, nodeSearch, useListTree, useUpdateList, type ListNode } from "@/lib/lists"
 import { sessionQuery } from "@/lib/queries"
@@ -35,7 +37,12 @@ export function ListsPage() {
         <h1 className="text-2xl font-semibold">{t("nav.lists")}</h1>
         <p className="text-sm text-muted-foreground eink:text-black">{t("list.overviewHint")}</p>
       </div>
-      <NewListInline className="-ml-2" onCreated={(l) => navigate({ to: "/", search: withFilter({}, { list: l.id }) })} />
+      <div className="flex flex-wrap items-start gap-2">
+        <NewListInline className="-ml-2" onCreated={(l) => navigate({ to: "/", search: withFilter({}, { list: l.id }) })} />
+        <Button type="button" variant="ghost" onClick={() => shelfDialog.open({ rule: { match: "all", conditions: [emptyCondition()] } })}>
+          <ListFilter /> {t("shelf.new")}
+        </Button>
+      </div>
       {error && !lists ? (
         <ErrorMessage error={error} onRetry={() => refetch()} />
       ) : !lists || !tree ? (
@@ -137,9 +144,11 @@ function ListRow({ node, user, nested, folded, onFold }: { node: ListNode; user?
           </LibraryLink>
         </h2>
         {list.description && <p className="line-clamp-2 text-sm whitespace-pre-line text-muted-foreground eink:text-base eink:text-black">{list.description}</p>}
+        {list.rule && <RuleLine rule={list.rule} error={list.queryError} />}
         <p className="flex flex-wrap items-center gap-2 text-sm">
           <span className="tabular-nums">{list.count === 1 ? t("list.oneBook") : t("list.books", { count: formatNumber(list.count) })}</span>
           {subCount > 0 && <span className="tabular-nums text-muted-foreground eink:text-black">{t("list.withSub", { count: formatNumber(total) })}</span>}
+          {list.rule && <Badge variant="secondary">{t("shelf.label")}</Badge>}
           {list.isDefault && <Badge variant="secondary">{t("list.defaultShort")}</Badge>}
           {list.favorite && <Badge variant="secondary">{t("list.favoriteShort")}</Badge>}
           {list.sync && <Badge variant="secondary">{t("list.syncShort")}</Badge>}
@@ -159,12 +168,17 @@ function ListRow({ node, user, nested, folded, onFold }: { node: ListNode; user?
               <Button variant="outline" size="sm" aria-pressed={list.favorite} disabled={update.isPending} onClick={() => toggle({ favorite: !list.favorite })}>
                 <Star className={cn(list.favorite && "fill-current")} /> {t("list.favoriteShort")}
               </Button>
-              <Button variant="outline" size="sm" aria-pressed={list.sync} disabled={update.isPending} onClick={() => toggle({ sync: !list.sync })}>
-                <RefreshCw /> {t("list.syncAction")}
-              </Button>
-              <Button variant="outline" size="sm" aria-pressed={list.isDefault} disabled={update.isPending} onClick={() => toggle({ isDefault: !list.isDefault })}>
-                <Bookmark className={cn(list.isDefault && "fill-current")} /> {t("list.defaultShort")}
-              </Button>
+              {/* a shelf finds its books itself: no reader sync, never the default list */}
+              {!list.rule && (
+                <>
+                  <Button variant="outline" size="sm" aria-pressed={list.sync} disabled={update.isPending} onClick={() => toggle({ sync: !list.sync })}>
+                    <RefreshCw /> {t("list.syncAction")}
+                  </Button>
+                  <Button variant="outline" size="sm" aria-pressed={list.isDefault} disabled={update.isPending} onClick={() => toggle({ isDefault: !list.isDefault })}>
+                    <Bookmark className={cn(list.isDefault && "fill-current")} /> {t("list.defaultShort")}
+                  </Button>
+                </>
+              )}
             </>
           )}
           {newSub}

@@ -16,6 +16,7 @@ import { CommandPalette } from "./command-palette"
 import { EinkSuggestion } from "./theme-switch"
 import { UploadButton, UploadHost } from "./upload"
 import { SaveDialogHost } from "./lists"
+import { ShelfDialogHost } from "./shelf"
 import { Toaster } from "./ui/toast"
 import { LibraryLink, ReplaceHistory } from "@/components/library-link"
 import { KeyboardHost } from "./keyboard"
@@ -110,6 +111,7 @@ export function AppShell() {
       </div>
       <UploadHost />
       <SaveDialogHost />
+      <ShelfDialogHost />
       <Toaster />
       {/* mounted only while open, so the input starts empty each time */}
       {palette !== null && <CommandPalette initialInput={palette} onClose={closePalette} />}

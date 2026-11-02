@@ -11,7 +11,7 @@ import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from 
 
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
-seedLists(books)
+seedLists(books, matches)
 let loggedIn = true
 
 const SORT_KEY: Record<string, (b: Book) => string | number> = {

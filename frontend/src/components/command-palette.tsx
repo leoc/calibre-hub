@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { ArrowDownUp, CopyCheck, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, Folder, FolderTree, LayoutGrid, LibraryBig, List, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
+import { ArrowDownUp, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, Folder, FolderTree, LayoutGrid, LibraryBig, List, ListFilter, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
 import { api, coverUrl, DEFAULT_CONFIG, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
-import { flattenListTree, inList, lastUsedList, listLabel, nodeCount, nodeSearch, saveDialog, useCreateList, useListMembership, useListTree } from "@/lib/lists"
+import { flattenListTree, inList, lastUsedList, listLabel, nodeCount, nodeSearch, savableLists, saveDialog, useCreateList, useListMembership, useListTree } from "@/lib/lists"
 import { matchNamed, parseInput, type Scope } from "@/lib/palette"
 import { categorySuggestions } from "@/lib/kategorie"
 import { defaultOrder, sortsFor, toBookQuery, toggleTag, withFilter } from "@/lib/search"
@@ -18,6 +19,7 @@ import { useDesktop } from "@/lib/use-media"
 import { leaveOverlays } from "@/lib/back-to-close"
 import { readerFormat } from "@/lib/reader"
 import { BookOpenText } from "lucide-react"
+import { emptyCondition, nameFromRule, ruleFromSearch, shelfDialog } from "@/lib/shelves"
 import { formatNumber, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "./ui/command"
@@ -84,7 +86,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const pageBook = useRouterState({ select: (s) => /^\/books\/(\d+)/.exec(s.location.pathname)?.[1] })
   const openId = search.book ?? (pageBook ? Number(pageBook) : null)
   const openBook = openId != null ? queryClient.getQueryData<Book>(["book", openId]) : undefined
-  const editableLists = lists?.filter((l) => l.editable) ?? []
+  const editableLists = savableLists(lists)
   const last = lastUsedList(lists)
   const bookActions: Action[] = openBook
     ? [
@@ -142,6 +144,15 @@ export function CommandPalette({ initialInput, onClose }: Props) {
           run: () => closeThen(() => requestBulk(a)),
         }))
       : []
+
+  // magic shelves: the library's filters as one ("Als Regal speichern"), or an empty one
+  const searchRule = onLibrary ? ruleFromSearch(search, config.categoryColumn) : null
+  const shelfActions: Action[] = [
+    ...(searchRule
+      ? [{ id: "shelf-search", label: t("shelf.fromSearch"), icon: <ListFilter />, run: () => closeThen(() => shelfDialog.open({ rule: searchRule, name: nameFromRule(searchRule) })) }]
+      : []),
+    { id: "shelf-new", label: t("shelf.new"), icon: <ListFilter />, run: () => closeThen(() => shelfDialog.open({ rule: { match: "all", conditions: [emptyCondition()] } })) },
+  ]
 
   const actions: Action[] = useMemo(
     () => [
@@ -204,7 +215,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const matchedActions = [
     ...(offerNew ? [newList(newName)] : []),
     ...(scope === "actions" || (scope === "all" && text)
-      ? [...bulkActions, ...bookActions, ...actions].filter((a) => plain(a.label).includes(plain(text))).slice(0, scope === "all" ? 4 : undefined)
+      ? [...bulkActions, ...bookActions, ...shelfActions, ...actions].filter((a) => plain(a.label).includes(plain(text))).slice(0, scope === "all" ? 4 : undefined)
       : []),
   ]
   const showFulltext = (scope === "all" || scope === "books") && text.length > 0
@@ -293,7 +304,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
               <CommandGroup heading={t("palette.lists")}>
                 {named(
                   listItems,
-                  (i) => (i.node.list ? <ListIcon /> : <Folder />),
+                  (i) => (i.node.list?.rule ? <ListFilter /> : i.node.list ? <ListIcon /> : <Folder />),
                   (i) => go(withFilter({}, nodeSearch(i.node, user))),
                   "l",
                   (i) => !i.node.list,

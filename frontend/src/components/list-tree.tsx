@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Bookmark, ChevronRight, Folder, ListIcon, Star } from "lucide-react"
+import { Bookmark, ChevronRight, Folder, ListFilter, ListIcon, Star } from "lucide-react"
 import { isBelow, nodeCount, nodeSearch, type ListNode } from "@/lib/lists"
 import { withFilter } from "@/lib/search"
 import { formatNumber, t } from "@/i18n"
@@ -37,7 +37,7 @@ function Item({ node, active, user, onNavigate, depth, gutter }: { node: ListNod
   const hasChildren = node.children.length > 0
   const count = nodeCount(node)
   const l = node.list
-  const Icon = !l ? Folder : l.isDefault ? Bookmark : l.favorite ? Star : ListIcon
+  const Icon = !l ? Folder : l.rule ? ListFilter : l.isDefault ? Bookmark : l.favorite ? Star : ListIcon
   return (
     <li>
       <div className="flex items-center" style={{ paddingLeft: depth * 12 }}>

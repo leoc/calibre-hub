@@ -4,6 +4,7 @@ import { formatNumber, t } from "@/i18n"
 import { toast } from "./toast"
 import { sessionQuery } from "./queries"
 import { api, ApiError, write, type Book, type BookPage, type BookQuery, type BulkTarget, type ListPatch, type ReadingList } from "./api"
+import { isShelf } from "./shelves"
 
 // Reading lists: queries, mutations and the "Speichern" dialog store.
 
@@ -20,13 +21,17 @@ export const listQuery = (id: number) =>
     staleTime: 30_000,
   })
 
+// Lists books can be saved to: editable, no magic shelf (its rule finds its books)
+export const savable = (l: ReadingList) => l.editable && !isShelf(l)
+export const savableLists = (lists: ReadingList[] | undefined) => lists?.filter(savable) ?? []
+
 // The list the bookmark on the cover saves to
-export const defaultList = (lists: ReadingList[] | undefined) => lists?.find((l) => l.isDefault && l.editable)
+export const defaultList = (lists: ReadingList[] | undefined) => lists?.find((l) => l.isDefault && savable(l))
 
 // The list books were added to last ("in zuletzt benutzte Liste")
 export function lastUsedList(lists: ReadingList[] | undefined): ReadingList | undefined {
   return lists
-    ?.filter((l) => l.editable && l.lastUsedAt)
+    ?.filter((l) => savable(l) && l.lastUsedAt)
     .sort((a, b) => b.lastUsedAt!.localeCompare(a.lastUsedAt!))[0]
 }
 
@@ -247,11 +252,13 @@ export function useUpdateList() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, patch }: { id: number; patch: ListPatch }) => write.updateList(id, patch),
-    onSuccess: (list) => {
+    onSuccess: (list, { patch }) => {
       storeList(qc, list)
       // a new name renames the sublists too
       qc.invalidateQueries({ queryKey: ["lists"] })
       qc.invalidateQueries({ queryKey: ["list"] })
+      // a shelf's new rule finds other books
+      if (patch.rule) qc.invalidateQueries(listPages(list.id))
     },
   })
 }
