@@ -225,6 +225,41 @@ module CalibreHub
       end
     end
 
+    put "/api/books/:id/cover" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        body = env.request.body || raise Edit::Invalid.new("", "image expected")
+        data = IO::Memory.new
+        raise Writer::TooLarge.new if IO.copy(body, data, Covers::MAX_BYTES + 1) > Covers::MAX_BYTES
+        writer.set_cover(id, data.to_slice).to_json
+      end
+    end
+
+    post "/api/books/:id/cover/from-file" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}")
+        writer.cover_from_file(id, body["format"]?.try(&.as_s?)).to_json
+      end
+    end
+
+    post "/api/books/:id/cover/from-url" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}")
+        url = body["url"]?.try(&.as_s?) || raise Edit::Invalid.new("url", "URL expected")
+        writer.cover_from_url(id, url).to_json
+      end
+    end
+
+    get "/api/books/:id/cover/search" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        book = writer.calibre.book(id) || raise Writer::NotFound.new
+        Covers.search(book, env.params.query["q"]?).to_json
+      end
+    end
+
     get "/api/jobs/:id" do |env|
       jobs[env.params.url["id"]]?.try(&.to_json) || fail(env, 404, {error: "not found"})
     end
@@ -267,8 +302,10 @@ module CalibreHub
     fail(env, 409, {error: "duplicate", duplicates: ex.books, titles: ex.titles})
   rescue ex : Writer::Unsupported
     fail(env, 415, {error: ex.message})
+  rescue ex : Writer::NoCover
+    fail(env, 422, {error: ex.message})
   rescue Writer::TooLarge
-    fail(env, 413, {error: "too large", limit: Writer::MAX_UPLOAD})
+    fail(env, 413, {error: "too large", limit: env.request.path.includes?("/cover") ? Covers::MAX_BYTES : Writer::MAX_UPLOAD})
   end
 
   def self.fail(env, status : Int32, body) : Nil

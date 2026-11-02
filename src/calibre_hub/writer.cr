@@ -1,4 +1,6 @@
 require "http"
+require "file_utils"
+require "./covers"
 require "./calibre"
 require "./detector"
 require "./edit"
@@ -43,6 +45,8 @@ module CalibreHub
 
     record Upload, file : String, filename : String, tags : Array(String), kategorie : String?,
       force : Bool, add_format_to : Int64?
+
+    getter calibre : Calibre
 
     def initialize(@calibre : Calibre, @detector : Detector?, @wake : Channel(Nil)?,
                    @category_column : String?)
@@ -244,6 +248,60 @@ module CalibreHub
         series: nil, series_index: nil, formats: [] of String, last_modified: Time::UNIX_EPOCH,
         timestamp: nil, pubdate: nil, rating: nil, publisher: nil, identifiers: {} of String => String,
         languages: [] of String, comments: nil, custom: {} of String => JSON::Any)
+    end
+  end
+end
+
+module CalibreHub
+  class Writer
+    class NoCover < Exception
+    end
+
+    COVER_FORMATS = %w(EPUB AZW3 MOBI PDF)
+
+    def set_cover(id : Int64, data : Bytes) : Book
+      @calibre.book(id) || raise NotFound.new
+      type = Covers.image_type(data)
+      raise Unsupported.new("JPEG or PNG expected#{type == "webp" ? " (convert WebP first)" : ""}") unless {"jpeg", "png"}.includes?(type)
+      @calibre.set_cover(id, data, type.not_nil!)
+      written([id])
+      @calibre.book(id) || raise NotFound.new
+    end
+
+    def cover_from_url(id : Int64, url : String) : Book
+      @calibre.book(id) || raise NotFound.new
+      data, _ = Covers.fetch(url)
+      set_cover(id, data)
+    rescue ex : Covers::FetchError
+      raise Edit::Invalid.new("url", ex.message || "download failed")
+    end
+
+    # Extracts the cover from a book file with ebook-meta
+    def cover_from_file(id : Int64, format : String?) : Book
+      book = @calibre.book(id) || raise NotFound.new
+      fmt = if f = format.presence
+              f.upcase.tap { |u| raise Edit::Invalid.new("format", "book has no #{u}") unless book.formats.includes?(u) }
+            else
+              COVER_FORMATS.find { |f| book.formats.includes?(f) } || book.formats.first? || raise NoCover.new("book has no files")
+            end
+      dir = File.tempname("cover")
+      Dir.mkdir(dir)
+      begin
+        file = File.join(dir, "book.#{fmt.downcase}")
+        File.open(file, "w") do |out_io|
+          @calibre.forward("GET", "/get/#{fmt.downcase}/#{id}") do |r|
+            raise NotFound.new unless r.success?
+            IO.copy(r.body_io, out_io)
+          end
+        end
+        jpg = File.join(dir, "cover.jpg")
+        status = Process.run("ebook-meta", [file, "--get-cover=#{jpg}"], env: {"QT_QPA_PLATFORM" => "offscreen"},
+          output: Process::Redirect::Close, error: Process::Redirect::Close)
+        raise NoCover.new("no cover in file") unless status.success? && File.exists?(jpg) && File.size(jpg) > 0
+        set_cover(id, File.open(jpg, &.getb_to_end))
+      ensure
+        FileUtils.rm_rf(dir)
+      end
     end
   end
 end

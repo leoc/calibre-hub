@@ -97,6 +97,15 @@ module CalibreHub
       request("POST", "/cdb/set-fields/#{book_id}#{library_path}", {changes: changes, loaded_book_ids: [book_id]}.to_json)
     end
 
+    # calibre takes JPEG or PNG as base64 and doesn't bump last_modified
+    # when a cover replaces another, so it is set explicitly
+    def set_cover(book_id : Int64, data : Bytes, type : String) : Nil
+      set_fields(book_id, {
+        "cover"         => JSON::Any.new("data:image/#{type};base64,#{Base64.strict_encode(data)}"),
+        "last_modified" => JSON::Any.new(Time.utc.to_rfc3339(fraction_digits: 6)),
+      })
+    end
+
     def add_format(book_id : Int64, file : String, ext : String) : Nil
       data = Base64.strict_encode(File.open(file, &.getb_to_end))
       set_fields(book_id, {"added_formats" => JSON.parse([{ext: ext, data_url: data}].to_json)})

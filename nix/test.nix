@@ -198,6 +198,24 @@ pkgs.testers.runNixOSTest {
         assert api("POST", "/api/books/bulk", {"target": {"ids": [1]}, "changes": {"title": "x"}})[0] == 400
         assert api("GET", "/api/jobs/unknown")[0] == 404
 
+    with subtest("cover"):
+        machine.succeed(f"curl -sf -b /tmp/jar -o /tmp/c.jpg {H}/api/books/{uid}/cover")
+        before = api("GET", "/api/books/1")[1]["lastModified"]
+        status, b = api("PUT", "/api/books/1/cover", extra="-H 'Content-Type: image/jpeg' --data-binary @/tmp/c.jpg")
+        assert status == 200 and b["lastModified"] != before, (status, b)
+        machine.succeed("printf 'RIFF\\0\\0\\0\\0WEBPVP8 ' > /tmp/c.webp")
+        assert api("PUT", "/api/books/1/cover", extra="--data-binary @/tmp/c.webp")[0] == 415
+        assert api("PUT", "/api/books/1/cover", extra="--data-binary @/tmp/u.txt")[0] == 415
+        before = b["lastModified"]
+        status, b = api("POST", f"/api/books/{uid}/cover/from-file", {})
+        assert status == 200 and b["id"] == uid, (status, b)
+        status, b = api("POST", "/api/books/1/cover/from-file", {"format": "pdf"})
+        assert status == 400 and b["field"] == "format", (status, b)
+        status, b = api("POST", "/api/books/1/cover/from-url", {"url": "http://127.0.0.1:8083/get/cover/1"})
+        assert status == 400 and b["field"] == "url" and "not allowed" in b["error"], (status, b)
+        status, hits = api("GET", "/api/books/1/cover/search")
+        assert status == 200 and isinstance(hits, list), (status, hits)
+
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/x.txt /tmp/kaputt.epub --title Kaputt --authors Niemand")
