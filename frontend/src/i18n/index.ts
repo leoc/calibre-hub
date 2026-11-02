@@ -24,4 +24,12 @@ const languageNames = (() => {
 
 // calibre stores ISO 639-2/3 codes ("deu", "eng")
 const ISO3_TO_1: Record<string, string> = { deu: "de", ger: "de", eng: "en", fra: "fr", fre: "fr", spa: "es", ita: "it", nld: "nl", rus: "ru", jpn: "ja", por: "pt", pol: "pl", swe: "sv" }
-export const languageName = (code: string) => languageNames?.of(ISO3_TO_1[code] ?? code) ?? code
+// Anything that isn't a language tag ("Icelandic" from a facet, junk from
+// an import) is shown as it is: DisplayNames.of throws a RangeError on it
+export const languageName = (code: string) => {
+  try {
+    return languageNames?.of(ISO3_TO_1[code] ?? code) ?? code
+  } catch {
+    return code
+  }
+}
