@@ -4,6 +4,7 @@ require "json"
 require "./meta_rules"
 require "./meta_sources"
 require "./calibre"
+require "./backlog_pause"
 require "./covers"
 require "./writer"
 require "./classify"
@@ -591,6 +592,7 @@ module CalibreHub
     end
 
     def follow_events
+      return if Backlog.paused?(@db)
       from = cursor || 0_i64
       ids = [] of Int64
       last = from

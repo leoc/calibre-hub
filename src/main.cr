@@ -12,6 +12,7 @@ require "./calibre_hub/handlers/leseliste"
 require "./calibre_hub/frontend"
 require "./calibre_hub/cli"
 require "./calibre_hub/hardcover_sync"
+require "./calibre_hub/backlog_jobs"
 
 module CalibreHub
   VERSION = "0.1.0"
@@ -42,6 +43,8 @@ module CalibreHub
     getter alert_command : String? = ENV["CALIBRE_HUB_ALERT_COMMAND"]?.presence
     getter inbox : String? = ENV["CALIBRE_HUB_INBOX"]?.presence
     getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
+    # folders a backlog import may read (POST /api/import), ':' separated
+    getter import_roots : Array(String) = env("CALIBRE_HUB_IMPORT_ROOTS", "").split(':', remove_empty: true).map(&.strip).reject(&.empty?)
     # tags the web app offers as one-click toggles
     getter fast_tags : Array(String) = env("CALIBRE_HUB_FAST_TAGS", "leseliste").split(',', remove_empty: true).map(&.strip)
     # built web app (dist/); served without login
@@ -442,11 +445,15 @@ module CalibreHub
       epub_fix.watch_events
       puts "epub-fix: EPUBs of added books are repaired"
     end
+    imports = config.import_roots.empty? ? nil : ImportJobs.new(db, calibre, writer, config.import_roots, config.library)
+    imports.try { |i| puts "backlog import: roots #{i.roots.join(", ")}" }
+    cleanup = config.category_column ? ImportCleanup.new(db, calibre, writer, config.category_column, File.dirname(File.expand_path(config.state_db))) : nil
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix] of Jobs, progress, ReaderSettings.new(db))
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, cleanup].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db))
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
     epub_fix_routes(epub_fix)
+    import_routes(imports, cleanup)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

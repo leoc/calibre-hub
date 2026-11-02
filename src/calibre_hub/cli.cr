@@ -4,6 +4,7 @@ require "./cli/args"
 require "./cli/client"
 require "./cli/output"
 require "./cli/completion"
+require "./cli/import"
 
 module CalibreHub
   # Command line client for a running hub: `calibre-hub cli <command>` or
@@ -80,6 +81,7 @@ module CalibreHub
         when "upload"     then upload(args)
         when "bulk"       then bulk(args)
         when "list"       then list(args)
+        when "import"     then import(args)
         when "completion" then completion(args)
         when "help"
           help(args.positional.first?.try { |n| Cli.command(n) || raise Usage.new("unknown command: #{n}") })

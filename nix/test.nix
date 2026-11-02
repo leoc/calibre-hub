@@ -44,6 +44,7 @@ pkgs.testers.runNixOSTest {
         calibre.servicePasswordFile = "/etc/hub/service";
         calibre.extraUsers.scripts = "/etc/hub/scripts";
         apiTokenFiles = [ "/etc/hub/token" ];
+        backlogImport.roots = [ "/srv/books/alt" ];
         inbox = {
           path = "/srv/books/inbox";
           stableSeconds = 2;
@@ -239,6 +240,7 @@ pkgs.testers.runNixOSTest {
         "d /srv/books/library 2775 calibre-server calibre-hub -"
         "d /srv/books/inbox 2775 root calibre-hub -"
         "d /srv/books/boox 2775 root calibre-hub -"
+        "d /srv/books/alt 0755 root root -"
       ];
     };
 
@@ -1030,6 +1032,130 @@ pkgs.testers.runNixOSTest {
         assert not any(b["bookId"] == wid and b["fixes"] for b in res["results"]), res
         assert api("GET", "/api/epub-fix/jobs/nope")[0] == 404
         embed_idle()
+
+    with subtest("backlog import"):
+        import base64
+
+        def put(path, data):
+            if isinstance(data, str):
+                data = data.encode()
+            machine.succeed(f"mkdir -p \"$(dirname '{path}')\" && echo {base64.b64encode(data).decode()} | base64 -d > '{path}'")
+
+        def opf(title, author, extra=""):
+            return f"""<?xml version='1.0' encoding='utf-8'?>
+    <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
+      <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+        <dc:identifier opf:scheme="calibre" id="calibre_id">12</dc:identifier>
+        <dc:title>{title}</dc:title>
+        <dc:creator opf:file-as="x" opf:role="aut">{author}</dc:creator>
+        {extra}
+      </metadata>
+    </package>
+    """
+
+        def pdf():
+            objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>"]
+            out = b"%PDF-1.4\n%" + b"x" * 3000 + b"\n"
+            offsets = []
+            for i, o in enumerate(objs, 1):
+                offsets.append(len(out))
+                out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+            xref = len(out)
+            out += b"xref\n0 4\n0000000000 65535 f \n" + b"".join(b"%010d 00000 n \n" % x for x in offsets)
+            return out + b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+
+        ALT = "/srv/books/alt"
+        CAL = f"{ALT}/Ada Writer/Altes Buch (12)"
+        # an old calibre library folder: metadata.opf, cover.jpg, two formats
+        machine.succeed("printf 'Altes Buch\\n\\nText\\n' > /tmp/alt.txt")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/alt.txt /tmp/alt.epub --title 'Falscher Titel' --authors 'Niemand'")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/alt.epub /tmp/alt.azw3")
+        machine.succeed(f"mkdir -p '{CAL}' && cp /tmp/alt.epub '{CAL}/Altes Buch - Ada Writer.epub' && cp /tmp/alt.azw3 '{CAL}/Altes Buch - Ada Writer.azw3'")
+        machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-meta /tmp/alt.epub --get-cover='{CAL}/cover.jpg'")
+        put(f"{CAL}/metadata.opf", opf("Altes Buch", "Ada Writer", """
+        <dc:identifier opf:scheme="ISBN">978-0-306-40615-7</dc:identifier>
+        <dc:subject>Geschichte</dc:subject>
+        <dc:publisher>Alter Verlag</dc:publisher>
+        <dc:date>1999-05-01T00:00:00+00:00</dc:date>
+        <dc:language>deu</dc:language>
+        <meta content="Alte Reihe" name="calibre:series"/>
+        <meta content="3.0" name="calibre:series_index"/>"""))
+        # the inbox's book in a format the library lacks
+        ib = book_by_title("Inboxbuch")
+        assert "AZW3" not in ib["formats"], ib
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt '/tmp/ib.azw3' --title Inboxbuch --authors 'Agatha Test'")
+        machine.succeed(f"mkdir -p '{ALT}/Agatha Test/Inboxbuch (7)' && cp /tmp/ib.azw3 '{ALT}/Agatha Test/Inboxbuch (7)/Inboxbuch.azw3'")
+        put(f"{ALT}/Agatha Test/Inboxbuch (7)/metadata.opf", opf("Inboxbuch", "Agatha Test"))
+        # a plain folder, a file that isn't a book, a copy of a book the library has
+        put(f"{ALT}/Some Author/book.pdf", pdf())
+        put(f"{ALT}/Some Author/talk.mp3", b"ID3" + b"\0" * 4000)
+        machine.succeed(f"mkdir -p '{ALT}/Krimi' && cp /srv/books/inbox/_imported/*/Roman/Krimi/k.epub '{ALT}/Krimi/k.epub'")
+
+        assert api("POST", "/api/import", {"path": "/srv/books"})[0] == 400
+        status, dry = api("POST", "/api/import", {"path": ALT})
+        assert status == 200 and dry["dryRun"] is True, (status, dry)
+        s = dry["summary"]
+        assert s["books"] == 4 and s["calibreFolders"] == 2 and s["withCover"] == 1, s
+        assert s["toAddFormats"] == 1 and s["toAdd"] + s["duplicates"]["total"] == 3, s
+        assert s["skipped"]["byType"] == {"mp3": 1}, s
+        assert book_by_title("Inboxbuch")["formats"] == ib["formats"]
+
+        status, run = api("POST", "/api/import", {"path": "/srv/books/alt", "dryRun": False})
+        assert status == 202 and run["jobId"], (status, run)
+        j = wait_job(run["jobId"], 180)
+        assert j["status"] == "done" and j["errors"] == [], j
+        status, run = api("GET", f"/api/import/runs/{run['id']}")
+        assert run["results"] == {"imported": 2, "formatAdded": 1, "duplicate": 1}, run
+        status, report = api("GET", f"/api/import/runs/{run['id']}/report")
+        units = {u["dir"].removeprefix(ALT + "/"): u for u in report["units"]}
+        assert report["skipped"] == [{"path": f"{ALT}/Some Author/talk.mp3", "reason": "not a book format"}], report["skipped"]
+
+        old = api("GET", f"/api/books/{units['Ada Writer/Altes Buch (12)']['bookId']}")[1]
+        assert old["title"] == "Altes Buch" and old["authors"] == ["Ada Writer"], old
+        assert old["series"] == "Alte Reihe" and old["seriesIndex"] == 3.0 and old["publisher"] == "Alter Verlag", old
+        assert old["identifiers"].get("isbn") == "9780306406157" and old["languages"] == ["deu"], old
+        assert set(old["formats"]) >= {"EPUB", "AZW3"}, old
+        # no folder as category or tag
+        assert [t for t in old["tags"] if t != "auto-metadaten"] == ["Geschichte"] and old["custom"]["kategorie"] is None, old
+        assert code(f"-b /tmp/jar {H}/api/books/{old['id']}/cover") == "200"
+        plain = api("GET", f"/api/books/{units['Some Author']['bookId']}")[1]
+        assert plain["formats"] == ["PDF"] and plain["custom"]["kategorie"] is None, plain
+        assert [t for t in plain["tags"] if t != "auto-metadaten"] == [], plain
+        assert units["Agatha Test/Inboxbuch (7)"]["status"] == "formatAdded" and units["Agatha Test/Inboxbuch (7)"]["bookId"] == ib["id"], units
+        assert "AZW3" in book_by_title("Inboxbuch")["formats"]
+        assert units["Krimi"]["status"] == "duplicate" and units["Krimi"]["bookId"] == ib["id"], units["Krimi"]
+        # nothing moved, and another run skips what was handled
+        machine.succeed(f"test -f '{ALT}/Some Author/book.pdf' && test -f '{ALT}/Krimi/k.epub'")
+        status, again = api("POST", "/api/import", {"path": ALT})
+        assert again["summary"]["books"] == 0 and again["summary"]["alreadyImported"] == 5, again["summary"]
+        st = api("GET", "/api/import")[1]
+        assert st["enabled"] and st["roots"] == [ALT] and st["hooksPaused"] is False and st["runs"][0]["id"] == again["id"], st
+
+        # the CLI
+        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import '{ALT}'")
+        assert "0 books in 0 files" in out and "imported before: 5" in out, out
+
+    with subtest("cleanup of inbox imports"):
+        ib = book_by_title("Inboxbuch")
+        assert ib["custom"]["kategorie"] == "Roman.Krimi" and {"Krimi", "Roman"} <= set(ib["tags"]), ib
+        params = {"minId": ib["id"], "maxId": ib["id"]}
+        status, dry = api("POST", "/api/import/cleanup", params)
+        assert status == 200 and dry["total"] == 1, (status, dry)
+        e = dry["entries"][0]
+        assert e["folders"] == ["Roman", "Krimi"] and sorted(e["removeTags"]) == ["Krimi", "Roman"] and e["clearKategorie"], e
+        status, c = api("POST", "/api/import/cleanup", {**params, "dryRun": False})
+        assert status == 202, (status, c)
+        assert wait_job(c["job"]["id"])["status"] == "done"
+        b = book_by_title("Inboxbuch")
+        assert b["custom"]["kategorie"] is None and not {"Krimi", "Roman"} & set(b["tags"]), b
+        machine.succeed(f"test -s /var/lib/calibre-hub/import-cleanup-{c['id']}.json")
+        assert api("POST", "/api/import/cleanup", params)[1]["total"] == 0
+        status, u = api("POST", f"/api/import/cleanups/{c['id']}/undo", {"dryRun": False})
+        assert status == 202, (status, u)
+        assert wait_job(u["undoJob"]["id"])["status"] == "done"
+        b = book_by_title("Inboxbuch")
+        assert b["custom"]["kategorie"] == "Roman.Krimi" and {"Krimi", "Roman"} <= set(b["tags"]), b
 
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")

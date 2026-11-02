@@ -165,6 +165,50 @@ export interface MetadataChange {
 
 export type MetadataTarget = "incomplete" | "all" | "authors" | { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }
 
+// A backlog import run (POST /api/import): its scan summary and, applied,
+// the job's progress and the results per status
+export interface ImportRun {
+  id: string
+  path: string
+  dryRun: boolean
+  createdAt: string
+  jobId: string | null
+  status: "planned" | "running" | "done" | "failed" | "gone"
+  done: number | null
+  total: number
+  error: string | null
+  summary: {
+    books: number
+    files: number
+    formats: Record<string, number>
+    calibreFolders: number
+    withCover: number
+    toAdd: number
+    toAddFormats: number
+    duplicates: Record<string, number> & { total: number }
+    alreadyImported: number
+    skipped: { total: number; byReason: Record<string, number>; byType: Record<string, number> }
+  }
+  results: Record<string, number>
+}
+
+export interface ImportCleanup {
+  id: string
+  createdAt: string
+  total: number
+  job: Job | null
+  undoJob: Job | null
+}
+
+export interface ImportStatus {
+  enabled: boolean
+  roots?: string[]
+  running?: boolean
+  hooksPaused?: boolean
+  runs?: ImportRun[]
+  cleanups: ImportCleanup[]
+}
+
 export interface MetadataStatus {
   enabled: boolean
   sources?: string[]
@@ -311,6 +355,7 @@ export const api = {
     }),
   classifyStatus: () => request<ClassifyStatus>("/api/classify/status"),
   metadataStatus: () => request<MetadataStatus>("/api/metadata/status"),
+  importStatus: () => request<ImportStatus>("/api/import"),
   metadataChanges: (query: MetadataChangesQuery = {}) =>
     request<{ changes: MetadataChange[]; books: Book[] }>(`/api/metadata/changes?${new URLSearchParams(Object.entries(query).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])))}`),
   // q: own search text instead of the book's title and author

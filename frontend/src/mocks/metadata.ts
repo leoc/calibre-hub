@@ -141,6 +141,27 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
   }
 
   return [
+    // the backlog import: one dry run, one finished import, one cleanup
+    http.get("/api/import", () => {
+      const summary = {
+        books: 1240, files: 1530, formats: { PDF: 900, MOBI: 400, EPUB: 230 }, calibreFolders: 360, withCover: 340,
+        toAdd: 1100, toAddFormats: 40, duplicates: { total: 100, isbn: 60, title: 30, file: 10 }, alreadyImported: 0,
+        skipped: { total: 9800, byReason: { "not a book format": 9700, "too small": 100 }, byType: { mp3: 4505, flv: 3740 } },
+      }
+      return HttpResponse.json({
+        enabled: true,
+        roots: ["/srv/media/ebooks/inbox"],
+        running: false,
+        hooksPaused: false,
+        runs: [
+          { id: "r2", path: "/srv/media/ebooks/inbox", dryRun: false, createdAt: "2026-11-02T20:10:00Z", jobId: "j2", status: "done",
+            done: 1240, total: 1240, error: null, summary, results: { imported: 1100, formatAdded: 40, duplicate: 98, failed: 2 } },
+          { id: "r1", path: "/srv/media/ebooks/inbox", dryRun: true, createdAt: "2026-11-02T20:00:00Z", jobId: null, status: "planned",
+            done: null, total: 1240, error: null, summary, results: { pending: 1240 } },
+        ],
+        cleanups: [{ id: "c1", createdAt: "2026-11-02T19:00:00Z", total: 1038, job: { status: "done", done: 1038, total: 1038, errors: [] }, undoJob: null }],
+      })
+    }),
     http.get("/api/metadata/status", () => {
       const active = new Set(changes.filter((c) => !c.revertedAt).map((c) => c.bookId))
       return HttpResponse.json({

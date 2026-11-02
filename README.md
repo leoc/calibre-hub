@@ -68,6 +68,11 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `POST /api/epub-fix` `{dryRun?, target?}` | runs the EPUB fixer over every book with an EPUB, or `target` (`{ids}` or `{query}` as in bulk edits); `dryRun` defaults to `true` (only checks); returns 202 `{jobId, total, dryRun}`, progress in `GET /api/jobs/:id` |
 | `GET /api/epub-fix/status` | `{onImport, keepOriginal, running, lastRun}`; `lastRun` is the job with `dryRun`, `from` (library, selection, added), `booksWithFixes`, `booksWithProblems`, `booksFixed` and counts per fix and problem (`fixes`, `problems`) |
 | `GET /api/epub-fix/jobs/:id` | the same for one run plus `results`: `[{bookId, title, applied, fixes: [{code, file, detail}], problems: [...]}]` (books with something to report, at most 500) |
+| `GET /api/import` | backlog import: `{enabled, roots, running, hooksPaused, runs: [...], cleanups: [...]}` (the last 10 runs and cleanups); only `{enabled: false, cleanups}` without `backlogImport.roots` |
+| `POST /api/import` `{path, dryRun?}` | scans `path` (absolute, or relative to the first root; must be in a root, 400) and plans; `dryRun` (default true): 200 with the run `{id, path, dryRun, status, summary, results}`; `dryRun: false`: 202 with `jobId` too, the import runs as a job (`GET /api/jobs/:id`, a unit per book); 409 while another import runs |
+| `GET /api/import/runs/:id`, `GET /api/import/runs/:id/report` | a run (status, `done`/`total`, `results` per status: pending, imported, formatAdded, duplicate, failed); the report adds every book (`units`: files, plan, status, `bookId`, `match`, `detail`) and every skipped file (`skipped: [{path, reason}]`) |
+| `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see Backlog import); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
+| `GET /api/import/cleanups/:id`, `POST /api/import/cleanups/:id/undo` `{dryRun?}` | a cleanup with its backup; undo puts category and tags back (dry run by default, else 202 with `undoJob`) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
 | `GET /healthz` | no auth |
@@ -334,6 +339,72 @@ tags embedded in the file are dropped. Originals move to `_imported/<date>/`
 or `_duplicates/<date>/`, after 3 failures to `_failed/<date>/`. Folders the
 hub can't write are skipped.
 
+## Backlog import
+
+`backlogImport.roots` (empty: off): folders an old collection may be
+imported from, read-only. Unlike the inbox, folders never become categories
+or tags, and nothing is moved or deleted.
+
+- A folder with `metadata.opf` (an old calibre library, `Author/Title (12)/`)
+  is one book: title, authors, series, tags, identifiers (without the old
+  library's calibre id and uuid), description, languages, publisher and
+  date from the OPF, the cover from `cover.jpg`, every book file in it a
+  format of that book.
+- Any other book file is a book with what calibre reads from it; files with
+  the same name and another extension in one folder are formats of one
+  book. Tags embedded in the file are dropped, like in the inbox.
+- Book formats: EPUB, KEPUB, AZW3, AZW, MOBI, PRC, AZW4, FB2, FBZ, DOCX, ODT,
+  RTF, PDF, DJVU, CHM, CBZ, CBR, CB7, LIT, PDB, TXT. Files below 2 KiB
+  (TXT: 20 KiB) or without their format's signature (`%PDF`, `PK`,
+  `BOOKMOBI`, ...) are skipped, as are hidden files, symlinks and the
+  inbox's `_imported`, `_duplicates`, `_failed` at the top of the folder.
+  Everything else stays where it is and is listed in the report with the
+  reason, counted by reason, type and top folder in the summary.
+- Duplicates are checked against the library before adding: the same file
+  (size, then KOReader's partial MD5 and the first KiB; also files the hub
+  rewrote since, by the checksum kept from before), the ISBN, or the same
+  title (ignoring case, accents, punctuation) with an author in common.
+  Files without an OPF are checked by file before adding and right after by
+  what calibre read from them: calibre's own title/author check, then ISBN
+  and title/author (the new book is removed again). A duplicate is skipped,
+  or adds the formats the library's book lacks (`formatAdded`).
+- The state DB keeps every file a run handled (`import_files`: path, size,
+  mtime, book), so another run of the same folder skips them ("imported
+  before") and only takes new or changed files.
+
+A run scans and plans right away (the dry run's summary: books, formats,
+calibre folders, covers, to add, formats to add, duplicates by how they were
+found, skipped). Applied, it is a job in a queue of its own, resumed after a
+restart; a failed book is listed and tried again by the next run. There is
+no stability wait per file, and while the job runs the metadata, classify,
+convert and embed hooks pause (`hooksPaused`), so calibre-server only adds
+books; afterwards they work off the new books' events as for any added
+book. calibre-server down: the job waits (20 x 15 s), then stops as failed.
+The Metadaten page of the web app shows the runs and cleanups.
+
+```sh
+hub import alt                      # dry run of <first root>/alt
+hub import /srv/media/ebooks/inbox --apply --report report.json
+hub import status
+```
+
+Cleanup of an inbox import (`POST /api/import/cleanup`, `hub import
+cleanup`): for books the inbox added (an `added` event since `since`, or a
+book id from `minId` to `maxId`) the folder path is read from the hub's
+events (the first state of the book with a category: the category and tags
+the inbox set together). The category is cleared when it is still that
+path, and exactly the tags that are a folder of the path are removed; other
+tags and a category set since stay. A dry run lists the books; applied, the
+previous values go to the state DB and
+`/var/lib/calibre-hub/import-cleanup-<id>.json`, and `undo` puts them back.
+Running it again finds nothing left to do.
+
+```sh
+hub import cleanup --since 2026-11-02T18:00        # dry run, local time
+hub import cleanup --min-id 114 --apply
+hub import undo <cleanup id> --apply
+```
+
 ## Category suggestions (local model)
 
 `classify.enable`: a small instruct model suggests a category for books
@@ -580,6 +651,7 @@ hub upload *.epub --tag neu --kategorie Roman/Krimi
 hub upload dune.pdf --add-format-to 12
 hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
 hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
+hub import alt                           # backlog import: dry run, --apply imports
 ```
 
 Every command has `--help` and `--json` (the API's JSON; on errors

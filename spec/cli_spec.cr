@@ -428,3 +428,50 @@ describe "hub CLI" do
     bash.should_not contain("calibre-hub\n")
   end
 end
+
+describe "hub import" do
+  it "shows a dry run's summary and imports with --apply" do
+    summary = {books: 3, files: 4, formats: {PDF: 3, EPUB: 1}, calibreFolders: 1, plainFiles: 2, withCover: 1, toAdd: 2,
+               toAddFormats: 0, duplicates: {total: 1, isbn: 1}, alreadyImported: 0,
+               skipped: {total: 1, byReason: {"not a book format": 1}, byType: {mp3: 1}, byFolder: [{folder: ".", count: 1, types: {mp3: 1}}]}}
+    run = {id: "r1", path: "/srv/inbox/alt", dryRun: true, status: "planned", summary: summary, results: {pending: 3}}
+    with_stub do |s|
+      s.on("POST", "/api/import", run)
+      code, stdo, _ = cli(s, "import", "alt")
+      code.should eq(0)
+      JSON.parse(s.requests.first.body).should eq(JSON.parse(%({"path":"alt","dryRun":true})))
+      stdo.should contain("3 books in 4 files (PDF 3, EPUB 1)")
+      stdo.should contain("duplicates: 1 (isbn 1)")
+      stdo.should contain("by type: mp3 1")
+      stdo.should contain("dry run, nothing imported")
+    end
+    with_stub do |s|
+      s.on("POST", "/api/import", run.merge({dryRun: false, status: "running", jobId: "j1", total: 3}), 202)
+      s.on("GET", "/api/jobs/j1", {id: "j1", status: "done", done: 3, total: 3, errors: [] of String})
+      s.on("GET", "/api/import/runs/r1", run.merge({dryRun: false, status: "done", results: {imported: 2, duplicate: 1}}))
+      code, stdo, _ = cli(s, "import", "/srv/inbox/alt", "--apply")
+      code.should eq(0)
+      JSON.parse(s.requests.first.body)["dryRun"].should eq(false)
+      stdo.should contain("done: 2 imported, 1 duplicate")
+    end
+  end
+
+  it "cleans up inbox imports and undoes it" do
+    entry = {bookId: 120, title: "A", folders: ["Defaults", "Algebra"], kategorie: "Defaults.Algebra",
+             tags: ["Algebra", "Defaults"], removeTags: ["Algebra", "Defaults"], clearKategorie: true}
+    with_stub do |s|
+      cli(s, "import", "cleanup")[0].should eq(1)
+      s.on("POST", "/api/import/cleanup", {dryRun: true, total: 1, entries: [entry]})
+      code, stdo, _ = cli(s, "import", "cleanup", "--min-id", "114")
+      code.should eq(0)
+      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"minId":114,"dryRun":true})))
+      stdo.should contain("Defaults.Algebra")
+      stdo.should contain("1 books, dry run")
+      s.on("POST", "/api/import/cleanups/c1/undo", {id: "c1", entries: [entry], undoJob: {id: "u1"}})
+      s.on("GET", "/api/jobs/u1", {id: "u1", status: "done", done: 1, total: 1, errors: [] of String})
+      code, stdo, _ = cli(s, "import", "undo", "c1", "--apply")
+      code.should eq(0)
+      stdo.should contain("undo of c1: done, 1 books")
+    end
+  end
+end

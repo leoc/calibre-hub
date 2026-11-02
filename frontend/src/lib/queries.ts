@@ -72,7 +72,16 @@ export const metadataStatusQuery = queryOptions({
   refetchInterval: (q) => (q.state.data?.running ? 1500 : false),
 })
 
-export const metadataChangesQuery = (query: MetadataChangesQuery = {}) =>
+// backlog import runs and cleanups; polls while one runs
+export const importStatusQuery = queryOptions({
+  queryKey: ["import-status"],
+  queryFn: api.importStatus,
+  staleTime: 30_000,
+  refetchInterval: (q) =>
+    q.state.data?.running || q.state.data?.cleanups.some((c) => c.job?.status === "running" || c.undoJob?.status === "running") ? 2000 : false,
+})
+
+export const metadataChangesQuery =(query: MetadataChangesQuery = {}) =>
   queryOptions({
     queryKey: ["metadata-changes", query],
     queryFn: () => api.metadataChanges(query),

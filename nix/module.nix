@@ -226,6 +226,18 @@ in
       };
     };
 
+    backlogImport.roots = mkOption {
+      type = types.listOf types.path;
+      default = [ ];
+      example = [ "/srv/media/ebooks/inbox" ];
+      description = ''
+        Folders an old collection may be imported from (POST /api/import,
+        `hub import`), read-only: folders never become categories or tags,
+        calibre library folders bring their metadata.opf and cover.jpg, files
+        that aren't books stay and are listed in the report. Empty: off.
+      '';
+    };
+
     fastTags = mkOption {
       type = types.listOf types.str;
       default = [ "leseliste" ];
@@ -630,7 +642,7 @@ in
       # a model on the same host is up before the first run
       ++ lib.optional ((cfg.classify.enable || cfg.metadata.useModel) && config.services.ollama.enable) "ollama.service";
       wants = [ "calibre-server.service" ];
-      unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable;
+      unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable ++ map toString cfg.backlogImport.roots;
       # ebook-convert for the reading list and conversions, pdfinfo/pdftotext for metadata
       path = [
         calibre
@@ -657,6 +669,7 @@ in
         CALIBRE_HUB_ALERT_COMMAND = lib.optionalString (cfg.alertCommand != null) cfg.alertCommand;
         CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
         CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
+        CALIBRE_HUB_IMPORT_ROOTS = lib.concatMapStringsSep ":" toString cfg.backlogImport.roots;
         CALIBRE_HUB_FAST_TAGS = lib.concatStringsSep "," cfg.fastTags;
         CALIBRE_HUB_LIST_MIGRATE_TAG = cfg.leseliste.tag;
         CALIBRE_HUB_CLASSIFY = lib.boolToString cfg.classify.enable;

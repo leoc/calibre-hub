@@ -4,6 +4,7 @@ require "digest/sha1"
 require "file_utils"
 require "json"
 require "./calibre"
+require "./backlog_pause"
 require "./detector"
 require "./library_db"
 require "./writer"
@@ -232,6 +233,7 @@ module CalibreHub
     end
 
     def follow_events(now = Time.utc)
+      return if Backlog.paused?(@db)
       from = cursor || 0_i64
       rows = [] of {Int64, String, Int64, String}
       @db.query_each("select id, type, book_id, payload from events where id > ? order by id limit 500", from) do |rs|
@@ -396,6 +398,7 @@ module CalibreHub
 
     # Added books (inbox, upload, calibre) without the target format
     def follow_events
+      return if Backlog.paused?(@db)
       from = cursor || 0_i64
       rows = [] of {Int64, String, Int64, String}
       @db.query_each("select id, type, book_id, payload from events where id > ? order by id limit 500", from) do |rs|
