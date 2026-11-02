@@ -222,6 +222,9 @@ describe CalibreHub::ConvertJobs do
       # the library: every book without EPUB that has something to convert
       jobs.submit_target(nil).total.should eq(1)
       jobs.submit_target(JSON::Any.new("azw3")).total.should eq(2)
+      # some books only (the command palette's selection)
+      jobs.submit_target(nil, JSON.parse(%({"ids": [2, 3]}))).total.should eq(0)
+      jobs.submit_target(JSON::Any.new("azw3"), JSON.parse(%({"ids": [2, 3]}))).total.should eq(1)
     ensure
       ENV["PATH"] = old_path if old_path
       FileUtils.rm_rf(bin) if bin

@@ -448,6 +448,11 @@ module CalibreHub
     imports = config.import_roots.empty? ? nil : ImportJobs.new(db, calibre, writer, config.import_roots, config.library)
     imports.try { |i| puts "backlog import: roots #{i.roots.join(", ")}" }
     cleanup = config.category_column ? ImportCleanup.new(db, calibre, writer, config.category_column, File.dirname(File.expand_path(config.state_db))) : nil
+    # selections from the command palette ({query} like bulk edits)
+    [convert_jobs, epub_fix].each do |j|
+      j.list_members = members
+      j.category_column = config.category_column
+    end
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
       writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, cleanup].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db))
     file_routes(convert_jobs, embedder)

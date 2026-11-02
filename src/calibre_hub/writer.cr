@@ -56,6 +56,11 @@ module CalibreHub
                    @category_column : String?)
     end
 
+    # The book as calibre has it now (bulk jobs read it before a change, for undo)
+    def book(id : Int64) : Book?
+      @calibre.book(id)
+    end
+
     def update(id : Int64, body : Hash(String, JSON::Any)) : Book
       current = @calibre.book(id) || raise NotFound.new
       raise Conflict.new(current) if Edit.conflict?(body, current)
@@ -178,8 +183,11 @@ module CalibreHub
   # still running when the hub stopped is resumed on start with the book it
   # was at. Re-applying that book is harmless, every bulk change is
   # idempotent per book.
+  #
+  # Field changes remember each book's values before the change ("before"),
+  # so POST /api/jobs/:id/undo can put them back with a job of its own.
   class Jobs
-    CHANGES = %w(addTags removeTags kategorie series numberSeries delete)
+    CHANGES = %w(addTags removeTags kategorie series numberSeries authors publisher languages rating pubdate pubYear delete)
     # finished jobs kept for GET /api/jobs/:id
     KEEP = 50
 
@@ -202,15 +210,23 @@ module CalibreHub
       getter ids : Array(Int64)
       @[JSON::Field(ignore: true)]
       getter changes : Hash(String, JSON::Any)
+      # book id => its fields before the change, as PATCH fields (undo)
+      @[JSON::Field(ignore: true)]
+      getter before : Hash(String, Hash(String, JSON::Any))
 
       def initialize(@ids, @changes, @id = Random::Secure.hex(8), @status = "running", @done = 0,
-                     @errors = [] of NamedTuple(bookId: Int64, error: String), @error = nil)
+                     @errors = [] of NamedTuple(bookId: Int64, error: String), @error = nil,
+                     @before = {} of String => Hash(String, JSON::Any))
         @total = @ids.size
       end
 
       # The changes for the book at index i: numberSeries becomes that
-      # book's seriesIndex (1..n in the order of the ids)
+      # book's seriesIndex (1..n in the order of the ids); an undo job puts
+      # back each book's own values
       def changes_for(index : Int32) : Hash(String, JSON::Any)
+        if restore = @changes["restore"]?.try(&.as_h?)
+          return restore[@ids[index].to_s]?.try(&.as_h?) || {} of String => JSON::Any
+        end
         return @changes unless @changes["numberSeries"]?.try(&.as_bool?)
         c = @changes.dup
         c.delete("numberSeries")
@@ -219,12 +235,14 @@ module CalibreHub
       end
     end
 
-    COLUMNS = "id, status, done, ids, changes, errors, error"
+    COLUMNS = "id, status, done, ids, changes, errors, error, before"
 
     # book ids of a reading list for {query: {list: id}} or {query:
     # {listPath: "A/B"}} (with direct, listOwner: Api.list_members); raises
     # when the list is unknown
     property list_members : Proc(HTTP::Params, Array(Int64))?
+    # for {query: {kategorie: …}} targets of queues that don't edit fields
+    setter category_column : String?
 
     # table: the queue, one per kind of job (jobs run one after another
     # within a queue, queues in parallel)
@@ -245,6 +263,7 @@ module CalibreHub
       columns = [] of String
       @db.query_each("select name from pragma_table_info('#{@table}')") { |rs| columns << rs.read(String) }
       @db.exec "alter table #{@table} add column error text" unless columns.includes?("error")
+      @db.exec "alter table #{@table} add column before text not null default '{}'" unless columns.includes?("before")
       @wake = Channel(Nil).new(1)
       spawn { work }
     end
@@ -286,8 +305,13 @@ module CalibreHub
           end
           raise Edit::Invalid.new("changes", "nothing to change") if changes.empty?
         end
+        if year = changes["pubYear"]?
+          raise Edit::Invalid.new("pubYear", "only one of pubdate and pubYear") if changes.has_key?("pubdate")
+          y = year.raw.nil? ? nil : (year.as_i64? || raise Edit::Invalid.new("pubYear", "year expected"))
+          raise Edit::Invalid.new("pubYear", "year from 1 to 9999 expected") if y && !(1 <= y <= 9999)
+        end
         # type errors now rather than once per book
-        Edit.changes(changes.dup.tap(&.delete("numberSeries")), Jobs.blank, @category_column)
+        Edit.changes(changes.dup.tap(&.delete("numberSeries")).tap(&.delete("pubYear")), Jobs.blank, @category_column)
       end
       enqueue(ids(body["target"]?), changes)
     end
@@ -371,7 +395,7 @@ module CalibreHub
           job.errors << {bookId: id, error: ex.message || ex.class.name}
         end
         job.done = i + 1
-        @db.exec "update #{@table} set done = ?, errors = ? where id = ?", job.done, job.errors.to_json, job.id
+        @db.exec "update #{@table} set done = ?, errors = ?, before = ? where id = ?", job.done, job.errors.to_json, job.before.to_json, job.id
       end
       job.status = (job.error || (job.errors.size == job.total && job.total > 0)) ? "failed" : "done"
       @db.exec "update #{@table} set status = ?, error = ? where id = ?", job.status, job.error, job.id
@@ -391,14 +415,66 @@ module CalibreHub
           raise ex unless resumed
         end
       else
-        @writer.update(id, job.changes_for(index))
+        changes = job.changes_for(index)
+        return if changes.empty?
+        current = @writer.book(id) || raise Writer::NotFound.new
+        # resumed: the values read then may be ours already
+        job.before[id.to_s] = Jobs.before(current, changes, @category_column) unless resumed && job.before.has_key?(id.to_s)
+        @writer.update(id, Jobs.with_year(changes, current))
       end
     end
 
+    # pubYear: the year of the publication date, keeping month and day
+    def self.with_year(changes : Hash(String, JSON::Any), book : Book) : Hash(String, JSON::Any)
+      year = changes["pubYear"]? || return changes
+      c = changes.dup
+      c.delete("pubYear")
+      c["pubdate"] = year.raw.nil? ? JSON::Any.new(nil) : JSON::Any.new("%04d-%s" % {year.as_i64, book.pubdate.try(&.to_utc.to_s("%m-%d")) || "01-01"})
+      c
+    end
+
+    # What a change will overwrite, as the PATCH fields that put it back
+    def self.before(book : Book, changes : Hash(String, JSON::Any), category_column : String?) : Hash(String, JSON::Any)
+      b = {} of String => JSON::Any
+      changes.each_key do |key|
+        case key
+        when "addTags", "removeTags", "tags" then b["tags"] = JSON.parse(book.tags.to_json)
+        when "kategorie"
+          b["kategorie"] = category_column.try { |c| book.custom[c]? }.try { |v| v.as_s? ? v : nil } || JSON::Any.new(nil)
+        when "series", "seriesIndex"
+          b["series"] = JSON::Any.new(book.series)
+          book.series_index.try { |i| b["seriesIndex"] = JSON::Any.new(i) }
+        when "authors"   then b["authors"] = JSON.parse(book.authors.to_json)
+        when "publisher" then b["publisher"] = JSON::Any.new(book.publisher)
+        when "languages" then b["languages"] = JSON.parse(book.languages.to_json)
+        when "rating"    then b["rating"] = book.rating.try { |r| JSON::Any.new(r.round.to_i64) } || JSON::Any.new(nil)
+        when "pubdate", "pubYear"
+          b["pubdate"] = JSON::Any.new(book.pubdate.try(&.to_utc.to_s("%Y-%m-%d")))
+        end
+      end
+      b
+    end
+
+    class NotUndoable < Exception
+    end
+
+    # Puts back what a finished field change overwrote, as a job of its own;
+    # once only
+    def undo(id : String) : Job
+      job = self[id]? || raise NotUndoable.new("unknown job")
+      raise NotUndoable.new("still running") if job.status == "running"
+      raise NotUndoable.new("nothing to undo") if job.before.empty? || job.changes.has_key?("delete")
+      ids = job.ids.select { |i| job.before.has_key?(i.to_s) }
+      restore = JSON::Any.new(job.before.transform_values { |h| JSON::Any.new(h) })
+      @db.exec "update #{@table} set before = '{}' where id = ?", job.id
+      enqueue(ids, {"restore" => restore})
+    end
+
     protected def self.read(rs) : Job
-      id, status, done, ids, changes, errors, error = rs.read(String, String, Int32, String, String, String, String?)
+      id, status, done, ids, changes, errors, error, before = rs.read(String, String, Int32, String, String, String, String?, String)
       Job.new(Array(Int64).from_json(ids), Hash(String, JSON::Any).from_json(changes), id, status, done,
-        Array(NamedTuple(bookId: Int64, error: String)).from_json(errors), error)
+        Array(NamedTuple(bookId: Int64, error: String)).from_json(errors), error,
+        Hash(String, Hash(String, JSON::Any)).from_json(before))
     end
 
     def self.blank : Book

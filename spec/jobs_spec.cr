@@ -5,9 +5,16 @@ require "../src/calibre_hub/writer"
 # Records the per-book changes instead of writing to calibre-server
 private class FakeWriter < CalibreHub::Writer
   getter calls = [] of {Int64, Hash(String, JSON::Any)}
+  # what book(id) answers; others get a blank book
+  getter books = {} of Int64 => CalibreHub::Book
 
   def initialize
     super(CalibreHub::Calibre.new("http://127.0.0.1:1", "x", "x"), nil, nil, "kategorie")
+  end
+
+  def book(id : Int64) : CalibreHub::Book?
+    return nil if id == 999
+    @books[id]? || CalibreHub::Jobs.blank
   end
 
   def update(id : Int64, body : Hash(String, JSON::Any)) : CalibreHub::Book
@@ -15,6 +22,14 @@ private class FakeWriter < CalibreHub::Writer
     @calls << {id, body}
     CalibreHub::Jobs.blank
   end
+end
+
+private def book(id, tags = [] of String, series : String? = nil, series_index : Float64? = nil,
+                  kategorie : String? = nil, pubdate : Time? = nil) : CalibreHub::Book
+  CalibreHub::Book.new(id: id.to_i64, title: "B#{id}", authors: ["X"], author_sort: nil, tags: tags,
+    series: series, series_index: series_index, formats: [] of String, last_modified: Time::UNIX_EPOCH,
+    timestamp: nil, pubdate: pubdate, rating: nil, publisher: nil, identifiers: {} of String => String,
+    languages: [] of String, comments: nil, custom: {"kategorie" => JSON::Any.new(kategorie)})
 end
 
 private def jobs(db, writer = FakeWriter.new)
@@ -141,6 +156,43 @@ describe CalibreHub::Jobs do
       invalid_field { j.submit(body(%({"target": {"ids": [1]}, "changes": {"series": null, "numberSeries": true}}))) }.should eq("numberSeries")
       invalid_field { j.submit(body(%({"target": {"ids": [1]}, "changes": {"series": "S", "numberSeries": "yes"}}))) }.should eq("numberSeries")
       invalid_field { j.submit(body(%({"target": {"ids": [1]}, "changes": {"numberSeries": false}}))) }.should eq("changes")
+    end
+  end
+
+  it "sets authors, publisher, language, rating and the year in bulk" do
+    with_state do |db, _|
+      writer = FakeWriter.new
+      writer.books[2_i64] = book(2, pubdate: Time.utc(1999, 5, 7, 12))
+      j = jobs(db, writer)
+      wait(j, j.submit(body(%({"target": {"ids": [1, 2]}, "changes": {"authors": ["A"], "publisher": "V", "languages": ["deu"], "rating": 8, "pubYear": 2001}}))).id)
+      writer.calls.should eq([
+        {1_i64, body(%({"authors": ["A"], "publisher": "V", "languages": ["deu"], "rating": 8, "pubdate": "2001-01-01"}))},
+        {2_i64, body(%({"authors": ["A"], "publisher": "V", "languages": ["deu"], "rating": 8, "pubdate": "2001-05-07"}))},
+      ])
+      invalid_field { j.submit(body(%({"target": {"ids": [1]}, "changes": {"pubYear": "x"}}))) }.should eq("pubYear")
+      invalid_field { j.submit(body(%({"target": {"ids": [1]}, "changes": {"pubYear": 2001, "pubdate": "2001-01-01"}}))) }.should eq("pubYear")
+      invalid_field { j.submit(body(%({"target": {"ids": [1]}, "changes": {"rating": 11}}))) }.should eq("rating")
+    end
+  end
+
+  it "undoes a field change with each book's own values, once" do
+    with_state do |db, _|
+      writer = FakeWriter.new
+      writer.books[1_i64] = book(1, tags: ["a"], series: "Alt", series_index: 3.0, kategorie: "Sachbuch.Geschichte")
+      writer.books[2_i64] = book(2)
+      j = jobs(db, writer)
+      first = wait(j, j.submit(body(%({"target": {"ids": [1, 2, 999]}, "changes": {"addTags": ["x"], "series": "Neu", "kategorie": "Roman"}}))).id)
+      first.before.keys.should eq(["1", "2"])
+      writer.calls.clear
+      undo = wait(j, j.undo(first.id).id)
+      undo.total.should eq(2)
+      writer.calls.should eq([
+        {1_i64, body(%({"tags": ["a"], "series": "Alt", "seriesIndex": 3.0, "kategorie": "Sachbuch.Geschichte"}))},
+        {2_i64, body(%({"tags": [], "series": null, "kategorie": null}))},
+      ])
+      expect_raises(CalibreHub::Jobs::NotUndoable) { j.undo(first.id) }
+      deleted = wait(j, j.submit(body(%({"target": {"ids": [1]}, "changes": {"delete": true}}))).id)
+      expect_raises(CalibreHub::Jobs::NotUndoable) { j.undo(deleted.id) }
     end
   end
 

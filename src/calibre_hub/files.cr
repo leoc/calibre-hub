@@ -368,9 +368,15 @@ module CalibreHub
       t
     end
 
-    # Every book that lacks the target and has something to convert
-    def submit_target(target : JSON::Any?) : Job
+    # Every book that lacks the target and has something to convert; with
+    # books ({ids} or {query} like bulk edits) only those
+    def submit_target(target : JSON::Any?, books : JSON::Any? = nil) : Job
       t = ConvertJobs.target!(target, @target)
+      if books && !books.raw.nil?
+        wanted = ids(books)
+        ids = @calibre.books(wanted, ["formats"]).select { |b| source(b.formats, t) }.map(&.id)
+        return enqueue(ids, {"target" => JSON::Any.new(t), "from" => JSON::Any.new("selection")})
+      end
       ids = @calibre.list("", ["formats"]).select { |b| source(b.formats, t) }.map(&.id)
       enqueue(ids, {"target" => JSON::Any.new(t), "from" => JSON::Any.new("library")})
     end
@@ -464,7 +470,7 @@ module CalibreHub
     post "/api/convert" do |env|
       write_errors(env) do
         body = json_body(env)
-        job = convert.submit_target(body["target"]?)
+        job = convert.submit_target(body["target"]?, body["books"]?)
         env.response.status_code = 202
         {jobId: job.id, total: job.total}.to_json
       end

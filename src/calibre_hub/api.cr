@@ -356,6 +356,17 @@ module CalibreHub
       (jobs[id]? || other_jobs.compact_map(&.[id]?).first?).try(&.to_json) || fail(env, 404, {error: "not found"})
     end
 
+    # puts back what a finished bulk field change overwrote (once)
+    post "/api/jobs/:id/undo" do |env|
+      id = env.params.url["id"]
+      next fail(env, 404, {error: "not found"}) unless jobs[id]?
+      job = jobs.undo(id)
+      env.response.status_code = 202
+      {jobId: job.id, total: job.total}.to_json
+    rescue ex : Jobs::NotUndoable
+      fail(env, 409, {error: ex.message})
+    end
+
     patch "/api/books/:id" do |env|
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
