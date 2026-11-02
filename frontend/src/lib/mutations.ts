@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query"
-import { ApiError, write, type Book, type BookPage, type BookPatch } from "./api"
+import { ApiError, write, type Book, type BookPage, type BookPatch, type ClassifyTarget } from "./api"
 
 // Put a changed book into every cached list and its detail entry.
 export function storeBook(qc: QueryClient, book: Book) {
@@ -76,6 +76,50 @@ export function useDeleteBook() {
       qc.removeQueries({ queryKey: ["book", id] })
       invalidateLibrary(qc)
     },
+  })
+}
+
+// Suggestions change books (category, tag) and the review list
+function invalidateSuggestions(qc: QueryClient, bookIds: number[]) {
+  qc.invalidateQueries({ queryKey: ["suggestions"] })
+  qc.invalidateQueries({ queryKey: ["classify-status"] })
+  bookIds.forEach((id) => {
+    qc.invalidateQueries({ queryKey: ["suggestion", id] })
+    qc.invalidateQueries({ queryKey: ["book", id] })
+  })
+  qc.invalidateQueries({ queryKey: ["books"] })
+  qc.invalidateQueries({ queryKey: ["categories"] })
+}
+
+export function useAcceptSuggestion() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ bookId, category }: { bookId: number; category?: string }) => write.acceptSuggestion(bookId, category),
+    onSuccess: (_s, { bookId }) => invalidateSuggestions(qc, [bookId]),
+  })
+}
+
+export function useRejectSuggestion() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (bookId: number) => write.rejectSuggestion(bookId),
+    onSuccess: (_s, bookId) => invalidateSuggestions(qc, [bookId]),
+  })
+}
+
+export function useAcceptSuggestions() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (bookIds: number[]) => write.acceptSuggestions(bookIds),
+    onSuccess: (_r, bookIds) => invalidateSuggestions(qc, bookIds),
+  })
+}
+
+export function useStartClassify() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (target: ClassifyTarget) => write.classify(target),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["classify-status"] }),
   })
 }
 

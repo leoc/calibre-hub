@@ -1,5 +1,5 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query"
-import { api, type BookQuery } from "./api"
+import { api, type BookQuery, type SuggestionStatus } from "./api"
 
 export const sessionQuery = queryOptions({
   queryKey: ["session"],
@@ -39,4 +39,26 @@ export const trashQuery = queryOptions({
   queryKey: ["trash"],
   queryFn: api.trash,
   staleTime: 0,
+})
+
+export const suggestionsQuery = (status: SuggestionStatus = "pending") =>
+  queryOptions({
+    queryKey: ["suggestions", status],
+    queryFn: () => api.suggestions(status),
+    staleTime: 0,
+  })
+
+export const suggestionQuery = (bookId: number) =>
+  queryOptions({
+    queryKey: ["suggestion", bookId],
+    queryFn: () => api.suggestion(bookId),
+    staleTime: 60_000,
+  })
+
+// polls while a run is going
+export const classifyStatusQuery = queryOptions({
+  queryKey: ["classify-status"],
+  queryFn: api.classifyStatus,
+  staleTime: 30_000,
+  refetchInterval: (q) => (q.state.data?.running ? 1500 : false),
 })

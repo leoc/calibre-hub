@@ -13,6 +13,7 @@ import { Button, buttonVariants } from "./ui/button"
 import { BookEdit } from "./book-edit"
 import { FastTagButtons } from "./fast-tags"
 import { DeleteBookButton } from "./delete-book"
+import { SuggestionBox } from "./suggestion-box"
 import { Badge } from "./ui/badge"
 import { LibraryLink } from "@/components/library-link"
 
@@ -94,6 +95,8 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
           </div>
         </div>
       </div>
+
+      <SuggestionBox book={book} />
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm eink:text-base">
         {kategorie && (

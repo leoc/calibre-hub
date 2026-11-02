@@ -24,6 +24,9 @@ export function parseCategory(input: string): ParsedCategory {
   return { value: parts.length ? parts.join(".") : null }
 }
 
+// Confidence of a model suggestion (0..1) as "85 %"
+export const percent = (confidence: number) => `${Math.round(confidence * 100)} %`
+
 // Suggestions for category inputs, as paths.
 export const categorySuggestions = (nodes: CategoryNode[]): (Named & { path: string })[] =>
   flattenTree(nodes).map((k) => ({ ...k, path: k.name, name: categoryLabel(k.name) }))

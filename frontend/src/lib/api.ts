@@ -50,7 +50,37 @@ export interface Categories {
 export interface HubConfig {
   fastTags: string[]
   categoryColumn: string | null
+  // category suggestions from a local model (services.calibre-hub.classify)
+  classify?: boolean
 }
+
+export type SuggestionStatus = "pending" | "auto" | "applied" | "rejected" | "none"
+
+// The latest category suggestion for a book; category is stored dotted, null
+// when no category of the tree fits
+export interface Suggestion {
+  bookId: number
+  category: string | null
+  confidence: number
+  reason: string
+  model: string
+  at: string
+  status: SuggestionStatus
+}
+
+export interface ClassifyStatus {
+  enabled: boolean
+  model?: string
+  threshold?: number
+  // nodes in the category tree; below minCategories nothing is suggested
+  categories?: number
+  minCategories?: number
+  pending?: number
+  running?: boolean
+  lastRun?: (Job & { id: string; startedAt: string }) | null
+}
+
+export type ClassifyTarget = "unsorted" | { ids: number[] }
 
 export const SORTS = ["title", "author", "added", "modified", "published", "series", "rating"] as const
 export type Sort = (typeof SORTS)[number]
@@ -109,6 +139,15 @@ export const api = {
   book: (id: number) => request<Book>(`/api/books/${id}`),
   categories: () => request<Categories>("/api/categories"),
   trash: () => request<TrashEntry[]>("/api/trash"),
+  suggestions: (status?: SuggestionStatus) =>
+    request<(Suggestion & { book: Book })[]>(`/api/suggestions${status ? `?status=${status}` : ""}`),
+  // null when the book has none
+  suggestion: (bookId: number) =>
+    request<Suggestion>(`/api/suggestions/${bookId}`).catch((e) => {
+      if (e instanceof ApiError && e.status === 404) return null
+      throw e
+    }),
+  classifyStatus: () => request<ClassifyStatus>("/api/classify/status"),
   // not every hub has /api/config yet (#8391); fall back to the defaults
   config: () =>
     request<HubConfig>("/api/config").catch((e) => {
@@ -163,6 +202,8 @@ export interface Job {
   done: number
   total: number
   errors: { bookId: number; error: string }[]
+  // why a job stopped early (e.g. the model is unavailable)
+  error?: string
 }
 
 export interface CoverHit {
@@ -191,6 +232,14 @@ export const write = {
   bulk: (target: BulkTarget, changes: BulkChanges) =>
     request<{ jobId: string; total: number }>("/api/books/bulk", { method: "POST", ...json({ target, changes }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  // category: another one than suggested, path or dotted
+  acceptSuggestion: (bookId: number, category?: string) =>
+    request<Suggestion>(`/api/suggestions/${bookId}/accept`, { method: "POST", ...json(category ? { category } : {}) }),
+  rejectSuggestion: (bookId: number) => request<Suggestion>(`/api/suggestions/${bookId}/reject`, { method: "POST" }),
+  acceptSuggestions: (bookIds: number[]) =>
+    request<{ accepted: Suggestion[]; errors: { bookId: number; error: string }[] }>("/api/suggestions/accept", { method: "POST", ...json({ bookIds }) }),
+  // 409 with {categories, minCategories} while the tree is too small
+  classify: (target: ClassifyTarget) => request<{ jobId: string; total: number }>("/api/classify", { method: "POST", ...json({ target }) }),
   coverUpload: (id: number, image: Blob) =>
     request<Book>(`/api/books/${id}/cover`, { method: "PUT", body: image, headers: { "Content-Type": image.type || "image/jpeg" } }),
   coverFromFile: (id: number, format?: string) =>
@@ -233,7 +282,7 @@ export function uploadBook(file: File, opts: UploadOptions, onProgress: (fractio
   })
 }
 
-export const DEFAULT_CONFIG: HubConfig = { fastTags: ["leseliste"], categoryColumn: "kategorie" }
+export const DEFAULT_CONFIG: HubConfig = { fastTags: ["leseliste"], categoryColumn: "kategorie", classify: false }
 
 export const coverUrl = (id: number, thumb = true, version?: string) =>
   `/api/books/${id}/cover${thumb ? "?size=thumb" : ""}${version ? `${thumb ? "&" : "?"}v=${encodeURIComponent(version)}` : ""}`

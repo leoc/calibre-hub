@@ -1,8 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { Bookmark, Inbox, Library, Trash2 } from "lucide-react"
-import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
+import { Bookmark, Inbox, Library, Sparkles, Trash2 } from "lucide-react"
+import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery } from "@/lib/queries"
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
 import { hasFilters, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
 import { matchNamed } from "@/lib/palette"
@@ -30,6 +30,7 @@ export function Sidebar({ search, onNavigate }: Props) {
     ...booksQuery({ q: unsortedQuery(config.categoryColumn ?? ""), limit: 1 }),
     enabled: !!config.categoryColumn,
   })
+  const { data: classify } = useQuery({ ...classifyStatusQuery, enabled: !!config.classify })
 
   return (
     <nav className="flex h-full flex-col gap-5 overflow-y-auto p-3">
@@ -96,6 +97,14 @@ export function Sidebar({ search, onNavigate }: Props) {
       )}
 
       <div className="mt-auto space-y-2 pt-2">
+        {config.classify && (
+          <Link to="/suggestions" onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+            <span className="flex items-center gap-2">
+              <Sparkles className="size-4" aria-hidden /> {t("suggest.title")}
+            </span>
+            {!!classify?.pending && <Count n={classify.pending} />}
+          </Link>
+        )}
         <Link to="/trash" onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
           <span className="flex items-center gap-2">
             <Trash2 className="size-4" aria-hidden /> {t("trash.title")}

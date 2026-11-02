@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Book, BookPatch, BulkChanges, BulkTarget, Job, TrashEntry } from "@/lib/api"
+import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Suggestion, SuggestionStatus, TrashEntry } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 
@@ -75,6 +75,42 @@ function moveToTrash(b: Book) {
   trash.unshift({ entry: { id: b.id, title: b.title, authors: b.authors, formats: b.formats, deletedAt: new Date().toISOString() }, book: b })
 }
 
+// Category suggestions of the "model": a few open ones for unsorted books
+// from the start; a run suggests by id (id % 3: 0 sure and applied, 1 open,
+// 2 nothing fits). Only categories of the tree, like the hub.
+const THRESHOLD = 0.85
+const suggestions = new Map<number, Suggestion>()
+const treePaths = () => {
+  const paths = new Set<string>()
+  books.forEach((b) => {
+    const k = b.custom.kategorie
+    if (typeof k !== "string" || !k) return
+    k.split(".").forEach((_, i, parts) => paths.add(parts.slice(0, i + 1).join(".")))
+  })
+  return [...paths].sort()
+}
+const unsorted = () => books.filter((b) => !b.custom.kategorie)
+
+function suggest(b: Book, kind: number): Suggestion {
+  const paths = treePaths().filter((p) => p.includes("."))
+  const category = kind === 2 ? null : paths[b.id % paths.length]
+  const confidence = kind === 0 ? 0.92 : kind === 1 ? 0.55 + (b.id % 4) * 0.05 : 0
+  const reason = category ? `Titel und Beschreibung passen zu ${category.split(".").join("/")}.` : "Keine Kategorie passt."
+  const s: Suggestion = { bookId: b.id, category, confidence, reason, model: "qwen2.5:3b", at: new Date().toISOString(), status: "pending" }
+  if (!category) s.status = "none"
+  else if (confidence >= THRESHOLD && !b.custom.kategorie) {
+    applyPatch(b, { kategorie: category, addTags: ["auto-kategorie"] })
+    s.status = "auto"
+  }
+  suggestions.set(b.id, s)
+  return s
+}
+unsorted()
+  .slice(0, 5)
+  .forEach((b) => suggest(b, 1))
+
+let lastClassify: (Job & { id: string; startedAt: string }) | null = null
+
 const jobs = new Map<string, Job>()
 const retried = new Set<number>()
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -95,7 +131,7 @@ export const readHandlers = [
     loggedIn = false
     return new HttpResponse(null, { status: 204 })
   }),
-  http.get("/api/config", () => auth() ?? HttpResponse.json({ fastTags: ["leseliste"], categoryColumn: "kategorie" })),
+  http.get("/api/config", () => auth() ?? HttpResponse.json({ fastTags: ["leseliste"], categoryColumn: "kategorie", classify: true })),
   http.get("/api/categories", () => auth() ?? HttpResponse.json(categories(books))),
   http.get("/api/books", ({ request }) => {
     const denied = auth()
@@ -241,6 +277,84 @@ export const writeHandlers = [
         job.done++
       }
       job.status = job.errors.length === list.length ? "failed" : "done"
+    })()
+    return HttpResponse.json({ jobId, total: list.length }, { status: 202 })
+  }),
+  http.get("/api/classify/status", () => {
+    const pending = [...suggestions.values()].filter((s) => s.status === "pending").length
+    return HttpResponse.json({
+      enabled: true, model: "qwen2.5:3b", threshold: THRESHOLD, categories: treePaths().length, minCategories: 2,
+      pending, running: lastClassify?.status === "running", lastRun: lastClassify,
+    })
+  }),
+  http.get("/api/suggestions", ({ request }) => {
+    const status = new URL(request.url).searchParams.get("status") as SuggestionStatus | null
+    const list = [...suggestions.values()].filter((s) => !status || s.status === status).sort((a, b) => b.at.localeCompare(a.at) || a.bookId - b.bookId)
+    return HttpResponse.json(list.flatMap((s) => {
+      const b = books.find((x) => x.id === s.bookId)
+      return b ? [{ ...s, book: b }] : []
+    }))
+  }),
+  http.get("/api/suggestions/:id", ({ params }) => {
+    const s = suggestions.get(Number(params.id))
+    return s ? HttpResponse.json(s) : HttpResponse.json({ error: "not found" }, { status: 404 })
+  }),
+  http.post("/api/suggestions/accept", async ({ request }) => {
+    const { bookIds } = (await request.json()) as { bookIds: number[] }
+    await delay(200)
+    const accepted: Suggestion[] = []
+    const errors: { bookId: number; error: string }[] = []
+    for (const id of bookIds) {
+      const s = suggestions.get(id)
+      const b = books.find((x) => x.id === id)
+      if (!s || !b) errors.push({ bookId: id, error: "not found" })
+      else if (!s.category) errors.push({ bookId: id, error: "no suggested category, name one" })
+      else {
+        applyPatch(b, { kategorie: s.category })
+        s.status = "applied"
+        accepted.push(s)
+      }
+    }
+    return HttpResponse.json({ accepted, errors })
+  }),
+  http.post("/api/suggestions/:id/accept", async ({ params, request }) => {
+    const s = suggestions.get(Number(params.id))
+    const b = books.find((x) => x.id === Number(params.id))
+    if (!s || !b) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    const body = (await request.json().catch(() => ({}))) as { category?: string }
+    const category = body.category?.split(/[/.]/).map((p) => p.trim()).filter(Boolean).join(".") || s.category
+    if (!category) return HttpResponse.json({ error: "no suggested category, name one", field: "category" }, { status: 400 })
+    await delay(200)
+    applyPatch(b, { kategorie: category })
+    Object.assign(s, { status: "applied", category })
+    return HttpResponse.json(s)
+  }),
+  http.post("/api/suggestions/:id/reject", async ({ params }) => {
+    const s = suggestions.get(Number(params.id))
+    if (!s) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    await delay(150)
+    s.status = "rejected"
+    return HttpResponse.json(s)
+  }),
+  http.post("/api/classify", async ({ request }) => {
+    const { target = "unsorted" } = (await request.json().catch(() => ({}))) as { target?: ClassifyTarget }
+    const paths = treePaths()
+    if (paths.length < 2) return HttpResponse.json({ error: "too few categories", categories: paths.length, minCategories: 2 }, { status: 409 })
+    const list =
+      target === "unsorted"
+        ? unsorted().filter((b) => !["pending", "rejected", "none"].includes(suggestions.get(b.id)?.status ?? ""))
+        : target.ids.flatMap((id) => books.filter((b) => b.id === id))
+    const jobId = Math.random().toString(36).slice(2)
+    const job = { id: jobId, startedAt: new Date().toISOString(), status: "running" as Job["status"], done: 0, total: list.length, errors: [] }
+    jobs.set(jobId, job)
+    lastClassify = job
+    ;(async () => {
+      for (const b of list) {
+        await delay(25)
+        suggest(b, b.id % 3)
+        job.done++
+      }
+      job.status = "done"
     })()
     return HttpResponse.json({ jobId, total: list.length }, { status: 202 })
   }),

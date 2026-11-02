@@ -45,5 +45,12 @@ the lockfile (v9) works with 10 to 12.
   search bar, with scope chips instead of typed prefixes.
 - Themes: system, light, dark, E-Ink (black on white, no animations, larger
   targets), stored per device. Boox/Onyx user agents get a one-time prompt.
+- Category suggestions (`/suggestions`, sidebar entry with the open count,
+  palette command "Vorschläge") only when `GET /api/config` says
+  `classify`: accept, change (category combobox), reject, accept several;
+  "Unsortierte klassifizieren" starts a run and polls its job. The book
+  detail shows an open suggestion with accept and reject. The mocks start
+  with 5 open suggestions; a run decides by id (`id % 3`: 0 applied with
+  the tag `auto-kategorie`, 1 open, 2 no fit).
 - Fast tags and the category column come from `GET /api/config`
   (`services.calibre-hub.fastTags`); toggling them follows in Phase 4.
