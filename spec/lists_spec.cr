@@ -193,11 +193,11 @@ describe CalibreHub::Lists do
 end
 
 # A calibre search stand-in for magic shelves: tags:"=Krimi" finds 5, 4, 3
-# (newest first), languages:"=deu" finds 4 and 9, "kaputt" is rejected
+# (newest first), languages:"=deu" finds 4 and 9, "kaputt" is rejected with a 500 like calibre-server does
 private def fake_search(searched = [] of String) : CalibreHub::Lists::Search
   ->(q : String, limit : Int32) do
     searched << q
-    raise CalibreHub::Calibre::Error.new("calibre-server /ajax/search: HTTP 400") if q.includes?("kaputt")
+    raise CalibreHub::Calibre::Unavailable.new("calibre-server /ajax/search: HTTP 500") if q.includes?("kaputt")
     ids = [] of Int64
     ids.concat([5_i64, 4_i64, 3_i64]) if q.includes?(%(tags:"=Krimi"))
     ids.concat([4_i64, 9_i64]) if q.includes?(%(languages:"=deu"))
@@ -288,9 +288,22 @@ describe "magic shelves" do
       db.exec "update lists set rule = ? where id = ?", %({"match":"all","conditions":[{"field":"text","value":"kaputt"}]}), s.id
       broken = lists[s.id, "arthur"]
       broken.count.should eq(0)
-      broken.query_error.not_nil!.should contain("HTTP 400")
+      broken.query_error.not_nil!.should contain("HTTP 500")
       lists.members([broken]).should be_empty
     end
+  end
+
+  it "doesn't take an outage of calibre-server for a broken rule" do
+    path = File.tempname("hub-shelves", ".sqlite")
+    db = DB.open("sqlite3://#{path}?max_pool_size=1")
+    down = ->(_q : String, _limit : Int32) { raise CalibreHub::Calibre::Unavailable.new("calibre-server: connection refused"); {0_i64, [] of Int64} }
+    lists = CalibreHub::Lists.new(db, nil, nil, down, nil)
+    expect_raises(CalibreHub::Calibre::Unavailable) do
+      lists.create("arthur", body(%({"name": "X", "rule": {"conditions": [{"field": "tag", "value": "a"}]}})))
+    end
+  ensure
+    db.try &.close
+    File.delete?(path) if path
   end
 
   it "nests shelves below lists and counts them into the node" do

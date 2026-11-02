@@ -507,15 +507,16 @@ module CalibreHub
       raise Edit::Invalid.new("bookIds", "a magic shelf has no books of its own, its rule finds them") if list.rule
     end
 
-    # A checked rule; calibre has to understand its search
+    # A checked rule; calibre has to understand its search. calibre-server
+    # answers a search it can't parse with a 500, like an outage: a plain
+    # search tells the two apart (it fails too while calibre is down).
     private def rule!(value : JSON::Any) : JSON::Any
       rule = Shelf.parse(value, @kategorie_column)
       if search = @search
         begin
           search.call(Shelf.query(rule, @kategorie_column), 1)
-        rescue ex : Calibre::Unavailable
-          raise ex
         rescue ex : Calibre::Error
+          search.call("", 1) if ex.is_a?(Calibre::Unavailable)
           raise Edit::Invalid.new("rule", "calibre can't search this: #{ex.message}")
         end
       end
