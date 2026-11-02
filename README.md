@@ -620,8 +620,8 @@ and sent.
 
 ## CLI
 
-`calibre-hub cli <command>`, or `hub <command>` (the package links it), talks
-to a running hub with an API token. `CALIBRE_HUB_URL` (default
+`hub <command>`, or `calibre-hub cli <command>` (the same client in the
+server binary, without `tui`), talks to a running hub with an API token. `CALIBRE_HUB_URL` (default
 `https://hub.nor.sh`); token from `CALIBRE_HUB_TOKEN`,
 `CALIBRE_HUB_TOKEN_FILE` or `~/.config/calibre-hub/token`.
 
@@ -664,7 +664,18 @@ anyway). `bulk` asks before changing unless `--yes` (required without a
 terminal) and waits for the job, listing books that failed.
 
 Completion: `hub completion fish | source`, `source <(hub completion bash)`;
-the package installs both. A Claude Code skill for the CLI is in
+the packages install them for `hub` and `calibre-hub`.
+
+The repository builds two binaries (targets in `shard.yml`):
+
+| Binary | Entry | Package | What |
+|---|---|---|---|
+| `calibre-hub` | `src/main.cr` | `packages.server` | serve, scan, install-triggers, handlers, `cli` (all but `tui`); what the NixOS module runs |
+| `hub` | `src/hub.cr` | `packages.hub` | the CLI with `tui`; links bubbletea.cr and its Go library |
+
+`packages.default` has both (for a workstation). The server binary doesn't
+link bubbletea.cr, so the Go library is not in the server's closure;
+`calibre-hub cli tui` points to `hub tui`. A Claude Code skill for the CLI is in
 [docs/skills/calibre-hub/SKILL.md](docs/skills/calibre-hub/SKILL.md)
 (copy it to `~/.claude/skills/calibre-hub/`).
 
@@ -690,8 +701,8 @@ Colours follow the terminal's light or dark background.
 
 It is built on [bubbletea.cr](https://github.com/leoc/bubbletea.cr) (Crystal
 bindings for Bubble Tea, Lip Gloss, Bubbles and Glamour through a Go
-library), so the binary
-links `libbubbletea_go.so`.
+library), so only the `hub` binary links `libbubbletea_go.so`
+(`nix/hub.nix`).
 
 Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
 
@@ -751,9 +762,10 @@ printf %s hub > /tmp/hub-pw
 export CALIBRE_HUB_CALIBRE_URL=http://127.0.0.1:18083 CALIBRE_HUB_CALIBRE_USER=hub \
   CALIBRE_HUB_CALIBRE_PASSWORD_FILE=/tmp/hub-pw CALIBRE_HUB_CUSTOM_COLUMNS=kategorie \
   CALIBRE_HUB_LIBRARY=/tmp/hub-testlib/library CALIBRE_HUB_LIBRARY_ID=library
-shards build && bin/calibre-hub serve   # API on 127.0.0.1:8084
+shards build && bin/calibre-hub serve   # API on 127.0.0.1:8084 (also builds bin/hub)
+shards build hub && bin/hub tui         # CLI and TUI only
 crystal spec
-nix build                               # package
+nix build                               # both binaries; .#server or .#hub alone
 ```
 
 After changing dependencies: `shards install && crystal2nix`.
@@ -761,8 +773,9 @@ After changing dependencies: `shards install && crystal2nix`.
 bubbletea.cr comes from GitHub (`leoc/bubbletea.cr`, in `shard.yml` and as the
 flake input `bubbletea-cr`; keep both on the same tag). Its Go library comes
 from the flake (`BUBBLETEA_LIB_DIR` in the dev shell), so the dev shell needs no
-Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it, the
-package links the flake input instead.
+Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
+`nix/hub.nix` links the flake input instead and the server package
+(`nix/package.nix`) doesn't need it.
 
 ## Configuration (environment)
 

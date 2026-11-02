@@ -80,11 +80,10 @@ in
 
     package = mkOption {
       type = types.package;
-      # package.nix needs the bubbletea.cr flake input; the flake's
-      # nixosModules.default sets it
-      default = throw "services.calibre-hub.package: import the flake's nixosModules.default or set the package";
-      defaultText = lib.literalExpression "calibre-hub.packages.\${system}.default";
-      description = "calibre-hub package.";
+      # the server binary only; `hub` (CLI + TUI) is packages.hub
+      default = pkgs.callPackage ./package.nix { };
+      defaultText = lib.literalExpression "calibre-hub.packages.\${system}.server";
+      description = "calibre-hub package (the server binary, `calibre-hub`).";
     };
 
     host = mkOption {

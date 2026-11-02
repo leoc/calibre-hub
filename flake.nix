@@ -5,7 +5,8 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   # Crystal bindings for Bubble Tea & co. (`hub tui`): the shard's source and
-  # its Go library. Keep the tag in step with shard.yml/shard.lock.
+  # its Go library, only for the hub binary. Keep the tag in step with
+  # shard.yml/shard.lock.
   inputs.bubbletea-cr = {
     url = "github:leoc/bubbletea.cr/v0.2.0";
     inputs.nixpkgs.follows = "nixpkgs";
@@ -28,9 +29,21 @@
       packages = forAll (
         pkgs:
         {
-          default = pkgs.callPackage ./nix/package.nix {
+          # the server binary only (calibre-hub), what the NixOS module runs
+          server = pkgs.callPackage ./nix/package.nix { };
+          # the CLI with the TUI (hub), links bubbletea.cr's Go library
+          hub = pkgs.callPackage ./nix/hub.nix {
             bubbletea-src = bubbletea-cr;
             libbubbletea-go = bubbletea-cr.packages.${pkgs.stdenv.hostPlatform.system}.libbubbletea-go;
+          };
+          # both, for a workstation (hub and calibre-hub cli)
+          default = pkgs.symlinkJoin {
+            name = "calibre-hub-0.1.0";
+            paths = [
+              self.packages.${pkgs.stdenv.hostPlatform.system}.server
+              self.packages.${pkgs.stdenv.hostPlatform.system}.hub
+            ];
+            meta.mainProgram = "calibre-hub";
           };
           # what calibre-server's preStart runs (see nix/triggers.nix)
           triggers = pkgs.callPackage ./nix/triggers.nix { };
@@ -41,12 +54,12 @@
         }
       );
 
-      # the module with the flake's package (it needs the bubbletea.cr input)
+      # the module with the flake's server package (no bubbletea.cr, no Go)
       nixosModules.default =
         { pkgs, lib, ... }:
         {
           imports = [ ./nix/module.nix ];
-          services.calibre-hub.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          services.calibre-hub.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.server;
         };
 
       # slow, not part of `nix flake check`: nix build .#scale-test -L
@@ -60,7 +73,8 @@
         vm = import ./nix/test.nix {
           inherit pkgs;
           module = self.nixosModules.default;
-          package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          package = self.packages.${pkgs.stdenv.hostPlatform.system}.server;
+          hub = self.packages.${pkgs.stdenv.hostPlatform.system}.hub;
         };
       });
 

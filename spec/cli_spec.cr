@@ -175,6 +175,12 @@ describe "hub CLI" do
     err.should contain("unknown command")
   end
 
+  it "points to hub tui where the TUI isn't linked (calibre-hub cli)" do
+    code, _, err = cli(nil, "tui")
+    code.should eq(1)
+    err.should contain("hub tui")
+  end
+
   it "searches with filters and the token" do
     with_stub do |s|
       s.on("GET", "/api/books", {total: 3, offset: 0, limit: 2, books: [book, book(2, "Dune Messiah")]})

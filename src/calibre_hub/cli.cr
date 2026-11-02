@@ -11,6 +11,10 @@ module CalibreHub
   # Command line client for a running hub: `calibre-hub cli <command>` or
   # `hub <command>`. Talks to the JSON API with an API token.
   module Cli
+    # the terminal UI; only the `hub` binary (src/hub.cr) links it, so the
+    # server binary stays without bubbletea.cr and its Go library
+    class_property tui : Proc(Client, Nil)?
+
     def self.run(argv : Array(String), stdout : IO = STDOUT, stderr : IO = STDERR, stdin : IO = STDIN,
                  env : Hash(String, String) = ENV.to_h) : Int32
       Runner.new(stdout, stderr, stdin, env).run(argv)
@@ -121,8 +125,9 @@ module CalibreHub
       # --- tui --------------------------------------------------------------
 
       private def tui
+        runner = Cli.tui || raise Failure.new(USAGE, "the TUI is only in the hub binary: hub tui")
         raise Usage.new("tui needs a terminal", "tui") unless @in.tty? && @out.tty?
-        Tui.run(client)
+        runner.call(client)
       end
 
       # --- read -------------------------------------------------------------

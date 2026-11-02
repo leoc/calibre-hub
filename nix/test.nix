@@ -1,7 +1,12 @@
 # NixOS VM test: calibre-server + calibre-hub from the module, an empty
 # library, one book added through calibre-server. Also the smoke test against
 # the calibre version of the pinned nixpkgs.
-{ pkgs, module, package }:
+{
+  pkgs,
+  module,
+  package,
+  hub,
+}:
 pkgs.testers.runNixOSTest {
   name = "calibre-hub";
 
@@ -20,8 +25,9 @@ pkgs.testers.runNixOSTest {
         pkgs.curl
         pkgs.jq
         pkgs.sqlite
-        # the CLI, as calibre-hub cli and hub
+        # the CLI, as calibre-hub cli (server package) and hub (own binary)
         config.services.calibre-hub.package
+        hub
       ];
       environment.etc = {
         "hub/service".text = "service-secret";

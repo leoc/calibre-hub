@@ -1,11 +1,11 @@
+# calibre-hub, the server binary (serve, scan, handlers, `calibre-hub cli`):
+# without bubbletea.cr, so no Go library in its closure. `hub` (CLI + TUI) is
+# nix/hub.nix; the flake's packages.default has both.
 {
   lib,
   crystal,
+  shards,
   sqlite,
-  installShellFiles,
-  # bubbletea.cr (shard source) and its Go library, from the flake input
-  bubbletea-src,
-  libbubbletea-go,
 }:
 crystal.buildCrystalPackage {
   pname = "calibre-hub";
@@ -21,34 +21,28 @@ crystal.buildCrystalPackage {
     ];
   };
 
-  # shards.nix has the shards from git URLs; bubbletea comes from the flake
-  # input, which also builds its Go library (linked with an rpath)
+  # shards.nix has the shards from git URLs (not bubbletea, see nix/hub.nix)
   shardsFile = ../shards.nix;
-  postConfigure = ''
-    ln -s ${bubbletea-src} lib/bubbletea
-  '';
-  env.BUBBLETEA_LIB_DIR = "${libbubbletea-go}/lib";
-  format = "shards";
+  format = "crystal";
+  crystalBinaries.calibre-hub.src = "src/main.cr";
   buildInputs = [ sqlite ];
-  nativeBuildInputs = [ installShellFiles ];
+  # kemal's exception_page asks `shards version` at compile time
+  nativeBuildInputs = [ shards ];
 
-  # `hub` is the CLI (calibre-hub cli), with completions for both names
   postInstall = ''
-    # bubbletea.cr always adds an rpath to its own go/build (empty here, the
-    # library comes from BUBBLETEA_LIB_DIR): keep only store paths
-    chmod u+w $out/bin/calibre-hub
-    patchelf --shrink-rpath --allowed-rpath-prefixes ${builtins.storeDir} $out/bin/calibre-hub
-    chmod u-w $out/bin/calibre-hub
-    ln -s calibre-hub $out/bin/hub
-    for prog in hub calibre-hub; do
-      $out/bin/calibre-hub cli completion fish --prog $prog > $prog.fish
-      $out/bin/calibre-hub cli completion bash --prog $prog > $prog.bash
-    done
-    installShellCompletion --fish hub.fish calibre-hub.fish --bash hub.bash calibre-hub.bash
+    $out/bin/calibre-hub cli completion fish --prog calibre-hub > calibre-hub.fish
+    $out/bin/calibre-hub cli completion bash --prog calibre-hub > calibre-hub.bash
+    installShellCompletion calibre-hub.{fish,bash}
   '';
 
-  # unit specs only; calibre-server is covered by the NixOS VM test
+  # unit specs without the TUI's (nix/hub.nix runs those); calibre-server is
+  # covered by the NixOS VM test
   doCheck = true;
+  checkPhase = ''
+    runHook preCheck
+    crystal spec $(ls spec/*_spec.cr | grep -v '^spec/tui_spec.cr$')
+    runHook postCheck
+  '';
 
   meta = {
     description = "Thin API, change events and web UI on top of calibre-server";

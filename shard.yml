@@ -9,8 +9,12 @@ authors:
 crystal: ">= 1.19.0"
 
 targets:
+  # the server and everything the host runs; without bubbletea.cr
   calibre-hub:
     main: src/main.cr
+  # the CLI with the TUI; links bubbletea.cr and its Go library
+  hub:
+    main: src/hub.cr
 
 dependencies:
   kemal:

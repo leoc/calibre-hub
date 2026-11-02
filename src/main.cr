@@ -467,13 +467,12 @@ module CalibreHub
       install-triggers <db>       create the changelog triggers in metadata.db
                                   (only while calibre-server is stopped)
       handler leseliste           mirror the reading list (event JSON on stdin)
-      cli <command>               command line client for a running hub (also as `hub`)
+      cli <command>               command line client for a running hub (the `hub`
+                                  binary is the same client plus `hub tui`)
       --help, --version
     TXT
 
   def self.main(args)
-    # the package links the binary as `hub`, which is the CLI
-    exit Cli.run(args) if File.basename(PROGRAM_NAME) == "hub"
     case args.first?
     when "cli"
       exit Cli.run(args[1..])
