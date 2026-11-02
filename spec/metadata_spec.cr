@@ -273,6 +273,12 @@ describe CalibreHub::Meta::Clean do
     {"Guidance", ["CDRH CBER"]}                                            => {"Guidance", ["CDRH CBER"], nil, nil, false},
     {"Erdsee", ["Le Guin, Ursula K."]}                                     => {"Erdsee", ["Ursula K. Le Guin"], nil, nil, false},
     {"Hundert Jahre Einsamkeit", ["Garcia Marquez, Gabriel"]}              => {"Hundert Jahre Einsamkeit", ["Gabriel Garcia Marquez"], nil, nil, false},
+    {"Guidance", ["FDA/CDER"]}                                             => {"Guidance", ["FDA/CDER"], nil, nil, false},
+    {"ISO/IEC 42001:2023", ["ISO"]}                                        => {"ISO/IEC 42001:2023", ["ISO"], nil, nil, false},
+    {"\u{FEFF}ISO/IEC 42001:2023\u{FEFF}", ["ISO"]}                       => {"ISO/IEC 42001:2023", ["ISO"], nil, nil, false},
+    {"Applied Software Project Management", ["libgen.lc"]}                 => {"Applied Software Project Management", [] of String, nil, nil, false},
+    {"[DIN EN ISO 14971 2009-10] -- Medizinprodukte", ["Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007), Berichtigungen zu DIN EN I"]} =>
+      {"[DIN EN ISO 14971 2009-10] -- Medizinprodukte", ["Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007), Berichtigungen zu DIN EN I"], nil, nil, false},
   }.each do |(title, authors), (want_title, want_authors, series, index, ambiguous)|
     it "cleans #{title.inspect} by #{authors.inspect}" do
       guesses, amb = CalibreHub::Meta::Clean.guesses(title, authors)

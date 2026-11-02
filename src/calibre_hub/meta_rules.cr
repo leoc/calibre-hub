@@ -191,6 +191,8 @@ module CalibreHub
       ARTICLES = Set{"der", "die", "das", "the", "a", "an", "ein", "eine", "le", "la", "les", "el", "il"}
 
       def self.unknown_author?(name : String) : Bool
+        # a download site as author ("libgen.lc", "z-lib.org")
+        return true if name.strip.matches?(/\A(?:libgen|z-?lib|zlibrary|b-ok|annas?-archive)[.\w-]*\z/i)
         n = Text.fold(name).gsub(/[^\p{L}]+/, " ").strip
         n.empty? || UNKNOWN.includes?(n)
       end
@@ -202,7 +204,8 @@ module CalibreHub
       # File junk out: download-site markers, extensions, hashes,
       # underscores, dots instead of spaces
       def self.strip_junk(s : String) : String
-        t = s.unicode_normalize.strip
+        # byte order marks and zero-width characters from copy & paste
+        t = s.unicode_normalize.gsub(/[\x{FEFF}\x{200B}-\x{200D}\x{2060}]/, "").strip
         t = URI.decode(t) if t.includes?("%20")
         t = t.sub(EXTENSION, "")
         t = t.gsub('_', ' ')
@@ -289,7 +292,8 @@ module CalibreHub
 
       def self.two_names?(s : String) : Bool
         before, after = s.split(',', 2).map { |p| p.strip.split(/\s+/).reject(&.empty?) }
-        return false if before.size < 2 || after.size < 2
+        return false if before.size < 2 || after.size < 2 || before.size > 3 || after.size > 3
+        return false unless name_score(before.join(' ')) > 0 && name_score(after.join(' ')) > 0
         return false if SURNAME_PARTICLES.includes?(before.first.downcase.rstrip("'’"))
         # initials belong to a first name ("Ursula K.")
         return false if (before + after).any? { |t| t.matches?(/\A\p{L}\.\z/) }
@@ -301,6 +305,8 @@ module CalibreHub
       def self.invert(name : String) : String
         m = name.match(/\A([^,]+),\s*([^,]+)\z/) || return name
         last, first = m[1].strip, m[2].strip
+        # a title in the author field ("Anwendung … (ISO 14971 2007), Berichtigungen …")
+        return name if name_score(name) < 0 || {last, first}.any? { |p| p.split(/\s+/).size > 3 }
         return name if first.matches?(/\A(?:jr|sr|ii|iii|iv|phd|md)\.?\z/i)
         "#{first} #{last}"
       end
