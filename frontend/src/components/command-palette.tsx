@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { ArrowDownUp, Bookmark, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Sparkles, Tag, Trash2, User } from "lucide-react"
+import { ArrowDownUp, Bookmark, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
 import { api, coverUrl, DEFAULT_CONFIG, SORTS, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { useToggleTag } from "@/lib/mutations"
@@ -97,6 +97,9 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       ...(config.classify
         ? [{ id: "suggestions", label: t("suggest.title"), icon: <Sparkles />, run: () => closeThen(() => navigate({ to: "/suggestions" })) }]
         : []),
+      ...(config.metadata
+        ? [{ id: "metadata", label: t("meta.title"), icon: <WandSparkles />, run: () => closeThen(() => navigate({ to: "/metadata" })) }]
+        : []),
       { id: "grid", label: t("view.grid"), icon: <LayoutGrid />, run: () => (setView("grid"), close()) },
       { id: "list", label: t("view.list"), icon: <List />, run: () => (setView("list"), close()) },
       ...THEMES.map((th) => ({ id: `theme-${th}`, label: `${t("theme.label")}: ${t(`theme.${th}`)}`, icon: <Palette />, run: () => (setTheme(th), close()) })),
@@ -118,7 +121,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [search, config.classify],
+    [search, config.classify, config.metadata],
   )
 
   const limit = scope === "all" ? 5 : 30

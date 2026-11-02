@@ -52,5 +52,23 @@ the lockfile (v9) works with 10 to 12.
   detail shows an open suggestion with accept and reject. The mocks start
   with 5 open suggestions; a run decides by id (`id % 3`: 0 applied with
   the tag `auto-kategorie`, 1 open, 2 no fit).
+- Metadata cleanup (`/metadata`, sidebar entry and palette command
+  "Metadaten") only when `GET /api/config` says `metadata`: status line
+  (sources, model, nightly run, last run), runs "Unvollständige prüfen",
+  "Alle prüfen" and "Autoren vereinheitlichen" with job polling, and the
+  changed books from `GET /api/metadata/changes` grouped per book (field,
+  before → after, source), each change or all of a book revertable, several
+  books selected at once; "Zurückgesetzte anzeigen" adds reverted changes,
+  greyed. The edit form gets "Metadaten holen": candidates of the book file,
+  Open Library and DNB (score, "sicher" on an ISBN match, source link);
+  "Übernehmen" puts a field into the form (ISBN into the identifiers), saved
+  with the form; a cover is set right away. The mocks start with five
+  changed books at the end of the library (a z-lib file name with author
+  "Unbekannt" filled from the DNB, two Le Guin books with the author
+  spelling unified, Kahneman, a series with a reverted publisher) and an
+  unresolved "Gaiman, Neil"; a run fills missing fields by id (`id % 4`:
+  ISBN, publisher, date; Open Library times out for `id % 53`), reverts
+  restore the fields and drop the `auto-metadaten` tag with the last active
+  change, candidates exist for every book (search "nichts" finds none).
 - Fast tags and the category column come from `GET /api/config`
   (`services.calibre-hub.fastTags`); toggling them follows in Phase 4.

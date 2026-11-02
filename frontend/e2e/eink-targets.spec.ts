@@ -92,6 +92,20 @@ test("E-Ink: category suggestions and the box in the detail", async ({ page }) =
   expect(await smallTargets(page, "main")).toEqual([])
 })
 
+test("E-Ink: metadata changes and candidates in the edit form", async ({ page }) => {
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await page.getByRole("link", { name: "Metadaten", exact: true }).click()
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
+  await page.getByRole("checkbox", { name: "Zurückgesetzte anzeigen" }).check()
+  await expect(page.getByText("zurückgesetzt", { exact: true }).first()).toBeVisible()
+  expect(await smallTargets(page)).toEqual([])
+  await page.goto("/books/7?edit=true")
+  await page.getByRole("button", { name: "Metadaten holen" }).click()
+  await expect(page.getByRole("list", { name: "Treffer" })).toBeVisible()
+  expect(await smallTargets(page, "[role=dialog]")).toEqual([])
+})
+
 test("E-Ink: trash and login", async ({ page }) => {
   await page.goto("/")
   await expect(results(page)).toBeVisible()

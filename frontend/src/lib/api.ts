@@ -52,6 +52,69 @@ export interface HubConfig {
   categoryColumn: string | null
   // category suggestions from a local model (services.calibre-hub.classify)
   classify?: boolean
+  // metadata completion and cleanup (title, authors, ISBN, cover …)
+  metadata?: boolean
+}
+
+export const METADATA_FIELDS = ["title", "authors", "authorSort", "isbn", "publisher", "pubdate", "languages", "comments", "series", "seriesIndex", "cover"] as const
+export type MetadataField = (typeof METADATA_FIELDS)[number]
+export type MetadataSource = "rules" | "model" | "file" | "openlibrary" | "dnb" | "authors"
+
+// One logged field change of the metadata cleanup; revertable while the
+// field still has the new value
+export interface MetadataChange {
+  id: number
+  bookId: number
+  field: MetadataField
+  old: unknown
+  new: unknown
+  source: MetadataSource
+  jobId: string | null
+  at: string
+  revertedAt: string | null
+}
+
+export type MetadataTarget = "incomplete" | "all" | "authors" | { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }
+
+export interface MetadataStatus {
+  enabled: boolean
+  sources?: string[]
+  // model that cleans names, null without one
+  model?: string | null
+  // "HH:MM"
+  nightly?: string | null
+  running?: boolean
+  // books with at least one change not reverted
+  changedBooks?: number
+  lastRun?: (Job & { id: string; startedAt: string; target: string }) | null
+}
+
+// What one source knows about a book; only the fields it has
+export interface MetadataCandidate {
+  source: "rules" | "file" | "openlibrary" | "dnb"
+  score: number
+  // ISBN matched exactly
+  sure: boolean
+  url: string | null
+  fields: {
+    title?: string
+    authors?: string[]
+    isbn?: string
+    publisher?: string
+    pubdate?: string
+    languages?: string[]
+    comments?: string
+    series?: string
+    seriesIndex?: number
+    coverUrl?: string
+  }
+}
+
+export interface MetadataChangesQuery {
+  bookId?: number
+  since?: string
+  reverted?: boolean
+  limit?: number
 }
 
 export type SuggestionStatus = "pending" | "auto" | "applied" | "rejected" | "none"
@@ -148,6 +211,12 @@ export const api = {
       throw e
     }),
   classifyStatus: () => request<ClassifyStatus>("/api/classify/status"),
+  metadataStatus: () => request<MetadataStatus>("/api/metadata/status"),
+  metadataChanges: (query: MetadataChangesQuery = {}) =>
+    request<{ changes: MetadataChange[]; books: Book[] }>(`/api/metadata/changes?${new URLSearchParams(Object.entries(query).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])))}`),
+  // q: own search text instead of the book's title and author
+  metadataCandidates: (bookId: number, q?: string) =>
+    request<{ candidates: MetadataCandidate[] }>(`/api/books/${bookId}/metadata/candidates${q ? `?${new URLSearchParams({ q })}` : ""}`),
   // not every hub has /api/config yet (#8391); fall back to the defaults
   config: () =>
     request<HubConfig>("/api/config").catch((e) => {
@@ -240,6 +309,16 @@ export const write = {
     request<{ accepted: Suggestion[]; errors: { bookId: number; error: string }[] }>("/api/suggestions/accept", { method: "POST", ...json({ bookIds }) }),
   // 409 with {categories, minCategories} while the tree is too small
   classify: (target: ClassifyTarget) => request<{ jobId: string; total: number }>("/api/classify", { method: "POST", ...json({ target }) }),
+  metadataRun: (target: MetadataTarget = "incomplete") =>
+    request<{ jobId: string; total: number }>("/api/metadata/run", { method: "POST", ...json({ target }) }),
+  // 409 {error, book} when the field was changed in the meantime
+  revertMetadataChange: (id: number) => request<{ change: MetadataChange; book: Book }>(`/api/metadata/changes/${id}/revert`, { method: "POST" }),
+  // by book: all active changes of those books
+  revertMetadataChanges: (target: { bookIds?: number[]; changeIds?: number[] }) =>
+    request<{ reverted: MetadataChange[]; errors: { changeId: number; bookId: number; error: string }[] }>("/api/metadata/changes/revert", {
+      method: "POST",
+      ...json(target),
+    }),
   coverUpload: (id: number, image: Blob) =>
     request<Book>(`/api/books/${id}/cover`, { method: "PUT", body: image, headers: { "Content-Type": image.type || "image/jpeg" } }),
   coverFromFile: (id: number, format?: string) =>
@@ -282,7 +361,7 @@ export function uploadBook(file: File, opts: UploadOptions, onProgress: (fractio
   })
 }
 
-export const DEFAULT_CONFIG: HubConfig = { fastTags: ["leseliste"], categoryColumn: "kategorie", classify: false }
+export const DEFAULT_CONFIG: HubConfig = { fastTags: ["leseliste"], categoryColumn: "kategorie", classify: false, metadata: false }
 
 export const coverUrl = (id: number, thumb = true, version?: string) =>
   `/api/books/${id}/cover${thumb ? "?size=thumb" : ""}${version ? `${thumb ? "&" : "?"}v=${encodeURIComponent(version)}` : ""}`

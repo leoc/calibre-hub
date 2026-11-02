@@ -2,6 +2,7 @@ import { http, HttpResponse } from "msw"
 import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Suggestion, SuggestionStatus, TrashEntry } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
+import { metadataHandlers } from "./metadata"
 
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
@@ -131,7 +132,7 @@ export const readHandlers = [
     loggedIn = false
     return new HttpResponse(null, { status: 204 })
   }),
-  http.get("/api/config", () => auth() ?? HttpResponse.json({ fastTags: ["leseliste"], categoryColumn: "kategorie", classify: true })),
+  http.get("/api/config", () => auth() ?? HttpResponse.json({ fastTags: ["leseliste"], categoryColumn: "kategorie", classify: true, metadata: true })),
   http.get("/api/categories", () => auth() ?? HttpResponse.json(categories(books))),
   http.get("/api/books", ({ request }) => {
     const denied = auth()
@@ -364,8 +365,20 @@ export const writeHandlers = [
   }),
 ]
 
+const metadata = metadataHandlers({
+  books,
+  jobs,
+  touch,
+  filterBooks,
+  delay,
+  setCover: (id, svg) => {
+    if (svg) customCovers.set(id, { body: new TextEncoder().encode(svg).buffer as ArrayBuffer, type: "image/svg+xml" })
+    else customCovers.delete(id)
+  },
+})
+
 export const setLoggedIn = (v: boolean) => {
   loggedIn = v
 }
 
-export const handlers = [...writeHandlers, ...readHandlers]
+export const handlers = [...writeHandlers, ...metadata, ...readHandlers]

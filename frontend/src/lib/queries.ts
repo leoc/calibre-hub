@@ -1,5 +1,5 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query"
-import { api, type BookQuery, type SuggestionStatus } from "./api"
+import { api, type BookQuery, type MetadataChangesQuery, type SuggestionStatus } from "./api"
 
 export const sessionQuery = queryOptions({
   queryKey: ["session"],
@@ -62,3 +62,27 @@ export const classifyStatusQuery = queryOptions({
   staleTime: 30_000,
   refetchInterval: (q) => (q.state.data?.running ? 1500 : false),
 })
+
+// polls while a run is going
+export const metadataStatusQuery = queryOptions({
+  queryKey: ["metadata-status"],
+  queryFn: api.metadataStatus,
+  staleTime: 30_000,
+  refetchInterval: (q) => (q.state.data?.running ? 1500 : false),
+})
+
+export const metadataChangesQuery = (query: MetadataChangesQuery = {}) =>
+  queryOptions({
+    queryKey: ["metadata-changes", query],
+    queryFn: () => api.metadataChanges(query),
+    staleTime: 0,
+  })
+
+// asks Open Library and the DNB: slow, kept until the dialog asks again
+export const metadataCandidatesQuery = (bookId: number, q: string) =>
+  queryOptions({
+    queryKey: ["metadata-candidates", bookId, q],
+    queryFn: () => api.metadataCandidates(bookId, q || undefined),
+    staleTime: 5 * 60_000,
+    retry: false,
+  })

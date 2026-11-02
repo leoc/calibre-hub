@@ -14,6 +14,8 @@ import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { ChipsInput, Combobox } from "./ui/suggest"
 import { CoverEditor } from "./cover-editor"
+import { FetchMetadata } from "./fetch-metadata"
+import { applyField } from "@/lib/metadata"
 
 const RichTextEditor = lazy(() => import("./rich-text-editor"))
 
@@ -67,6 +69,10 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
   }
 
   const set = <K extends keyof BookForm>(k: K) => (v: BookForm[K]) => setForm((f) => ({ ...f, [k]: v }))
+  // the rich text editor keeps its own state: a new key loads a value set from outside
+  const [commentsRev, setCommentsRev] = useState(0)
+  // a new cover bumps lastModified; keep the form's precondition in step
+  const coverChanged = (b: Book) => setBase((prev) => ({ ...prev, lastModified: b.lastModified }))
 
   async function save(e?: FormEvent) {
     e?.preventDefault()
@@ -111,8 +117,7 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
         />
       )}
       <div className="flex flex-col gap-5 sm:flex-row">
-        {/* a new cover bumps lastModified; keep the form's precondition in step */}
-        <CoverEditor book={base} onChanged={(b) => setBase((prev) => ({ ...prev, lastModified: b.lastModified }))} />
+        <CoverEditor book={base} onChanged={coverChanged} />
         <div className="min-w-0 flex-1 space-y-4">
           <Field label={t("edit.title")} error={form.title.trim() ? null : t("edit.titleRequired")}>
             <Input value={form.title} onChange={(e) => set("title")(e.target.value)} required aria-invalid={!form.title.trim()} />
@@ -128,6 +133,17 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
               <Input inputMode="decimal" value={form.seriesIndex} onChange={(e) => set("seriesIndex")(e.target.value)} disabled={!form.series.trim()} />
             </Field>
           </div>
+          {config.metadata && (
+            <FetchMetadata
+              book={base}
+              form={form}
+              onCover={coverChanged}
+              onApply={(field, value) => {
+                setForm((f) => applyField(f, field, value))
+                if (field === "comments") setCommentsRev((n) => n + 1)
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -163,7 +179,7 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
       </Field>
       <Field label={t("edit.comments")} as="div">
         <Suspense fallback={<div className="h-40 rounded-md border" />}>
-          <RichTextEditor label={t("edit.comments")} value={form.comments} onChange={set("comments")} />
+          <RichTextEditor key={commentsRev} label={t("edit.comments")} value={form.comments} onChange={set("comments")} />
         </Suspense>
       </Field>
 

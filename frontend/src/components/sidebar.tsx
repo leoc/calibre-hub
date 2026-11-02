@@ -1,7 +1,7 @@
 import { useContext, useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { Bookmark, Inbox, Library, Sparkles, Trash2 } from "lucide-react"
+import { Bookmark, Inbox, Library, Sparkles, Trash2, WandSparkles } from "lucide-react"
 import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery } from "@/lib/queries"
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
 import { hasFilters, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
@@ -105,6 +105,13 @@ export function Sidebar({ search, onNavigate }: Props) {
               <Sparkles className="size-4" aria-hidden /> {t("suggest.title")}
             </span>
             {!!classify?.pending && <Count n={classify.pending} />}
+          </Link>
+        )}
+        {config.metadata && (
+          <Link to="/metadata" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+            <span className="flex items-center gap-2">
+              <WandSparkles className="size-4" aria-hidden /> {t("meta.title")}
+            </span>
           </Link>
         )}
         <Link to="/trash" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>

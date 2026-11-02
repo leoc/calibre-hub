@@ -10,6 +10,7 @@ import { LibraryPage } from "./routes/library"
 import { BookPage } from "./routes/book"
 import { TrashPage } from "./routes/trash"
 import { SuggestionsPage } from "./routes/suggestions"
+import { MetadataPage } from "./routes/metadata"
 import { ErrorView } from "./components/error-view"
 import { parseSearch, stringifySearch } from "./lib/url-search"
 
@@ -72,7 +73,13 @@ const suggestionsRoute = createRoute({
   component: SuggestionsPage,
 })
 
-const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([libraryRoute, bookRoute, trashRoute, suggestionsRoute])])
+const metadataRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/metadata",
+  component: MetadataPage,
+})
+
+const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([libraryRoute, bookRoute, trashRoute, suggestionsRoute, metadataRoute])])
 
 export function makeRouter(queryClient: QueryClient) {
   return createRouter({

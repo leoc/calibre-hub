@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query"
-import { ApiError, write, type Book, type BookPage, type BookPatch, type ClassifyTarget } from "./api"
+import { ApiError, write, type Book, type BookPage, type BookPatch, type ClassifyTarget, type MetadataTarget } from "./api"
 
 // Put a changed book into every cached list and its detail entry.
 export function storeBook(qc: QueryClient, book: Book) {
@@ -131,5 +131,58 @@ export function useRestoreBook() {
       storeBook(qc, book)
       invalidateLibrary(qc)
     },
+  })
+}
+
+// Metadata changes: reverts change books (fields, the auto-metadaten tag)
+export function invalidateMetadata(qc: QueryClient, bookIds?: number[]) {
+  qc.invalidateQueries({ queryKey: ["metadata-changes"] })
+  qc.invalidateQueries({ queryKey: ["metadata-status"] })
+  if (bookIds) bookIds.forEach((id) => qc.invalidateQueries({ queryKey: ["book", id] }))
+  else qc.invalidateQueries({ queryKey: ["book"] })
+  qc.invalidateQueries({ queryKey: ["books"] })
+  qc.invalidateQueries({ queryKey: ["categories"] })
+}
+
+export function useStartMetadataRun() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (target: MetadataTarget) => write.metadataRun(target),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["metadata-status"] }),
+  })
+}
+
+export class RevertConflictError extends Error {
+  constructor(public current: Book | null) {
+    super("changed in the meantime")
+  }
+}
+
+export function useRevertMetadataChange() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: number) => {
+      try {
+        return await write.revertMetadataChange(id)
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) throw new RevertConflictError((e.body?.book as Book | undefined) ?? null)
+        throw e
+      }
+    },
+    onSuccess: ({ book }) => {
+      storeBook(qc, book)
+      invalidateMetadata(qc, [book.id])
+    },
+    // a conflict means the book changed: show its current state
+    onError: () => invalidateMetadata(qc),
+  })
+}
+
+export function useRevertMetadataChanges() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (target: { bookIds?: number[]; changeIds?: number[] }) => write.revertMetadataChanges(target),
+    // failed ones may have changed as well
+    onSuccess: () => invalidateMetadata(qc),
   })
 }
