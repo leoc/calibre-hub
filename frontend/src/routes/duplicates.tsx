@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Link } from "@tanstack/react-router"
+import { getRouteApi, Link } from "@tanstack/react-router"
 import { ArrowLeft, CheckCircle2, CopyCheck, Merge as MergeIcon, RotateCcw, X } from "lucide-react"
 import { ApiError, DEFAULT_CONFIG } from "@/lib/api"
 import { configQuery } from "@/lib/queries"
@@ -35,9 +35,15 @@ const tapLink = "underline-offset-2 hover:underline eink:inline-flex eink:min-h-
 
 // Books that look like the same book, side by side; one stays, the others
 // are merged into it and go to the trash. Every merge can be undone.
+const route = getRouteApi("/_app/duplicates")
+
 export function DuplicatesPage() {
   const [threshold, setThreshold] = useState<number | undefined>(undefined)
-  const { data, error, refetch, isFetching } = useQuery(duplicatesQuery(threshold))
+  const { data: all, error, refetch, isFetching } = useQuery(duplicatesQuery(threshold))
+  // "Auf Duplikate prüfen" from the palette: the groups of these books
+  const { ids } = route.useSearch()
+  const only = ids ? new Set(ids.split(",").map(Number)) : null
+  const data = all && only ? { ...all, groups: all.groups.filter((g) => g.bookIds.some((id) => only.has(id))) } : all
   const [done, setDone] = useState<{ merge: Merge; title: string } | null>(null)
   const shown = threshold ?? data?.threshold
 
@@ -68,6 +74,14 @@ export function DuplicatesPage() {
         </label>
         {data && <span className="text-sm text-muted-foreground eink:text-black">{t("dup.groups", { count: formatNumber(data.groups.length) })}</span>}
       </div>
+      {only && (
+        <p className="flex flex-wrap items-center gap-2 text-sm" role="status">
+          {t("actions.duplicatesFiltered", { count: formatNumber(only.size) })}
+          <Link to="/duplicates" search={{}} className={cn("underline", tapLink)}>
+            {t("actions.duplicatesAll")}
+          </Link>
+        </p>
+      )}
       {done && <MergedNote done={done} onUndone={() => setDone(null)} />}
       {error && !data ? (
         <ErrorMessage error={error} onRetry={() => refetch()} />

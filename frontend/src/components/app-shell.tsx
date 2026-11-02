@@ -18,6 +18,7 @@ import { UploadButton, UploadHost } from "./upload"
 import { SaveDialogHost } from "./lists"
 import { ShelfDialogHost } from "./shelf"
 import { Toaster } from "./ui/toast"
+import { JobWatcher } from "./job-watcher"
 import { LibraryLink, ReplaceHistory } from "@/components/library-link"
 import { KeyboardHost } from "./keyboard"
 import { OfflineBadge } from "./offline"
@@ -113,6 +114,7 @@ export function AppShell() {
       <SaveDialogHost />
       <ShelfDialogHost />
       <Toaster />
+      <JobWatcher />
       {/* mounted only while open, so the input starts empty each time */}
       {palette !== null && <CommandPalette initialInput={palette} onClose={closePalette} />}
       {/* "/" focuses the wide search bar (phones: opens the palette), ">" the palette's commands */}

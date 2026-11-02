@@ -113,7 +113,7 @@ Feature: Reading lists
     When I press "Control+k"
     Then the command palette opens
     When I type "> zu liste klass" in the palette
-    Then "Zu Liste: Klassiker" is the selected entry
+    Then "Zu Liste ‚Klassiker‘" is the selected entry
     When I press Enter
     Then the book is in the list "Klassiker"
 

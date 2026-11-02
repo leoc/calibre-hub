@@ -20,12 +20,9 @@ import { Badge } from "./ui/badge"
 import { LibraryLink } from "@/components/library-link"
 import { ReadButton } from "./reading"
 import { OfflineButton } from "./offline"
-import { readerFormat } from "@/lib/reader"
+import { readerFormat, sortFormats } from "@/lib/reader"
 
-// Order in which formats are offered; the first is the primary button.
-const FORMAT_ORDER = ["EPUB", "KEPUB", "AZW3", "MOBI", "PDF", "CBZ", "CBR", "DJVU", "TXT"]
-export const sortFormats = (f: string[]) =>
-  [...f].sort((a, b) => (FORMAT_ORDER.indexOf(a) + 1 || 99) - (FORMAT_ORDER.indexOf(b) + 1 || 99))
+export { sortFormats } from "@/lib/reader"
 
 interface DetailProps {
   id: number

@@ -70,9 +70,9 @@ the lockfile (v9) works with 10 to 12.
   - In the open detail j/k (arrows) go to the next/previous book. `/` puts
     the focus into the wide search bar (phones: the palette); Enter
     searches and goes on in the list from the first result, Escape returns
-    to the list. `>` opens the palette's commands, with books selected the
-    bulk commands with the count ("Tags hinzufügen (3)"). Selection uses the
-    bulk store and turns selection mode on.
+    to the list. `>` opens the palette's commands, with the commands on
+    the selection or the active book ("Tag hinzufügen (3)", see "Commands
+    on books"). Selection uses the bulk store and turns selection mode on.
   - Keys do nothing in text fields and while a dialog is open; the active
     book is a roving tab stop with real focus and a ring (thick black in
     E-Ink).
@@ -92,6 +92,43 @@ the lockfile (v9) works with 10 to 12.
     goTrash goMetadata goSuggestions goCategories goLists goDuplicates hints
     hintsSelect help`. Example:
     `{"down": ["n", "j", "<Down>"], "toggleList": []}`.
+- Commands on books (`e2e/features/keyboard.feature`, Phase 3): one list
+  of definitions in `src/lib/book-actions.ts` (name, icon, typed keywords,
+  the kind of value, which books they are offered for, the bulk change
+  they make), used by the bulk bar (its buttons and dialogs) and the
+  palette; `src/lib/run-action.ts` runs them, `src/lib/jobs.ts` and
+  `src/components/job-watcher.tsx` follow the hub's jobs to the toast.
+  - Target (`src/lib/use-action-target.ts`): the selection (ids in the
+    order they were selected, or "Alle N Treffer" as a query), else the
+    active book (focus ring), else the book open in the detail. The
+    command names it: "Tag hinzufügen (3)", "Tag hinzufügen: <Titel>".
+  - Input: direct, a keyword and the value (`> tag sheet music` offers
+    "Tag ‚Sheet Music‘ hinzufügen (3)", existing values first, then "Neu:
+    …" for a new one); or two steps: `> Tag hinzufügen`, Enter, then the
+    palette lists the values (categories as an indented tree, "Kategorie
+    entfernen" and the like at the end; Backspace in the empty input or
+    the arrow goes back). Keywords: `tag`, `tag entfernen`, `kategorie`,
+    `serie`, `nummerieren`, `autor`, `verlag`, `sprache`, `bewertung`,
+    `jahr`, `zu liste`, `aus liste`, `neue liste`.
+  - Edit: tags add/remove, Kategorie, Serie (and "setzen und
+    durchnummerieren" in selection order, ids only), Autor (`A & B` for
+    several), Verlag, Sprache, Bewertung, Erscheinungsjahr (month and day
+    stay). They run as a bulk job at once; the toast "Erledigt: …" offers
+    "Rückgängig" (`POST /api/jobs/:id/undo`, each book's own values).
+  - Lists: "Zu Liste …" / "Aus Liste …" with sublists as paths, never a
+    magic shelf; toast with "Rückgängig". "Neue Liste aus Auswahl", "Als
+    Regal speichern" (magic shelf from the search) as before.
+  - Runs: "Metadaten holen und prüfen" (`metadata`), "Kategorie
+    vorschlagen" (`classify`), "EPUB reparieren", "Nach EPUB
+    konvertieren" (`POST /api/convert` with `books`), "Auf Duplikate
+    prüfen" (`/duplicates?ids=…` shows only those books' groups), "Cover
+    neu aus der Datei holen" (one request per book).
+  - Device and export: "Lesen" (one book), "Herunterladen" (the first
+    format, several one after another, no ZIP), "Link kopieren" (one link
+    per line), "Offline verfügbar machen", "Löschen".
+  - Asks first, in the palette ("Ja, auf 120 Bücher anwenden" /
+    "Abbrechen"): deleting, and runs over more than 50 books. The bulk
+    bar's dialogs ask the same way.
 - Themes: system, light, dark, E-Ink (black on white, no animations, larger
   targets), stored per device. Boox/Onyx user agents get a one-time prompt.
 - Category suggestions (`/suggestions`, sidebar entry with the open count,
@@ -136,9 +173,10 @@ the lockfile (v9) works with 10 to 12.
   "Aus Liste" (in a list: "Aus dieser Liste", no question but a toast "2
   Bücher aus Urlaub entfernt · Rückgängig" for 8 s that puts exactly those
   books back; `src/lib/toast.ts`, one message at a time, no animation). Palette: `l ` lists the
-  lists, `> Zu Liste: …` / `Aus Liste: …` for the open book, "Zu Liste …"
-  opens the dialog, `> Neue Liste: Name` (or a new name after `l `) creates
-  one. They replace the fast tags; `fastTags` in `GET /api/config` is
+  lists, `> zu liste urlaub` / `> aus liste urlaub` for the selection,
+  the active or the open book (see "Commands on books"), "In Listen
+  speichern: <Titel>" opens the dialog, `> Neue Liste: Name` (or a new
+  name after `l `) creates one (with the selection or the book in it). They replace the fast tags; `fastTags` in `GET /api/config` is
   ignored. The mocks start with "Leseliste" (default, favorite, synced, the
   books tagged `leseliste`), "Urlaub" (favorite, used last, books 11–13)
   and an empty "Klassiker".

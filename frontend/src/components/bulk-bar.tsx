@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, CircleAlert, ListMinus, ListPlus, Loader2, Trash2, X } from "lucide-react"
-import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget, type ReadingList } from "@/lib/api"
+import { CheckCircle2, CircleAlert, ListMinus, Loader2, X } from "lucide-react"
+import { ApiError, DEFAULT_CONFIG, write, type BulkTarget, type ReadingList } from "@/lib/api"
+import { BOOK_ACTIONS, bookAction, commandLabel, CONFIRM_ABOVE, type ActionTarget, type BookActionDef } from "@/lib/book-actions"
+import { isBulkJob, trackedJobs, useTrackedJobs, type TrackedJob } from "@/lib/jobs"
+import { startChange } from "@/lib/run-action"
+import { jobQuery } from "./job-watcher"
 import { findNode, listLabel, listsQuery, offerUndoRemove, savableLists, useBulkList, useListTree } from "@/lib/lists"
 import { NewListInline } from "./lists"
 import { categorySuggestions, parseCategory } from "@/lib/kategorie"
@@ -14,19 +18,17 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dial
 import { ChipsInput, Combobox } from "./ui/suggest"
 
 type Action = BulkAction
-interface StartedJob {
-  id: string
-  total: number
-  target: BulkTarget
-  changes: BulkChanges
-}
-const CONFIRM_ABOVE = 50
+// the bar's buttons, from the one list of commands on books
+const BAR = BOOK_ACTIONS.filter((a) => a.bar)
 
 export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pageIds: number[]; total: number }) {
   const sel = useSelection()
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const [action, setAction] = useState<Action | null>(null)
-  const [job, setJob] = useState<StartedJob | null>(null)
+  // the newest edit or delete, also one started from the palette
+  const job = useTrackedJobs().filter((j) => isBulkJob(j) && !j.dismissed).at(-1) ?? null
+  // what finished while the bar was away is no news
+  useEffect(() => trackedJobs.dropFinished, [])
   const [listAction, setListAction] = useState<"add" | "remove" | null>(null)
   // the outcome of a list change, shown until the search changes
   const [listResult, setListResult] = useState<{ text: string; key: string } | null>(null)
@@ -46,7 +48,7 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
     if (sel.all) selection.clear()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
-  // the command palette's "Tags hinzufügen (3)" …
+  // the Delete key with books selected
   useEffect(() => onBulkRequest(setAction), [])
 
   // ids keep the order they were selected in (numbering a series)
@@ -87,18 +89,16 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
       ) : job ? (
         // no overflow here: the error list opens above the bar
         <div className="flex flex-wrap items-center gap-2">
-          <JobProgress job={job} onClose={() => setJob(null)} onRestart={setJob} />
+          <JobProgress job={job} onClose={() => trackedJobs.dismiss(job.id)} />
         </div>
       ) : (
         <div className={row}>
-          {(["addTags", "removeTags", "kategorie", "series"] as Action[]).map((a) => (
-            <Button key={a} variant="outline" size="sm" disabled={!count} onClick={() => setAction(a)}>
-              {t(`bulk.${a}`)}
+          {BAR.filter((a) => a.group === "edit").map((a) => (
+            <Button key={a.id} variant="outline" size="sm" disabled={!count} onClick={() => setAction(a.id as Action)}>
+              {t(a.bar!)}
             </Button>
           ))}
-          <Button variant="outline" size="sm" disabled={!count} onClick={() => setListAction("add")}>
-            <ListPlus /> {t("bulk.addToList")}
-          </Button>
+          <BarButton def={bookAction("addToList")} disabled={!count} onClick={() => setListAction("add")} />
           {/* on a list with its sublists' books the removal would miss those: then the dialog */}
           {search.list != null && !inShelf && (search.direct || !hasSublists) ? (
             <Button
@@ -116,18 +116,23 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
               <ListMinus /> {t("bulk.removeFromThis")}
             </Button>
           ) : (
-            <Button variant="outline" size="sm" disabled={!count} onClick={() => setListAction("remove")}>
-              <ListMinus /> {t("bulk.removeFromList")}
-            </Button>
+            <BarButton def={bookAction("removeFromList")} disabled={!count} onClick={() => setListAction("remove")} />
           )}
-          <Button variant="outline" size="sm" disabled={!count} onClick={() => setAction("delete")}>
-            <Trash2 /> {t("bulk.delete")}
-          </Button>
+          <BarButton def={bookAction("delete")} disabled={!count} onClick={() => setAction("delete")} />
         </div>
       )}
-      {action && <BulkDialog action={action} count={count} target={target} onClose={() => setAction(null)} onStarted={setJob} />}
+      {action && <BulkDialog action={action} count={count} target={target} onClose={() => setAction(null)} />}
       {listAction && <BulkListDialog remove={listAction === "remove"} count={count} target={target} onClose={() => setListAction(null)} onDone={setListDone} />}
     </div>
+  )
+}
+
+function BarButton({ def, disabled, onClick }: { def: BookActionDef; disabled: boolean; onClick: () => void }) {
+  const Icon = def.icon
+  return (
+    <Button variant="outline" size="sm" disabled={disabled} onClick={onClick}>
+      <Icon /> {t(def.bar!)}
+    </Button>
   )
 }
 
@@ -203,13 +208,11 @@ function BulkDialog({
   count,
   target,
   onClose,
-  onStarted,
 }: {
   action: Action
   count: number
   target: BulkTarget
   onClose: () => void
-  onStarted: (job: StartedJob) => void
 }) {
   const { data: cats } = useQuery(categoriesQuery)
   const [tags, setTags] = useState<string[]>([])
@@ -218,32 +221,26 @@ function BulkDialog({
   // numbering needs an order, which only explicitly selected books have
   const canNumber = "ids" in target
   const [numberSeries, setNumberSeries] = useState(false)
+  const on: ActionTarget = { bulk: target, count, ordered: canNumber }
+  // the same definitions as the palette's commands
+  const def = bookAction(action === "series" && numberSeries && canNumber && text.trim() ? "seriesNumbered" : action)
   const start = useMutation({
-    mutationFn: (changes: BulkChanges) => write.bulk(target, changes),
-    onSuccess: (r, changes) => {
-      onStarted({ id: r.jobId, total: r.total, target, changes })
-      onClose()
-    },
+    mutationFn: ({ value, label }: { value: string | string[] | null; label: string }) => startChange(def, on, value, label),
+    onSuccess: onClose,
   })
   const kategorie = parseCategory(text)
   const kategorieError = action === "kategorie" && "error" in kategorie ? t("kategorie.dot", { name: kategorie.error }) : null
   const series = text.trim() || null
-  const changes: BulkChanges =
-    action === "delete"
-      ? { delete: true }
-      : action === "addTags"
-      ? { addTags: tags }
-      : action === "removeTags"
-        ? { removeTags: tags }
-        : action === "kategorie"
-          ? { kategorie: "value" in kategorie ? kategorie.value : null }
-          : { series, ...(numberSeries && canNumber && series ? { numberSeries: true } : {}) }
+  const value =
+    action === "delete" ? null : action === "addTags" || action === "removeTags" ? tags : action === "kategorie" ? ("value" in kategorie ? kategorie.value : null) : series
+  // "Tags hinzufügen (3)", "Serie ‚Dune‘ setzen (3)" in the toasts
+  const label = commandLabel(def, on, typeof value === "string" ? { value, label: action === "kategorie" ? text.trim() : value } : undefined)
   const empty = (action === "addTags" || action === "removeTags") && !tags.length
   const submit = () => {
     if (kategorieError) return
     // deleting asks in the dialog itself
     if (action !== "delete" && count > CONFIRM_ABOVE && !confirming) return setConfirming(true)
-    start.mutate(changes)
+    start.mutate({ value, label })
   }
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -307,37 +304,24 @@ function BulkDialog({
   )
 }
 
-function JobProgress({ job, onClose, onRestart }: { job: StartedJob; onClose: () => void; onRestart: (job: StartedJob) => void }) {
-  const qc = useQueryClient()
-  const { data, error } = useQuery({
-    queryKey: ["job", job.id],
-    queryFn: () => write.job(job.id),
-    refetchInterval: (q) => (q.state.data?.status === "running" || !q.state.data ? 700 : false),
-    retry: false,
-  })
+// Progress of the newest edit or delete; <JobWatcher> refreshes the library
+// and shows the toast with "Rückgängig"
+function JobProgress({ job, onClose }: { job: TrackedJob; onClose: () => void }) {
+  const { data, error } = useQuery(jobQuery(job.id))
   const finished = data && data.status !== "running"
-  const deleting = !!job.changes.delete
-  useEffect(() => {
-    if (finished) {
-      qc.invalidateQueries({ queryKey: ["books"] })
-      qc.invalidateQueries({ queryKey: ["book"] })
-      qc.invalidateQueries({ queryKey: ["categories"] })
-      if (deleting) {
-        qc.invalidateQueries({ queryKey: ["trash"] })
-        // the selected books are gone
-        selection.clear()
-      }
-    }
-  }, [finished, deleting, qc])
+  const deleting = job.kind === "delete"
   // 404: the hub restarted and forgot the job
   const lost = error instanceof ApiError && error.status === 404
   const failed = finished ? data.errors : []
   // e.g. calibre-server restarted mid-job: run the same change on the failed
   // books; numbering needs the whole selection again to count right
-  const retryTarget: BulkTarget = job.changes.numberSeries ? job.target : { ids: failed.map((e) => e.bookId) }
+  const retryTarget: BulkTarget = job.changes?.numberSeries && job.target ? job.target : { ids: failed.map((e) => e.bookId) }
   const retry = useMutation({
-    mutationFn: () => write.bulk(retryTarget, job.changes),
-    onSuccess: (r) => onRestart({ id: r.jobId, total: r.total, target: retryTarget, changes: job.changes }),
+    mutationFn: () => write.bulk(retryTarget, job.changes ?? {}),
+    onSuccess: (r) => {
+      trackedJobs.dismiss(job.id)
+      trackedJobs.add({ ...job, id: r.jobId, total: r.total, target: retryTarget, finished: false, dismissed: false })
+    },
   })
   return (
     <span className="flex items-center gap-2 text-sm" role="status">

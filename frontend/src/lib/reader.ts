@@ -158,3 +158,9 @@ export function readerKey(e: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" 
 
 // E-Ink tap zones: left third back, right third on, the middle the toolbar
 export const tapZone = (x: number, width: number): "prev" | "next" | "menu" => (x < width / 3 ? "prev" : x > (width * 2) / 3 ? "next" : "menu")
+
+// Order in which formats are offered; the first is the primary button
+// (detail) and what "Herunterladen" takes.
+const FORMAT_ORDER = ["EPUB", "KEPUB", "AZW3", "MOBI", "PDF", "CBZ", "CBR", "DJVU", "TXT"]
+export const sortFormats = (f: string[]) =>
+  [...f].sort((a, b) => (FORMAT_ORDER.indexOf(a) + 1 || 99) - (FORMAT_ORDER.indexOf(b) + 1 || 99))

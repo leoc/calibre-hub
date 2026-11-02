@@ -1,23 +1,25 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useNavigate, useRouterState } from "@tanstack/react-router"
-import { ArrowDownUp, CopyCheck, ListFilter, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, Folder, FolderTree, LayoutGrid, LibraryBig, List, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
-import { api, coverUrl, DEFAULT_CONFIG, type Book, type Sort } from "@/lib/api"
+import { useNavigate } from "@tanstack/react-router"
+import { ArrowDownUp, ArrowLeft, BookmarkPlus, BookText, Check, CopyCheck, Folder, FolderTree, Keyboard, LayoutGrid, LibraryBig, List, ListFilter, ListIcon, ListPlus, LogOut, Palette, Pencil, Search, Sparkles, Tag, Trash2, User, WandSparkles, X } from "lucide-react"
+import { api, coverUrl, DEFAULT_CONFIG, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
-import { flattenListTree, inList, lastUsedList, listLabel, nodeCount, nodeSearch, savableLists, saveDialog, useCreateList, useListMembership, useListTree } from "@/lib/lists"
+import { flattenListTree, inList, lastUsedList, listLabel, nodeCount, nodeSearch, saveDialog, useListMembership, useListTree } from "@/lib/lists"
 import { matchNamed, parseInput, type Scope } from "@/lib/palette"
 import { categorySuggestions } from "@/lib/kategorie"
-import { defaultOrder, sortsFor, toBookQuery, toggleTag, withFilter } from "@/lib/search"
+import { bookAction, commandLabel, needsConfirm, offeredActions, parseDirect, valueChoices, type ActionValue, type BookActionDef } from "@/lib/book-actions"
+import { runAction } from "@/lib/run-action"
+import { useActionTarget } from "@/lib/use-action-target"
+import { toast } from "@/lib/toast"
+import { defaultOrder, sortsFor, toggleTag, withFilter } from "@/lib/search"
 import { useLibrarySearch } from "@/lib/use-library"
+import { useRouterState } from "@tanstack/react-router"
 import { setView } from "@/lib/prefs"
-import { requestBulk, useSelection, type BulkAction } from "@/lib/selection"
 import { keyboard } from "@/lib/keyboard"
 import { MODES } from "@/lib/keymap"
 import { THEMES, useTheme } from "@/lib/theme"
 import { useDesktop } from "@/lib/use-media"
 import { leaveOverlays } from "@/lib/back-to-close"
-import { readerFormat } from "@/lib/reader"
-import { BookOpenText } from "lucide-react"
 import { emptyCondition, nameFromRule, ruleFromSearch, shelfDialog } from "@/lib/shelves"
 import { formatNumber, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
@@ -61,7 +63,13 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const desktop = useDesktop()
   const { setTheme } = useTheme()
   const { data: cats } = useQuery({ ...categoriesQuery, enabled: open })
-  const wants = (s: Scope) => scope === "all" || scope === s
+  // a command's second step or its question: only that
+  const [step, setStep] = useState<BookActionDef | null>(null)
+  // from: the entry that asked, selected again on "Abbrechen"
+  const [confirm, setConfirm] = useState<{ def: BookActionDef; value?: ActionValue; from: string } | null>(null)
+  // the selected entry; switching to the question selects "Ja"
+  const [selected, setSelected] = useState("")
+  const wants = (s: Scope) => !step && !confirm && (scope === "all" || scope === s)
   const books = useQuery({
     ...booksQuery({ q: debounced, limit: 8, sort: "title" }),
     enabled: open && wants("books") && debounced.length > 1,
@@ -78,70 +86,69 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const go = (s: Parameters<typeof withFilter>[0]) => closeThen(() => navigate({ to: "/", search: s }))
 
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  const onLibrary = useRouterState({ select: (s) => s.location.pathname }) === "/"
   const { lists, tree, user } = useListTree(open)
   const membership = useListMembership()
-  const createList = useCreateList()
-  // the book open in the detail (?book= or /books/:id), if any
-  const pageBook = useRouterState({ select: (s) => /^\/books\/(\d+)/.exec(s.location.pathname)?.[1] })
-  const openId = search.book ?? (pageBook ? Number(pageBook) : null)
-  const openBook = openId != null ? queryClient.getQueryData<Book>(["book", openId]) : undefined
-  const editableLists = savableLists(lists)
+  // what commands on books act on: the selection, the active book or the detail
+  const target = useActionTarget(open)
+  const openBook = target?.book
   const last = lastUsedList(lists)
-  const bookActions: Action[] = openBook
+  // one book: the save dialog, the list used last, editing
+  const bookExtras: Action[] = openBook
     ? [
-        ...(readerFormat(openBook)
-          ? [{ id: "read", label: t("reader.command", { title: openBook.title }), icon: <BookOpenText />, run: () => closeThen(() => navigate({ to: "/read/$id", params: { id: openBook.id } })) }]
-          : []),
         ...(last && !inList(openBook, last.id)
           ? [{ id: "list-last", label: t("list.quick", { name: listLabel(last) }), icon: <BookmarkPlus />, run: () => (membership.mutate({ list: last, bookIds: [openBook.id], on: true }), close()) }]
           : []),
-        { id: "list-dialog", label: t("list.addToMenu"), icon: <ListPlus />, run: () => closeThen(() => saveDialog.open(openBook)) },
-        // "Zu Liste: Urlaub", found by typing part of the name
-        ...editableLists.map((l) => {
-          const on = inList(openBook, l.id)
-          return {
-            id: `list-${l.id}`,
-            label: on ? t("list.removeFrom", { name: listLabel(l) }) : t("list.addTo", { name: listLabel(l) }),
-            icon: on ? <BookmarkMinus /> : <Bookmark />,
-            run: () => {
-              membership.mutate({ list: l, bookIds: [openBook.id], on: !on })
-              close()
-            },
-          }
-        }),
-        ...(search.book != null ? [{ id: "edit", label: `${t("book.edit")}: ${openBook.title}`, icon: <Pencil />, run: () => go({ ...search, edit: true }) }] : []),
+        { id: "list-dialog", label: `${t("list.saveTitle")}: ${openBook.title}`, icon: <ListPlus />, run: () => closeThen(() => saveDialog.open(openBook)) },
+        ...(onLibrary ? [{ id: "edit", label: `${t("book.edit")}: ${openBook.title}`, icon: <Pencil />, run: () => go({ ...search, book: openBook.id, edit: true }) }] : []),
       ]
     : []
-  // "Neue Liste: <Name>": creates it (with the open book) and opens it
-  const newList = (name: string): Action => ({
-    id: "list-new",
-    label: t("list.newNamed", { name }),
-    icon: <ListPlus />,
-    run: () =>
-      createList.mutate(
-        { name },
-        {
-          onSuccess: (l) => {
-            if (openBook) membership.mutate({ list: l, bookIds: [openBook.id], on: true })
-            go(withFilter({}, { list: l.id }))
-          },
-        },
-      ),
-  })
 
-  // with books selected (bulk mode in the library): the bulk commands, with the count
-  const sel = useSelection()
-  const onLibrary = useRouterState({ select: (s) => s.location.pathname }) === "/"
-  const { data: matches } = useQuery({ ...booksQuery(toBookQuery(search, config.categoryColumn)), enabled: open && sel.all && onLibrary })
-  const selCount = sel.all ? (matches?.total ?? 0) : sel.ids.size
-  const bulkActions: Action[] =
-    onLibrary && sel.active && selCount > 0
-      ? (["addTags", "removeTags", "kategorie", "series", "delete"] as BulkAction[]).map((a) => ({
-          id: `bulk-${a}`,
-          label: `${t(`bulk.${a}`)} (${formatNumber(selCount)})`,
-          icon: a === "delete" ? <Trash2 /> : <ListChecks />,
-          run: () => closeThen(() => requestBulk(a)),
-        }))
+  // commands on books (src/lib/book-actions.ts): as typed ("tag krimi"), or
+  // a second step that picks the value ("Tag hinzufügen" -> the tags)
+  const defs = target ? offeredActions(target, config) : [bookAction("newList")]
+  const sources = { cats, lists, book: openBook }
+  const ctx = { qc: queryClient, navigate }
+  const runNow = (def: BookActionDef, value?: ActionValue) => {
+    const on = target ?? { bulk: { ids: [] }, count: 0, ordered: false }
+    closeThen(() => {
+      if (def.changes) toast.show(t("actions.running", { label: commandLabel(def, target, value && { ...value, isNew: false }) }))
+      void runAction(ctx, def, on, value)
+    })
+  }
+  const start = (def: BookActionDef, value?: ActionValue) => {
+    if (!target || !needsConfirm(def, target)) return runNow(def, value)
+    setConfirm({ def, value, from: selected })
+    setSelected("confirm-yes")
+  }
+  const back = () => {
+    if (confirm) {
+      setSelected(confirm.from)
+      setConfirm(null)
+    } else {
+      setStep(null)
+      setInput(">")
+    }
+  }
+  const pick = (def: BookActionDef) => {
+    setStep(def)
+    setInput("")
+  }
+  const commandItems: Action[] = (target ? defs : []).map((def) => {
+    const Icon = def.icon
+    return { id: `cmd-${def.id}`, label: commandLabel(def, target), icon: <Icon />, run: () => (def.value ? pick(def) : start(def)) }
+  })
+  const valueItem = (def: BookActionDef, v: ActionValue): Action => {
+    const Icon = def.icon
+    return { id: `val-${def.id}-${v.isNew ? "new" : ""}${v.value}`, label: commandLabel(def, target, v), icon: <Icon />, run: () => start(def, v) }
+  }
+  const directItems: Action[] =
+    scope === "actions"
+      ? parseDirect(text, defs).flatMap(({ def, rest }) =>
+          valueChoices(def, sources, rest, 5)
+            .filter((v) => !v.clear)
+            .map((v) => valueItem(def, v)),
+        )
       : []
 
   // magic shelves: the library's filters as one ("Als Regal speichern"), or an empty one
@@ -208,16 +215,19 @@ export function CommandPalette({ initialInput, onClose }: Props) {
           limit,
         )
       : []
-  // typed in the lists scope, or as "> Neue Liste: Name"
-  const newName = scope === "lists" ? text : scope === "actions" ? (/^neue liste:?\s+(.+)$/i.exec(text)?.[1]?.trim() ?? "") : ""
-  const offerNew = !!newName && !lists?.some((l) => listLabel(l).toLowerCase() === listLabel(newName).toLowerCase())
+  // a new name typed in the lists scope ("> Neue Liste: Name" is a direct command)
+  const offerNew = scope === "lists" && !!text && !lists?.some((l) => listLabel(l).toLowerCase() === listLabel(text).toLowerCase())
+  const newListItem = offerNew ? valueItem(bookAction("newList"), { value: listLabel(text), label: listLabel(text), isNew: true }) : null
   const matchedActions = [
-    ...(offerNew ? [newList(newName)] : []),
+    ...(newListItem ? [newListItem] : []),
+    ...directItems,
     ...(scope === "actions" || (scope === "all" && text)
-      ? [...bulkActions, ...bookActions, ...shelfActions, ...actions].filter((a) => plain(a.label).includes(plain(text))).slice(0, scope === "all" ? 4 : undefined)
+      ? [...commandItems, ...bookExtras, ...shelfActions, ...actions].filter((a) => plain(a.label).includes(plain(text))).slice(0, scope === "all" ? 4 : undefined)
       : []),
   ]
-  const showFulltext = (scope === "all" || scope === "books") && text.length > 0
+  // the second step: the values of one command
+  const stepItems = step ? valueChoices(step, sources, input, 200) : []
+  const showFulltext = !step && !confirm && (scope === "all" || scope === "books") && text.length > 0
 
   const fulltext = (
     <CommandGroup>
@@ -255,13 +265,20 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       >
         <DialogTitle className="sr-only">{t("palette.open")}</DialogTitle>
         {/* icons get the width of the book covers (24 px), so all rows start their text at one x */}
-        <Command shouldFilter={false} loop className="[&_[cmdk-item]>svg]:mx-1">
+        <Command shouldFilter={false} loop value={selected} onValueChange={setSelected} className="[&_[cmdk-item]>svg]:mx-1">
           <div className="flex items-center border-b eink:border-b-2">
             <CommandInput
               ref={inputRef}
               value={input}
               onValueChange={setInput}
-              placeholder={desktop ? t("palette.placeholder") : t("search.placeholder")}
+              // the second step: Backspace in the empty input goes back to the commands
+              onKeyDown={(e) => {
+                if (e.key === "Backspace" && !input && (step || confirm)) {
+                  e.preventDefault()
+                  back()
+                }
+              }}
+              placeholder={step ? t("actions.pick", { label: commandLabel(step, target) }) : desktop ? t("palette.placeholder") : t("search.placeholder")}
               className="min-w-0"
               wrapperClassName="min-w-0 flex-1 border-b-0 eink:border-b-0"
             />
@@ -271,9 +288,58 @@ export function CommandPalette({ initialInput, onClose }: Props) {
               </button>
             )}
           </div>
-          <ScopeChips scope={scope} text={text} onChange={setInput} />
+          {step || confirm ? (
+            <div className="flex items-center gap-2 border-b px-1 py-1 text-sm font-medium eink:border-b-2 eink:text-base">
+              <button
+                type="button"
+                onClick={back}
+                onMouseDown={(e) => e.preventDefault()}
+                aria-label={t("actions.back")}
+                title={t("actions.back")}
+                className="flex size-9 shrink-0 items-center justify-center rounded-md hover:bg-accent eink:size-12 touch:size-11"
+              >
+                <ArrowLeft className="size-4" />
+              </button>
+              <span className="min-w-0 truncate">{confirm ? commandLabel(confirm.def, target, confirm.value) : commandLabel(step!, target)}</span>
+            </div>
+          ) : (
+            <ScopeChips scope={scope} text={text} onChange={setInput} />
+          )}
           <CommandList className="max-h-none flex-1 sm:max-h-[60vh] sm:flex-none">
             <CommandEmpty>{t("palette.empty")}</CommandEmpty>
+            {confirm && target && (
+              <CommandGroup heading={t("actions.confirmTitle")}>
+                {confirm.def.id === "delete" && <p className="px-2 pb-2 text-sm text-muted-foreground eink:text-black">{t("bulk.deleteText")}</p>}
+                <CommandItem value="confirm-yes" onSelect={() => runNow(confirm.def, confirm.value)}>
+                  {confirm.def.id === "delete" ? <Trash2 /> : <Check />}
+                  {confirm.def.id === "delete"
+                    ? target.book
+                      ? t("actions.confirmDeleteOne", { title: target.book.title })
+                      : t("actions.confirmDelete", { count: formatNumber(target.count) })
+                    : t("actions.confirmRun", { count: formatNumber(target.count) })}
+                </CommandItem>
+                <CommandItem value="confirm-no" onSelect={back}>
+                  <X />
+                  {t("actions.cancel")}
+                </CommandItem>
+              </CommandGroup>
+            )}
+            {step && !confirm && !!stepItems.length && (
+              <CommandGroup heading={t("actions.values")}>
+                {stepItems.map((v) => {
+                  const Icon = step.icon
+                  return (
+                    <CommandItem key={`${v.isNew ? "new:" : v.clear ? "clear:" : ""}${v.value}`} value={`v:${v.isNew ? "new:" : v.clear ? "clear:" : ""}${v.value}`} onSelect={() => start(step, v)}>
+                      <Icon />
+                      <span className="truncate" style={v.depth ? { paddingLeft: `${v.depth * 1.25}rem` } : undefined}>
+                        {v.isNew && !step.free ? t("actions.new", { label: v.label }) : v.label}
+                      </span>
+                      {v.count != null && v.count > 0 && <CommandShortcut>{formatNumber(v.count)}</CommandShortcut>}
+                    </CommandItem>
+                  )
+                })}
+              </CommandGroup>
+            )}
             {/* without a prefix, Enter searches the library: full text first */}
             {showFulltext && scope === "all" && fulltext}
             {!!books.data?.books.length && wants("books") && text.length > 1 && (
@@ -311,7 +377,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
               </CommandGroup>
             )}
 
-            {!!matchedActions.length && (
+            {!step && !confirm && !!matchedActions.length && (
               <CommandGroup heading={t("palette.actions")}>
                 {matchedActions.map((a) => (
                   <CommandItem key={a.id} value={`>${a.id}`} onSelect={a.run}>

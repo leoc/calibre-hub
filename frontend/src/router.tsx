@@ -122,6 +122,8 @@ const listsRoute = createRoute({
 const duplicatesRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/duplicates",
+  // ids=1,2,3: only the groups with these books ("Auf Duplikate prüfen")
+  validateSearch: z.object({ ids: z.coerce.string().regex(/^\d+(,\d+)*$/).optional().catch(undefined) }),
   component: DuplicatesPage,
 })
 

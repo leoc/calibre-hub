@@ -41,7 +41,7 @@ function useEpubFix(onDone?: (run: EpubFixRun) => void) {
     setStarting(true)
     setError(null)
     write
-      .epubFix(dryRun, ids)
+      .epubFix(dryRun, ids && { ids })
       .then((r) => setJobId(r.jobId), setError)
       .finally(() => setStarting(false))
   }

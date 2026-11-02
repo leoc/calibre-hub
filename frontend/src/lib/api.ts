@@ -276,7 +276,7 @@ export interface ClassifyStatus {
   lastRun?: (Job & { id: string; startedAt: string }) | null
 }
 
-export type ClassifyTarget = "unsorted" | { ids: number[] }
+export type ClassifyTarget = "unsorted" | BulkTarget
 
 export const SORTS = ["title", "author", "added", "modified", "published", "series", "rating"] as const
 // inside a list: the time a book was added to it first, no manual order
@@ -406,6 +406,14 @@ export interface BulkChanges {
   series?: string | null
   // with series and an ids target: volumes 1..n in the order of the ids
   numberSeries?: boolean
+  authors?: string[]
+  publisher?: string | null
+  languages?: string[]
+  // 0..10 (half stars), null: none
+  rating?: number | null
+  pubdate?: string | null
+  // the year of the publication date, month and day stay
+  pubYear?: number | null
   // moves the books to the trash; only on its own
   delete?: true
 }
@@ -495,6 +503,8 @@ export const write = {
   bulk: (target: BulkTarget, changes: BulkChanges) =>
     request<{ jobId: string; total: number }>("/api/books/bulk", { method: "POST", ...json({ target, changes }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  // puts back what a finished bulk field change overwrote, as a new job (once)
+  undoJob: (id: string) => request<{ jobId: string; total: number }>(`/api/jobs/${id}/undo`, { method: "POST" }),
   // category: another one than suggested, path or dotted
   acceptSuggestion: (bookId: number, category?: string) =>
     request<Suggestion>(`/api/suggestions/${bookId}/accept`, { method: "POST", ...json(category ? { category } : {}) }),
@@ -503,11 +513,12 @@ export const write = {
     request<{ accepted: Suggestion[]; errors: { bookId: number; error: string }[] }>("/api/suggestions/accept", { method: "POST", ...json({ bookIds }) }),
   // 409 with {categories, minCategories} while the tree is too small
   classify: (target: ClassifyTarget) => request<{ jobId: string; total: number }>("/api/classify", { method: "POST", ...json({ target }) }),
-  // converts every book without the target format (default: the configured one)
-  convert: (target?: string) => request<{ jobId: string; total: number }>("/api/convert", { method: "POST", ...json(target ? { target } : {}) }),
+  // converts every book (or those of books) without the target format (default: the configured one)
+  convert: (target?: string, books?: BulkTarget) =>
+    request<{ jobId: string; total: number }>("/api/convert", { method: "POST", ...json({ ...(target ? { target } : {}), ...(books ? { books } : {}) }) }),
   // the EPUB fixer over the library or some books; a dry run only checks
-  epubFix: (dryRun: boolean, ids?: number[]) =>
-    request<{ jobId: string; total: number; dryRun: boolean }>("/api/epub-fix", { method: "POST", ...json(ids ? { dryRun, target: { ids } } : { dryRun }) }),
+  epubFix: (dryRun: boolean, target?: BulkTarget) =>
+    request<{ jobId: string; total: number; dryRun: boolean }>("/api/epub-fix", { method: "POST", ...json(target ? { dryRun, target } : { dryRun }) }),
   epubFixRun: (jobId: string) => request<EpubFixRun>(`/api/epub-fix/jobs/${jobId}`),
   metadataRun: (target: MetadataTarget = "incomplete") =>
     request<{ jobId: string; total: number }>("/api/metadata/run", { method: "POST", ...json({ target }) }),

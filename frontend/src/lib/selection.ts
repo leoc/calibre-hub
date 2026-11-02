@@ -46,7 +46,7 @@ export const selection = {
   },
 }
 
-// Bulk commands from elsewhere (the command palette) open the bulk bar's dialog.
+// Bulk commands from elsewhere (the Delete key) open the bulk bar's dialog.
 export type BulkAction = "addTags" | "removeTags" | "kategorie" | "series" | "delete"
 const bulkListeners = new Set<(a: BulkAction) => void>()
 export function requestBulk(action: BulkAction) {

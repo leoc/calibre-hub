@@ -134,6 +134,25 @@ unsorted()
 let lastClassify: (Job & { id: string; startedAt: string }) | null = null
 
 const jobs = new Map<string, Job>()
+// bulk field changes: each book's fields before, until undone
+const bulkBefore = new Map<string, Map<number, Partial<Book>>>()
+const epubRuns = new Map<string, { dryRun: boolean; ids: number[] }>()
+// a job over books, a step per book
+function runJob(list: Book[], step: (b: Book) => void) {
+  const jobId = Math.random().toString(36).slice(2)
+  const job: Job = { status: "running", done: 0, total: list.length, errors: [] }
+  jobs.set(jobId, job)
+  ;(async () => {
+    for (const b of list) {
+      await delay(15)
+      step(b)
+      touch(b)
+      job.done++
+    }
+    job.status = "done"
+  })()
+  return { jobId, total: list.length }
+}
 const retried = new Set<number>()
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // covers set through the cover endpoints (object URLs are not reachable from the worker, so keep bytes)
@@ -272,6 +291,7 @@ export const writeHandlers = [
     )
   }),
   http.post("/api/books/bulk", async ({ request }) => {
+    // like the hub: each book's fields before the change, for POST /api/jobs/:id/undo
     const { target, changes } = (await request.json()) as { target: BulkTarget; changes: BulkChanges }
     if ("query" in target) {
       const bad = Object.keys(target.query).find((k) => ["offset", "limit", "sort", "order"].includes(k))
@@ -280,10 +300,12 @@ export const writeHandlers = [
     if (changes.numberSeries && !("ids" in target && changes.series)) return HttpResponse.json({ error: "numberSeries needs series and ids", field: "numberSeries" }, { status: 400 })
     // ids in the given order: numberSeries counts along it
     const list = "ids" in target ? target.ids.flatMap((id) => books.filter((b) => b.id === id)) : filterBooks(bookSearchParams(target.query))
-    const { numberSeries, ...patch } = changes
+    const { numberSeries, pubYear, ...patch } = changes
     const jobId = Math.random().toString(36).slice(2)
     const job: Job = { status: "running", done: 0, total: list.length, errors: [] }
     jobs.set(jobId, job)
+    const before = new Map<number, Partial<Book>>()
+    if (!changes.delete) bulkBefore.set(jobId, before)
     ;(async () => {
       for (const [i, b] of list.entries()) {
         await delay(15)
@@ -293,8 +315,10 @@ export const writeHandlers = [
           job.errors.push({ bookId: b.id, error: "calibre-server: Connection refused" })
         } else if (changes.delete) moveToTrash(b)
         else {
+          before.set(b.id, structuredClone({ tags: b.tags, custom: b.custom, series: b.series, seriesIndex: b.seriesIndex, authors: b.authors, publisher: b.publisher, languages: b.languages, rating: b.rating, pubdate: b.pubdate }))
           applyPatch(b, patch)
           if (numberSeries) b.seriesIndex = i + 1
+          if (pubYear !== undefined) b.pubdate = pubYear == null ? null : `${String(pubYear).padStart(4, "0")}${b.pubdate?.slice(4, 10) ?? "-01-01"}T12:00:00+00:00`
         }
         job.done++
       }
@@ -365,7 +389,9 @@ export const writeHandlers = [
     const list =
       target === "unsorted"
         ? unsorted().filter((b) => !["pending", "rejected", "none"].includes(suggestions.get(b.id)?.status ?? ""))
-        : target.ids.flatMap((id) => books.filter((b) => b.id === id))
+        : "ids" in target
+          ? target.ids.flatMap((id) => books.filter((b) => b.id === id))
+          : filterBooks(bookSearchParams(target.query))
     const jobId = Math.random().toString(36).slice(2)
     const job = { id: jobId, startedAt: new Date().toISOString(), status: "running" as Job["status"], done: 0, total: list.length, errors: [] }
     jobs.set(jobId, job)
@@ -379,6 +405,60 @@ export const writeHandlers = [
       job.status = "done"
     })()
     return HttpResponse.json({ jobId, total: list.length }, { status: 202 })
+  }),
+  http.post("/api/jobs/:id/undo", ({ params }) => {
+    const id = String(params.id)
+    const job = jobs.get(id)
+    const before = bulkBefore.get(id)
+    if (!job) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    if (job.status === "running" || !before?.size) return HttpResponse.json({ error: "nothing to undo" }, { status: 409 })
+    bulkBefore.delete(id)
+    const undoId = Math.random().toString(36).slice(2)
+    const undo: Job = { status: "running", done: 0, total: before.size, errors: [] }
+    jobs.set(undoId, undo)
+    ;(async () => {
+      for (const [bookId, fields] of before) {
+        await delay(15)
+        const b = books.find((x) => x.id === bookId)
+        if (b) {
+          Object.assign(b, fields)
+          touch(b)
+        }
+        undo.done++
+      }
+      undo.status = "done"
+    })()
+    return HttpResponse.json({ jobId: undoId, total: before.size }, { status: 202 })
+  }),
+  // conversion: a book without EPUB gets one (the mocks serve every file as an EPUB anyway)
+  http.post("/api/convert", async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { target?: string; books?: BulkTarget }
+    const target = (body.target ?? "EPUB").toUpperCase()
+    const pool = body.books ? ("ids" in body.books ? books.filter((b) => (body.books as { ids: number[] }).ids.includes(b.id)) : filterBooks(bookSearchParams(body.books.query))) : books
+    const list = pool.filter((b) => b.formats.length && !b.formats.includes(target))
+    return HttpResponse.json(runJob(list, (b) => { b.formats = [...b.formats, target] }), { status: 202 })
+  }),
+  // the EPUB fixer: books with id % 5 == 0 have something to repair
+  http.post("/api/epub-fix", async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { dryRun?: boolean; target?: BulkTarget }
+    const dryRun = body.dryRun ?? true
+    const pool = body.target ? ("ids" in body.target ? books.filter((b) => (body.target as { ids: number[] }).ids.includes(b.id)) : filterBooks(bookSearchParams(body.target.query))) : books
+    const list = pool.filter((b) => b.formats.includes("EPUB"))
+    const r = runJob(list, () => undefined)
+    epubRuns.set(r.jobId, { dryRun, ids: list.map((b) => b.id) })
+    return HttpResponse.json({ ...r, dryRun }, { status: 202 })
+  }),
+  http.get("/api/epub-fix/jobs/:id", ({ params }) => {
+    const id = String(params.id)
+    const job = jobs.get(id)
+    const run = epubRuns.get(id)
+    if (!job || !run) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    const fixable = run.ids.filter((x) => x % 5 === 0)
+    const fixes = fixable.length ? { mimetype: fixable.length } : {}
+    return HttpResponse.json({
+      ...job, id, dryRun: run.dryRun, booksWithFixes: fixable.length, booksWithProblems: 0, booksFixed: run.dryRun ? 0 : fixable.length, fixes, problems: {},
+      results: fixable.map((bookId) => ({ bookId, title: books.find((b) => b.id === bookId)?.title ?? "", applied: !run.dryRun, fixes: [{ code: "mimetype", file: null, detail: "" }], problems: [] })),
+    })
   }),
   http.get("/api/jobs/:id", ({ params }) => {
     const job = jobs.get(String(params.id))

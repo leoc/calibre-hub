@@ -115,7 +115,7 @@ Feature: Keyboard control
     Given I selected 3 books
     When I type ">"
     Then the command palette opens in command mode
-    And it offers "Tags hinzufügen (3)", "Kategorie setzen (3)" and "Löschen (3)"
+    And it offers "Tag hinzufügen (3)", "Kategorie setzen (3)" and "Löschen (3)"
 
   Scenario: ">" without a selection opens the general commands
     Given nothing is selected
@@ -258,3 +258,67 @@ Feature: Keyboard control
     And the first book is the active book
     When I type "n"
     Then the active book moves down by one row
+
+  # --- Phase 3: commands on the selection and the active book -----------------
+  # The palette's commands act on the selection (or all matches), else the
+  # active book, else the open detail; the command names its target:
+  # "Tag hinzufügen (3)" or "Tag hinzufügen: <title>". A value can be typed
+  # right after the command ("tag Noten") or picked in a second step. Field
+  # changes apply at once with "Rückgängig"; deleting and runs over more than
+  # 50 books ask first.
+
+  Scenario: A command with its value typed directly, then undone
+    Given I selected 3 books
+    When I type ">"
+    And I type "tag Noten"
+    Then "Neu: Tag ‚Noten‘ hinzufügen (3)" is the first and selected entry
+    When I press "Enter"
+    Then the palette closes
+    And a toast says "Erledigt: Tag ‚Noten‘ hinzufügen (3)"
+    And the 3 selected books have the tag "Noten"
+    When I click "Rückgängig" in the toast
+    Then a message says "Rückgängig gemacht: Tag ‚Noten‘ hinzufügen (3)"
+    And no selected book has the tag "Noten"
+
+  Scenario: Picking the value in a second step, for the active book
+    Given nothing is selected
+    And the second book is the active book
+    When I type ">"
+    And I type "Tag hinzufügen"
+    Then the selected entry is "Tag hinzufügen" for the active book
+    When I press "Enter"
+    Then the palette asks for a value of "Tag hinzufügen"
+    When I type "geschenk"
+    And I press "Enter"
+    Then the palette closes
+    And the active book has the tag "geschenk"
+
+  Scenario: Adding the selection to a list typed in the palette
+    Given I selected 2 books
+    When I type ">"
+    And I type "zu liste klass"
+    Then "Zu Liste ‚Klassiker‘ (2)" is the first and selected entry
+    When I press "Enter"
+    Then a toast says "2 zu Klassiker hinzugefügt"
+    And the 2 selected books are in the list "Klassiker"
+
+  Scenario: Deleting the active book from the palette asks first
+    Given nothing is selected
+    And the first book is the active book
+    When I type ">"
+    And I type "Löschen"
+    And I press "Enter"
+    Then the palette asks to delete the active book
+    When I press "Enter"
+    Then a message says "1 in den Papierkorb verschoben"
+    And the active book is gone from the library
+
+  Scenario: A change of more than 50 books asks first
+    Given I selected all matches
+    When I type ">"
+    And I type "tag Noten"
+    And I press "Enter"
+    Then the palette asks to change all matches
+    When I press "ArrowDown"
+    And I press "Enter"
+    Then "Neu: Tag ‚Noten‘ hinzufügen" is offered for all matches again

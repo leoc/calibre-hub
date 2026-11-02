@@ -3,7 +3,7 @@ import { queryOptions, useMutation, useQuery, useQueryClient, type Query, type Q
 import { formatNumber, t } from "@/i18n"
 import { toast } from "./toast"
 import { sessionQuery } from "./queries"
-import { api, ApiError, write, type Book, type BookPage, type BookQuery, type BulkTarget, type ListPatch, type ReadingList } from "./api"
+import { api, ApiError, write, type Book, type BookPage, type BookQuery, type BulkTarget, type ListChange, type ListPatch, type ReadingList } from "./api"
 import { isShelf } from "./shelves"
 
 // Reading lists: queries, mutations and the "Speichern" dialog store.
@@ -200,18 +200,43 @@ export function useListMembership() {
   })
 }
 
+// After books came into a list or left it: the list, the books' badges and
+// the pages that show it
+export function afterListChange(qc: QueryClient, listId: number, r: ListChange) {
+  storeList(qc, r.list)
+  const changed = new Set(r.added ?? r.removed ?? [])
+  patchBookLists(qc, changed, listId, !!r.added)
+  qc.invalidateQueries(listPages(listId))
+}
+
+// Adds or removes books (ids or all matches of a search), outside of a hook
+// (the command palette closes before the answer)
+export async function changeList(qc: QueryClient, listId: number, target: BulkTarget, remove = false): Promise<ListChange> {
+  const books = "ids" in target ? { bookIds: target.ids } : { target }
+  const r = await (remove ? write.removeFromList(listId, books) : write.addToList(listId, books))
+  afterListChange(qc, listId, r)
+  return r
+}
+
 // Bulk: the selected books (ids or all matches of the search)
 export function useBulkList() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ listId, target, remove }: { listId: number; target: BulkTarget; remove?: boolean }) =>
       remove ? write.removeFromList(listId, { target }) : write.addToList(listId, { target }),
-    onSuccess: (r, { listId }) => {
-      storeList(qc, r.list)
-      const changed = new Set(r.added ?? r.removed ?? [])
-      patchBookLists(qc, changed, listId, !!r.added)
-      qc.invalidateQueries(listPages(listId))
-    },
+    onSuccess: (r, { listId }) => afterListChange(qc, listId, r),
+  })
+}
+
+// "3 zu Urlaub hinzugefügt · Rückgängig": takes exactly the added books out again
+export function offerUndoAdd(qc: QueryClient, list: Pick<ReadingList, "id" | "name">, added: number[]) {
+  const name = listLabel(list)
+  const text = t("actions.listAdded", { count: formatNumber(added.length), name })
+  if (!added.length) return void toast.show(text)
+  toast.show(text, {
+    label: t("toast.undo"),
+    run: () =>
+      void changeList(qc, list.id, { ids: added }, true).catch((e: unknown) => toast.show(t("list.undoFailed", { error: e instanceof ApiError ? e.message : String(e) }))),
   })
 }
 
