@@ -26,6 +26,7 @@ stdenv.mkDerivation (finalAttrs: {
       ./src
       ./e2e
       ./public
+      ./vendor
     ];
   };
 
@@ -33,7 +34,7 @@ stdenv.mkDerivation (finalAttrs: {
     inherit (finalAttrs) pname version src;
     pnpm = pnpm_11;
     fetcherVersion = 4;
-    hash = "sha256-o9/QJPBnbVtZ/oT6h4j2BTIRIMyWwOeWVHsye64ntzc=";
+    hash = "sha256-JpDCiooDak3TsFBi5syP2eYb2ZtKPGwW9F2GEhWGX04=";
   };
 
   nativeBuildInputs = [
