@@ -1113,6 +1113,12 @@ describe "stricter DNB" do
       # a German book may be a translation
       CalibreHub::Meta::Match.reject(c, ["deu"], "Effortless", [] of String).should be_nil
     end
+    # "und" (undetermined, live: #31 from its OPF) is no language: a German
+    # title makes the book German, an English one doesn't
+    german = list.first.tap { |c| c.fields.title = "Die Psychologie sexueller Leidenschaft" }
+    CalibreHub::Meta::Match.reject(german, ["und"], "Die Psychologie sexueller Leidenschaft", [] of String).should be_nil
+    CalibreHub::Meta::Match.reject(german, ["und"], "Effortless", [] of String).should eq("translation")
+    CalibreHub::Meta::Lang.known(["und", "deu", "zxx"]).should eq(["deu"])
     # found by the book's own ISBN it is this edition
     own = list.first.tap { |c| c.by_isbn = c.fields.isbn }
     CalibreHub::Meta::Match.reject(own, ["eng"], "Effortless", [own.fields.isbn.not_nil!]).should be_nil

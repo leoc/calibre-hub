@@ -290,7 +290,8 @@ module CalibreHub
     def lookup(book : Book, guesses : Array(Meta::Guess), info : Meta::FileMeta::Info?, q : String? = nil) : {Array(Meta::Candidate), Bool}
       trusted = [book.identifiers["isbn"]?.try { |i| Meta::Isbn.normalize(i) }, info.try(&.record.isbn)].compact.uniq
       isbns = (trusted + (info.try(&.isbns.first(3)) || [] of String)).uniq.first(4)
-      languages = book.languages.presence || info.try(&.record.languages) || [] of String
+      languages = Meta::Lang.known(book.languages).presence ||
+                  Meta::Lang.known(info.try(&.record.languages) || [] of String)
       title = guesses.first?.try(&.title).presence || book.title
       check = ->(list : Array(Meta::Candidate)) do
         list.reject do |c|

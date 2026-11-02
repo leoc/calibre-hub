@@ -547,9 +547,18 @@ module CalibreHub
         title.downcase.scan(/\p{L}+/).any? { |m| GERMAN_WORDS.includes?(m[0]) }
       end
 
+      # ISO 639 codes that name no language: undetermined (ebook tools write
+      # "und" into the OPF), no linguistic content, several languages
+      NO_LANGUAGE = Set{"und", "zxx", "mul", "mis"}
+
+      def self.known(languages : Array(String)) : Array(String)
+        languages.reject { |l| NO_LANGUAGE.includes?(l.downcase) }
+      end
+
       # The book's languages, or German when there are none and the title
       # looks German
       def self.effective(languages : Array(String), title : String) : Array(String)
+        languages = known(languages)
         return languages unless languages.empty?
         german_title?(title) ? ["deu"] : [] of String
       end
