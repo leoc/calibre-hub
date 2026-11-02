@@ -136,6 +136,8 @@ export const de = {
   "meta.deleted": "Buch #{id} (gelöscht)",
   "meta.before": "vorher",
   "meta.after": "nachher",
+  "meta.field.tags": "Tags",
+  "meta.field.identifier": "Kennung ({scheme})",
   "meta.field.title": "Titel",
   "meta.field.authors": "Autoren",
   "meta.field.authorSort": "Autorensortierung",

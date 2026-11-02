@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowRight, Loader2, RotateCcw, UsersRound, WandSparkles } f
 import { ApiError, write, type MetadataChange, type MetadataStatus, type MetadataTarget } from "@/lib/api"
 import { metadataChangesQuery, metadataStatusQuery } from "@/lib/queries"
 import { invalidateMetadata, RevertConflictError, useRevertMetadataChange, useRevertMetadataChanges, useStartMetadataRun } from "@/lib/mutations"
-import { FIELD_LABEL, formatValue, groupChanges, sourceLabel, type BookChanges } from "@/lib/metadata"
+import { fieldLabel, formatValue, groupChanges, sourceLabel, type BookChanges } from "@/lib/metadata"
 import { formatDate, formatNumber, locale, t } from "@/i18n"
 import { cn } from "@/lib/utils"
 import { Button, buttonVariants } from "@/components/ui/button"
@@ -197,7 +197,7 @@ function Value({ change: c, which }: { change: MetadataChange; which: "old" | "n
 
 function ChangeRow({ change: c, title, canRevert }: { change: MetadataChange; title: string; canRevert: boolean }) {
   const revert = useRevertMetadataChange()
-  const label = t(FIELD_LABEL[c.field])
+  const label = fieldLabel(c.field)
   const reverted = !!c.revertedAt
   return (
     <li className={cn("flex flex-wrap items-start gap-x-3 gap-y-1 px-3 py-2", reverted && "text-muted-foreground eink:text-black")} aria-label={label}>

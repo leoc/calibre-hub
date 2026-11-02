@@ -1,6 +1,6 @@
 import type { Book, MetadataCandidate, MetadataChange, MetadataField, MetadataSource } from "./api"
 import type { BookForm } from "./book-form"
-import { formatNumber, languageName, locale } from "@/i18n"
+import { formatNumber, languageName, locale, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
 
 export const FIELD_LABEL: Record<MetadataField, MessageKey> = {
@@ -15,6 +15,16 @@ export const FIELD_LABEL: Record<MetadataField, MessageKey> = {
   series: "meta.field.series",
   seriesIndex: "meta.field.seriesIndex",
   cover: "meta.field.cover",
+}
+
+// Change-log fields beyond the form fields: tags (Norm, Entwurf, ersetzt) and
+// identifiers ("identifier:din" for standards)
+export function fieldLabel(field: string): string {
+  if (field in FIELD_LABEL) return t(FIELD_LABEL[field as MetadataField])
+  if (field === "tags") return t("meta.field.tags")
+  const id = /^identifier:(.+)$/.exec(field)
+  if (id) return t("meta.field.identifier", { scheme: id[1].toUpperCase() })
+  return field
 }
 
 const SOURCE_LABEL: Record<MetadataSource, MessageKey> = {
