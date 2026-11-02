@@ -80,6 +80,8 @@ export interface ProgressSave {
   fraction: number
   device: string
   deviceName?: string
+  // ms since it was read, for positions sent late (read offline)
+  age?: number
 }
 
 export type ListPatch = Partial<Pick<ReadingList, "name" | "description" | "visibility" | "sync" | "favorite" | "isDefault">>

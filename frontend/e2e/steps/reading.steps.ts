@@ -101,7 +101,88 @@ When("I tap the right third of the page", async ({ page }) => tapAt(page, 0.85))
 When("I tap the left third of the page", async ({ page }) => tapAt(page, 0.15))
 When("I tap the middle of the page", async ({ page }) => tapAt(page, 0.5))
 
+When("I open the reader from the detail", async ({ page }) => {
+  await page.getByRole("link", { name: /^(Lesen|Weiterlesen)/ }).click()
+  await waitForReader(page)
+})
+
+When("I make the book available offline", async ({ page }) => {
+  await page.getByRole("button", { name: "Offline verfügbar machen", exact: true }).click()
+  await expect(page.locator("[data-offline-size]")).toBeVisible()
+})
+
+// navigator.onLine false and no network; the mocks fail /api/ then too
+When("the connection is lost", async ({ context }) => {
+  await context.setOffline(true)
+})
+
+When("the connection is back", async ({ context }) => {
+  await context.setOffline(false)
+})
+
 // --- Then -------------------------------------------------------------------
+
+Then("the detail shows the book as available offline with its size", async ({ page }) => {
+  await expect(page.locator("[data-offline-size]")).toHaveText(/Offline verfügbar · [\d,]+ (B|KB|MB)/)
+  const stored = await page.evaluate(async (id) => {
+    const res = await caches.match(`/api/books/${id}/download/epub`, { cacheName: "hub-books" })
+    return res ? (await res.blob()).size : 0
+  }, bookOf(page))
+  expect(stored).toBeGreaterThan(0)
+})
+
+Then("the detail offers to make the book available offline", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Offline verfügbar machen", exact: true })).toBeVisible()
+  const stored = await page.evaluate((id) => caches.match(`/api/books/${id}/download/epub`, { cacheName: "hub-books" }).then((r) => !!r), bookOf(page))
+  expect(stored).toBe(false)
+})
+
+Then("the app shows that it is offline", async ({ page }) => {
+  // wide: behind the detail's dialog, so not in the accessibility tree
+  await expect(page.locator('body > div header [role="status"]', { hasText: "Offline" })).toBeAttached()
+})
+
+Then("the reader shows that it is offline", async ({ page }) => {
+  await expect(page.locator("[data-reader] header").getByRole("status").filter({ hasText: "Offline" })).toBeAttached()
+})
+
+Then("this device's position waits for the connection", async ({ page }) => {
+  const pct = await shownPercent(page)
+  expect(pct).toBeGreaterThan(0)
+  await expect
+    .poll(
+      () =>
+        page.evaluate((id) => {
+          const q = JSON.parse(localStorage.getItem("hub.progressQueue") ?? "{}")
+          return q[id] ? Math.floor(q[id].save.fraction * 100) : null
+        }, bookOf(page)),
+      { timeout: 10_000 },
+    )
+    .toBe(pct)
+  saved.set(page, pct)
+})
+
+Then("the hub has this device's position from offline", async ({ page }) => {
+  const device = await page.evaluate(() => localStorage.getItem("hub.device"))
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ([id, device]) =>
+            fetch(`/api/books/${id}/progress`)
+              .then((r) => r.json())
+              .then((p) => {
+                const d = p.devices.find((d: { device: string }) => d.device === device)
+                return d ? Math.floor(d.fraction * 100) : null
+              })
+              .catch(() => null),
+          [bookOf(page), device] as const,
+        ),
+      { timeout: 10_000 },
+    )
+    .toBe(saved.get(page))
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("hub.progressQueue"))).toBeNull()
+})
 
 Then("the reader shows the book at {int} %", async ({ page }, pct: number) => {
   await expect(progressbar(page)).toHaveAttribute("aria-valuenow", String(pct))

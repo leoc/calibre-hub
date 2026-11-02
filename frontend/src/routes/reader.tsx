@@ -3,8 +3,12 @@ import { getRouteApi, useCanGoBack, useNavigate, useRouter } from "@tanstack/rea
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowLeft, ChevronLeft, ChevronRight, List, Minus, Plus, Type } from "lucide-react"
 import type { FoliateView, RelocateDetail, TocItem } from "foliate-js/view.js"
-import { downloadUrl, write, type Book, type ProgressEntry, type ProgressSave } from "@/lib/api"
+import { ApiError, type Book, type ProgressEntry, type ProgressSave } from "@/lib/api"
 import { bookQuery, progressQuery } from "@/lib/queries"
+import { loadBookFile, offlineSupported, refreshOffline, useOfflineBook } from "@/lib/offline"
+import { isNetworkError, useOnline } from "@/lib/online"
+import { queuedProgress, saveProgress, withQueued } from "@/lib/progress-sync"
+import { OfflineBadge, OfflineButton } from "@/components/offline"
 import {
   fileName,
   getDeviceId,
@@ -35,17 +39,39 @@ const route = getRouteApi("/read/$id")
 export function ReaderPage() {
   const { id } = route.useParams()
   const { format: wanted } = route.useSearch()
+  const online = useOnline()
+  const stored = useOfflineBook(id)
   const book = useQuery(bookQuery(id))
   // fresh every time: another device may have read on since
   const progress = useQuery({ ...progressQuery(id), gcTime: 0 })
   const back = useBack(id)
+  // a book stored offline keeps what the hub last said
+  useEffect(() => {
+    if (book.data) refreshOffline(id, { book: book.data })
+  }, [id, book.data])
+  useEffect(() => {
+    if (progress.data) refreshOffline(id, { progress: progress.data.devices })
+  }, [id, progress.data])
   const error = book.error ?? progress.error
-  if (error) return <Centered><ErrorMessage error={error} onRetry={() => (book.refetch(), progress.refetch())} /><BackButton onClick={back} /></Centered>
-  if (!book.data || !progress.data) return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
-  const format = readerFormat(book.data, wanted)
+  // without the hub a book stored offline opens from what was stored
+  const local = stored && (!online || unreachable(book.error) || unreachable(progress.error)) ? stored : null
+  const data = book.data ?? local?.book
+  const devices = progress.data?.devices ?? local?.progress
+  if (error && !local) return <Centered><ErrorMessage error={error} onRetry={() => (book.refetch(), progress.refetch())} /><BackButton onClick={back} /></Centered>
+  if (!data || !devices) {
+    if (!online && !stored) return <Centered><p role="alert">{t("reader.notOffline")}</p><BackButton onClick={back} /></Centered>
+    return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
+  }
+  // the stored format unless another one is asked for, so the reader
+  // doesn't reopen when the hub answers again
+  const format = stored && (!wanted || wanted.toUpperCase() === stored.format) ? stored.format : readerFormat(data, wanted)
   if (!format) return <Centered><p role="alert">{t("reader.noFormat")}</p><BackButton onClick={back} /></Centered>
-  return <Reader key={`${id}-${format}`} book={book.data} format={format} start={startPoint(progress.data.devices, getDeviceId())} onBack={back} />
+  const start = startPoint(withQueued(devices, queuedProgress(id)), getDeviceId())
+  return <Reader key={`${id}-${format}`} book={data} format={format} start={start} onBack={back} />
 }
+
+// no answer, or a hub that can't answer now
+const unreachable = (e: unknown) => isNetworkError(e) || (e instanceof ApiError && e.status >= 500)
 
 // Escape and the back button: where the reader was opened from (the
 // detail), or the book's page when it was opened directly
@@ -117,14 +143,10 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
       if (!p) return
       pending.current = null
       saved.current = p.position
-      write
-        .saveProgress(book.id, p, closing)
-        .then(() => queryClient.invalidateQueries({ queryKey: ["progress"] }))
-        .catch(() => {
-          // offline or gone: the next page turn tries again
-          if (!pending.current) pending.current = p
-          saved.current = null
-        })
+      // queued first; offline it waits there for the next contact
+      void saveProgress(book.id, p, closing).then((entry) => {
+        if (entry) void queryClient.invalidateQueries({ queryKey: ["progress"] })
+      })
     },
     [book.id, queryClient],
   )
@@ -213,9 +235,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
     ;(async () => {
       try {
         await import("foliate-js/view.js")
-        const res = await fetch(downloadUrl(book.id, format), { credentials: "same-origin", signal: abort.signal })
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-        const file = new File([await res.blob()], fileName(book.id, format))
+        const file = new File([await loadBookFile(book.id, format, abort.signal)], fileName(book.id, format))
         if (gone) return
         view = document.createElement("foliate-view") as FoliateView
         view.className = "block h-full w-full"
@@ -304,14 +324,13 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
             <h1 className="truncate text-sm font-semibold eink:text-base">{book.title}</h1>
             {loc.chapter && <p className="truncate text-xs text-muted-foreground eink:text-sm eink:text-black">{loc.chapter}</p>}
           </div>
+          <OfflineBadge className="mx-1" />
           <Button variant="ghost" size="icon" onClick={() => setTocOpen(true)} aria-label={t("reader.toc")} disabled={status !== "ready"}>
             <List className="size-5" />
           </Button>
-          {!fixed && (
-            <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} aria-label={t("reader.settings")} disabled={status !== "ready"}>
-              <Type className="size-5" />
-            </Button>
-          )}
+          <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} aria-label={t("reader.settings")} disabled={status !== "ready"}>
+            <Type className="size-5" />
+          </Button>
         </header>
       )}
 
@@ -381,19 +400,21 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
         <SheetContent side="right" aria-describedby={undefined} className="sm:max-w-sm" header={<SheetTitle>{t("reader.settings")}</SheetTitle>}>
           <div className="space-y-6 px-4 pb-4">
-            <section className="space-y-2">
-              <h2 className="text-sm font-medium">{t("reader.fontSize")}</h2>
-              <div className="flex items-center gap-3">
-                <Button variant="outline" size="icon" onClick={() => changeFont(-1)} aria-label={t("reader.smaller")}>
-                  <Minus />
-                </Button>
-                <span className="w-14 text-center tabular-nums" data-font-size>{fontSize} %</span>
-                <Button variant="outline" size="icon" onClick={() => changeFont(1)} aria-label={t("reader.larger")}>
-                  <Plus />
-                </Button>
-              </div>
-            </section>
-            {!eink && (
+            {!fixed && (
+              <section className="space-y-2">
+                <h2 className="text-sm font-medium">{t("reader.fontSize")}</h2>
+                <div className="flex items-center gap-3">
+                  <Button variant="outline" size="icon" onClick={() => changeFont(-1)} aria-label={t("reader.smaller")}>
+                    <Minus />
+                  </Button>
+                  <span className="w-14 text-center tabular-nums" data-font-size>{fontSize} %</span>
+                  <Button variant="outline" size="icon" onClick={() => changeFont(1)} aria-label={t("reader.larger")}>
+                    <Plus />
+                  </Button>
+                </div>
+              </section>
+            )}
+            {!eink && !fixed && (
               <section className="space-y-2">
                 <h2 className="text-sm font-medium">{t("reader.layout")}</h2>
                 <div role="radiogroup" aria-label={t("reader.layout")} className="flex gap-2">
@@ -403,6 +424,12 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
                     </Button>
                   ))}
                 </div>
+              </section>
+            )}
+            {offlineSupported() && (
+              <section className="space-y-2">
+                <h2 className="text-sm font-medium">{t("offline.section")}</h2>
+                <OfflineButton book={book} format={format} />
               </section>
             )}
           </div>

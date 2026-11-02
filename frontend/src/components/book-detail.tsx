@@ -19,6 +19,7 @@ import { SuggestionBox } from "./suggestion-box"
 import { Badge } from "./ui/badge"
 import { LibraryLink } from "@/components/library-link"
 import { ReadButton } from "./reading"
+import { OfflineButton } from "./offline"
 import { readerFormat } from "@/lib/reader"
 
 // Order in which formats are offered; the first is the primary button.
@@ -108,6 +109,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
             )}
             <ListButtons book={book} />
             {onEdit && <EpubFixButton book={book} />}
+            <OfflineButton book={book} />
             {onDeleted && <DeleteBookButton book={book} onDeleted={onDeleted} />}
           </div>
         </div>

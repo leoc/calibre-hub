@@ -188,4 +188,25 @@ the lockfile (v9) works with 10 to 12.
   the middle of the library (ids 150/160: one book twice, the copy with a
   PDF and a publisher; 170/180: a PDF and an 80-byte Anna's Archive
   leftover with the ISBN in its title).
+- Offline (`src/lib/offline.ts`, `src/lib/progress-sync.ts`,
+  `src/components/offline.tsx`): "Offline verfügbar machen" in the detail
+  and the reader's "Darstellung" stores the book's file in Cache Storage
+  (`hub-books`, under its download URL) and the book with every device's
+  position in `hub.offline`; then "Offline verfügbar · 1,2 MB" and "Offline
+  entfernen". The reader takes the file from there first; without network
+  (or with the hub out of reach) it opens from what was stored. Positions
+  are written to `hub.progressQueue` first and removed once the hub has
+  them; what waits is sent on start, on `online` and when the app is shown
+  again, with its `age`, so the hub dates it back and the newest position
+  still wins. "Offline" in the header and the reader while
+  `navigator.onLine` is false; without the hub the error page lists the
+  books stored offline. Logging out sends what waits and then deletes all
+  of it. The service worker (`src/service-worker.js`, built into
+  `dist/sw.js` by the `service-worker` plugin in `vite.config.ts` with the
+  list of built files and a hash over them) precaches the whole build,
+  answers navigations from the network and falls back to `index.html`
+  offline or on 5xx, and never touches `/api/`, `/get/`, `/opds`,
+  `/healthz`. It is registered in builds only (dev:mock runs MSW's worker);
+  e2e emulates offline with `context.setOffline`, the mocks then fail
+  `/api/`.
 - The category column comes from `GET /api/config`.

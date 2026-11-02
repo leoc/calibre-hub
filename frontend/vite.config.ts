@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 import path from "node:path"
 import fs from "node:fs"
+import crypto from "node:crypto"
 
 // `pnpm dev` proxies to the deployed hub (log in with the real user),
 // `pnpm dev:mock` serves MSW mock data instead.
@@ -13,10 +14,26 @@ export default defineConfig(({ mode }) => ({
     react(),
     tailwindcss(),
     {
-      // the MSW worker lives in public/ for dev:mock only
-      name: "drop-mock-worker",
+      // the MSW worker lives in public/ for dev:mock only; the app's own
+      // service worker (src/service-worker.js) precaches every built file
+      name: "service-worker",
       apply: "build",
-      closeBundle: () => fs.rmSync(path.resolve(import.meta.dirname, "dist/mockServiceWorker.js"), { force: true }),
+      closeBundle: () => {
+        const dist = path.resolve(import.meta.dirname, "dist")
+        fs.rmSync(path.join(dist, "mockServiceWorker.js"), { force: true })
+        const files = fs
+          .readdirSync(dist, { recursive: true, encoding: "utf8" })
+          .map((f) => f.split(path.sep).join("/"))
+          .filter((f) => f !== "sw.js" && f !== "mockServiceWorker.js" && fs.statSync(path.join(dist, f)).isFile())
+          .sort()
+        const hash = crypto.createHash("sha256")
+        for (const f of files) hash.update(f).update(fs.readFileSync(path.join(dist, f)))
+        const sw = fs
+          .readFileSync(path.resolve(import.meta.dirname, "src/service-worker.js"), "utf8")
+          .replace('"__VERSION__"', JSON.stringify(hash.digest("hex").slice(0, 12)))
+          .replace("__FILES__", JSON.stringify(files.map((f) => `/${f}`)))
+        fs.writeFileSync(path.join(dist, "sw.js"), sw)
+      },
     },
   ],
   // foliate-js is vendored at a fixed commit (vendor/foliate-js/README.md)

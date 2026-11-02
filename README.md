@@ -30,7 +30,7 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /api/books/:id/cover[?size=thumb]` | cover image |
 | `GET /api/books/:id/download/:format` | book file; `Range` requests are passed to calibre-server (`Accept-Ranges`, `Content-Range` come back) |
 | `GET /api/books/:id/progress` | reading progress of the user: `{latest, devices: [...]}`, every device's last position, newest first; an entry is `{bookId, device, deviceName, format, position, fraction, source, updatedAt}`, `latest` is the newest (null when the book was never opened) |
-| `PUT /api/books/:id/progress` `{format, position, fraction, device, deviceName?, source?}` | stores the device's position (replaces its last one; the time is the hub's): `position` depends on the format (EPUB/MOBI/AZW3/CBZ: CFI from foliate-js, PDF: page number), `fraction` 0..1, `device` an id per browser/device, `deviceName` shown in "Auf … weiterlesen?", `source` web (default) or koreader |
+| `PUT /api/books/:id/progress` `{format, position, fraction, device, deviceName?, source?, age?}` | stores the device's position (replaces its last one unless that is newer; the time is the hub's, minus `age` in ms for a position read offline and sent later, at most 30 days): `position` depends on the format (EPUB/MOBI/AZW3/CBZ: CFI from foliate-js, PDF: page number), `fraction` 0..1, `device` an id per browser/device, `deviceName` shown in "Auf … weiterlesen?", `source` web (default) or koreader |
 | `GET /api/progress` | the newest position per book (progress bars on the covers): `[{bookId, fraction, format, updatedAt}]` |
 | `DELETE /api/books/:id` | moves the book to calibre's trash; returns `{book}` as it was |
 | `GET /api/trash` | books in calibre's trash, newest first: `[{id, title, authors, formats, deletedAt}]` (`id` is the id the book had) |
@@ -156,6 +156,13 @@ the newest one wins. A book opens where this device stopped; when another
 device saved a newer position since, the reader asks "Auf <Gerät> bei 71 % –
 dort weiterlesen?". The table keeps a `source` per row so KOReader's sync
 positions can live next to the web reader's later.
+
+Books can be made available offline in the web app (detail or reader). The
+file then lives in the browser's Cache Storage; a service worker
+(`frontend/src/service-worker.js`) keeps the app itself offline, but never
+caches `/api/`. Positions read offline wait in the browser and are sent on
+reconnect with their `age`, so they don't win over what another device read
+in the meantime.
 
 ## Events and handlers
 

@@ -9,6 +9,7 @@ private def with_dist(&)
   File.write(File.join(root, "assets", "app-abc123.js"), "js")
   File.write(File.join(root, "manifest.webmanifest"), "{}")
   File.write(File.join(root, "assets", "pdf.worker-abc123.mjs"), "js")
+  File.write(File.join(root, "sw.js"), "self")
   yield root
 ensure
   FileUtils.rm_rf(root) if root
@@ -43,6 +44,9 @@ describe CalibreHub::FrontendHandler do
       get(h, "/")[2].should contain("<html>app</html>")
       content_type(h, "/manifest.webmanifest").should eq("application/manifest+json")
       content_type(h, "/assets/pdf.worker-abc123.mjs").should eq("text/javascript")
+      # the service worker: JavaScript, always checked for a new version
+      content_type(h, "/sw.js").to_s.should start_with("text/javascript")
+      get(h, "/sw.js")[1].should eq("no-cache")
     end
   end
 

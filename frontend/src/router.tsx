@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query"
 import { createRootRouteWithContext, createRoute, createRouter, lazyRouteComponent, Outlet, redirect } from "@tanstack/react-router"
 import { z } from "zod"
 import { ApiError } from "./lib/api"
+import { isNetworkError, isOnline, OfflineError } from "./lib/online"
 import { sessionQuery } from "./lib/queries"
 import { flag, librarySearchSchema } from "./lib/search"
 import { AppShell } from "./components/app-shell"
@@ -28,7 +29,12 @@ const loginRoute = createRoute({
   component: LoginPage,
 })
 
-async function requireSession({ context, location }: { context: { queryClient: QueryClient }; location: { href: string } }) {
+type Ctx = { context: { queryClient: QueryClient }; location: { href: string } }
+
+async function requireSession({ context, location }: Ctx) {
+  // offline the check would wait for the network (the error page lists
+  // the books stored offline)
+  if (!isOnline() && context.queryClient.getQueryData(sessionQuery.queryKey) === undefined) throw new OfflineError()
   try {
     await context.queryClient.ensureQueryData(sessionQuery)
   } catch (e) {
@@ -36,6 +42,15 @@ async function requireSession({ context, location }: { context: { queryClient: Q
       throw redirect({ to: "/login", search: { redirect: location.href } })
     }
     throw e
+  }
+}
+
+// The reader also opens books stored offline when the hub is out of reach
+async function requireSessionOrOffline(ctx: Ctx) {
+  try {
+    await requireSession(ctx)
+  } catch (e) {
+    if (!isNetworkError(e)) throw e
   }
 }
 
@@ -52,7 +67,7 @@ const appRoute = createRoute({
 const readerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/read/$id",
-  beforeLoad: requireSession,
+  beforeLoad: requireSessionOrOffline,
   params: {
     parse: ({ id }) => ({ id: z.coerce.number().int().parse(id) }),
     stringify: ({ id }) => ({ id: String(id) }),

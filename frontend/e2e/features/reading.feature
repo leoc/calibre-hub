@@ -3,7 +3,9 @@
 # The mocks serve every book file as a small EPUB with three chapters
 # ("Kapitel 1" to "Kapitel 3"), PDFs as a three-page PDF. The reading
 # position is saved per device; another device is simulated by saving a
-# position through the API with another device id.
+# position through the API with another device id. Offline is Playwright's
+# context.setOffline; the mocks then fail /api/ like the network would (the
+# service worker that keeps the app itself offline runs in builds only).
 
 Feature: Reading
 
@@ -59,3 +61,23 @@ Feature: Reading
     Then the reader shows the first page
     When I tap the middle of the page
     Then the reader's toolbar is shown
+
+  Scenario: Making a book available offline
+    Given the detail of a book with the format "EPUB" is open
+    When I make the book available offline
+    Then the detail shows the book as available offline with its size
+    When I click "Offline entfernen" in the detail
+    Then the detail offers to make the book available offline
+
+  Scenario: Reading offline, the position is synced on reconnect
+    Given the reader is open for a book with the format "EPUB"
+    And I press "Escape" in the reader
+    And I make the book available offline
+    When the connection is lost
+    Then the app shows that it is offline
+    When I open the reader from the detail
+    And I press "PageDown" in the reader 3 times
+    Then the reader shows that it is offline
+    And this device's position waits for the connection
+    When the connection is back
+    Then the hub has this device's position from offline

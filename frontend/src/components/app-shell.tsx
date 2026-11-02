@@ -19,6 +19,9 @@ import { SaveDialogHost } from "./lists"
 import { Toaster } from "./ui/toast"
 import { LibraryLink, ReplaceHistory } from "@/components/library-link"
 import { KeyboardHost } from "./keyboard"
+import { OfflineBadge } from "./offline"
+import { clearOffline } from "@/lib/offline"
+import { clearQueue, flushProgress } from "@/lib/progress-sync"
 import { activateWhenLoaded, focusActive, focusSearch, registerSearchFocus } from "@/lib/keyboard"
 
 export function AppShell() {
@@ -74,6 +77,7 @@ export function AppShell() {
         </LibraryLink>
         <HeaderSearch value={search.q ?? ""} onOpenPalette={setPalette} />
         <UploadButton className="sm:ml-auto" />
+        <OfflineBadge />
         <LogoutButton />
       </header>
       <div className="flex flex-1">
@@ -249,7 +253,11 @@ function LogoutButton() {
       aria-label={t("logout")}
       title={t("logout")}
       onClick={async () => {
+        // positions read offline go out first; then nothing of the account stays
+        await flushProgress().catch(() => 0)
         await api.logout().catch(() => undefined)
+        clearQueue()
+        await clearOffline()
         queryClient.clear()
         window.location.href = "/login"
       }}

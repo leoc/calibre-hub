@@ -44,9 +44,13 @@ export const progressHandlers = [
       position: body.position,
       fraction: body.fraction,
       source: "web",
-      updatedAt: now(),
+      // read offline and sent later: dated back by its age (ms)
+      updatedAt: body.age ? new Date(Date.parse(now()) - body.age).toISOString() : now(),
     }
     if (!store.has(bookId)) store.set(bookId, new Map())
+    // a newer position of the same device stays
+    const old = store.get(bookId)!.get(entry.device)
+    if (old && Date.parse(old.updatedAt) > Date.parse(entry.updatedAt)) return HttpResponse.json(old)
     store.get(bookId)!.set(entry.device, entry)
     return HttpResponse.json(entry)
   }),
