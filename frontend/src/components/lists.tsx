@@ -207,10 +207,14 @@ export function NewListInline({ onCreated, initialOpen = false, className }: { o
 }
 
 // Up to four covers of the books added last
-function Mosaic({ list }: { list: ReadingList }) {
+export function Mosaic({ list, className }: { list: ReadingList; className?: string }) {
   const ids = list.coverBookIds.slice(0, 4)
   return (
-    <div role="img" aria-label={t("list.mosaic")} className="grid aspect-[3/4] w-24 shrink-0 grid-cols-2 grid-rows-2 gap-0.5 overflow-hidden rounded-md bg-muted sm:w-32 eink:border-2 eink:border-black">
+    <div
+      role="img"
+      aria-label={t("list.mosaic")}
+      className={cn("grid aspect-[3/4] w-24 shrink-0 grid-cols-2 grid-rows-2 gap-0.5 overflow-hidden rounded-md bg-muted sm:w-32 eink:border-2 eink:border-black", className)}
+    >
       {ids.length === 0 ? (
         <Bookmark className="col-span-2 row-span-2 m-auto size-8 text-muted-foreground eink:text-black" aria-hidden />
       ) : (
@@ -273,7 +277,20 @@ export function ListHeader({ list }: { list: ReadingList }) {
   )
 }
 
-function ListEditDialog({ list, onClose }: { list: ReadingList; onClose: () => void }) {
+// Name, description, flags and visibility; delete (asks first). Opened on
+// the delete question from the overview's "Löschen". Deleting leaves the
+// list's page for the library unless onDeleted says otherwise.
+export function ListEditDialog({
+  list,
+  onClose,
+  startWithDelete = false,
+  onDeleted,
+}: {
+  list: ReadingList
+  onClose: () => void
+  startWithDelete?: boolean
+  onDeleted?: () => void
+}) {
   const update = useUpdateList()
   const del = useDeleteList()
   const navigate = useNavigate()
@@ -283,7 +300,7 @@ function ListEditDialog({ list, onClose }: { list: ReadingList; onClose: () => v
   const [favorite, setFavorite] = useState(list.favorite)
   const [isDefault, setDefault] = useState(list.isDefault)
   const [visibility, setVisibility] = useState<Visibility>(list.visibility)
-  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(startWithDelete)
   const { data: session } = useQuery(sessionQuery)
   // only the owner deletes a list
   const owner = session?.user === list.owner
@@ -301,7 +318,7 @@ function ListEditDialog({ list, onClose }: { list: ReadingList; onClose: () => v
           <>
             <DialogDescription>{t("list.deleteText", { name: list.name })}</DialogDescription>
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setConfirmDelete(false)}>
+              <Button variant="outline" onClick={() => (startWithDelete ? onClose() : setConfirmDelete(false))}>
                 {t("edit.cancel")}
               </Button>
               <Button
@@ -310,6 +327,10 @@ function ListEditDialog({ list, onClose }: { list: ReadingList; onClose: () => v
                 onClick={() =>
                   del.mutate(list.id, {
                     onSuccess: () => {
+                      if (onDeleted) {
+                        onClose()
+                        return onDeleted()
+                      }
                       const left = leaveOverlays()
                       onClose()
                       left.then(() => navigate({ to: "/", search: {}, replace: true }))

@@ -55,12 +55,17 @@ the lockfile (v9) works with 10 to 12.
     (asks; with a selection the bulk delete), Alt+←/→ go back and forward.
   - Vim: the app keys plus hjkl, counts (`5j`), `gg`/`G`, Ctrl+D/U, `[`/`]`
     pages, `v` visual mode, `H`/`L` back and forward, `gl` library, `gt`
-    trash, `gm` metadata, `gv` suggestions, `gc` category tree (j/k move,
+    trash, `gm` metadata, `gv` suggestions, `gL` lists, `gc` category tree (j/k move,
     l/h open and close, Enter filters, Escape back to the books), `f`/`F`
     hints (letters on every book and link; `f` opens, `F` selects a book or
     opens a link in a new tab), and on the active book `e` edit, `t`
-    reading list (the first fast tag), `dd` delete, `y` copy its link, `D`
-    download the first format. Visual mode, a pending count or sequence
+    default reading list, `dd` delete, `y` copy its link, `D`
+    download the first format.
+  - Both modes: `s` (App: Ctrl+S, the browser's "save page" never opens)
+    puts the selection, or else the active book, into the list used last,
+    or takes them out again when all are in it already (with the undo
+    toast); without a list used last it opens "In Listen speichern". `S`
+    (App: Ctrl+Shift+S) opens that dialog for the active book. Visual mode, a pending count or sequence
     and messages show top right.
   - In the open detail j/k (arrows) go to the next/previous book. `/` puts
     the focus into the wide search bar (phones: the palette); Enter
@@ -83,8 +88,9 @@ the lockfile (v9) works with 10 to 12.
     keys in a row (`gg`, `dd`). Actions: `down up left right first last
     halfDown halfUp nextPage prevPage open toggleSelect extendDown extendUp
     extendLeft extendRight visual selectAll search commands edit toggleList
-    delete copyLink download back forward goLibrary goTrash goMetadata
-    goSuggestions goCategories hints hintsSelect help`. Example:
+    saveLast saveDialog delete copyLink download back forward goLibrary
+    goTrash goMetadata goSuggestions goCategories goLists hints hintsSelect
+    help`. Example:
     `{"down": ["n", "j", "<Down>"], "toggleList": []}`.
 - Themes: system, light, dark, E-Ink (black on white, no animations, larger
   targets), stored per device. Boox/Onyx user agents get a one-time prompt.
@@ -114,7 +120,11 @@ the lockfile (v9) works with 10 to 12.
   restore the fields and drop the `auto-metadaten` tag with the last active
   change, candidates exist for every book (search "nichts" finds none).
 - Reading lists (`e2e/features/lists.feature`), like playlists: the
-  sidebar section "Listen" (favorites first, "Neue Liste"), a list's page
+  sidebar section "Listen" shows the favorites (and the open list) and
+  "Alle Listen (N)", the overview `/lists` (palette command "Listen", Vim
+  `gL`): every list with covers, description, count and badges, "Öffnen",
+  "Bearbeiten", toggles for favorite, sync and default list, "Löschen"
+  (asks), and "Neue Liste". A list's page
   is the library with `?list=` (cover mosaic of the books added last,
   description, count, favorite, "Liste bearbeiten" with name, description,
   favorite, default list, sync to the reader, visibility and delete; sorts:
@@ -123,7 +133,9 @@ the lockfile (v9) works with 10 to 12.
   "In Listen speichern" (a checkbox per list, "Neue Liste" with its name
   typed in place), as does "Speichern" in the detail, which also offers the
   default list and the list used last ("In Urlaub"). Bulk: "Zu Liste",
-  "Aus Liste" (in a list: "Aus dieser Liste"). Palette: `l ` lists the
+  "Aus Liste" (in a list: "Aus dieser Liste", no question but a toast "2
+  Bücher aus Urlaub entfernt · Rückgängig" for 8 s that puts exactly those
+  books back; `src/lib/toast.ts`, one message at a time, no animation). Palette: `l ` lists the
   lists, `> Zu Liste: …` / `Aus Liste: …` for the open book, "Zu Liste …"
   opens the dialog, `> Neue Liste: Name` (or a new name after `l `) creates
   one. They replace the fast tags; `fastTags` in `GET /api/config` is

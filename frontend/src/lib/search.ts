@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { ALL_SORTS, LIST_SORTS, SORTS, type BookQuery, type Sort } from "./api"
+import { ALL_SORTS, LIST_SORTS, SORTS, type BookQuery, type BulkTarget, type Sort } from "./api"
 
 export const PAGE_SIZE = 60
 
@@ -62,6 +62,14 @@ const quote = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 
 // calibre search for books with an empty category column
 export const unsortedQuery = (categoryColumn: string) => `#${categoryColumn}:false`
+
+// "All matches" for the bulk API: the filters only, no paging, sorting or
+// open book
+export function bulkTarget(search: LibrarySearch, categoryColumn: string | null = null): BulkTarget {
+  const { page: _p, book: _b, edit: _e, ...filters } = search
+  const { offset: _o, limit: _l, sort: _s, order: _r, ...query } = toBookQuery(filters, categoryColumn)
+  return { query }
+}
 
 export function toBookQuery(s: LibrarySearch, categoryColumn: string | null = null): BookQuery {
   const q = [

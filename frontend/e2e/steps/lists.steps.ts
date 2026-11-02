@@ -180,3 +180,103 @@ Then("the list {string} exists", async ({ page }, name: string) => {
 Then("the bulk bar says {string}", async ({ page }, text: string) => {
   await expect(page.getByRole("status").filter({ hasText: text })).toBeVisible()
 })
+
+// --- sidebar, overview, undo --------------------------------------------------
+
+const toast = (page: Page) => page.getByRole("status", { name: "Meldung" })
+const overview = (page: Page) => page.getByRole("main").getByRole("list", { name: "Listen" })
+const overviewRow = (page: Page, name: string) => overview(page).getByRole("listitem", { name, exact: true })
+
+interface ListFlags extends ListInfo {
+  favorite: boolean
+  sync: boolean
+  isDefault: boolean
+  count: number
+}
+const listByName = async (page: Page, name: string) => (await lists(page)).find((l) => l.name === name) as ListFlags | undefined
+
+Then("the sidebar section {string} shows {string}, {string} in this order", async ({ page }, section: string, a: string, b: string) => {
+  const links = page.getByRole("navigation").getByRole("list", { name: section }).getByRole("link")
+  await expect(links).toHaveText([new RegExp(`^${a}`), new RegExp(`^${b}`)])
+})
+
+Then("the sidebar links to {string} with the count {int}", async ({ page }, label: string, n: number) => {
+  await expect(page.getByRole("navigation").getByRole("link", { name: label })).toHaveText(new RegExp(`^\\s*${label}\\s*${n}$`))
+})
+
+When("I click {string} in the sidebar", async ({ page }, label: string) => {
+  await page.getByRole("navigation").getByRole("link", { name: label }).click()
+})
+
+When("I run the command {string} in the palette", async ({ page }, command: string) => {
+  await openPalette(page)
+  await palette(page).getByRole("combobox").fill(`>${command}`)
+  await palette(page).getByRole("option", { name: command, exact: true }).click()
+  await expect(palette(page)).toBeHidden()
+})
+
+Then("the overview shows {string}, {string}, {string}", async ({ page }, a: string, b: string, c: string) => {
+  await expect(overview(page).getByRole("heading", { level: 2 })).toHaveText([a, b, c])
+})
+
+Then("the overview shows {string}, {string}", async ({ page }, a: string, b: string) => {
+  await expect(overview(page).getByRole("heading", { level: 2 })).toHaveText([a, b])
+})
+
+Then("the overview shows {string} and the badge {string} for {string}", async ({ page }, count: string, badge: string, name: string) => {
+  const row = overviewRow(page, name)
+  await expect(row.getByText(count, { exact: true })).toBeVisible()
+  await expect(row.locator("[data-slot=badge]", { hasText: badge })).toBeVisible()
+})
+
+When("I click {string} for {string} in the overview", async ({ page }, label: string, name: string) => {
+  await overviewRow(page, name).getByRole("button", { name: label, exact: true }).click()
+})
+
+const FLAGS: Record<string, { check: (l: ListFlags | undefined) => boolean; button?: string }> = {
+  "is a favorite": { check: (l) => !!l?.favorite, button: "Favorit" },
+  "is synced": { check: (l) => !!l?.sync, button: "Synchronisieren" },
+  "is the default list": { check: (l) => !!l?.isDefault, button: "Standardliste" },
+  "is not the default list": { check: (l) => !l?.isDefault },
+}
+
+Then(/^the list "([^"]+)" (is a favorite|is synced|is the default list|is not the default list)$/, async ({ page }, name: string, what: string) => {
+  const { check, button } = FLAGS[what]
+  await expect.poll(async () => check(await listByName(page, name))).toBe(true)
+  // and the overview's toggle says so
+  if (button) await expect(overviewRow(page, name).getByRole("button", { name: button, exact: true })).toHaveAttribute("aria-pressed", "true")
+})
+
+Then("the list {string} has {int} books", async ({ page }, name: string, n: number) => {
+  await expect.poll(async () => (await listByName(page, name))?.count).toBe(n)
+})
+
+Then("the dialog {string} asks about {string}", async ({ page }, title: string, name: string) => {
+  const dialog = page.getByRole("dialog", { name: title })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText(name)
+})
+
+When("I click {string} in the dialog", async ({ page }, label: string) => {
+  await page.getByRole("dialog").getByRole("button", { name: label, exact: true }).click()
+})
+
+When("I create the list {string} in the overview", async ({ page }, name: string) => {
+  const main = page.getByRole("main")
+  await main.getByRole("button", { name: "Neue Liste" }).click()
+  await main.getByRole("textbox", { name: "Name der neuen Liste" }).fill(name)
+  await main.getByRole("button", { name: "Anlegen" }).click()
+})
+
+Then("a toast says {string}", async ({ page }, text: string) => {
+  await expect(toast(page)).toContainText(text)
+  await expect(toast(page).getByRole("button", { name: "Rückgängig" })).toBeVisible()
+})
+
+When("I click {string} in the toast", async ({ page }, label: string) => {
+  await toast(page).getByRole("button", { name: label, exact: true }).click()
+})
+
+Then("the toast is gone", async ({ page }) => {
+  await expect(toast(page)).toBeHidden()
+})

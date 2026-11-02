@@ -1,6 +1,8 @@
 import { useRef, useSyncExternalStore, type MouseEvent, type PointerEvent } from "react"
 import { queryOptions, useMutation, useQueryClient, type Query, type QueryClient } from "@tanstack/react-query"
-import { api, write, type Book, type BookPage, type BookQuery, type BulkTarget, type ListPatch, type ReadingList } from "./api"
+import { formatNumber, t } from "@/i18n"
+import { toast } from "./toast"
+import { api, ApiError, write, type Book, type BookPage, type BookQuery, type BulkTarget, type ListPatch, type ReadingList } from "./api"
 
 // Reading lists: queries, mutations and the "Speichern" dialog store.
 
@@ -86,6 +88,28 @@ export function useBulkList() {
       patchBookLists(qc, changed, listId, !!r.added)
       qc.invalidateQueries(listPages(listId))
     },
+  })
+}
+
+// The undo of a removal: puts exactly these books back. Outside of a hook,
+// since the toast that offers it outlives the component that removed them.
+export async function restoreToList(qc: QueryClient, listId: number, bookIds: number[]) {
+  const r = await write.addToList(listId, { bookIds })
+  storeList(qc, r.list)
+  patchBookLists(qc, new Set(r.added ?? []), listId, true)
+  qc.invalidateQueries(listPages(listId))
+  return r
+}
+
+// "2 Bücher aus Urlaub entfernt · Rückgängig"
+export function offerUndoRemove(qc: QueryClient, list: Pick<ReadingList, "id" | "name">, removed: number[]) {
+  if (!removed.length) return
+  const name = list.name
+  const text = removed.length === 1 ? t("list.removedOne", { name }) : t("list.removedMany", { count: formatNumber(removed.length), name })
+  toast.show(text, {
+    label: t("toast.undo"),
+    run: () =>
+      void restoreToList(qc, list.id, removed).catch((e: unknown) => toast.show(t("list.undoFailed", { error: e instanceof ApiError ? e.message : String(e) }))),
   })
 }
 

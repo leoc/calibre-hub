@@ -139,6 +139,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const actions: Action[] = useMemo(
     () => [
       { id: "all", label: t("nav.all"), icon: <LibraryBig />, run: () => go({}) },
+      { id: "lists", label: t("nav.lists"), icon: <ListIcon />, run: () => closeThen(() => navigate({ to: "/lists" })) },
       { id: "trash", label: t("trash.title"), icon: <Trash2 />, run: () => closeThen(() => navigate({ to: "/trash" })) },
       ...(config.classify
         ? [{ id: "suggestions", label: t("suggest.title"), icon: <Sparkles />, run: () => closeThen(() => navigate({ to: "/suggestions" })) }]

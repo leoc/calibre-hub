@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Keyboard, Settings2 } from "lucide-react"
-import { DEFAULT_CONFIG, downloadUrl, type Book } from "@/lib/api"
+import { DEFAULT_CONFIG, downloadUrl, type Book, type ReadingList } from "@/lib/api"
 import { configQuery } from "@/lib/queries"
-import { defaultList, inList, listsQuery, saveDialog, useListMembership } from "@/lib/lists"
+import { defaultList, inList, lastUsedList, listsQuery, offerUndoRemove, saveDialog, useBulkList, useListMembership } from "@/lib/lists"
 import { eventToken, KeyEngine, MODES, type Action } from "@/lib/keymap"
 import { activateWhenLoaded, bookElement, focusActive, keyboard, registerList, runListAction, useKeyboard } from "@/lib/keyboard"
-import type { LibrarySearch } from "@/lib/search"
+import { bulkTarget, type LibrarySearch } from "@/lib/search"
 import { requestBulk, selection, useSelection } from "@/lib/selection"
-import { t } from "@/i18n"
+import { formatNumber, t } from "@/i18n"
 import { cn } from "@/lib/utils"
 import { sortFormats } from "./book-detail"
 import { DeleteBookDialog } from "./delete-book"
@@ -91,6 +91,14 @@ export function KeyboardHost({ onSearch, onCommands }: { onSearch: () => void; o
           return true
         case "goCategories":
           return focusTree()
+        case "goLists":
+          navigate({ to: "/lists" })
+          return true
+        case "saveLast":
+        case "saveDialog":
+          // never the browser's "save page", also where there are no books
+          if (!runListAction(action, count, e)) keyboard.flash(t("keys.noBook"))
+          return true
         case "hints":
         case "hintsSelect": {
           const list = collectHints()
@@ -269,6 +277,8 @@ function showActive() {
   })
 }
 
+const savedText = (n: number, name: string) => (n === 1 ? t("list.savedOne", { name }) : t("list.savedMany", { count: formatNumber(n), name }))
+
 function download(book: Book) {
   const format = sortFormats(book.formats)[0]
   if (!format) return false
@@ -292,10 +302,12 @@ export function useListKeys(props: ListProps): ReactNode {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const { data: lists } = useQuery(listsQuery)
   const membership = useListMembership()
+  const bulkList = useBulkList()
+  const qc = useQueryClient()
   const [deleting, setDeleting] = useState<{ book: Book; next: number | null } | null>(null)
-  const latest = useRef({ ...props, config, lists, membership })
+  const latest = useRef({ ...props, config, lists, membership, bulkList })
   useEffect(() => {
-    latest.current = { ...props, config, lists, membership }
+    latest.current = { ...props, config, lists, membership, bulkList }
   })
   // ending the selection (bulk bar X) ends visual mode too
   const { active: selecting } = useSelection()
@@ -303,172 +315,208 @@ export function useListKeys(props: ListProps): ReactNode {
     if (!selecting && keyboard.get().visual) keyboard.setVisual(null)
   }, [selecting])
 
-  useEffect(
-    () =>
-      registerList((action, count) => {
-        const { books, search, page, pages, lists, membership } = latest.current
-        const detailOpen = search.book != null
-        // the edit form owns the keys
-        if (search.edit) return false
-        const n = count ?? 1
+  useEffect(() => {
+    // Like the detail's button: into the list used last, or out of it again
+    // when all of them are in it already (with an undo)
+    const toggleLast = (list: ReadingList, ids: number[]) => {
+      const { books, membership } = latest.current
+      const known = (id: number) => books?.find((b) => b.id === id) ?? qc.getQueryData<Book>(["book", id])
+      const allIn = ids.every((id) => {
+        const b = known(id)
+        return !!b && inList(b, list.id)
+      })
+      membership
+        .mutateAsync({ list, bookIds: ids, on: !allIn })
+        .then((r) => (allIn ? offerUndoRemove(qc, r.list, r.removed ?? ids) : keyboard.flash(savedText(r.added?.length ?? ids.length, r.list.name))))
+        .catch(() => undefined)
+    }
+    return registerList((action, count) => {
+      const { books, search, page, pages, lists, membership, bulkList, config } = latest.current
+      const detailOpen = search.book != null
+      // the edit form owns the keys
+      if (search.edit) return false
+      const n = count ?? 1
 
-        if (action === "nextPage" || action === "prevPage") {
-          const to = Math.min(pages, Math.max(1, page + (action === "nextPage" ? n : -n)))
-          if (to === page) return true
-          keyboard.setVisual(null)
-          activateWhenLoaded({ at: "first", focus: true, when: (s) => (s.page ?? 1) === to })
-          navigate({ to: "/", search: { ...search, page: to > 1 ? to : undefined, book: undefined, edit: undefined } })
-          return true
+      if (action === "nextPage" || action === "prevPage") {
+        const to = Math.min(pages, Math.max(1, page + (action === "nextPage" ? n : -n)))
+        if (to === page) return true
+        keyboard.setVisual(null)
+        activateWhenLoaded({ at: "first", focus: true, when: (s) => (s.page ?? 1) === to })
+        navigate({ to: "/", search: { ...search, page: to > 1 ? to : undefined, book: undefined, edit: undefined } })
+        return true
+      }
+      if (!books?.length) return false
+      const ids = books.map((b) => b.id)
+      const kb = keyboard.get()
+      const sel = selection.get()
+      const cur = kb.active != null ? ids.indexOf(kb.active) : -1
+      const activate = (i: number) => {
+        const id = ids[i]
+        keyboard.setActive(id)
+        const visual = keyboard.get().visual
+        if (visual) {
+          const [a, b] = [ids.indexOf(visual.anchor), i].sort((x, y) => x - y)
+          selection.replace([...new Set([...visual.base, ...(a < 0 ? [id] : ids.slice(a, b + 1))])])
         }
-        if (!books?.length) return false
-        const ids = books.map((b) => b.id)
-        const kb = keyboard.get()
-        const sel = selection.get()
-        const cur = kb.active != null ? ids.indexOf(kb.active) : -1
-        const activate = (i: number) => {
-          const id = ids[i]
-          keyboard.setActive(id)
-          const visual = keyboard.get().visual
-          if (visual) {
-            const [a, b] = [ids.indexOf(visual.anchor), i].sort((x, y) => x - y)
-            selection.replace([...new Set([...visual.base, ...(a < 0 ? [id] : ids.slice(a, b + 1))])])
-          }
-          // the open detail follows the active book
-          if (detailOpen) navigate({ to: "/", search: { ...search, book: id }, replace: true })
-          else showActive()
-        }
+        // the open detail follows the active book
+        if (detailOpen) navigate({ to: "/", search: { ...search, book: id }, replace: true })
+        else showActive()
+      }
 
-        switch (action) {
-          case "escape":
-            if (detailOpen) return false
-            if (kb.visual) keyboard.setVisual(null)
-            else if (sel.ids.size || sel.all) selection.clear()
-            else if (sel.active) selection.stop()
-            else return false
-            showActive()
-            return true
-          case "selectAll":
-            selection.start()
-            selection.addPage(ids)
-            showActive()
-            return true
-          case "delete":
-            // with a selection: the bulk delete (it asks itself)
-            if (sel.active && (sel.ids.size || sel.all)) {
-              requestBulk("delete")
-              return true
-            }
-        }
-
-        // everything else starts from the active book; the first key press picks one
-        if (cur < 0) {
-          activate(action === "last" ? ids.length - 1 : 0)
-          if (action === "toggleSelect") {
-            selection.start()
-            selection.toggle(ids[0], false, ids)
-          }
-          return true
-        }
-        const book = books[cur]
-
-        // in the open detail the books follow one another: j/k is next/previous
-        const { cols, rows } = detailOpen ? { cols: 1, rows: 2 } : layout()
-        // up/down: as many rows as there are, never sideways out of the column
-        const vertical = (step: number) => {
-          for (let k = n; k > 0; k--) {
-            const to = cur + step * k
-            if (to >= 0 && to < ids.length) return to
-            // a shorter last row: its last book
-            if (step > 0 && Math.floor((ids.length - 1) / cols) > Math.floor(cur / cols) && k === 1) return ids.length - 1
-          }
-          return cur
-        }
-        const clamp = (i: number) => Math.min(ids.length - 1, Math.max(0, i))
-
-        switch (action) {
-          case "down":
-          case "extendDown":
-            activate(vertical(cols))
-            break
-          case "up":
-          case "extendUp":
-            activate(vertical(-cols))
-            break
-          case "left":
-          case "extendLeft":
-            activate(clamp(cur - n))
-            break
-          case "right":
-          case "extendRight":
-            activate(clamp(cur + n))
-            break
-          case "halfDown":
-            activate(clamp(cur + cols * Math.max(1, Math.floor(rows / 2)) * n))
-            break
-          case "halfUp":
-            activate(clamp(cur - cols * Math.max(1, Math.floor(rows / 2)) * n))
-            break
-          case "first":
-            activate(0)
-            break
-          case "last":
-            activate(ids.length - 1)
-            break
-          case "open":
-            navigate({ to: "/", search: { ...search, book: book.id, edit: undefined } })
-            return true
-          case "edit":
-            navigate({ to: "/", search: { ...search, book: book.id, edit: true } })
-            return true
-          case "toggleList": {
-            // the default reading list; without one the save dialog
-            const list = defaultList(lists)
-            if (!list) {
-              saveDialog.open(book)
-              return true
-            }
-            membership.mutate({ list, bookIds: [book.id], on: !inList(book, list.id) })
-            return true
-          }
-          case "delete":
-            setDeleting({ book, next: ids[cur + 1] ?? ids[cur - 1] ?? null })
-            return true
-          case "copyLink":
-            navigator.clipboard
-              .writeText(new URL(`/books/${book.id}`, location.origin).href)
-              .then(() => keyboard.flash(t("keys.linkCopied")))
-              .catch(() => keyboard.flash(t("keys.copyFailed")))
-            return true
-          case "download":
-            return download(book)
-          case "toggleSelect":
-            selection.start()
-            selection.toggle(book.id, false, ids)
-            showActive()
-            return true
-          case "visual":
-            if (kb.visual) {
-              keyboard.setVisual(null)
-              return true
-            }
-            selection.start()
-            keyboard.setVisual({ anchor: book.id, base: [...sel.ids] })
-            selection.replace([...new Set([...sel.ids, book.id])])
-            showActive()
-            return true
-          default:
-            return false
-        }
-        if (action.startsWith("extend")) {
-          const anchor = sel.anchor != null && ids.includes(sel.anchor) ? sel.anchor : book.id
-          selection.start()
-          selection.addRange(anchor, keyboard.get().active!, ids)
+      switch (action) {
+        case "escape":
+          if (detailOpen) return false
+          if (kb.visual) keyboard.setVisual(null)
+          else if (sel.ids.size || sel.all) selection.clear()
+          else if (sel.active) selection.stop()
+          else return false
           showActive()
+          return true
+        case "selectAll":
+          selection.start()
+          selection.addPage(ids)
+          showActive()
+          return true
+        case "delete":
+          // with a selection: the bulk delete (it asks itself)
+          if (sel.active && (sel.ids.size || sel.all)) {
+            requestBulk("delete")
+            return true
+          }
+          break
+        case "saveLast":
+          // with a selection: the selection, otherwise the active book (below)
+          if (sel.active && (sel.ids.size || sel.all)) {
+            const last = lastUsedList(lists)
+            if (!last) keyboard.flash(t("list.noLast"))
+            else if (sel.all) {
+              // all matches: added, no toggle (that would need them all loaded)
+              bulkList
+                .mutateAsync({ listId: last.id, target: bulkTarget(search, config.categoryColumn) })
+                .then((r) => keyboard.flash(savedText(r.added?.length ?? 0, last.name)))
+                .catch(() => undefined)
+            } else toggleLast(last, [...sel.ids])
+            return true
+          }
+      }
+
+      // everything else starts from the active book; the first key press picks one
+      if (cur < 0) {
+        activate(action === "last" ? ids.length - 1 : 0)
+        if (action === "toggleSelect") {
+          selection.start()
+          selection.toggle(ids[0], false, ids)
         }
         return true
-      }),
-    [navigate],
-  )
+      }
+      const book = books[cur]
+
+      // in the open detail the books follow one another: j/k is next/previous
+      const { cols, rows } = detailOpen ? { cols: 1, rows: 2 } : layout()
+      // up/down: as many rows as there are, never sideways out of the column
+      const vertical = (step: number) => {
+        for (let k = n; k > 0; k--) {
+          const to = cur + step * k
+          if (to >= 0 && to < ids.length) return to
+          // a shorter last row: its last book
+          if (step > 0 && Math.floor((ids.length - 1) / cols) > Math.floor(cur / cols) && k === 1) return ids.length - 1
+        }
+        return cur
+      }
+      const clamp = (i: number) => Math.min(ids.length - 1, Math.max(0, i))
+
+      switch (action) {
+        case "down":
+        case "extendDown":
+          activate(vertical(cols))
+          break
+        case "up":
+        case "extendUp":
+          activate(vertical(-cols))
+          break
+        case "left":
+        case "extendLeft":
+          activate(clamp(cur - n))
+          break
+        case "right":
+        case "extendRight":
+          activate(clamp(cur + n))
+          break
+        case "halfDown":
+          activate(clamp(cur + cols * Math.max(1, Math.floor(rows / 2)) * n))
+          break
+        case "halfUp":
+          activate(clamp(cur - cols * Math.max(1, Math.floor(rows / 2)) * n))
+          break
+        case "first":
+          activate(0)
+          break
+        case "last":
+          activate(ids.length - 1)
+          break
+        case "open":
+          navigate({ to: "/", search: { ...search, book: book.id, edit: undefined } })
+          return true
+        case "edit":
+          navigate({ to: "/", search: { ...search, book: book.id, edit: true } })
+          return true
+        case "toggleList": {
+          // the default reading list; without one the save dialog
+          const list = defaultList(lists)
+          if (!list) {
+            saveDialog.open(book)
+            return true
+          }
+          membership.mutate({ list, bookIds: [book.id], on: !inList(book, list.id) })
+          return true
+        }
+        case "saveLast": {
+          const last = lastUsedList(lists)
+          if (!last) saveDialog.open(book)
+          else toggleLast(last, [book.id])
+          return true
+        }
+        case "saveDialog":
+          saveDialog.open(book)
+          return true
+        case "delete":
+          setDeleting({ book, next: ids[cur + 1] ?? ids[cur - 1] ?? null })
+          return true
+        case "copyLink":
+          navigator.clipboard
+            .writeText(new URL(`/books/${book.id}`, location.origin).href)
+            .then(() => keyboard.flash(t("keys.linkCopied")))
+            .catch(() => keyboard.flash(t("keys.copyFailed")))
+          return true
+        case "download":
+          return download(book)
+        case "toggleSelect":
+          selection.start()
+          selection.toggle(book.id, false, ids)
+          showActive()
+          return true
+        case "visual":
+          if (kb.visual) {
+            keyboard.setVisual(null)
+            return true
+          }
+          selection.start()
+          keyboard.setVisual({ anchor: book.id, base: [...sel.ids] })
+          selection.replace([...new Set([...sel.ids, book.id])])
+          showActive()
+          return true
+        default:
+          return false
+      }
+      if (action.startsWith("extend")) {
+        const anchor = sel.anchor != null && ids.includes(sel.anchor) ? sel.anchor : book.id
+        selection.start()
+        selection.addRange(anchor, keyboard.get().active!, ids)
+        showActive()
+      }
+      return true
+    })
+  }, [navigate, qc])
 
   if (!deleting) return null
   return (

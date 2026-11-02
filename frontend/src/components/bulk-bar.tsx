@@ -2,11 +2,11 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckCircle2, CircleAlert, ListMinus, ListPlus, Loader2, Trash2, X } from "lucide-react"
 import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget, type ReadingList } from "@/lib/api"
-import { listsQuery, useBulkList } from "@/lib/lists"
+import { listsQuery, offerUndoRemove, useBulkList } from "@/lib/lists"
 import { NewListInline } from "./lists"
 import { categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { categoriesQuery, configQuery } from "@/lib/queries"
-import { toBookQuery, type LibrarySearch } from "@/lib/search"
+import { bulkTarget, type LibrarySearch } from "@/lib/search"
 import { onBulkRequest, selection, useSelection, type BulkAction } from "@/lib/selection"
 import { formatNumber, t } from "@/i18n"
 import { Button } from "./ui/button"
@@ -31,6 +31,7 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   // the outcome of a list change, shown until the search changes
   const [listResult, setListResult] = useState<{ text: string; key: string } | null>(null)
   const bulkList = useBulkList()
+  const qc = useQueryClient()
   const count = sel.all ? total : sel.ids.size
   // "all matches" belongs to one search
   const key = JSON.stringify({ ...search, page: undefined, book: undefined, edit: undefined })
@@ -43,11 +44,8 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   // the command palette's "Tags hinzufügen (3)" …
   useEffect(() => onBulkRequest(setAction), [])
 
-  const { page: _p, book: _b, edit: _e, ...filters } = search
-  // the bulk query takes filters only, no paging or sorting; ids keep the
-  // order they were selected in (numbering a series)
-  const { offset: _o, limit: _l, sort: _s, order: _r, ...query } = toBookQuery(filters, config.categoryColumn)
-  const target: BulkTarget = sel.all ? { query } : { ids: [...sel.ids] }
+  // ids keep the order they were selected in (numbering a series)
+  const target: BulkTarget = sel.all ? bulkTarget(search, config.categoryColumn) : { ids: [...sel.ids] }
 
   // Two groups: what is selected, and what to do with it. Side by side on wide
   // screens; on smaller ones each is a row that scrolls sideways instead of
@@ -101,10 +99,11 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
               variant="outline"
               size="sm"
               disabled={!count || bulkList.isPending}
+              // no confirmation: the toast offers to undo it
               onClick={() =>
                 bulkList.mutate(
                   { listId: search.list!, target, remove: true },
-                  { onSuccess: (r) => (setListDone(t("bulk.listRemoved", { count: formatNumber(r.removed?.length ?? 0), name: r.list.name })), selection.clear()) },
+                  { onSuccess: (r) => (offerUndoRemove(qc, r.list, r.removed ?? []), selection.clear()) },
                 )
               }
             >

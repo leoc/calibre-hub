@@ -33,6 +33,8 @@ export const ACTIONS = [
   "commands",
   "edit",
   "toggleList",
+  "saveLast",
+  "saveDialog",
   "delete",
   "copyLink",
   "download",
@@ -43,6 +45,7 @@ export const ACTIONS = [
   "goMetadata",
   "goSuggestions",
   "goCategories",
+  "goLists",
   "hints",
   "hintsSelect",
   "help",
@@ -70,6 +73,9 @@ const APP: Bindings = {
   search: ["/"],
   commands: [">"],
   edit: ["<F2>"],
+  // Ctrl+S would save the page in the browser
+  saveLast: ["<C-s>"],
+  saveDialog: ["<C-S-s>"],
   delete: ["<Del>"],
   back: ["<A-Left>"],
   forward: ["<A-Right>"],
@@ -91,6 +97,8 @@ const VIM: Bindings = {
   visual: ["v"],
   edit: ["e"],
   toggleList: ["t"],
+  saveLast: ["s"],
+  saveDialog: ["S"],
   delete: ["dd"],
   copyLink: ["y"],
   download: ["D"],
@@ -101,6 +109,7 @@ const VIM: Bindings = {
   goMetadata: ["gm"],
   goSuggestions: ["gv"],
   goCategories: ["gc"],
+  goLists: ["gL"],
   hints: ["f"],
   hintsSelect: ["F"],
 }
@@ -109,8 +118,8 @@ const VIM: Bindings = {
 export const GROUPS: { title: "move" | "select" | "book" | "go"; actions: Action[] }[] = [
   { title: "move", actions: ["down", "up", "left", "right", "first", "last", "halfDown", "halfUp", "nextPage", "prevPage"] },
   { title: "select", actions: ["toggleSelect", "extendDown", "extendUp", "extendLeft", "extendRight", "visual", "selectAll"] },
-  { title: "book", actions: ["open", "edit", "toggleList", "delete", "copyLink", "download", "hints", "hintsSelect"] },
-  { title: "go", actions: ["search", "commands", "back", "forward", "goLibrary", "goTrash", "goMetadata", "goSuggestions", "goCategories", "help"] },
+  { title: "book", actions: ["open", "edit", "toggleList", "saveLast", "saveDialog", "delete", "copyLink", "download", "hints", "hintsSelect"] },
+  { title: "go", actions: ["search", "commands", "back", "forward", "goLibrary", "goTrash", "goMetadata", "goSuggestions", "goCategories", "goLists", "help"] },
 ]
 
 export function defaultBindings(mode: KeyMode): Bindings {

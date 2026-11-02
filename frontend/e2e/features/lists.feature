@@ -5,6 +5,7 @@
 # last) and "Klassiker". The bookmark on a cover saves to the default list;
 # a long press (touch) or a right click opens "In Listen speichern" with a
 # checkbox per list. The palette lists the lists with the prefix "l ".
+# The sidebar shows the favorites; "Alle Listen" leads to the overview.
 
 Feature: Reading lists
 
@@ -49,8 +50,39 @@ Feature: Reading lists
     Then the book is in the list "Urlaub"
 
   @wide
-  Scenario: Wide: the sidebar shows the lists, favorites first
-    Then the sidebar section "Listen" shows "Leseliste", "Urlaub", "Klassiker" in this order
+  Scenario: Wide: the sidebar shows the favorite lists only
+    Then the sidebar section "Listen" shows "Leseliste", "Urlaub" in this order
+    And the sidebar links to "Alle Listen" with the count 3
+    When I click "Alle Listen" in the sidebar
+    Then I see the heading "Listen"
+    And the overview shows "Leseliste", "Urlaub", "Klassiker"
+
+  Scenario: The overview of all lists
+    When I run the command "Listen" in the palette
+    Then I see the heading "Listen"
+    And the overview shows "Leseliste", "Urlaub", "Klassiker"
+    And the overview shows "3 Bücher" and the badge "Favorit" for "Urlaub"
+    When I click "Favorit" for "Klassiker" in the overview
+    Then the list "Klassiker" is a favorite
+    When I click "Synchronisieren" for "Urlaub" in the overview
+    Then the list "Urlaub" is synced
+    When I click "Standardliste" for "Klassiker" in the overview
+    Then the list "Klassiker" is the default list
+    And the list "Leseliste" is not the default list
+
+  Scenario: Deleting a list from the overview asks first
+    When I run the command "Listen" in the palette
+    And I click "Löschen" for "Klassiker" in the overview
+    Then the dialog "Liste löschen" asks about "Klassiker"
+    When I click "Ja, Liste löschen" in the dialog
+    Then the overview shows "Leseliste", "Urlaub"
+    And I see the heading "Listen"
+
+  Scenario: Creating a list from the overview
+    When I run the command "Listen" in the palette
+    And I create the list "Sommer 2027" in the overview
+    Then I see the heading "Sommer 2027"
+    And the list "Sommer 2027" exists
 
   Scenario: A list page with description, covers and count
     When I open the list "Urlaub"
@@ -93,5 +125,16 @@ Feature: Reading lists
     Then the library shows 2 books
     When I select the first 1 books
     And I remove the selection from this list
-    Then the bulk bar says "1 aus Klassiker entfernt"
+    Then a toast says "1 Buch aus Klassiker entfernt"
     And the library shows 1 books
+
+  Scenario: Bulk: removing from this list asks nothing and can be undone
+    When I open the list "Urlaub"
+    And I select the first 2 books
+    And I remove the selection from this list
+    Then a toast says "2 Bücher aus Urlaub entfernt"
+    And the library shows 1 books
+    When I click "Rückgängig" in the toast
+    Then the toast is gone
+    And the library shows 3 books
+    And the list "Urlaub" has 3 books

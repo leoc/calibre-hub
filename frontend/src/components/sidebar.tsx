@@ -1,9 +1,9 @@
 import { useContext, useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { Link } from "@tanstack/react-router"
 import { Bookmark, Inbox, Library, ListIcon, Sparkles, Star, Trash2, WandSparkles } from "lucide-react"
 import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery } from "@/lib/queries"
-import { DEFAULT_CONFIG, type Named, type ReadingList } from "@/lib/api"
+import { DEFAULT_CONFIG, type Named } from "@/lib/api"
 import { listsQuery } from "@/lib/lists"
 import { hasFilters, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
 import { matchNamed } from "@/lib/palette"
@@ -13,7 +13,6 @@ import { CategoryTree } from "./category-tree"
 import { ThemeSwitch } from "./theme-switch"
 import { KeyboardSwitch } from "./keyboard"
 import { LibraryLink, ReplaceHistory } from "@/components/library-link"
-import { NewListInline } from "./lists"
 
 interface Props {
   search: LibrarySearch
@@ -120,45 +119,36 @@ export function Sidebar({ search, onNavigate }: Props) {
   )
 }
 
-// Reading lists, favorites first; non-favorites beyond a few collapse
+// Reading lists: the favorites (and the open list, so it shows as active),
+// then "Alle Listen" with the overview
 function ListsSection({ search, onNavigate }: Props) {
   const { data: lists } = useQuery(listsQuery)
-  const [expanded, setExpanded] = useState(false)
-  const navigate = useNavigate()
   const replace = useContext(ReplaceHistory) || undefined
   if (!lists) return null
-  const favorites = lists.filter((l) => l.favorite)
-  const others = lists.filter((l) => !l.favorite)
-  const shown = expanded || others.length <= COLLAPSED ? others : others.filter((l, i) => i < COLLAPSED || l.id === search.list)
-  const item = (l: ReadingList) => (
-    <li key={l.id}>
-      <LibraryLink search={withFilter({}, { list: l.id })} onClick={onNavigate} className={cn(navItem, search.list === l.id && active)}>
-        <span className="flex min-w-0 items-center gap-2">
-          {l.isDefault ? <Bookmark className="size-4 shrink-0" aria-hidden /> : l.favorite ? <Star className="size-4 shrink-0" aria-hidden /> : <ListIcon className="size-4 shrink-0" aria-hidden />}
-          <span className="truncate">{l.name}</span>
-        </span>
-        <Count n={l.count} />
-      </LibraryLink>
-    </li>
-  )
+  const shown = lists.filter((l) => l.favorite || l.id === search.list)
   return (
     <Section title={t("nav.lists")}>
-      <ul className="space-y-0.5" aria-label={t("nav.lists")}>
-        {favorites.map(item)}
-        {shown.map(item)}
-      </ul>
-      {others.length > COLLAPSED && (
-        <button onClick={() => setExpanded(!expanded)} className="px-2 py-1 text-xs text-muted-foreground underline-offset-2 hover:underline eink:min-h-11 touch:min-h-11 eink:text-sm eink:text-black eink:underline">
-          {expanded ? t("nav.less") : t("nav.more", { count: formatNumber(others.length) })}
-        </button>
+      {!!shown.length && (
+        <ul className="space-y-0.5" aria-label={t("nav.lists")}>
+          {shown.map((l) => (
+            <li key={l.id}>
+              <LibraryLink search={withFilter({}, { list: l.id })} onClick={onNavigate} className={cn(navItem, search.list === l.id && active)}>
+                <span className="flex min-w-0 items-center gap-2">
+                  {l.isDefault ? <Bookmark className="size-4 shrink-0" aria-hidden /> : l.favorite ? <Star className="size-4 shrink-0" aria-hidden /> : <ListIcon className="size-4 shrink-0" aria-hidden />}
+                  <span className="truncate">{l.name}</span>
+                </span>
+                <Count n={l.count} />
+              </LibraryLink>
+            </li>
+          ))}
+        </ul>
       )}
-      <NewListInline
-        className="h-auto w-full px-2 py-1 font-normal text-muted-foreground eink:min-h-11 touch:min-h-11 eink:text-black"
-        onCreated={(l) => {
-          onNavigate?.()
-          navigate({ to: "/", search: withFilter({}, { list: l.id }), replace })
-        }}
-      />
+      <Link to="/lists" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+        <span className="flex items-center gap-2">
+          <ListIcon className="size-4" aria-hidden /> {t("nav.allLists")}
+        </span>
+        <Count n={lists.length} />
+      </Link>
     </Section>
   )
 }

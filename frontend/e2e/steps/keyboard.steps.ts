@@ -56,6 +56,8 @@ Given("keyboard mode is {string}", async ({ page, context }, mode: string) => {
   await page.evaluate((m) => localStorage.setItem("hub.keys", m), mode)
   await page.reload()
   await expect(results(page)).toBeVisible()
+  // after the app's own listener: was the last key taken from the browser?
+  await page.evaluate(() => window.addEventListener("keydown", (e) => (document.body.dataset.keyPrevented = String(e.defaultPrevented))))
 })
 
 // the app keys work in both modes
@@ -253,7 +255,7 @@ Then("the library is shown", async ({ page }) => {
   await expect(results(page)).toBeVisible()
 })
 
-Then(/^the (trash|metadata|suggestions) page is shown$/, async ({ page }, name: string) => {
+Then(/^the (trash|metadata|suggestions|lists) page is shown$/, async ({ page }, name: string) => {
   await expect(page).toHaveURL(new RegExp(`/${name}$`))
 })
 
@@ -319,6 +321,42 @@ Then("an overlay lists the keys of the current mode", async ({ page }) => {
 
 Then("the overlay is closed", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "Tastenhilfe" })).toBeHidden()
+})
+
+// --- reading lists ------------------------------------------------------------
+
+const listIdOf = async (page: Page, name: string): Promise<number> => {
+  const all: { id: number; name: string }[] = await page.evaluate(() => fetch("/api/lists").then((r) => r.json()))
+  return all.find((l) => l.name === name)!.id
+}
+const listsOf = (page: Page, id: number): Promise<number[]> => page.evaluate((id) => fetch(`/api/books/${id}`).then((r) => r.json()).then((b) => b.lists), id)
+
+Then("the browser did not handle the key itself", async ({ page }) => {
+  await expect(page.locator("body")).toHaveAttribute("data-key-prevented", "true")
+})
+
+Then("the {word} book is in the list {string}", async ({ page }, word: string, name: string) => {
+  const [id, list] = [(await bookIds(page))[ordinal(word)], await listIdOf(page, name)]
+  await expect.poll(() => listsOf(page, id)).toContain(list)
+})
+
+Then("the {word} book is not in the list {string}", async ({ page }, word: string, name: string) => {
+  const [id, list] = [(await bookIds(page))[ordinal(word)], await listIdOf(page, name)]
+  await expect.poll(() => listsOf(page, id)).not.toContain(list)
+})
+
+Then("the {int} selected books are in the list {string}", async ({ page }, n: number, name: string) => {
+  const ids = await selected(page).evaluateAll((els) => els.map((e) => Number(e.getAttribute("data-book-id"))))
+  expect(ids).toHaveLength(n)
+  const list = await listIdOf(page, name)
+  for (const id of ids) await expect.poll(() => listsOf(page, id)).toContain(list)
+})
+
+Then("the dialog {string} opens for the {word} book", async ({ page }, title: string, word: string) => {
+  const book = await books(page).nth(ordinal(word)).locator("p").first().textContent()
+  const dialog = page.getByRole("dialog", { name: title })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText(book!)
 })
 
 Then("the active book moves down by one row", async ({ page }) => {

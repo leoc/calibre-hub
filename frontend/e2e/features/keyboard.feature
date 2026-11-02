@@ -177,6 +177,7 @@ Feature: Keyboard control
       | gt   | trash page       |
       | gm   | metadata page    |
       | gv   | suggestions page |
+      | gL   | lists page       |
       | gl   | library          |
 
   Scenario: Category tree with the keyboard
@@ -212,6 +213,38 @@ Feature: Keyboard control
       | t    | the first book's reading list toggle flips     |
       | dd   | a delete confirmation for the first book opens |
       | y    | the link to the first book is in the clipboard |
+
+  Scenario Outline: Saving the active book to the list used last, and back out
+    Given keyboard mode is "<mode>"
+    And the first book is the active book
+    When I press "<save>"
+    Then the browser did not handle the key itself
+    And the first book is in the list "Urlaub"
+    When I press "<save>"
+    Then the first book is not in the list "Urlaub"
+    And a toast says "1 Buch aus Urlaub entfernt"
+
+    Examples:
+      | mode | save      |
+      | app  | Control+s |
+      | vim  | s         |
+
+  Scenario: "s" saves the selection to the list used last
+    Given keyboard mode is "vim"
+    And I selected 3 books
+    When I type "s"
+    Then the 3 selected books are in the list "Urlaub"
+
+  Scenario Outline: "S" opens the save dialog for the active book
+    Given keyboard mode is "<mode>"
+    And the first book is the active book
+    When I press "<dialog>"
+    Then the dialog "In Listen speichern" opens for the first book
+
+    Examples:
+      | mode | dialog          |
+      | app  | Control+Shift+S |
+      | vim  | Shift+S         |
 
   Scenario: Help overlay
     When I type "?"
