@@ -262,6 +262,16 @@ in
         type = types.port;
         default = 8083;
       };
+      triggersPackage = mkOption {
+        type = types.package;
+        default = pkgs.callPackage ./triggers.nix { };
+        defaultText = lib.literalExpression "pkgs.callPackage ./triggers.nix { }";
+        description = ''
+          Installer of the changelog triggers, run in calibre-server's preStart.
+          A package of its own, so calibre-server only restarts when the
+          triggers change, not with every hub update.
+        '';
+      };
       serviceUser = mkOption {
         type = types.str;
         default = "calibre-hub";
@@ -325,8 +335,9 @@ in
         USERS=$(sed "s#|#|$CREDENTIALS_DIRECTORY/#" <<<"$USERS")
         export USERS
         ${pkgs.bash}/bin/bash ${./init.sh}
-        # change log for the hub; calibre-server is not running yet
-        ${lib.getExe cfg.package} install-triggers ${lib.escapeShellArg "${toString cfg.library}/metadata.db"}
+        # change log for the hub; calibre-server is not running yet. Not
+        # cfg.package: a hub update alone must not restart calibre-server.
+        ${lib.getExe cfg.calibre.triggersPackage} ${lib.escapeShellArg "${toString cfg.library}/metadata.db"}
       '';
     };
 

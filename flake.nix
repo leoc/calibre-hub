@@ -18,6 +18,8 @@
         pkgs:
         {
           default = pkgs.callPackage ./nix/package.nix { };
+          # what calibre-server's preStart runs (see nix/triggers.nix)
+          triggers = pkgs.callPackage ./nix/triggers.nix { };
         }
         # web app, built by frontend/package.nix (Phase 3)
         // pkgs.lib.optionalAttrs (builtins.pathExists ./frontend/package.nix) {
