@@ -3,6 +3,13 @@ import { SORTS, type BookQuery } from "./api"
 
 export const PAGE_SIZE = 60
 
+// "?edit=1" / "?edit=true" -> true
+export const flag = z
+  .union([z.boolean(), z.string()])
+  .transform((v) => v === true || v === "1" || v === "true" || undefined)
+  .optional()
+  .catch(undefined)
+
 // Library state lives in the URL, so back/forward and shared links restore it.
 export const librarySearchSchema = z.object({
   q: z.string().optional().catch(undefined),
@@ -20,6 +27,7 @@ export const librarySearchSchema = z.object({
   page: z.coerce.number().int().min(1).optional().catch(undefined),
   // book opened in the detail panel (desktop) or as a page (small screens)
   book: z.coerce.number().int().optional().catch(undefined),
+  edit: flag,
 })
 
 export type LibrarySearch = z.infer<typeof librarySearchSchema>
@@ -60,7 +68,7 @@ export function toBookQuery(s: LibrarySearch): BookQuery {
 
 // Filter changes start again at page 1 and close the detail.
 export function withFilter(s: LibrarySearch, patch: Partial<LibrarySearch>): LibrarySearch {
-  return { ...s, ...patch, page: undefined, book: undefined }
+  return { ...s, ...patch, page: undefined, book: undefined, edit: undefined }
 }
 
 export function toggleTag(s: LibrarySearch, tag: string): LibrarySearch {

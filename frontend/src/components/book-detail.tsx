@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Download } from "lucide-react"
+import { Download, Pencil } from "lucide-react"
 import { categoryOf, DEFAULT_CONFIG, downloadUrl, type Book } from "@/lib/api"
 import { bookQuery, configQuery } from "@/lib/queries"
 import { toggleTag, withFilter } from "@/lib/search"
@@ -9,7 +9,9 @@ import { cn } from "@/lib/utils"
 import { BookCover } from "./book-cover"
 import { formatIndex } from "./book-grid"
 import { ErrorMessage } from "./error-view"
-import { buttonVariants } from "./ui/button"
+import { Button, buttonVariants } from "./ui/button"
+import { BookEdit } from "./book-edit"
+import { FastTagButtons } from "./fast-tags"
 import { Badge } from "./ui/badge"
 import { LibraryLink } from "@/components/library-link"
 
@@ -18,15 +20,27 @@ const FORMAT_ORDER = ["EPUB", "KEPUB", "AZW3", "MOBI", "PDF", "CBZ", "CBR", "DJV
 const sortFormats = (f: string[]) =>
   [...f].sort((a, b) => (FORMAT_ORDER.indexOf(a) + 1 || 99) - (FORMAT_ORDER.indexOf(b) + 1 || 99))
 
-export function BookDetail({ id, placeholder, onNavigate }: { id: number; placeholder?: Book; onNavigate?: () => void }) {
-  // list rows have everything except comments; show them right away
-  const { data, error, refetch } = useQuery({ ...bookQuery(id), placeholderData: placeholder })
-  if (error && !data) return <ErrorMessage error={error} onRetry={() => refetch()} />
-  if (!data) return <p className="p-8 text-muted-foreground">{t("loading")}</p>
-  return <BookView book={data} onNavigate={onNavigate} />
+interface DetailProps {
+  id: number
+  placeholder?: Book
+  onNavigate?: () => void
+  edit?: boolean
+  onEdit?: (on: boolean) => void
 }
 
-function BookView({ book, onNavigate }: { book: Book; onNavigate?: () => void }) {
+export function BookDetail({ id, placeholder, onNavigate, edit, onEdit }: DetailProps) {
+  // list rows have everything except comments; show them right away
+  const { data, error, refetch, isPlaceholderData } = useQuery({ ...bookQuery(id), placeholderData: placeholder })
+  if (error && !data) return <ErrorMessage error={error} onRetry={() => refetch()} />
+  if (!data) return <p className="p-8 text-muted-foreground">{t("loading")}</p>
+  // the form needs the full book (comments)
+  if (edit && onEdit) {
+    return isPlaceholderData ? <p className="p-8 text-muted-foreground">{t("loading")}</p> : <BookEdit key={data.id} book={data} onDone={() => onEdit(false)} />
+  }
+  return <BookView book={data} onNavigate={onNavigate} onEdit={onEdit && (() => onEdit(true))} />
+}
+
+function BookView({ book, onNavigate, onEdit }: { book: Book; onNavigate?: () => void; onEdit?: () => void }) {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const kategorie = categoryOf(book, config.categoryColumn)
   const formats = sortFormats(book.formats)
@@ -57,6 +71,14 @@ function BookView({ book, onNavigate }: { book: Book; onNavigate?: () => void })
             </p>
           )}
           <div className="flex flex-wrap gap-2 pt-2">
+            {onEdit && (
+              <Button type="button" variant="outline" onClick={onEdit}>
+                <Pencil /> {t("book.edit")}
+              </Button>
+            )}
+            <FastTagButtons book={book} />
+          </div>
+          <div className="flex flex-wrap gap-2">
             {formats.length === 0 && <p className="text-muted-foreground">{t("book.noFormats")}</p>}
             {formats.map((f, i) => (
               <a key={f} href={downloadUrl(book.id, f)} download className={buttonVariants({ variant: i === 0 ? "default" : "outline" })}>

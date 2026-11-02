@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { ArrowDownUp, Palette, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Tag, User } from "lucide-react"
-import { api, coverUrl, SORTS, type Sort } from "@/lib/api"
-import { booksQuery, categoriesQuery } from "@/lib/queries"
+import { ArrowDownUp, Bookmark, Palette, Pencil, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Tag, User } from "lucide-react"
+import { api, coverUrl, DEFAULT_CONFIG, SORTS, type Book, type Sort } from "@/lib/api"
+import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
+import { useToggleTag } from "@/lib/mutations"
 import { flattenTree, matchNamed, parseInput, type Scope } from "@/lib/palette"
 import { defaultOrder, toggleTag, withFilter } from "@/lib/search"
 import { useLibrarySearch } from "@/lib/use-library"
@@ -57,6 +58,28 @@ export function CommandPalette({ open, onOpenChange }: Props) {
     navigate({ to: "/", search: s })
   }
 
+  const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  const toggleFast = useToggleTag()
+  // the book open in the detail, if any
+  const openBook = search.book != null ? queryClient.getQueryData<Book>(["book", search.book]) : undefined
+  const bookActions: Action[] = openBook
+    ? [
+        ...config.fastTags.map((tag) => {
+          const on = openBook.tags.includes(tag)
+          return {
+            id: `fast-${tag}`,
+            label: on ? t("fast.remove", { tag }) : t("fast.add", { tag }),
+            icon: <Bookmark />,
+            run: () => {
+              toggleFast.mutate({ book: openBook, tag, on: !on })
+              close()
+            },
+          }
+        }),
+        { id: "edit", label: `${t("book.edit")}: ${openBook.title}`, icon: <Pencil />, run: () => go({ ...search, edit: true }) },
+      ]
+    : []
+
   const actions: Action[] = useMemo(
     () => [
       { id: "all", label: t("nav.all"), icon: <LibraryBig />, run: () => go({}) },
@@ -91,7 +114,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
   const kategorien = cats && wants("kategorie") ? matchNamed(flattenTree(cats.kategorie), text, limit) : []
   const matchedActions =
     scope === "actions" || (scope === "all" && text)
-      ? actions.filter((a) => a.label.toLowerCase().includes(text.toLowerCase())).slice(0, scope === "all" ? 4 : undefined)
+      ? [...bookActions, ...actions].filter((a) => a.label.toLowerCase().includes(text.toLowerCase())).slice(0, scope === "all" ? 4 : undefined)
       : []
   const showFulltext = (scope === "all" || scope === "books") && text.length > 0
 

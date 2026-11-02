@@ -1,5 +1,6 @@
 import { http, HttpResponse } from "msw"
-import type { Book } from "@/lib/api"
+import type { Book, BookPatch, BulkChanges, BulkTarget, Job } from "@/lib/api"
+import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
@@ -31,9 +32,41 @@ const cover = (b: Book) => {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="hsl(${hue} 45% 40%)"/><text x="20" y="60" font-family="serif" font-size="26" fill="#fff">${title.slice(0, 18)}</text><text x="20" y="92" font-family="serif" font-size="26" fill="#fff">${title.slice(18, 36)}</text><text x="20" y="370" font-family="sans-serif" font-size="16" fill="#fff">${b.authors[0]}</text></svg>`
 }
 
+function filterBooks(p: URLSearchParams) {
+  const k = p.get("kategorie")
+  return books.filter((b) => {
+    const cat = b.custom.kategorie as string | null
+    if (k && !(cat === k || cat?.startsWith(`${k}.`))) return false
+    if (p.getAll("tag").some((t) => !b.tags.includes(t))) return false
+    if (p.get("author") && !b.authors.includes(p.get("author")!)) return false
+    if (p.get("series") && b.series !== p.get("series")) return false
+    return !p.get("q") || matches(b, p.get("q")!)
+  })
+}
+
+function touch(b: Book) {
+  b.lastModified = new Date(Math.max(Date.now(), Date.parse(b.lastModified) + 1000)).toISOString()
+}
+
+function applyPatch(b: Book, patch: BookPatch) {
+  const { addTags, removeTags, kategorie, lastModified: _lm, ...fields } = patch
+  Object.assign(b, fields)
+  if (addTags) b.tags = [...new Set([...b.tags, ...addTags])]
+  if (removeTags) b.tags = b.tags.filter((t) => !removeTags.includes(t))
+  if (kategorie !== undefined) b.custom = { ...b.custom, kategorie }
+  if (patch.series === null) b.seriesIndex = null
+  else if (patch.series && b.seriesIndex == null) b.seriesIndex = 1
+  touch(b)
+}
+
+const jobs = new Map<string, Job>()
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+// covers set through the cover endpoints (object URLs are not reachable from the worker, so keep bytes)
+const customCovers = new Map<number, { body: ArrayBuffer; type: string }>()
+
 const auth = () => (loggedIn ? null : HttpResponse.json({ error: "login required" }, { status: 401 }))
 
-export const handlers = [
+export const readHandlers = [
   http.get("/api/session", () => auth() ?? HttpResponse.json({ user: "arthur" })),
   http.post("/api/session", async ({ request }) => {
     const { password } = (await request.json()) as { password: string }
@@ -51,15 +84,7 @@ export const handlers = [
     const denied = auth()
     if (denied) return denied
     const p = new URL(request.url).searchParams
-    const k = p.get("kategorie")
-    let list = books.filter((b) => {
-      const cat = b.custom.kategorie as string | null
-      if (k && !(cat === k || cat?.startsWith(`${k}.`))) return false
-      if (p.getAll("tag").some((t) => !b.tags.includes(t))) return false
-      if (p.get("author") && !b.authors.includes(p.get("author")!)) return false
-      if (p.get("series") && b.series !== p.get("series")) return false
-      return !p.get("q") || matches(b, p.get("q")!)
-    })
+    let list = filterBooks(p)
     const key = SORT_KEY[p.get("sort") ?? "title"]
     if (!key) return HttpResponse.json({ error: "unknown sort" }, { status: 400 })
     const dir = p.get("order") === "desc" ? -1 : 1
@@ -73,6 +98,8 @@ export const handlers = [
     return auth() ?? (b ? HttpResponse.json(b) : HttpResponse.json({ error: "not found" }, { status: 404 }))
   }),
   http.get("/api/books/:id/cover", ({ params }) => {
+    const custom = customCovers.get(Number(params.id))
+    if (custom) return new HttpResponse(custom.body, { headers: { "Content-Type": custom.type } })
     const b = books.find((x) => x.id === Number(params.id))
     if (!b || b.id % 13 === 0) return new HttpResponse(null, { status: 404 })
     return new HttpResponse(cover(b), { headers: { "Content-Type": "image/svg+xml" } })
@@ -84,6 +111,97 @@ export const handlers = [
   ),
 ]
 
+export const writeHandlers = [
+  http.patch("/api/books/:id", async ({ params, request }) => {
+    const b = books.find((x) => x.id === Number(params.id))
+    if (!b) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    const patch = (await request.json()) as BookPatch
+    await delay(300)
+    if (patch.title !== undefined && !patch.title.trim()) return HttpResponse.json({ error: "title must not be empty", field: "title" }, { status: 400 })
+    if (patch.lastModified && patch.lastModified !== b.lastModified) return HttpResponse.json({ error: "changed elsewhere", book: b }, { status: 409 })
+    applyPatch(b, patch)
+    return HttpResponse.json(b)
+  }),
+  http.post("/api/books", async ({ request }) => {
+    const form = await request.formData()
+    const file = form.get("file") as File
+    const ext = file.name.split(".").pop()?.toUpperCase() ?? ""
+    await delay(500)
+    if (!["EPUB", "PDF", "AZW3", "MOBI", "CBZ"].includes(ext)) return HttpResponse.json({ error: "unsupported format" }, { status: 415 })
+    const title = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ")
+    const target = form.get("addFormatTo")
+    if (target) {
+      const b = books.find((x) => x.id === Number(target))!
+      b.formats = [...new Set([...b.formats, ext])]
+      touch(b)
+      return HttpResponse.json({ book: b }, { status: 201 })
+    }
+    const dups = books.filter((b) => b.title.toLowerCase() === title.toLowerCase())
+    if (dups.length && form.get("force") !== "1") return HttpResponse.json({ error: "duplicate", duplicates: dups }, { status: 409 })
+    const now = new Date().toISOString()
+    const b: Book = {
+      id: Math.max(...books.map((x) => x.id)) + 1, title, authors: ["Unbekannt"], authorSort: "Unbekannt", tags: form.getAll("tags") as string[],
+      series: null, seriesIndex: null, formats: [ext], lastModified: now, added: now, pubdate: null, rating: null, publisher: null,
+      identifiers: {}, languages: [], comments: null, custom: { kategorie: (form.get("kategorie") as string) || null },
+    }
+    books.push(b)
+    return HttpResponse.json({ book: b }, { status: 201 })
+  }),
+  http.put("/api/books/:id/cover", async ({ params, request }) => {
+    const b = books.find((x) => x.id === Number(params.id))!
+    customCovers.set(b.id, { body: await request.arrayBuffer(), type: request.headers.get("Content-Type") ?? "image/jpeg" })
+    touch(b)
+    return HttpResponse.json(b)
+  }),
+  http.post("/api/books/:id/cover/from-file", async ({ params }) => {
+    const b = books.find((x) => x.id === Number(params.id))!
+    customCovers.delete(b.id)
+    await delay(400)
+    touch(b)
+    return HttpResponse.json(b)
+  }),
+  http.post("/api/books/:id/cover/from-url", async ({ params, request }) => {
+    const b = books.find((x) => x.id === Number(params.id))!
+    const { url } = (await request.json()) as { url: string }
+    if (!/^https?:\/\//.test(url)) return HttpResponse.json({ error: "only http(s) urls" }, { status: 400 })
+    const hue = (url.length * 37) % 360
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="hsl(${hue} 60% 35%)"/><text x="20" y="200" font-size="22" fill="#fff">von URL</text></svg>`
+    customCovers.set(b.id, { body: new TextEncoder().encode(svg).buffer as ArrayBuffer, type: "image/svg+xml" })
+    touch(b)
+    return HttpResponse.json(b)
+  }),
+  http.get("/api/books/:id/cover/search", async () => {
+    await delay(600)
+    return HttpResponse.json(
+      ["Open Library", "Google Books", "Open Library"].map((source, i) => ({
+        url: `https://covers.example/${source.replace(" ", "").toLowerCase()}/${i}.jpg`, source, width: 600 + i * 100, height: 900 + i * 120,
+      })),
+    )
+  }),
+  http.post("/api/books/bulk", async ({ request }) => {
+    const { target, changes } = (await request.json()) as { target: BulkTarget; changes: BulkChanges }
+    const list = "ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query))
+    const jobId = Math.random().toString(36).slice(2)
+    const job: Job = { status: "running", done: 0, total: list.length, errors: [] }
+    jobs.set(jobId, job)
+    ;(async () => {
+      for (const b of list) {
+        await delay(15)
+        applyPatch(b, changes)
+        job.done++
+      }
+      job.status = "done"
+    })()
+    return HttpResponse.json({ jobId, total: list.length }, { status: 202 })
+  }),
+  http.get("/api/jobs/:id", ({ params }) => {
+    const job = jobs.get(String(params.id))
+    return job ? HttpResponse.json(job) : HttpResponse.json({ error: "not found" }, { status: 404 })
+  }),
+]
+
 export const setLoggedIn = (v: boolean) => {
   loggedIn = v
 }
+
+export const handlers = [...writeHandlers, ...readHandlers]

@@ -16,10 +16,10 @@ export default defineConfig(({ mode }) => ({
       // the MSW worker lives in public/ for dev:mock only
       name: "drop-mock-worker",
       apply: "build",
-      closeBundle: () => fs.rmSync(path.resolve(__dirname, "dist/mockServiceWorker.js"), { force: true }),
+      closeBundle: () => fs.rmSync(path.resolve(import.meta.dirname, "dist/mockServiceWorker.js"), { force: true }),
     },
   ],
-  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
   server: {
     port: 5173,
     proxy:

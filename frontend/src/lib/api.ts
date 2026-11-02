@@ -71,6 +71,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public body: Record<string, unknown> | null = null,
   ) {
     super(message)
   }
@@ -84,7 +85,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...init, headers, credentials: "same-origin" })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new ApiError(res.status, body?.error ?? res.statusText)
+    throw new ApiError(res.status, body?.error ?? res.statusText, body)
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
 }
@@ -113,6 +114,104 @@ export const api = {
       if (e instanceof ApiError && e.status === 404) return DEFAULT_CONFIG
       throw e
     }),
+}
+
+export interface BookPatch {
+  title?: string
+  authors?: string[]
+  series?: string | null
+  seriesIndex?: number | null
+  tags?: string[]
+  addTags?: string[]
+  removeTags?: string[]
+  kategorie?: string | null
+  comments?: string | null
+  publisher?: string | null
+  pubdate?: string | null // YYYY-MM-DD
+  languages?: string[]
+  rating?: number | null
+  identifiers?: Record<string, string>
+  // optimistic concurrency: 409 when the book changed since
+  lastModified?: string
+}
+
+export interface BulkChanges {
+  addTags?: string[]
+  removeTags?: string[]
+  kategorie?: string | null
+  series?: string | null
+}
+
+export type BulkTarget = { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }
+
+export interface Job {
+  status: "running" | "done" | "failed"
+  done: number
+  total: number
+  errors: { bookId: number; error: string }[]
+}
+
+export interface CoverHit {
+  url: string
+  source: string
+  width: number | null
+  height: number | null
+}
+
+export interface UploadOptions {
+  tags?: string[]
+  kategorie?: string
+  force?: boolean
+  addFormatTo?: number
+}
+
+export type UploadResult = { status: "added"; book: Book } | { status: "duplicate"; duplicates: Book[] }
+
+const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
+
+export const write = {
+  patchBook: (id: number, patch: BookPatch) => request<Book>(`/api/books/${id}`, { method: "PATCH", ...json(patch) }),
+  bulk: (target: BulkTarget, changes: BulkChanges) =>
+    request<{ jobId: string; total: number }>("/api/books/bulk", { method: "POST", ...json({ target, changes }) }),
+  job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  coverUpload: (id: number, image: Blob) =>
+    request<Book>(`/api/books/${id}/cover`, { method: "PUT", body: image, headers: { "Content-Type": image.type || "image/jpeg" } }),
+  coverFromFile: (id: number, format?: string) =>
+    request<Book>(`/api/books/${id}/cover/from-file`, { method: "POST", ...json({ format }) }),
+  coverFromUrl: (id: number, url: string) => request<Book>(`/api/books/${id}/cover/from-url`, { method: "POST", ...json({ url }) }),
+  coverSearch: (id: number) => request<CoverHit[]>(`/api/books/${id}/cover/search`),
+}
+
+// XHR instead of fetch for upload progress.
+export function uploadBook(file: File, opts: UploadOptions, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<UploadResult> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData()
+    form.append("file", file)
+    opts.tags?.forEach((t) => form.append("tags", t))
+    if (opts.kategorie) form.append("kategorie", opts.kategorie)
+    if (opts.force) form.append("force", "1")
+    if (opts.addFormatTo != null) form.append("addFormatTo", String(opts.addFormatTo))
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", "/api/books")
+    xhr.setRequestHeader("X-Calibre-Hub", "1")
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total)
+    xhr.onerror = () => reject(new ApiError(0, "network error"))
+    xhr.onabort = () => reject(new DOMException("aborted", "AbortError"))
+    xhr.onload = () => {
+      const body = (() => {
+        try {
+          return JSON.parse(xhr.responseText)
+        } catch {
+          return null
+        }
+      })()
+      if (xhr.status === 201 || xhr.status === 200) resolve({ status: "added", book: body.book })
+      else if (xhr.status === 409 && body?.duplicates) resolve({ status: "duplicate", duplicates: body.duplicates })
+      else reject(new ApiError(xhr.status, body?.error ?? xhr.statusText))
+    }
+    signal?.addEventListener("abort", () => xhr.abort())
+    xhr.send(form)
+  })
 }
 
 export const DEFAULT_CONFIG: HubConfig = { fastTags: ["leseliste"], categoryColumn: "kategorie" }

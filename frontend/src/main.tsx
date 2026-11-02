@@ -5,6 +5,7 @@ import { RouterProvider } from "@tanstack/react-router"
 import { ApiError } from "./lib/api"
 import { ThemeProvider } from "./lib/theme"
 import { makeRouter } from "./router"
+import { connectUploads } from "./lib/upload-store"
 import "./index.css"
 
 // A 401 anywhere means the session ran out: back to the login.
@@ -26,6 +27,7 @@ const queryClient = new QueryClient({
   },
 })
 const router = makeRouter(queryClient)
+connectUploads(queryClient)
 
 async function start() {
   if (import.meta.env.MODE === "mock") {

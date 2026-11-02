@@ -3,7 +3,7 @@ import { createRootRouteWithContext, createRoute, createRouter, Outlet, redirect
 import { z } from "zod"
 import { ApiError } from "./lib/api"
 import { sessionQuery } from "./lib/queries"
-import { librarySearchSchema } from "./lib/search"
+import { flag, librarySearchSchema } from "./lib/search"
 import { AppShell } from "./components/app-shell"
 import { LoginPage } from "./routes/login"
 import { LibraryPage } from "./routes/library"
@@ -54,6 +54,7 @@ const bookRoute = createRoute({
     parse: ({ id }) => ({ id: z.coerce.number().int().parse(id) }),
     stringify: ({ id }) => ({ id: String(id) }),
   },
+  validateSearch: z.object({ edit: flag }),
   component: BookPage,
 })
 

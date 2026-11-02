@@ -1,4 +1,5 @@
-import { ArrowDown, ArrowUp, LayoutGrid, List, X } from "lucide-react"
+import { ArrowDown, ArrowUp, LayoutGrid, List, ListChecks, X } from "lucide-react"
+import { selection, useSelection } from "@/lib/selection"
 import { SORTS, type Sort } from "@/lib/api"
 import { defaultOrder, effectiveSort, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
 import { setView, useView } from "@/lib/prefs"
@@ -11,6 +12,7 @@ import { LibraryLink } from "@/components/library-link"
 
 export function LibraryToolbar({ search, total }: { search: LibrarySearch; total: number | undefined }) {
   const view = useView()
+  const sel = useSelection()
   const go = useGoLibrary()
   const { sort, order } = effectiveSort(search)
 
@@ -20,6 +22,9 @@ export function LibraryToolbar({ search, total }: { search: LibrarySearch; total
         <p className="mr-auto text-sm text-muted-foreground tabular-nums eink:text-base eink:text-black" aria-live="polite">
           {total == null ? " " : total === 1 ? t("results.one") : t("results.count", { count: formatNumber(total) })}
         </p>
+        <Button variant={sel.active ? "default" : "outline"} size="sm" aria-pressed={sel.active} onClick={sel.active ? selection.stop : selection.start}>
+          <ListChecks /> <span className="hidden sm:inline">{t("bulk.start")}</span>
+        </Button>
         <label className="flex items-center gap-1.5 text-sm">
           <span className="sr-only">{t("sort.label")}</span>
           <select

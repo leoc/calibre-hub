@@ -4,27 +4,27 @@ import { configQuery } from "@/lib/queries"
 import type { LibrarySearch } from "@/lib/search"
 import { formatDate, t } from "@/i18n"
 import { BookCover } from "./book-cover"
-import { FastTagMarks } from "./fast-tags"
+import { FastTagToggles } from "./fast-tags"
+import { BookItem } from "./book-item"
 import { formatIndex } from "./book-grid"
-import { LibraryLink } from "@/components/library-link"
 
 // Compact rows; columns beyond title/author only on wider screens.
 export function BookList({ books, search }: { books: Book[]; search: LibrarySearch }) {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  const order = books.map((b) => b.id)
   return (
     <ul className="divide-y eink:divide-y-2 eink:divide-black">
       {books.map((b) => (
-        <li key={b.id}>
-          <LibraryLink
-            search={{ ...search, book: b.id }}
-            className="grid grid-cols-[2.5rem_1fr] items-center gap-3 px-1 py-2 hover:bg-accent md:grid-cols-[2.5rem_2fr_1fr_1fr_7rem] eink:min-h-16"
+        <li key={b.id} className="group flex items-center">
+          <BookItem
+            id={b.id}
+            order={order}
+            search={search}
+            className="grid min-w-0 flex-1 grid-cols-[2.5rem_1fr] items-center gap-3 px-1 py-2 hover:bg-accent md:grid-cols-[2.5rem_2fr_1fr_1fr_7rem] eink:min-h-16"
           >
             <BookCover book={b} compact className="w-10 rounded-sm" />
             <div className="min-w-0">
-              <p className="flex items-center gap-2 font-medium">
-                <span className="truncate">{b.title}</span>
-                <FastTagMarks book={b} />
-              </p>
+              <p className="truncate font-medium">{b.title}</p>
               <p className="truncate text-sm text-muted-foreground eink:text-black">{b.authors.join(", ")}</p>
             </div>
             <p className="hidden truncate text-sm md:block">
@@ -39,7 +39,8 @@ export function BookList({ books, search }: { books: Book[]; search: LibrarySear
             <p className="hidden text-right text-xs text-muted-foreground tabular-nums md:block eink:text-black" title={t("book.added")}>
               {b.added && formatDate(b.added)}
             </p>
-          </LibraryLink>
+          </BookItem>
+          <FastTagToggles book={b} className="shrink-0 px-2" />
         </li>
       ))}
     </ul>

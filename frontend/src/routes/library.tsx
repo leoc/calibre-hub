@@ -14,6 +14,8 @@ import { Pagination } from "@/components/pagination"
 import { ErrorMessage } from "@/components/error-view"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
+import { BulkBar } from "@/components/bulk-bar"
+import { useSelection } from "@/lib/selection"
 import { LibraryLink } from "@/components/library-link"
 
 const route = getRouteApi("/_app/")
@@ -23,11 +25,13 @@ export function LibraryPage() {
   const navigate = useNavigate()
   const desktop = useDesktop()
   const view = useView()
+  const sel = useSelection()
   const query = toBookQuery(search)
   const { data, error, isFetching, isPlaceholderData, refetch } = useQuery(booksQuery(query))
   const page = search.page ?? 1
   const pages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
-  const closeBook = () => navigate({ to: "/", search: { ...search, book: undefined } })
+  const closeBook = () => navigate({ to: "/", search: { ...search, book: undefined, edit: undefined } })
+  const setEdit = (on: boolean) => navigate({ to: "/", search: { ...search, edit: on || undefined }, replace: !on })
   const placeholder = data?.books.find((b) => b.id === search.book)
 
   // small screens: the detail replaces the list, back returns to it
@@ -37,7 +41,7 @@ export function LibraryPage() {
         <Button variant="ghost" className="mb-4 -ml-2" onClick={() => (history.length > 1 ? history.back() : closeBook())}>
           <ArrowLeft /> {t("book.back")}
         </Button>
-        <BookDetail id={search.book} placeholder={placeholder} />
+        <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} />
       </div>
     )
   }
@@ -68,11 +72,12 @@ export function LibraryPage() {
           <Pagination search={search} page={page} pages={pages} />
         </div>
       )}
+      {sel.active && data && <BulkBar search={search} pageIds={data.books.map((b) => b.id)} total={data.total} />}
       {desktop && (
         <Sheet open={search.book != null} onOpenChange={(o) => !o && closeBook()}>
           <SheetContent side="right" className="overflow-y-auto p-6 sm:max-w-2xl" aria-describedby={undefined}>
             <SheetTitle className="sr-only">{placeholder?.title ?? t("app.title")}</SheetTitle>
-            {search.book != null && <BookDetail id={search.book} placeholder={placeholder} />}
+            {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} />}
           </SheetContent>
         </Sheet>
       )}

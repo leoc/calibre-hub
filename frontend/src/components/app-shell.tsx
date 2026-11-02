@@ -12,6 +12,7 @@ import { Sheet, SheetContent, SheetTitle } from "./ui/sheet"
 import { Sidebar } from "./sidebar"
 import { CommandPalette } from "./command-palette"
 import { EinkSuggestion } from "./theme-switch"
+import { UploadButton, UploadHost } from "./upload"
 import { LibraryLink } from "@/components/library-link"
 
 export function AppShell() {
@@ -42,11 +43,12 @@ export function AppShell() {
             <Menu className="size-5" />
           </Button>
         )}
-        <LibraryLink search={{}} className="flex items-center gap-2 font-semibold lg:w-60" aria-label={t("app.title")}>
+        <LibraryLink search={{}} className="hidden items-center gap-2 font-semibold sm:flex lg:w-60" aria-label={t("app.title")}>
           <BookOpen className="size-5" aria-hidden />
           <span className="hidden sm:inline">{t("app.title")}</span>
         </LibraryLink>
         <HeaderSearch value={search.q ?? ""} onOpenPalette={() => setPaletteOpen(true)} />
+        <UploadButton />
         <LogoutButton />
       </header>
       <div className="flex flex-1">
@@ -68,6 +70,7 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+      <UploadHost />
       {/* mounted only while open, so the input starts empty each time */}
       {paletteOpen && <CommandPalette open onOpenChange={setPaletteOpen} />}
     </div>
