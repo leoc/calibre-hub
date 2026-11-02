@@ -4,7 +4,8 @@ import { defineBddConfig } from "playwright-bdd"
 // Runs against `pnpm dev:mock`. On NixOS point CHROMIUM_PATH at a system
 // chromium (e.g. $(which chromium)) instead of downloading browsers.
 const executablePath = process.env.CHROMIUM_PATH || undefined
-const port = 5174
+// E2E_PORT lets several checkouts (worktrees) run e2e at the same time
+const port = Number(process.env.E2E_PORT ?? 5174)
 
 const phone = devices["Pixel 7"]
 const desktop = { ...devices["Desktop Chrome"], viewport: { width: 1400, height: 900 } }
@@ -15,6 +16,9 @@ const bdd = (name: string, tags: string) =>
 
 export default defineConfig({
   fullyParallel: true,
+  // one shared vite + MSW server; more workers than this make unrelated
+  // tests time out on machines with many cores
+  workers: process.env.CI ? 8 : "50%",
   reporter: "list",
   use: { baseURL: `http://localhost:${port}`, launchOptions: { executablePath } },
   projects: [
