@@ -490,6 +490,18 @@ describe CalibreHub::Meta::Merge do
     publisher: "Hobbit Presse", pubdate: "1969", comments: "<p>Ringe</p>", cover_url: "http://c/1.jpg"))
   text_match.score = 0.8
 
+  it "takes the language of a sure match when the file says \"und\" (live: #31)" do
+    b = book("Die Psychologie sexueller Leidenschaft", ["David Schnarch"], isbn: "9783608106381", publisher: "Klett Cotta")
+    file = record(publisher: "Klett Cotta", languages: ["und"])
+    dnb = CalibreHub::Meta::Candidate.new("dnb", record(title: "Die Psychologie sexueller Leidenschaft", authors: ["David Schnarch"],
+      publisher: "Klett-Cotta", pubdate: "2016", languages: ["deu"]))
+    dnb.sure = true
+    dnb.score = 1.0
+    changes = CalibreHub::Meta::Merge.plan(b, nil, file, [dnb]).to_h { |c| {c.field, {c.new.raw, c.source}} }
+    changes["languages"].should eq({["deu"].map { |l| JSON::Any.new(l) }, "dnb"})
+    CalibreHub::Meta::Lang.list(["und", "ger"]).should eq(["deu"])
+  end
+
   it "fills missing fields: file first, then the best candidate" do
     b = book("Der Herr der Ringe", ["J. R. R. Tolkien"])
     file = record(publisher: "Klett-Cotta Verlag", languages: ["deu"])

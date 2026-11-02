@@ -527,7 +527,7 @@ module CalibreHub
       end
 
       def self.list(codes : Enumerable(String)) : Array(String)
-        codes.compact_map { |c| normalize(c) }.uniq
+        known(codes.compact_map { |c| normalize(c) }.uniq)
       end
 
       # ISO 639-2/T -> the bibliographic code MARC catalogues (DNB) search by
@@ -772,7 +772,7 @@ module CalibreHub
         # with the same title), never a source for this book
         # A match by the book's own ISBN is this edition and may correct the
         # language.
-        known_langs = book.languages.presence || file.try(&.languages).try(&.presence)
+        known_langs = Lang.known(book.languages).presence || file.try(&.languages).try { |l| Lang.known(l).presence }
         own_isbns = [book.identifiers["isbn"]?, file.try(&.isbn)].compact.compact_map { |i| Isbn.normalize(i) }
         if known_langs
           candidates = candidates.reject do |c|
@@ -875,7 +875,7 @@ module CalibreHub
         # "(1974, Tonos)" the rules took from the title
         fill(book, file, accepted, "publisher", set, guess.try(&.publisher)) { |r, c| c.nil? || c.edition ? r.publisher : nil }
         fill(book, file, accepted, "pubdate", set, guess.try(&.pubdate)) { |r, c| c.nil? || c.edition ? r.pubdate : nil }
-        fill(book, file, accepted, "languages", set) { |r, _| r.languages.try { |l| l.empty? ? nil : l } }
+        fill(book, file, accepted, "languages", set) { |r, _| r.languages.try { |l| Lang.known(l).presence } }
         fill(book, file, accepted, "comments", set, replace: false) { |r, _| r.comments.presence }
         if book.series.nil? && changes.none? { |c| c.field == "series" }
           src = file.try { |f| f.series ? {f, "file"} : nil } || ordered(accepted, "series").find(&.fields.series).try { |c| {c.fields, c.source} }
