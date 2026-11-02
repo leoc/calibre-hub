@@ -51,6 +51,10 @@ pkgs.testers.runNixOSTest {
           enable = true;
           target = "/srv/books/boox";
         };
+        classify = {
+          enable = true;
+          model = "stub";
+        };
         handlerAttempts = 2;
         alertCommand = "${pkgs.writeShellScript "alert" ''echo "$1: $2" >> /var/lib/calibre-hub/alerts.log''}";
         handlers = {
@@ -66,6 +70,45 @@ pkgs.testers.runNixOSTest {
           meta.mainProgram = "calibre-hub";
         }
       );
+      # stands in for Ollama: the part of /api/chat the hub uses, canned
+      # answers by title
+      systemd.services.model-stub = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${pkgs.writeText "model-stub.py" ''
+          import json
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          ANSWERS = {
+              "Wüstenplanet": ("Roman/SF", 0.95, "Wüste und Raumfahrt"),
+              "Mordfall": ("Roman/Krimi", 0.6, "Ein Mord im Titel"),
+              "Hochgeladen": ("Roman", 0.4, "Unklar"),
+          }
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                  if self.path != "/api/chat" or body.get("model") != "stub":
+                      return self.reply(404, {"error": "model not found, try pulling it first"})
+                  user = body["messages"][-1]["content"]
+                  title = next(l[7:] for l in user.splitlines() if l.startswith("Title: "))
+                  category, confidence, reason = ANSWERS.get(title, ("", 0, "Nichts passt"))
+                  # only categories of the tree are offered
+                  assert category in body["format"]["properties"]["category"]["enum"], category
+                  print("asked about", title, flush=True)
+                  content = json.dumps({"category": category, "confidence": confidence, "reason": reason})
+                  self.reply(200, {"model": "stub", "message": {"role": "assistant", "content": content}, "done": True})
+
+              def reply(self, status, body):
+                  data = json.dumps(body).encode()
+                  self.send_response(status)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(data)))
+                  self.end_headers()
+                  self.wfile.write(data)
+
+          HTTPServer(("127.0.0.1", 11434), Handler).serve_forever()
+        ''}";
+      };
       systemd.tmpfiles.rules = [
         "d /srv/books/library 2775 calibre-server calibre-hub -"
         "d /srv/books/inbox 2775 root calibre-hub -"
@@ -75,6 +118,7 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     import json
+    import urllib.parse
     from datetime import datetime
 
     H = "http://127.0.0.1:8084"
@@ -322,6 +366,86 @@ pkgs.testers.runNixOSTest {
         assert api("GET", f"/api/books/{rid}")[0] == 404
         assert any(e["id"] == rid for e in api("GET", "/api/trash")[1])
         machine.wait_until_succeeds(f"! {mirrored}", timeout=30)
+
+    def book_by_title(title):
+        q = urllib.parse.quote(f'title:"={title}"')
+        books = json.loads(machine.succeed(f"curl -sf -b /tmp/jar '{H}/api/books?q={q}'"))["books"]
+        assert len(books) == 1, books
+        return books[0]
+
+    def epub(title):
+        machine.succeed(f"printf '{title}\\n\\nText\\n' > /tmp/{title}.txt")
+        machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/{title}.txt /tmp/{title}.epub --title {title} --authors 'Klara Klassisch'")
+        return f"/tmp/{title}.epub"
+
+    def add_book(title):
+        machine.succeed(f"{DB} add {epub(title)}")
+        return book_by_title(title)["id"]
+
+    with subtest("classify"):
+        cfg = api("GET", "/api/config")[1]
+        assert cfg["classify"] is True, cfg
+        status, st = api("GET", "/api/classify/status")
+        assert status == 200 and st["enabled"] and st["model"] == "stub" and st["threshold"] == 0.85, st
+        # the tree so far: Bulk, Roman, Roman.Krimi; Roman.SF from a book of
+        # its own, added with its category, so it isn't classified
+        status, r = api("POST", "/api/books", extra=f"-F file=@{epub('Fern')} -F kategorie=Roman.SF")
+        assert status == 201, (status, r)
+        machine.wait_for_unit("model-stub.service")
+        # the upload without a category in "upload" was classified on its added event
+        dup = book_by_title("Hochgeladen")["id"]
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/suggestions/{dup} | jq -e '.status == \"pending\"'", timeout=60)
+
+        # model down: the run stops as failed, nothing else breaks
+        machine.systemctl("stop model-stub.service")
+        mord = add_book("Mordfall")
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/classify/status | jq -e '.lastRun.status == \"failed\" and (.lastRun.error | contains(\"model unavailable\"))'", timeout=90)
+        assert api("GET", f"/api/suggestions/{mord}")[0] == 404
+        assert code(f"-b /tmp/jar {H}/api/books") == "200"
+        machine.systemctl("start model-stub.service")
+        machine.wait_for_open_port(11434)
+
+        # a new book without a category is classified through its added event,
+        # sure enough to be applied with the tag
+        dune = add_book("Wüstenplanet")
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{dune} | jq -e '.custom.kategorie == \"Roman.SF\"'", timeout=90)
+        b = api("GET", f"/api/books/{dune}")[1]
+        assert "auto-kategorie" in b["tags"], b
+        s = api("GET", f"/api/suggestions/{dune}")[1]
+        assert s["status"] == "auto" and s["category"] == "Roman.SF" and s["confidence"] == 0.95 and s["model"] == "stub", s
+
+        # run over the unsorted books: the rest waits for review
+        status, r = api("POST", "/api/classify", {"target": "unsorted"})
+        assert status == 202 and r["total"] >= 1, (status, r)
+        j = wait_job(r["jobId"], 120)
+        assert j["status"] == "done" and j["errors"] == [], j
+        status, pending = api("GET", "/api/suggestions?status=pending")
+        assert status == 200, (status, pending)
+        by_id = {p["bookId"]: p for p in pending}
+        assert by_id[mord]["category"] == "Roman.Krimi" and by_id[mord]["confidence"] == 0.6, pending
+        assert by_id[mord]["reason"] == "Ein Mord im Titel" and by_id[mord]["book"]["title"] == "Mordfall", pending
+        assert dune not in by_id, pending
+        assert api("GET", "/api/books/" + str(mord))[1]["custom"]["kategorie"] is None
+        st = api("GET", "/api/classify/status")[1]
+        assert st["pending"] == len(pending) and st["lastRun"]["id"] == r["jobId"], st
+        # nothing new to ask for the same tree
+        assert api("POST", "/api/classify", {"target": "unsorted"})[1]["total"] == 0
+
+        # accept and reject
+        assert code(f"-b /tmp/jar -X POST {H}/api/suggestions/{mord}/accept") == "403"
+        status, s = api("POST", f"/api/suggestions/{mord}/accept", {})
+        assert status == 200 and s["status"] == "applied", (status, s)
+        b = api("GET", f"/api/books/{mord}")[1]
+        assert b["custom"]["kategorie"] == "Roman.Krimi" and "auto-kategorie" not in b["tags"], b
+        assert by_id[dup]["category"] == "Roman" and by_id[dup]["confidence"] == 0.4, pending
+        other = dup
+        status, s = api("POST", f"/api/suggestions/{other}/reject")
+        assert status == 200 and s["status"] == "rejected", (status, s)
+        assert api("GET", f"/api/books/{other}")[1]["custom"]["kategorie"] is None
+        assert api("GET", "/api/suggestions?status=pending")[1] == []
+        status, r = api("POST", "/api/suggestions/accept", {"bookIds": [other, 99999]})
+        assert status == 200 and [e["bookId"] for e in r["errors"]] == [99999], r
+        assert api("GET", f"/api/books/{other}")[1]["custom"]["kategorie"] == "Roman", r
 
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")

@@ -3,6 +3,7 @@ require "./calibre"
 require "./auth"
 require "./writer"
 require "./trash"
+require "./classify"
 
 module CalibreHub
   module Api
@@ -145,7 +146,8 @@ module CalibreHub
   end
 
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
-                  fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil)
+                  fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil,
+                  classify : ClassifyJobs? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -166,7 +168,7 @@ module CalibreHub
 
     get "/api/session" { {user: auth.user}.to_json }
 
-    get "/api/config" { {fastTags: fast_tags, categoryColumn: kategorie}.to_json }
+    get "/api/config" { {fastTags: fast_tags, categoryColumn: kategorie, classify: !classify.nil?}.to_json }
 
     delete "/api/session" do |env|
       env.response.cookies << auth.expired_cookie
@@ -215,9 +217,10 @@ module CalibreHub
     end
 
     if (w = writer) && (j = jobs)
-      write_routes(w, j)
+      write_routes(w, j, classify)
     end
     trash.try { |t| trash_routes(t) }
+    classify_routes(classify, calibre)
 
     # OPDS for reader apps; its links point to /opds/* and /get/*
     {"/opds", "/opds/*", "/get/*"}.each do |route|
@@ -228,7 +231,7 @@ module CalibreHub
     end
   end
 
-  def self.write_routes(writer : Writer, jobs : Jobs)
+  def self.write_routes(writer : Writer, jobs : Jobs, other_jobs : Jobs? = nil)
     # before /api/books/:id so "bulk" isn't taken for an id
     post "/api/books/bulk" do |env|
       write_errors(env) do
@@ -275,7 +278,8 @@ module CalibreHub
     end
 
     get "/api/jobs/:id" do |env|
-      jobs[env.params.url["id"]]?.try(&.to_json) || fail(env, 404, {error: "not found"})
+      id = env.params.url["id"]
+      (jobs[id]? || other_jobs.try(&.[id]?)).try(&.to_json) || fail(env, 404, {error: "not found"})
     end
 
     patch "/api/books/:id" do |env|
@@ -316,6 +320,91 @@ module CalibreHub
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
         {book: trash.restore(id)}.to_json
+      end
+    end
+  end
+
+  # Category suggestions from a local model (classify.cr). Only the status
+  # route exists while classification is off.
+  def self.classify_routes(jobs : ClassifyJobs?, calibre : Calibre)
+    get "/api/classify/status" do
+      next {enabled: false}.to_json unless jobs
+      c = jobs.classify
+      last = jobs.last.try do |job, started|
+        JSON.parse(job.to_json).as_h.merge({"startedAt" => JSON::Any.new(started.to_rfc3339)})
+      end
+      {
+        enabled: true, model: c.model, threshold: c.threshold, categories: c.paths(fresh: true).size,
+        minCategories: Classifier::MIN_CATEGORIES, pending: c.suggestions.count("pending"),
+        running: jobs.running?, lastRun: last,
+      }.to_json
+    end
+    return unless jobs
+    c = jobs.classify
+
+    get "/api/suggestions" do |env|
+      status = env.params.query["status"]?.presence
+      if status && !Suggestions::STATUSES.includes?(status)
+        next fail(env, 400, {error: "unknown status", field: "status"})
+      end
+      list = c.suggestions.list(status)
+      books = calibre.books(list.map(&.book_id)).index_by(&.id)
+      # books deleted since are left out
+      list.compact_map do |s|
+        books[s.book_id]?.try { |b| JSON.parse(s.to_json).as_h.merge({"book" => JSON.parse(b.to_json)}) }
+      end.to_json
+    end
+
+    get "/api/suggestions/:id" do |env|
+      id = env.params.url["id"].to_i64? || next fail(env, 404, {error: "not found"})
+      c.suggestions[id]?.try(&.to_json) || fail(env, 404, {error: "not found"})
+    end
+
+    # before /api/suggestions/:id/accept so "accept" isn't taken for an id
+    post "/api/suggestions/accept" do |env|
+      write_errors(env) do
+        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        ids = body["bookIds"]?.try(&.as_a?) || raise Edit::Invalid.new("bookIds", "list of book ids expected")
+        ids = ids.map { |v| v.as_i64? || raise Edit::Invalid.new("bookIds", "list of book ids expected") }
+        accepted = [] of Suggestions::Suggestion
+        errors = [] of NamedTuple(bookId: Int64, error: String)
+        ids.uniq.each do |id|
+          accepted << c.accept(id)
+        rescue Writer::NotFound
+          errors << {bookId: id, error: "not found"}
+        rescue ex : Calibre::Unavailable
+          raise ex
+        rescue ex
+          errors << {bookId: id, error: ex.message || ex.class.name}
+        end
+        {accepted: accepted, errors: errors}.to_json
+      end
+    end
+
+    post "/api/suggestions/:id/accept" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}")
+        override = body["category"]?.try { |v| v.as_s? || raise Edit::Invalid.new("category", "string expected") }
+        c.accept(id, override).to_json
+      end
+    end
+
+    post "/api/suggestions/:id/reject" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        c.reject(id).to_json
+      end
+    end
+
+    post "/api/classify" do |env|
+      write_errors(env) do
+        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        job = jobs.submit_target(body["target"]? || JSON::Any.new("unsorted"))
+        env.response.status_code = 202
+        {jobId: job.id, total: job.total}.to_json
+      rescue ex : Classify::TooFewCategories
+        fail(env, 409, {error: ex.message, categories: ex.count, minCategories: Classifier::MIN_CATEGORIES})
       end
     end
   end

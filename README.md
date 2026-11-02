@@ -28,7 +28,15 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /api/categories` | `kategorie` tree with counts, `tags`, `authors`, `series`, `languages` |
 | `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart) |
 | `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}}` (filters as in `GET /api/books`); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids); returns 202 `{jobId, total}` |
-| `GET /api/jobs/:id` | `{id, status: running\|done\|failed, done, total, errors: [{bookId, error}]}`; jobs are kept in the state DB, a running job resumes after a restart, the last 50 finished ones stay |
+| `GET /api/jobs/:id` | `{id, status: running\|done\|failed, done, total, errors: [{bookId, error}], error?}`; jobs are kept in the state DB, a running job resumes after a restart, the last 50 finished ones stay; `error` when a job stopped early. Also finds classify runs |
+| `GET /api/config` | `{fastTags, categoryColumn, classify}` for the web app |
+| `GET /api/classify/status` | `{enabled, model, threshold, categories, minCategories, pending, running, lastRun}`; only `{enabled: false}` when off |
+| `POST /api/classify` `{target}` | `target`: `"unsorted"` (default), `{ids: [...]}` or `{query: {...}}`; returns 202 `{jobId, total}`, 409 `{categories, minCategories}` while the tree is too small |
+| `GET /api/suggestions[?status=]` | latest suggestion per book with `book`: `[{bookId, category, confidence, reason, model, at, status, book}]`; `status`: pending, auto, applied, rejected, none |
+| `GET /api/suggestions/:bookId` | the book's suggestion, 404 without one |
+| `POST /api/suggestions/:bookId/accept` `[{category}]` | sets the suggested category, or `category` instead (`A/B` or `A.B`); status `applied` |
+| `POST /api/suggestions/:bookId/reject` | status `rejected`; the book isn't asked about again until the tree changes |
+| `POST /api/suggestions/accept` `{bookIds}` | bulk accept; returns `{accepted, errors: [{bookId, error}]}` |
 | `PUT /api/books/:id/cover`, `POST .../cover/from-file`, `POST .../cover/from-url` | set the cover from an image, a book file, a URL |
 | `GET /api/books/:id/cover/search[?q=]` | cover candidates from Open Library and, by ISBN, DNB (no API keys) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
@@ -73,6 +81,49 @@ through calibre-server; `A/B/x.epub` gets category `A.B` and tags `A`, `B`,
 tags embedded in the file are dropped. Originals move to `_imported/<date>/`
 or `_duplicates/<date>/`, after 3 failures to `_failed/<date>/`. Folders the
 hub can't write are skipped.
+
+## Category suggestions (local model)
+
+`classify.enable`: a small instruct model suggests a category for books
+without one, only from the existing category tree (every node of
+`categoryColumn`, parents included), never a new one. The hub talks to the
+[Ollama](https://ollama.com) HTTP API at `classify.endpoint` and nothing
+else: title, authors, series, tags, publisher, language and the description
+(HTML stripped, cut at 1200 characters) stay in the home network.
+
+- Runs: `POST /api/classify` (the web app's "Unsortierte klassifizieren"),
+  nightly at `classify.schedule` over the books without a category, and for
+  every book added without one (its `added` event). Runs are jobs in the
+  state DB like bulk edits, in a queue of their own; a run resumes after a
+  restart.
+- Answer: `/api/chat` with a JSON schema whose `category` is an enum of the
+  tree's paths (`A/B`) or `""` for no fit, temperature 0. The hub checks the
+  answer again: unknown categories are discarded (an error for that book),
+  `confidence` is clamped to 0..1, a broken answer is asked once more.
+- Suggestions at or above `classify.autoApplyThreshold` are applied to books
+  without a category, together with the tag `auto-kategorie` (status
+  `auto`; filter by the tag to check them). The rest wait for review
+  (`pending`) under "Vorschläge" in the web app and in the book detail.
+  Books that have a category (only with `{ids}`/`{query}`) are never
+  changed, only suggested.
+- With fewer than 2 categories nothing is suggested: create a few first
+  (assign them to some books), the status says how many there are. A
+  rejected or no-fit book is asked again once the tree changes.
+- Model down or missing: timeouts and connection errors are retried 3 times
+  with backoff, then the run stops as `failed` with `error`; nothing else
+  is affected. A missing model (`404`) isn't retried.
+
+Setting up the model (in the host's config, not this module):
+
+```nix
+services.ollama = { enable = true; host = "127.0.0.1"; };  # CPU is enough for a 3B model
+```
+
+```sh
+ollama pull qwen2.5:3b   # ~2 GB, ~5-20 s per book on a CPU
+```
+
+The hub starts after `ollama.service` when both run on the same host.
 
 ## CLI
 
@@ -133,6 +184,11 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     calibre.servicePasswordFile = "/run/secrets/calibre-service";
     inbox.path = "/srv/books/inbox";
     leseliste = { enable = true; target = "/srv/books/reader"; };
+    classify = {
+      enable = true;
+      # defaults: endpoint = "http://127.0.0.1:11434"; model = "qwen2.5:3b";
+      # autoApplyThreshold = 0.85; schedule = "03:45" (null: no nightly run); timeout = 300;
+    };
     alertCommand = "/run/current-system/sw/bin/notify-admin";
     handlers."20-log" = pkgs.writeShellScript "log" "cat >> /var/lib/calibre-hub/events.log";
   };
@@ -169,7 +225,7 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CALIBRE_PASSWORD_FILE` | required | without trailing newline |
 | `CALIBRE_HUB_LIBRARY_ID` | server default | |
 | `CALIBRE_HUB_CUSTOM_COLUMNS` | none | comma separated, e.g. `kategorie` |
-| `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot, event queue, bulk jobs |
+| `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot, event queue, bulk jobs, suggestions |
 | `CALIBRE_HUB_HOST`, `CALIBRE_HUB_PORT` | `127.0.0.1`, `8084` | |
 | `CALIBRE_HUB_LIBRARY` | none | library path: changelog in `metadata.db`, read-only |
 | `CALIBRE_HUB_SCAN_INTERVAL` | `900` | reconcile interval when triggers are missing |
@@ -179,3 +235,6 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
 | `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |
 | `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each |
+| `CALIBRE_HUB_CLASSIFY` | `false` | `true` turns on category suggestions (needs `CALIBRE_HUB_CATEGORY_COLUMN`) |
+| `CALIBRE_HUB_CLASSIFY_ENDPOINT`, `_MODEL` | `http://127.0.0.1:11434`, `qwen2.5:3b` | Ollama API and model |
+| `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT` | `0.85`, `03:45`, `300` | auto-apply from, nightly run (empty: none), seconds per answer |

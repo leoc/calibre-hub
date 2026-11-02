@@ -179,6 +179,11 @@ module CalibreHub
     # finished jobs kept for GET /api/jobs/:id
     KEEP = 50
 
+    # Raised while applying a book: stops the whole job as failed, e.g. when
+    # a service it needs is down
+    class Abort < Exception
+    end
+
     class Job
       include JSON::Serializable
 
@@ -187,13 +192,15 @@ module CalibreHub
       property done : Int32 = 0
       getter total : Int32
       getter errors = [] of NamedTuple(bookId: Int64, error: String)
+      # why the job stopped early (Abort)
+      property error : String?
       @[JSON::Field(ignore: true)]
       getter ids : Array(Int64)
       @[JSON::Field(ignore: true)]
       getter changes : Hash(String, JSON::Any)
 
       def initialize(@ids, @changes, @id = Random::Secure.hex(8), @status = "running", @done = 0,
-                     @errors = [] of NamedTuple(bookId: Int64, error: String))
+                     @errors = [] of NamedTuple(bookId: Int64, error: String), @error = nil)
         @total = @ids.size
       end
 
@@ -208,26 +215,46 @@ module CalibreHub
       end
     end
 
-    def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer, @category_column : String?)
+    COLUMNS = "id, status, done, ids, changes, errors, error"
+
+    # table: the queue, one per kind of job (jobs run one after another
+    # within a queue, queues in parallel)
+    def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer, @category_column : String?,
+                   @table = "jobs")
       @db.exec <<-SQL
-        create table if not exists jobs (
+        create table if not exists #{@table} (
           id text primary key,
           status text not null,
           done integer not null default 0,
           ids text not null,
           changes text not null,
           errors text not null default '[]',
-          created_at integer not null
+          created_at integer not null,
+          error text
         )
         SQL
+      columns = [] of String
+      @db.query_each("select name from pragma_table_info('#{@table}')") { |rs| columns << rs.read(String) }
+      @db.exec "alter table #{@table} add column error text" unless columns.includes?("error")
       @wake = Channel(Nil).new(1)
       spawn { work }
     end
 
     def []?(id : String) : Job?
-      @db.query_one?("select id, status, done, ids, changes, errors from jobs where id = ?", id) do |rs|
+      @db.query_one?("select #{COLUMNS} from #{@table} where id = ?", id) do |rs|
         Jobs.read(rs)
       end
+    end
+
+    # Most recent job with its start time
+    def last : {Job, Time}?
+      @db.query_one?("select #{COLUMNS}, created_at from #{@table} order by created_at desc, rowid desc limit 1") do |rs|
+        {Jobs.read(rs), Time.unix(rs.read(Int64))}
+      end
+    end
+
+    def running? : Bool
+      !@db.query_one?("select 1 from #{@table} where status = 'running' limit 1", as: Int64).nil?
     end
 
     # body: {target: {ids: [...]} | {query: {...}}, changes: {...}}
@@ -253,8 +280,12 @@ module CalibreHub
         # type errors now rather than once per book
         Edit.changes(changes.dup.tap(&.delete("numberSeries")), Jobs.blank, @category_column)
       end
-      job = Job.new(ids(body["target"]?), changes)
-      @db.exec "insert into jobs (id, status, done, ids, changes, created_at) values (?, ?, 0, ?, ?, ?)",
+      enqueue(ids(body["target"]?), changes)
+    end
+
+    protected def enqueue(ids : Array(Int64), changes : Hash(String, JSON::Any)) : Job
+      job = Job.new(ids, changes)
+      @db.exec "insert into #{@table} (id, status, done, ids, changes, created_at) values (?, ?, 0, ?, ?, ?)",
         job.id, job.status, job.ids.to_json, job.changes.to_json, Time.utc.to_unix
       select
       when @wake.send(nil)
@@ -291,7 +322,7 @@ module CalibreHub
           end
         rescue ex
           # the state DB failed; try again later instead of spinning
-          STDERR.puts "bulk jobs: #{ex.message}"
+          STDERR.puts "#{@table}: #{ex.message}"
           sleep 10.seconds
           next
         end
@@ -300,7 +331,7 @@ module CalibreHub
     end
 
     private def next_job : Job?
-      @db.query_one?("select id, status, done, ids, changes, errors from jobs where status = 'running' order by created_at, rowid limit 1") do |rs|
+      @db.query_one?("select #{COLUMNS} from #{@table} where status = 'running' order by created_at, rowid limit 1") do |rs|
         Jobs.read(rs)
       end
     end
@@ -311,36 +342,45 @@ module CalibreHub
       (job.done...job.total).each do |i|
         id = job.ids[i]
         begin
-          if job.changes.has_key?("delete")
-            begin
-              @writer.delete(id)
-            rescue ex : Writer::NotFound
-              # deleted just before the hub stopped, progress not saved yet
-              raise ex unless i == resumed_at
-            end
-          else
-            @writer.update(id, job.changes_for(i))
-          end
+          apply(job, i, id, i == resumed_at)
+        rescue ex : Abort
+          job.error = ex.message
+          STDERR.puts "#{@table}: job #{job.id} stopped at #{job.done}/#{job.total}: #{ex.message}"
+          break
         rescue Writer::NotFound
           job.errors << {bookId: id, error: "not found"}
         rescue ex
           job.errors << {bookId: id, error: ex.message || ex.class.name}
         end
         job.done = i + 1
-        @db.exec "update jobs set done = ?, errors = ? where id = ?", job.done, job.errors.to_json, job.id
+        @db.exec "update #{@table} set done = ?, errors = ? where id = ?", job.done, job.errors.to_json, job.id
       end
-      job.status = job.errors.size == job.total && job.total > 0 ? "failed" : "done"
-      @db.exec "update jobs set status = ? where id = ?", job.status, job.id
+      job.status = (job.error || (job.errors.size == job.total && job.total > 0)) ? "failed" : "done"
+      @db.exec "update #{@table} set status = ?, error = ? where id = ?", job.status, job.error, job.id
       @db.exec <<-SQL, KEEP
-        delete from jobs where status != 'running' and rowid not in (
-          select rowid from jobs where status != 'running' order by created_at desc, rowid desc limit ?)
+        delete from #{@table} where status != 'running' and rowid not in (
+          select rowid from #{@table} where status != 'running' order by created_at desc, rowid desc limit ?)
         SQL
     end
 
+    # One book of a job; resumed: the book the job was at when the hub stopped
+    protected def apply(job : Job, index : Int32, id : Int64, resumed : Bool)
+      if job.changes.has_key?("delete")
+        begin
+          @writer.delete(id)
+        rescue ex : Writer::NotFound
+          # deleted just before the hub stopped, progress not saved yet
+          raise ex unless resumed
+        end
+      else
+        @writer.update(id, job.changes_for(index))
+      end
+    end
+
     protected def self.read(rs) : Job
-      id, status, done, ids, changes, errors = rs.read(String, String, Int32, String, String, String)
+      id, status, done, ids, changes, errors, error = rs.read(String, String, Int32, String, String, String, String?)
       Job.new(Array(Int64).from_json(ids), Hash(String, JSON::Any).from_json(changes), id, status, done,
-        Array(NamedTuple(bookId: Int64, error: String)).from_json(errors))
+        Array(NamedTuple(bookId: Int64, error: String)).from_json(errors), error)
     end
 
     def self.blank : Book

@@ -43,6 +43,14 @@ module CalibreHub
     # built web app (dist/); served without login
     getter frontend : String? = ENV["CALIBRE_HUB_FRONTEND"]?.presence
     getter login_user : String = env("CALIBRE_HUB_LOGIN_USER", "arthur")
+    # category suggestions from a local model (Ollama API)
+    getter classify : Bool = env("CALIBRE_HUB_CLASSIFY", "false") == "true"
+    getter classify_endpoint : String = env("CALIBRE_HUB_CLASSIFY_ENDPOINT", "http://127.0.0.1:11434")
+    getter classify_model : String = env("CALIBRE_HUB_CLASSIFY_MODEL", "qwen2.5:3b")
+    getter classify_threshold : Float64 = env("CALIBRE_HUB_CLASSIFY_THRESHOLD", "0.85").to_f
+    # nightly run over the unsorted books, local time HH:MM; empty: none
+    getter classify_schedule : String = env("CALIBRE_HUB_CLASSIFY_SCHEDULE", "03:45")
+    getter classify_timeout : Time::Span = env("CALIBRE_HUB_CLASSIFY_TIMEOUT", "300").to_i.seconds
     # read only by serve, so scan works without them
     def login_password : String
       secret("CALIBRE_HUB_LOGIN_PASSWORD_FILE")
@@ -221,6 +229,21 @@ module CalibreHub
     end
   end
 
+  def self.classify(config : Config, calibre : Calibre, writer : Writer, db : DB::Database) : ClassifyJobs?
+    return nil unless config.classify
+    column = config.category_column || begin
+      STDERR.puts "classify: needs a category column, off"
+      return nil
+    end
+    ollama = Ollama.new(config.classify_endpoint, config.classify_model, config.classify_timeout)
+    c = Classify.new(calibre, writer, column, Suggestions.new(db), ollama, config.classify_threshold)
+    jobs = ClassifyJobs.new(db, calibre, writer, c)
+    jobs.watch_events
+    config.classify_schedule.presence.try { |at| jobs.schedule(at) }
+    puts "classify: #{config.classify_model} at #{config.classify_endpoint}, auto-apply from #{config.classify_threshold}"
+    jobs
+  end
+
   def self.serve(config : Config)
     calibre = config.calibre
     db = config.state
@@ -240,7 +263,8 @@ module CalibreHub
     use auth_handler
     writer = Writer.new(calibre, detector, wake, config.category_column)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, Jobs.new(db, calibre, writer, config.category_column), Trash.new(calibre, writer, config.library, db))
+      writer, Jobs.new(db, calibre, writer, config.category_column), Trash.new(calibre, writer, config.library, db),
+      classify(config, calibre, writer, db))
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

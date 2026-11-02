@@ -241,6 +241,39 @@ in
       description = "Built web app (contents of Vite's dist/), served without login; null serves none.";
     };
 
+    classify = {
+      enable = mkEnableOption ''
+        category suggestions from a local model through the Ollama API. Only
+        categories of the existing tree (categoryColumn) are suggested; sure
+        ones are applied with the tag `auto-kategorie`, the rest wait for review
+      '';
+      endpoint = mkOption {
+        type = types.str;
+        default = "http://127.0.0.1:11434";
+        description = "Ollama API the hub sends title, authors, tags and description to; keep it in the home network.";
+      };
+      model = mkOption {
+        type = types.str;
+        default = "qwen2.5:3b";
+        description = "Model name as Ollama knows it (`ollama pull <model>`).";
+      };
+      autoApplyThreshold = mkOption {
+        type = types.numbers.between 0 1;
+        default = 0.85;
+        description = "Suggestions at least this confident are applied to books without a category.";
+      };
+      schedule = mkOption {
+        type = types.nullOr (types.strMatching "[0-9]{2}:[0-9]{2}");
+        default = "03:45";
+        description = "Local time of the nightly run over the books without a category; null for none.";
+      };
+      timeout = mkOption {
+        type = types.ints.positive;
+        default = 300;
+        description = "Seconds to wait for one answer (a small model on CPU, loading included).";
+      };
+    };
+
     leseliste = {
       enable = mkEnableOption "the reading list handler (mirror tagged books into a folder)";
       tag = mkOption {
@@ -303,6 +336,13 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.classify.enable -> cfg.categoryColumn != null;
+        message = "services.calibre-hub.classify needs services.calibre-hub.categoryColumn.";
+      }
+    ];
+
     users.users.calibre-hub = {
       isSystemUser = true;
       group = cfg.group;
@@ -359,7 +399,9 @@ in
       after = [
         "network.target"
         "calibre-server.service"
-      ];
+      ]
+      # a model on the same host is up before the first run
+      ++ lib.optional (cfg.classify.enable && config.services.ollama.enable) "ollama.service";
       wants = [ "calibre-server.service" ];
       unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable;
       # ebook-convert for the reading list
@@ -386,7 +428,13 @@ in
         CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
         CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
         CALIBRE_HUB_FAST_TAGS = lib.concatStringsSep "," cfg.fastTags;
-        CALIBRE_HUB_FRONTEND = lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
+        CALIBRE_HUB_CLASSIFY = lib.boolToString cfg.classify.enable;
+        CALIBRE_HUB_CLASSIFY_ENDPOINT = cfg.classify.endpoint;
+        CALIBRE_HUB_CLASSIFY_MODEL = cfg.classify.model;
+        CALIBRE_HUB_CLASSIFY_THRESHOLD = toString cfg.classify.autoApplyThreshold;
+        CALIBRE_HUB_CLASSIFY_SCHEDULE = lib.optionalString (cfg.classify.schedule != null) cfg.classify.schedule;
+        CALIBRE_HUB_CLASSIFY_TIMEOUT = toString cfg.classify.timeout;
+        CALIBRE_HUB_FRONTEND =lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";
         CALIBRE_HUB_SESSION_KEY_FILE = "%d/session-key";
