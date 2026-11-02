@@ -71,6 +71,67 @@ module CalibreHub
       {false, ex.message || "#{cmd} failed"}
     end
 
+    # KOReader partial MD5s a file had before the hub rewrote it, oldest
+    # first per book and format (the original), for KOSync mappings
+    def self.create_checksums(db : DB::Database)
+      db.exec <<-SQL
+        create table if not exists file_checksums (
+          book_id integer not null,
+          format text not null,
+          partial_md5 text not null,
+          size integer not null,
+          recorded_at integer not null,
+          primary key (book_id, format, partial_md5)
+        )
+        SQL
+    end
+
+    # The files of a book in the library (format -> path), read from
+    # metadata.db; empty without a library path
+    def self.library_files(library : String?, id : Int64) : Hash(String, String)
+      files = {} of String => String
+      library || return files
+      ldb = LibraryDB.open_read_only(File.join(library, "metadata.db"))
+      begin
+        ldb.query_each("select b.path, d.format, d.name from books b join data d on d.book = b.id where b.id = ?", id) do |rs|
+          path, fmt, name = rs.read(String, String, String)
+          files[fmt.upcase] = File.join(library, path, "#{name}.#{fmt.downcase}")
+        end
+      ensure
+        ldb.close
+      end
+      files
+    end
+
+    # The KOReader checksums of a book's files before they change
+    def self.remember_checksums(db : DB::Database, library : String?, id : Int64, fmts : Array(String))
+      return unless library
+      files = library_files(library, id)
+      now = Time.utc.to_unix
+      fmts.each do |f|
+        file = files[f]? || next
+        next unless File.exists?(file)
+        db.exec "insert or ignore into file_checksums (book_id, format, partial_md5, size, recorded_at) values (?, ?, ?, ?, ?)",
+          id, f, partial_md5(file), File.size(file), now
+      rescue ex : File::Error
+        STDERR.puts "files: ##{id} #{f}: checksum not kept: #{ex.message}"
+      end
+    end
+
+    # The files changed, the metadata didn't: a changed event with the same
+    # formats on both sides, so handlers (the reading list) copy the files again
+    def self.files_changed(detector : Detector?, wake : Channel(Nil)?, book : Book)
+      d = detector || return
+      formats = JSON.parse(book.formats.to_json)
+      d.record([Event.new("changed", book.id, changes: {"formats" => [formats, formats]}, book: JSON.parse(book.to_json))])
+      if w = wake
+        select
+        when w.send(nil)
+        else
+        end
+      end
+    end
+
     def self.tmpdir(&)
       dir = File.join(Dir.tempdir, "calibre-hub-#{Random::Secure.hex(6)}")
       Dir.mkdir(dir)
@@ -120,18 +181,7 @@ module CalibreHub
         )
         SQL
       @db.exec "create table if not exists embed_state (book_id integer primary key, fingerprint text not null, embedded_at integer not null)"
-      # KOReader partial MD5s a file had before the hub rewrote it, oldest
-      # first per book and format (the original), for KOSync mappings
-      @db.exec <<-SQL
-        create table if not exists file_checksums (
-          book_id integer not null,
-          format text not null,
-          partial_md5 text not null,
-          size integer not null,
-          recorded_at integer not null,
-          primary key (book_id, format, partial_md5)
-        )
-        SQL
+      BookFiles.create_checksums(@db)
     end
 
     # Follows the events and works off the due books
@@ -268,40 +318,11 @@ module CalibreHub
 
     # The KOReader checksums of the files before they change
     def remember_checksums(id : Int64, fmts : Array(String))
-      library = @library || return
-      files = {} of String => String
-      ldb = LibraryDB.open_read_only(File.join(library, "metadata.db"))
-      begin
-        ldb.query_each("select b.path, d.format, d.name from books b join data d on d.book = b.id where b.id = ?", id) do |rs|
-          path, fmt, name = rs.read(String, String, String)
-          files[fmt.upcase] = File.join(library, path, "#{name}.#{fmt.downcase}")
-        end
-      ensure
-        ldb.close
-      end
-      now = Time.utc.to_unix
-      fmts.each do |f|
-        file = files[f]? || next
-        next unless File.exists?(file)
-        @db.exec "insert or ignore into file_checksums (book_id, format, partial_md5, size, recorded_at) values (?, ?, ?, ?, ?)",
-          id, f, BookFiles.partial_md5(file), File.size(file), now
-      rescue ex : File::Error
-        STDERR.puts "embed: ##{id} #{f}: checksum not kept: #{ex.message}"
-      end
+      BookFiles.remember_checksums(@db, @library, id, fmts)
     end
 
-    # The files changed, the metadata didn't: a changed event with the same
-    # formats on both sides, so handlers (the reading list) copy the files again
     private def notify(book : Book)
-      d = @detector || return
-      formats = JSON.parse(book.formats.to_json)
-      d.record([Event.new("changed", book.id, changes: {"formats" => [formats, formats]}, book: JSON.parse(book.to_json))])
-      if w = @wake
-        select
-        when w.send(nil)
-        else
-        end
-      end
+      BookFiles.files_changed(@detector, @wake, book)
     end
   end
 
