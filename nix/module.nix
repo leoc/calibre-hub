@@ -30,7 +30,6 @@ let
   );
 
   leseliste = pkgs.writeShellScript "calibre-hub-leseliste" ''
-    export LESELISTE_TAG=${lib.escapeShellArg cfg.leseliste.tag}
     export LESELISTE_TARGET=${lib.escapeShellArg (toString cfg.leseliste.target)}
     export LESELISTE_FORMATS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.leseliste.formats)}
     exec ${lib.getExe cfg.package} handler leseliste
@@ -334,10 +333,15 @@ in
     };
 
     leseliste = {
-      enable = mkEnableOption "the reading list handler (mirror tagged books into a folder)";
+      enable = mkEnableOption "the reading list handler (mirror the synced lists into a folder, one subfolder per list)";
       tag = mkOption {
         type = types.str;
         default = "leseliste";
+        description = ''
+          Tag of the reading list before lists existed. Its books become the
+          list "Leseliste" (synced, default list) once; the tag stays on the
+          books but is no longer read afterwards.
+        '';
       };
       target = mkOption {
         type = types.path;
@@ -490,6 +494,7 @@ in
         CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
         CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
         CALIBRE_HUB_FAST_TAGS = lib.concatStringsSep "," cfg.fastTags;
+        CALIBRE_HUB_LIST_MIGRATE_TAG = cfg.leseliste.tag;
         CALIBRE_HUB_CLASSIFY = lib.boolToString cfg.classify.enable;
         CALIBRE_HUB_CLASSIFY_ENDPOINT = cfg.classify.endpoint;
         CALIBRE_HUB_CLASSIFY_MODEL = cfg.classify.model;

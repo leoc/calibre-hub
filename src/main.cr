@@ -42,6 +42,8 @@ module CalibreHub
     getter fast_tags : Array(String) = env("CALIBRE_HUB_FAST_TAGS", "leseliste").split(',', remove_empty: true).map(&.strip)
     # built web app (dist/); served without login
     getter frontend : String? = ENV["CALIBRE_HUB_FRONTEND"]?.presence
+    # the tag the reading list was; becomes the list "Leseliste" once
+    getter list_migrate_tag : String = env("CALIBRE_HUB_LIST_MIGRATE_TAG", "leseliste")
     getter login_user : String = env("CALIBRE_HUB_LOGIN_USER", "arthur")
     # category suggestions from a local model (Ollama API)
     getter classify : Bool = env("CALIBRE_HUB_CLASSIFY", "false") == "true"
@@ -277,6 +279,28 @@ module CalibreHub
     jobs
   end
 
+  # Lists: deleted books leave them; the reading list tag becomes a list
+  # once (retried until calibre-server answers)
+  def self.lists(config : Config, calibre : Calibre, db : DB::Database, wake : Channel(Nil)) : Lists
+    exists = ->(ids : Array(Int64)) { calibre.books(ids, ["title"]).map(&.id) }
+    lists = Lists.new(db, exists, wake)
+    lists.watch_events
+    unless lists.migrated?
+      spawn do
+        loop do
+          tag = config.list_migrate_tag
+          tagged = calibre.search(%(tags:"=#{Api.escape(tag)}"), "timestamp", true, 0, 1_000_000).ids
+          lists.migrate(config.login_user, tag, tagged)
+          break
+        rescue ex
+          STDERR.puts "lists: migrating the tag failed, retrying: #{ex.message}"
+          sleep 10.seconds
+        end
+      end
+    end
+    lists
+  end
+
   def self.serve(config : Config)
     calibre = config.calibre
     db = config.state
@@ -295,10 +319,16 @@ module CalibreHub
     config.frontend.try { |dir| use FrontendHandler.new(dir) }
     use auth_handler
     writer = Writer.new(calibre, detector, wake, config.category_column)
+    lists = lists(config, calibre, db, wake)
+    members = ->(id : Int64) { lists[id, config.login_user]; lists.book_ids(id) }
     metadata_jobs = metadata(config, calibre, writer, db)
+    classify_jobs = classify(config, calibre, writer, db, metadata_jobs)
+    jobs = Jobs.new(db, calibre, writer, config.category_column)
+    [jobs, metadata_jobs, classify_jobs].compact.each { |j| j.list_members = members }
+    trash = Trash.new(calibre, writer, config.library, db)
+    trash.on_restore = ->(old_id : Int64, new_id : Int64) { lists.book_restored(old_id, new_id) }
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, Jobs.new(db, calibre, writer, config.category_column), Trash.new(calibre, writer, config.library, db),
-      classify(config, calibre, writer, db, metadata_jobs), metadata_jobs)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

@@ -217,6 +217,10 @@ module CalibreHub
 
     COLUMNS = "id, status, done, ids, changes, errors, error"
 
+    # book ids of a reading list for {query: {list: id}}; raises when the
+    # list is unknown
+    property list_members : Proc(Int64, Array(Int64))?
+
     # table: the queue, one per kind of job (jobs run one after another
     # within a queue, queues in parallel)
     def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer, @category_column : String?,
@@ -305,6 +309,15 @@ module CalibreHub
         query.each do |k, v|
           raise Edit::Invalid.new("target", "offset/limit not allowed") if {"offset", "limit", "sort", "order"}.includes?(k)
           (v.as_a? || [v]).each { |x| params.add(k, x.as_s? || x.to_s) }
+        end
+        # the books of a reading list, filtered further by the rest
+        if list = params["list"]?.presence
+          members = list_members.try(&.call(list.to_i64? || raise Edit::Invalid.new("target", "unknown list"))) ||
+                    raise Edit::Invalid.new("target", "unknown list")
+          q = Api.query(params, @category_column)
+          return members if q.empty?
+          found = @calibre.search(q, "id", true, 0, 1_000_000).ids.to_set
+          return members.select { |id| found.includes?(id) }
         end
         @calibre.search(Api.query(params, @category_column), "id", true, 0, 1_000_000).ids
       else

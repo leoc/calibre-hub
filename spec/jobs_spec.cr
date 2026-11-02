@@ -53,6 +53,16 @@ rescue ex : CalibreHub::Edit::Invalid
 end
 
 describe CalibreHub::Jobs do
+  it "takes the books of a reading list for a list query" do
+    with_state do |db, _|
+      j = jobs(db)
+      expect_raises(CalibreHub::Edit::Invalid, "unknown list") { j.ids(JSON.parse(%({"query": {"list": "3"}}))) }
+      j.list_members = ->(id : Int64) { id == 3 ? [6_i64, 5_i64] : raise CalibreHub::Lists::NotFound.new }
+      j.ids(JSON.parse(%({"query": {"list": "3"}}))).should eq([6_i64, 5_i64])
+      expect_raises(CalibreHub::Lists::NotFound) { j.ids(JSON.parse(%({"query": {"list": 4}}))) }
+    end
+  end
+
   it "runs a job, records errors per book and keeps the API shape" do
     with_state do |db, _|
       writer = FakeWriter.new

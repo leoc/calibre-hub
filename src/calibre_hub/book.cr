@@ -30,6 +30,10 @@ module CalibreHub
     @[JSON::Field(emit_null: false)]
     getter comments : String?
     getter custom : Hash(String, JSON::Any)
+    # ids of the reading lists the book is in (set by the API, never in
+    # the snapshot)
+    @[JSON::Field(emit_null: false)]
+    property lists : Array(Int64)?
 
     module Micros
       def self.to_json(value : Time, json : JSON::Builder)

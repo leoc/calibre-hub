@@ -221,11 +221,6 @@ pkgs.testers.runNixOSTest {
     with subtest("events reach handlers"):
         machine.wait_until_succeeds("grep -q '\"changed\",1,.*tags' /var/lib/calibre-hub/events.log", timeout=30)
 
-    with subtest("reading list"):
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Fachbuch/Software/Lovelace, Ada - Testbuch.epub'", timeout=30)
-        machine.succeed(f"{DB} set_metadata 1 -f tags:")
-        machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
-
     with subtest("inbox"):
         machine.succeed("printf 'Krimi\\n\\nText\\n' > /tmp/k.txt")
         # a folder without group write is skipped, not imported twice
@@ -248,6 +243,64 @@ pkgs.testers.runNixOSTest {
         out = machine.succeed(f"curl -s -b /tmp/jar -X {method} {CSRF} {data} {extra} -w '\\n%{{http_code}}' '{H}{path}'")
         text, status = out.rsplit("\n", 1)
         return int(status), (json.loads(text) if text.strip() else None)
+
+    STATE = "/var/lib/calibre-hub/state.sqlite"
+
+    with subtest("reading list tag becomes a list"):
+        # migrated on the first start, when the library was still empty
+        status, ls = api("GET", "/api/lists")
+        assert status == 200 and [(l["name"], l["sync"], l["isDefault"], l["count"]) for l in ls] == [("Leseliste", True, True, 0)], ls
+        # once more with the tagged book: as on a host that had the tag
+        machine.systemctl("stop calibre-hub.service")
+        machine.succeed(f"sqlite3 {STATE} \"delete from list_items; delete from lists; delete from meta where key = 'lists_migrated'\"")
+        machine.systemctl("start calibre-hub.service")
+        machine.wait_for_open_port(8084)
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'", timeout=60)
+        status, ls = api("GET", "/api/lists")
+        assert [(l["name"], l["sync"], l["isDefault"], l["favorite"], l["count"]) for l in ls] == [("Leseliste", True, True, True, 1)], ls
+        lid = ls[0]["id"]
+        assert api("GET", "/api/books/1")[1]["lists"] == [lid]
+        # the old category folders are gone, the tag no longer counts
+        machine.fail("test -e /srv/books/boox/Fachbuch")
+        machine.succeed(f"{DB} set_metadata 1 -f tags:")
+        machine.sleep(5)
+        machine.succeed("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'")
+
+    with subtest("lists"):
+        status, u = api("POST", "/api/lists", {"name": "Urlaub", "sync": True, "description": "Strand"})
+        assert status == 201 and u["owner"] == "arthur" and u["visibility"] == "private", (status, u)
+        assert api("POST", "/api/lists", {"name": "urlaub"})[0] == 409
+        status, r = api("PUT", f"/api/lists/{u['id']}/books/1")
+        assert status == 200 and r["added"] == [1] and r["list"]["count"] == 1, (status, r)
+        assert api("PUT", f"/api/lists/{u['id']}/books/9999")[0] == 404
+        # one folder per synced list, a book in two lists is in both
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Urlaub/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        machine.succeed("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'")
+        status, page = api("GET", f"/api/books?list={u['id']}")
+        assert status == 200 and page["total"] == 1 and page["books"][0]["id"] == 1, page
+        assert sorted(page["books"][0]["lists"]) == sorted([lid, u["id"]]), page
+        assert api("GET", f"/api/books?list={u['id']}&sort=title")[1]["total"] == 1
+        assert api("GET", f"/api/books?list={u['id']}&q=title:nichts")[1]["total"] == 0
+        assert api("GET", "/api/books?list=9999")[0] == 404
+        assert [l["id"] for l in api("GET", "/api/books/1/lists")[1]] == sorted([lid, u["id"]])
+        # renaming moves the folder
+        status, u = api("PATCH", f"/api/lists/{u['id']}", {"name": "Sommer"})
+        assert status == 200 and u["name"] == "Sommer", (status, u)
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        machine.succeed("test ! -e /srv/books/boox/Urlaub")
+        # removing a book removes its file
+        status, r = api("DELETE", f"/api/lists/{u['id']}/books/1")
+        assert status == 200 and r["removed"] == [1] and r["list"]["count"] == 0, (status, r)
+        machine.wait_until_succeeds("! test -e '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        machine.succeed("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'")
+        status, r = api("POST", f"/api/lists/{u['id']}/books", {"target": {"query": {"q": "title:Testbuch"}}})
+        assert status == 200 and r["added"] == [1], (status, r)
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        assert api("DELETE", f"/api/lists/{u['id']}")[0] == 200
+        machine.wait_until_succeeds("! test -e /srv/books/boox/Sommer", timeout=30)
+        machine.wait_until_succeeds("grep -q '\"list\",0,' /var/lib/calibre-hub/events.log", timeout=30)
+        status, r = api("DELETE", f"/api/lists/{lid}/books/1")
+        machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
 
     with subtest("edit"):
         assert code(f"-b /tmp/jar -X PATCH -d '{{}}' {H}/api/books/1") == "403"
@@ -382,9 +435,10 @@ pkgs.testers.runNixOSTest {
         # calibre's own expiry is off (init.sh)
         pref = machine.succeed("sqlite3 /srv/books/library/metadata.db \"select val from preferences where key = 'expire_old_trash_after'\"").strip()
         assert int(pref) >= 100 * 365 * 86400, pref
-        status, b = api("PATCH", f"/api/books/{uid}", {"addTags": ["leseliste"]})
-        assert status == 200, (status, b)
-        mirrored = "find /srv/books/boox -name '*Hochgeladen.epub' | grep -q ."
+        b = api("GET", f"/api/books/{uid}")[1]
+        status, r = api("PUT", f"/api/lists/{lid}/books/{uid}")
+        assert status == 200, (status, r)
+        mirrored = "find /srv/books/boox/Leseliste -name '*Hochgeladen.epub' | grep -q ."
         machine.wait_until_succeeds(mirrored, timeout=30)
         assert code(f"-b /tmp/jar -X DELETE {H}/api/books/{uid}") == "403"
         status, r = api("DELETE", f"/api/books/{uid}")
@@ -393,6 +447,8 @@ pkgs.testers.runNixOSTest {
         assert api("DELETE", f"/api/books/{uid}")[0] == 404
         machine.wait_until_succeeds(f"grep -q '\"deleted\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
         machine.wait_until_succeeds(f"! {mirrored}", timeout=30)
+        # the deleted book left its list
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/lists/{lid} | jq -e '.count == 0'", timeout=30)
         machine.succeed(f"test -f /srv/books/library/.caltrash/b/{uid}/metadata.opf")
         status, trash = api("GET", "/api/trash")
         entry = next(e for e in trash if e["id"] == uid)
@@ -402,13 +458,15 @@ pkgs.testers.runNixOSTest {
         assert status == 200, (status, r)
         rb = r["book"]
         assert rb["title"] == "Hochgeladen" and rb["authors"] == ["Ulla Upload"], rb
-        assert sorted(rb["formats"]) == ["EPUB", "TXT"] and "leseliste" in rb["tags"], rb
+        assert sorted(rb["formats"]) == ["EPUB", "TXT"], rb
         assert rb["custom"]["kategorie"] == b["custom"]["kategorie"] and rb["series"] == b["series"], (rb, b)
         added = lambda x: datetime.fromisoformat(x["added"]).replace(microsecond=0)
         assert added(rb) == added(b), (rb, b)
         rid = rb["id"]
         assert code(f"-b /tmp/jar '{H}/api/books/{rid}/cover'") == "200"
         machine.wait_until_succeeds(f"grep -q '\"added\",{rid},' /var/lib/calibre-hub/events.log", timeout=30)
+        # back in the list it was in, with its new id
+        assert api("GET", f"/api/books/{rid}")[1]["lists"] == [lid]
         machine.wait_until_succeeds(mirrored, timeout=30)
         assert all(e["id"] != uid for e in api("GET", "/api/trash")[1])
         assert api("POST", f"/api/trash/{uid}/restore")[0] == 404

@@ -18,8 +18,15 @@ to the cookie. Field names are camelCase, missing values `null`.
 |---|---|
 | `POST /api/session` `{user, password}` | login, sets `hub_session` (30 days, renewed on use); 429 after 5 failures in 15 min |
 | `GET /api/session`, `DELETE /api/session` | current user, logout |
-| `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}` |
-| `GET /api/books/:id` | one book incl. `comments` |
+| `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in). With `list=<id>` only the books of that list, `sort` then listAdded (default, newest first), title, author or series |
+| `GET /api/books/:id` | one book incl. `comments` and `lists` |
+| `GET /api/lists` | the reading lists the user sees (own ones first, favorites first, by name): `[{id, name, description, owner, visibility, sync, favorite, isDefault, count, coverBookIds, createdAt, updatedAt, lastUsedAt, editable}]`; `coverBookIds`: the 4 most recently added books |
+| `POST /api/lists` `{name, description?, visibility?, sync?, favorite?, isDefault?}` | creates a list (201); `visibility`: private (default), readable, editable; names are unique per owner, ignoring case (409) |
+| `GET /api/lists/:id`, `PATCH /api/lists/:id`, `DELETE /api/lists/:id` | one list; change any of the fields above (one default list per owner: `isDefault: true` takes it from the other); delete returns `{list}` (owner only, 403) |
+| `POST /api/lists/:id/books` `{bookIds}` or `{target}` | adds books (`target` as in bulk edits; unknown ids are left out); returns `{list, added}` with the ids that were new |
+| `POST /api/lists/:id/books/remove` `{bookIds}` or `{target}` | removes books; returns `{list, removed}` |
+| `PUT`, `DELETE /api/lists/:id/books/:bookId` | adds (404 for an unknown book) or removes one book; `{list, added}` / `{list, removed}` |
+| `GET /api/books/:id/lists` | the lists the book is in |
 | `GET /api/books/:id/cover[?size=thumb]` | cover image |
 | `GET /api/books/:id/download/:format` | book file |
 | `DELETE /api/books/:id` | moves the book to calibre's trash; returns `{book}` as it was |
@@ -73,14 +80,37 @@ start and daily at `reconcileAt`.
 
 Events: `{"type": "added|changed|deleted", "bookId": 1, "changes":
 {"tags": [[old], [new]], "#kategorie": [...]}, "book": {...}, "at": ...}`.
+Reading lists add `{"type": "list", "action": "created|updated|deleted|added|removed",
+"bookId": 0, "listId": 3, "list": {...}, "previous": {...}, "bookIds": [...], "at": ...}`
+(`previous`: the list before an update; `bookIds`: the books added or
+removed, or the books of a deleted list).
 Every executable in the handlers directory gets each event on stdin, in
 order per handler. Exit 0 = done, otherwise retry with backoff (10 s up to
 1 h); after `handlerAttempts` the delivery is parked and `alertCommand` is
 called with subject and text.
 
 Bundled handler `calibre-hub handler leseliste` (`leseliste.enable`):
-mirrors books with a tag into a folder (epub, else pdf, else converted),
-subfolders from the category column, files named `Author - Series NN - Title`.
+mirrors every reading list with `sync` into a folder of its own below
+`leseliste.target` (`<target>/<list name>/Author - Series NN - Title.epub`;
+epub, else pdf, else converted). A book in two synced lists is in both
+folders; a book that leaves a list (or is deleted) loses its file, a
+renamed list renames its folder, a list no longer synced loses its folder.
+It reads the lists from the state DB, read-only.
+
+## Reading lists
+
+Lists like playlists, kept in the hub's state DB (calibre Desktop doesn't
+see them): name, description, owner, visibility (private, readable,
+editable; matters once there is more than one user), sync to the reader,
+favorite (shown in the sidebar), default list (the bookmark on the cover)
+and the books with the time they were added. A deleted book leaves its
+lists and goes back into them when it is restored from the trash.
+
+Migration: on the first start the books with the tag `leseliste.tag`
+(default `leseliste`) become the list "Leseliste", synced, favorite and
+default list. The tag stays on the books but is no longer read; the list is
+the source of truth from then on. The reader folder changes from category
+subfolders to `<target>/Leseliste/`.
 
 Inbox (`inbox.path`): files unchanged for `inbox.stableSeconds` are added
 through calibre-server; `A/B/x.epub` gets category `A.B` and tags `A`, `B`,
@@ -295,7 +325,7 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CALIBRE_PASSWORD_FILE` | required | without trailing newline |
 | `CALIBRE_HUB_LIBRARY_ID` | server default | |
 | `CALIBRE_HUB_CUSTOM_COLUMNS` | none | comma separated, e.g. `kategorie` |
-| `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot, event queue, bulk jobs, suggestions |
+| `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot, event queue, bulk jobs, suggestions, reading lists |
 | `CALIBRE_HUB_HOST`, `CALIBRE_HUB_PORT` | `127.0.0.1`, `8084` | |
 | `CALIBRE_HUB_LIBRARY` | none | library path: changelog in `metadata.db`, read-only |
 | `CALIBRE_HUB_SCAN_INTERVAL` | `900` | reconcile interval when triggers are missing |
@@ -304,6 +334,7 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_HANDLER_ATTEMPTS`, `_TIMEOUT` | `10`, `600` | |
 | `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
 | `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |
+| `CALIBRE_HUB_LIST_MIGRATE_TAG` | `leseliste` | books with this tag become the list "Leseliste" on the first start |
 | `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each |
 | `CALIBRE_HUB_CLASSIFY` | `false` | `true` turns on category suggestions (needs `CALIBRE_HUB_CATEGORY_COLUMN`) |
 | `CALIBRE_HUB_CLASSIFY_ENDPOINT`, `_MODEL` | `http://127.0.0.1:11434`, `qwen2.5:3b` | Ollama API and model |

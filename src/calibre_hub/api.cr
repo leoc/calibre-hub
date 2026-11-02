@@ -5,6 +5,7 @@ require "./writer"
 require "./trash"
 require "./classify"
 require "./metadata"
+require "./lists"
 
 module CalibreHub
   module Api
@@ -33,6 +34,41 @@ module CalibreHub
       params["author"]?.presence.try { |a| parts << %(authors:"=#{escape(a)}") }
       params["series"]?.presence.try { |s| parts << %(series:"=#{escape(s)}") }
       parts.join(" and ")
+    end
+
+    # Books of a list, filtered and sorted: {total, ids of the page}.
+    # sort: listAdded (default, newest first), title, author, series; the
+    # other filters of GET /api/books apply too.
+    def self.list_page(lists : Lists, calibre : Calibre, list_id : Int64, user : String, p : HTTP::Params,
+                       kategorie : String?, offset : Int32, limit : Int32) : {Int32, Array(Int64)}
+      lists[list_id, user]
+      sort = p["sort"]?.presence || "listAdded"
+      raise Edit::Invalid.new("sort", "one of #{Lists::SORTS.join(", ")}") unless Lists::SORTS.includes?(sort)
+      members = lists.book_ids(list_id)
+      query = query(p, kategorie)
+      ids = if sort == "listAdded"
+              ordered = p["order"]? == "asc" ? members.reverse : members
+              if query.empty?
+                ordered
+              else
+                found = calibre.search(query, "id", true, 0, 1_000_000).ids.to_set
+                ordered.select { |id| found.includes?(id) }
+              end
+            else
+              set = members.to_set
+              calibre.search(query, SORTS[sort], p["order"]? != "desc", 0, 1_000_000).ids.select { |id| set.includes?(id) }
+            end
+      {ids.size, ids[offset, limit]? || [] of Int64}
+    end
+
+    # Adds the ids of the user's lists to each book
+    def self.with_lists(books : Array(Book), lists : Lists?, user : String) : Array(Book)
+      return books unless lists
+      m = lists.memberships(books.map(&.id), user)
+      books.map do |b|
+        b.lists = m[b.id]? || [] of Int64
+        b
+      end
     end
 
     def self.escape(value : String) : String
@@ -148,7 +184,7 @@ module CalibreHub
 
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
                   fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil,
-                  classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil)
+                  classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil, lists : Lists? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -179,17 +215,24 @@ module CalibreHub
 
     get "/api/books" do |env|
       p = env.params.query
-      sort = Api::SORTS[p["sort"]? || "title"]? || halt(env, 400, %({"error":"unknown sort"}))
-      ascending = p["order"]? != "desc"
       offset = (p["offset"]?.try(&.to_i?) || 0).clamp(0, Int32::MAX)
       limit = (p["limit"]?.try(&.to_i?) || Api::DEFAULT_LIMIT).clamp(1, Api::MAX_LIMIT)
+      if (l = lists) && (list_param = p["list"]?.presence)
+        next write_errors(env) do
+          list_id = list_param.to_i64? || raise Lists::NotFound.new
+          total, ids = Api.list_page(l, calibre, list_id, auth.user, p, kategorie, offset, limit)
+          {total: total, offset: offset, limit: limit, books: Api.with_lists(calibre.books(ids), lists, auth.user)}.to_json
+        end
+      end
+      sort = Api::SORTS[p["sort"]? || "title"]? || halt(env, 400, %({"error":"unknown sort"}))
+      ascending = p["order"]? != "desc"
       result = calibre.search(Api.query(p, kategorie), sort, ascending, offset, limit)
-      {total: result.total, offset: offset, limit: limit, books: calibre.books(result.ids)}.to_json
+      {total: result.total, offset: offset, limit: limit, books: Api.with_lists(calibre.books(result.ids), lists, auth.user)}.to_json
     end
 
     get "/api/books/:id" do |env|
       id = env.params.url["id"].to_i64? || halt(env, 404, %({"error":"not found"}))
-      calibre.book(id).try(&.to_json) || halt(env, 404, %({"error":"not found"}))
+      calibre.book(id).try { |b| Api.with_lists([b], lists, auth.user).first.to_json } || halt(env, 404, %({"error":"not found"}))
     end
 
     get "/api/books/:id/cover" do |env|
@@ -221,6 +264,7 @@ module CalibreHub
       write_routes(w, j, [classify, metadata].compact.map(&.as(Jobs)))
     end
     trash.try { |t| trash_routes(t) }
+    lists.try { |l| list_routes(l, auth, jobs) }
     classify_routes(classify, calibre)
     metadata_routes(metadata, calibre)
 
@@ -310,6 +354,93 @@ module CalibreHub
           File.delete?(upload.file)
         end
       end
+    end
+  end
+
+  # Reading lists (lists.cr). Owner is the logged-in user.
+  def self.list_routes(lists : Lists, auth : Auth, jobs : Jobs?)
+    get "/api/lists" do |env|
+      write_errors(env) { lists.all(auth.user).to_json }
+    end
+
+    post "/api/lists" do |env|
+      write_errors(env) do
+        list = lists.create(auth.user, json_body(env))
+        env.response.status_code = 201
+        list.to_json
+      end
+    end
+
+    get "/api/lists/:id" do |env|
+      write_errors(env) { lists[list_id(env), auth.user].to_json }
+    end
+
+    patch "/api/lists/:id" do |env|
+      write_errors(env) { lists.update(list_id(env), auth.user, json_body(env)).to_json }
+    end
+
+    delete "/api/lists/:id" do |env|
+      write_errors(env) { {list: lists.delete(list_id(env), auth.user)}.to_json }
+    end
+
+    post "/api/lists/:id/books" do |env|
+      write_errors(env) do
+        list, added = lists.add(list_id(env), auth.user, list_book_ids(json_body(env), jobs))
+        {list: list, added: added}.to_json
+      end
+    end
+
+    # before .../books/:bookId so "remove" isn't taken for an id
+    post "/api/lists/:id/books/remove" do |env|
+      write_errors(env) do
+        list, removed = lists.remove(list_id(env), auth.user, list_book_ids(json_body(env), jobs))
+        {list: list, removed: removed}.to_json
+      end
+    end
+
+    put "/api/lists/:id/books/:bookId" do |env|
+      write_errors(env) do
+        book = env.params.url["bookId"].to_i64? || raise Writer::NotFound.new
+        list, added = lists.add(list_id(env), auth.user, [book])
+        raise Writer::NotFound.new if added.empty? && !lists.book_ids(list.id).includes?(book)
+        {list: list, added: added}.to_json
+      end
+    end
+
+    delete "/api/lists/:id/books/:bookId" do |env|
+      write_errors(env) do
+        book = env.params.url["bookId"].to_i64? || raise Writer::NotFound.new
+        list, removed = lists.remove(list_id(env), auth.user, [book])
+        {list: list, removed: removed}.to_json
+      end
+    end
+
+    get "/api/books/:id/lists" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        lists.lists_of(id, auth.user).to_json
+      end
+    end
+  end
+
+  def self.list_id(env) : Int64
+    env.params.url["id"].to_i64? || raise Lists::NotFound.new
+  end
+
+  def self.json_body(env) : Hash(String, JSON::Any)
+    JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+  end
+
+  # book ids from {bookIds: [...]} or {target: {ids} | {query}}
+  def self.list_book_ids(body : Hash(String, JSON::Any), jobs : Jobs?) : Array(Int64)
+    if v = body["bookIds"]?
+      (v.as_a? || raise Edit::Invalid.new("bookIds", "list of book ids expected")).map do |x|
+        x.as_i64? || raise Edit::Invalid.new("bookIds", "list of book ids expected")
+      end
+    elsif (t = body["target"]?) && jobs
+      jobs.ids(t)
+    else
+      raise Edit::Invalid.new("bookIds", "bookIds or target expected")
     end
   end
 
@@ -512,8 +643,12 @@ module CalibreHub
     fail(env, 400, {error: "invalid JSON: #{ex.message}"})
   rescue ex : Edit::Invalid
     fail(env, 400, {error: ex.message, field: ex.field})
-  rescue Writer::NotFound
+  rescue Writer::NotFound | Lists::NotFound
     fail(env, 404, {error: "not found"})
+  rescue ex : Lists::Forbidden
+    fail(env, 403, {error: ex.message})
+  rescue ex : Lists::Taken
+    fail(env, 409, {error: ex.message, field: "name"})
   rescue ex : Writer::Conflict
     fail(env, 409, {error: "changed in the meantime", book: ex.book})
   rescue ex : Writer::Duplicates

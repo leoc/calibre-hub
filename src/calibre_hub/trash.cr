@@ -64,6 +64,9 @@ module CalibreHub
       JSON.parse(output.to_s)
     end
 
+    # called with the trash id and the new id after a restore (lists)
+    property on_restore : Proc(Int64, Int64, Nil)?
+
     def initialize(@calibre : Calibre, @writer : Writer, @library : String?, @db : DB::Database,
                    @read_metadata : MetadataReader = ->Trash.read_metadata(String))
       @mutex = Mutex.new
@@ -118,6 +121,11 @@ module CalibreHub
         @db.exec "insert or replace into trash_restored (trash_id, deleted_at, book_id, restored_at) values (?, ?, ?, ?)",
           id, entry.deleted_at.to_unix, book_id, Time.utc.to_unix
         @writer.written([book_id])
+        begin
+          @on_restore.try(&.call(id, book_id))
+        rescue ex
+          STDERR.puts "after restoring #{id} as #{book_id}: #{ex.message}"
+        end
         @calibre.book(book_id) || raise Writer::NotFound.new
       end
     end

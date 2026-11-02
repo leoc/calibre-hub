@@ -4,108 +4,181 @@ require "../calibre"
 require "../library_db"
 
 module CalibreHub
-  # Handler: mirrors every book with a tag (default "leseliste") into a
-  # folder, e.g. one synced to an e-reader. Preferred formats in order
-  # (default epub, then pdf); without them a convertible format is converted
-  # to the first one and added to calibre. Subfolders come from the category
-  # column ("Fachbuch.Software" -> Fachbuch/Software), file names are
-  # "Author - Series NN - Title". Files whose book lost the tag are removed.
+  # Handler: mirrors the synced reading lists (lists.cr) into a folder,
+  # e.g. one synced to an e-reader, one subfolder per list:
+  # <target>/<list name>/<Author - Series NN - Title>.epub. A book in two
+  # synced lists is in both folders. Preferred formats in order (default
+  # epub, then pdf); without them a convertible format is converted to the
+  # first one and added to calibre. Files of books that left a list (or of
+  # lists no longer synced) are removed; a renamed list renames its folder.
   #
-  # Reads metadata.db read-only for paths; writes only via calibre-server.
-  # Environment: LESELISTE_TAG, LESELISTE_TARGET, LESELISTE_FORMATS,
-  # CALIBRE_HUB_LIBRARY, CALIBRE_HUB_CATEGORY_COLUMN and the calibre-server
-  # settings of the hub (for adding converted formats).
+  # Reads the hub's state DB (lists) and metadata.db (paths) read-only;
+  # writes only via calibre-server. Environment: LESELISTE_TARGET,
+  # LESELISTE_FORMATS, CALIBRE_HUB_STATE_DB, CALIBRE_HUB_LIBRARY and the
+  # calibre-server settings of the hub (for adding converted formats).
   module Leseliste
     CONVERTIBLE = %w(AZW3 MOBI AZW KEPUB FB2 LIT DOCX RTF HTMLZ TXT)
     KEEP        = {".stfolder", ".stignore", ".stversions"}
-    RELEVANT    = %w(tags title authors authorSort series seriesIndex formats)
+    RELEVANT    = %w(title authors authorSort series seriesIndex formats)
 
     record Wanted, rel : String, src : String
+    record SyncedList, id : Int64, name : String, books : Array(Int64)
 
-    def self.relevant?(event : JSON::Any?, tag : String, category : String?) : Bool
+    # synced: the books in synced lists
+    def self.relevant?(event : JSON::Any?, synced : Set(Int64)) : Bool
       return true unless event
-      return true if event["type"]? != JSON::Any.new("changed")
-      keys = event["changes"]?.try(&.as_h.keys) || [] of String
-      fields = RELEVANT + (category ? ["##{category}"] : [] of String)
-      return false unless keys.any? { |k| fields.includes?(k) }
-      # only books that have or had the tag matter
-      tags = event["changes"]["tags"]?.try(&.as_a.flat_map { |v| v.as_a? || [] of JSON::Any }.map(&.as_s)) ||
-             event["book"]?.try(&.["tags"].as_a.map(&.as_s)) || [] of String
-      tags.any? { |t| t.downcase == tag }
+      case event["type"]?.try(&.as_s?)
+      when "list"
+        # a synced list, or one that was synced before the change
+        {event["list"]?, event["previous"]?}.any? { |l| l.try(&.["sync"]?.try(&.as_bool?)) }
+      when "changed"
+        keys = event["changes"]?.try(&.as_h.keys) || [] of String
+        keys.any? { |k| RELEVANT.includes?(k) } && synced.includes?(event["bookId"].as_i64)
+      when "added", "deleted"
+        synced.includes?(event["bookId"].as_i64)
+      else
+        true
+      end
     end
 
     def self.run(env = ENV, input : IO = STDIN) : Int32
-      tag = (env["LESELISTE_TAG"]? || "leseliste").downcase
       target = env["LESELISTE_TARGET"]? || abort "LESELISTE_TARGET is not set"
       library = env["CALIBRE_HUB_LIBRARY"]? || abort "CALIBRE_HUB_LIBRARY is not set"
+      state_path = env["CALIBRE_HUB_STATE_DB"]? || abort "CALIBRE_HUB_STATE_DB is not set"
       formats = (env["LESELISTE_FORMATS"]? || "epub,pdf").split(',', remove_empty: true).map(&.strip.upcase)
-      category = env["CALIBRE_HUB_CATEGORY_COLUMN"]?.presence
 
       raw = input.gets_to_end.strip
       event = raw.empty? ? nil : JSON.parse(raw)
-      return 0 unless relevant?(event, tag, category)
+
+      state = LibraryDB.open_read_only(state_path)
+      lists = begin
+        synced_lists(state)
+      ensure
+        state.close
+      end
+      # before the tag became a list nothing is touched
+      unless lists
+        puts "lists not migrated yet, skipped"
+        return 0
+      end
+      return 0 unless relevant?(event, lists.flat_map(&.books).to_set)
+      rename(event, target)
 
       db = LibraryDB.open_read_only(File.join(library, "metadata.db"))
       Dir.mktmpdir_compat do |tmp|
-        mirror(wanted(db, library, tag, formats, category, tmp, env), target)
+        mirror(wanted(db, library, lists, formats, tmp, env), target)
       end
       db.close
       0
     end
 
-    def self.wanted(db, library, tag, formats, category, tmp, env) : Array(Wanted)
-      column = category.try do |c|
-        db.query_one?("select id from custom_columns where label = ?", c, as: Int64)
+    # nil until the lists exist (migration done)
+    def self.synced_lists(state) : Array(SyncedList)?
+      return nil if state.query_one?("select value from meta where key = 'lists_migrated'", as: String).nil?
+      lists = [] of SyncedList
+      state.query_each("select id, name from lists where sync = 1 order by id") do |rs|
+        lists << SyncedList.new(rs.read(Int64), rs.read(String), [] of Int64)
       end
-      cat_sql = column ? %((select v.value from custom_column_#{column} v
-        join books_custom_column_#{column}_link l on l.value = v.id where l.book = b.id)) : "null"
-      rows = [] of {Int64, String, String, Float64, String?, String?, String?}
-      db.query_each(<<-SQL, tag) do |rs|
-        select b.id, b.title, b.path, b.series_index,
-               (select s.name from series s join books_series_link l on l.series = s.id where l.book = b.id),
-               (select a.sort from authors a join books_authors_link l on l.author = a.id
-                 where l.book = b.id order by l.id limit 1),
-               #{cat_sql}
-          from books b
-          join books_tags_link bt on bt.book = b.id
-          join tags t on t.id = bt.tag
-         where lower(t.name) = ?
-        SQL
-        rows << {rs.read(Int64), rs.read(String), rs.read(String), rs.read(Float64),
-                 rs.read(String?), rs.read(String?), rs.read(String?)}
+      lists.map do |l|
+        ids = [] of Int64
+        state.query_each("select book_id from list_items where list_id = ? order by book_id", l.id) { |rs| ids << rs.read(Int64) }
+        SyncedList.new(l.id, l.name, ids)
+      end
+    rescue ex : SQLite3::Exception
+      # no list tables yet
+      nil
+    end
+
+    # Folder names, unique among the lists
+    def self.folders(lists : Array(SyncedList)) : Hash(Int64, String)
+      used = Set(String).new
+      lists.to_h do |l|
+        name = clean(l.name, 60)
+        name = "#{name} (#{l.id})" if used.includes?(name.downcase)
+        used << name.downcase
+        {l.id, name}
+      end
+    end
+
+    # A renamed synced list keeps its files: the folder moves along
+    def self.rename(event : JSON::Any?, target : String)
+      return unless event && event["type"]? == "list" && event["action"]? == "updated"
+      before = event["previous"]?.try(&.["name"]?).try(&.as_s?)
+      after = event["list"]?.try(&.["name"]?).try(&.as_s?)
+      return unless before && after && before != after
+      return unless event["list"]["sync"]?.try(&.as_bool?)
+      from = File.join(target, clean(before, 60))
+      to = File.join(target, clean(after, 60))
+      return if from == to || !Dir.exists?(from) || File.exists?(to)
+      File.rename(from, to)
+      puts "#{clean(before, 60)} -> #{clean(after, 60)}"
+    rescue ex : File::Error
+      puts "renaming the folder of #{before} failed: #{ex.message}"
+    end
+
+    def self.wanted(db, library, lists : Array(SyncedList), formats, tmp, env) : Array(Wanted)
+      folders = folders(lists)
+      ids = lists.flat_map(&.books).uniq
+      rows = {} of Int64 => {String, String, Float64, String?, String?}
+      ids.each_slice(500) do |slice|
+        db.query_each(<<-SQL) do |rs|
+          select b.id, b.title, b.path, b.series_index,
+                 (select s.name from series s join books_series_link l on l.series = s.id where l.book = b.id),
+                 (select a.sort from authors a join books_authors_link l on l.author = a.id
+                   where l.book = b.id order by l.id limit 1)
+            from books b
+           where b.id in (#{slice.join(",")})
+          SQL
+          rows[rs.read(Int64)] = {rs.read(String), rs.read(String), rs.read(Float64), rs.read(String?), rs.read(String?)}
+        end
       end
 
+      # one source file and name per book, also when it is in two lists
+      files_of = {} of Int64 => {String, String}?
       result = {} of String => Wanted
-      rows.each do |id, title, path, idx, series, author, kategorie|
-        files = {} of String => String
-        db.query_each("select format, name from data where book = ?", id) do |rs|
-          fmt = rs.read(String).upcase
-          files[fmt] = File.join(library, path, "#{rs.read(String)}.#{fmt.downcase}")
+      lists.each do |list|
+        list.books.each do |id|
+          # deleted from the library meanwhile
+          row = rows[id]? || next
+          source = files_of.fetch(id) { files_of[id] = source(db, library, id, row, formats, tmp, env) }
+          next unless source
+          src, name = source
+          folder = folders[list.id]
+          rel = File.join(folder, name)
+          rel = File.join(folder, "#{File.basename(name, File.extname(name))} (#{id})#{File.extname(name)}") if result.has_key?(rel)
+          result[rel] = Wanted.new(rel, src)
         end
-        fmt = formats.find { |f| files.has_key?(f) }
-        src = fmt.try { |f| files[f] }
-        unless src
-          from = CONVERTIBLE.find { |f| files.has_key?(f) }
-          if from.nil?
-            puts "##{id} #{title}: no #{formats.join("/")} and nothing to convert (#{files.keys.join(", ")})"
-            next
-          end
-          fmt = formats.first
-          begin
-            src = convert(id, files[from], fmt, tmp, env)
-            puts "##{id} #{title}: #{from} -> #{fmt}, added to calibre"
-          rescue ex
-            puts "##{id} #{title}: #{from} -> #{fmt} failed: #{ex.message}"
-            next
-          end
-        end
-        name = series ? "#{author || "Unknown"} - #{series} #{series_number(idx)} - #{title}" : "#{author || "Unknown"} - #{title}"
-        folders = kategorie ? kategorie.split('.').map(&.strip).reject(&.empty?).map { |p| clean(p, 60) } : [] of String
-        rel = File.join(folders + ["#{clean(name)}.#{fmt.not_nil!.downcase}"])
-        rel = File.join(folders + ["#{clean(name)} (#{id}).#{fmt.not_nil!.downcase}"]) if result.has_key?(rel)
-        result[rel] = Wanted.new(rel, src.not_nil!)
       end
       result.values
+    end
+
+    # {source file, file name} or nil when there is nothing to copy
+    private def self.source(db, library, id, row, formats, tmp, env) : {String, String}?
+      title, path, idx, series, author = row
+      files = {} of String => String
+      db.query_each("select format, name from data where book = ?", id) do |rs|
+        fmt = rs.read(String).upcase
+        files[fmt] = File.join(library, path, "#{rs.read(String)}.#{fmt.downcase}")
+      end
+      fmt = formats.find { |f| files.has_key?(f) }
+      src = fmt.try { |f| files[f] }
+      unless src
+        from = CONVERTIBLE.find { |f| files.has_key?(f) }
+        if from.nil?
+          puts "##{id} #{title}: no #{formats.join("/")} and nothing to convert (#{files.keys.join(", ")})"
+          return nil
+        end
+        fmt = formats.first
+        begin
+          src = convert(id, files[from], fmt, tmp, env)
+          puts "##{id} #{title}: #{from} -> #{fmt}, added to calibre"
+        rescue ex
+          puts "##{id} #{title}: #{from} -> #{fmt} failed: #{ex.message}"
+          return nil
+        end
+      end
+      name = series ? "#{author || "Unknown"} - #{series} #{series_number(idx)} - #{title}" : "#{author || "Unknown"} - #{title}"
+      {src, "#{clean(name)}.#{fmt.not_nil!.downcase}"}
     end
 
     def self.mirror(wanted : Array(Wanted), target : String)
