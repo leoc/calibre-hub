@@ -2,6 +2,7 @@ require "kemal"
 require "./calibre"
 require "./auth"
 require "./writer"
+require "./trash"
 
 module CalibreHub
   module Api
@@ -144,7 +145,7 @@ module CalibreHub
   end
 
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
-                  fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil)
+                  fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -216,6 +217,7 @@ module CalibreHub
     if (w = writer) && (j = jobs)
       write_routes(w, j)
     end
+    trash.try { |t| trash_routes(t) }
 
     # OPDS for reader apps; its links point to /opds/* and /get/*
     {"/opds", "/opds/*", "/get/*"}.each do |route|
@@ -284,6 +286,13 @@ module CalibreHub
       end
     end
 
+    delete "/api/books/:id" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        {book: writer.delete(id)}.to_json
+      end
+    end
+
     post "/api/books" do |env|
       write_errors(env) do
         upload = Writer.read_upload(env.request)
@@ -294,6 +303,19 @@ module CalibreHub
         ensure
           File.delete?(upload.file)
         end
+      end
+    end
+  end
+
+  def self.trash_routes(trash : Trash)
+    get "/api/trash" do
+      trash.list.to_json
+    end
+
+    post "/api/trash/:id/restore" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        {book: trash.restore(id)}.to_json
       end
     end
   end

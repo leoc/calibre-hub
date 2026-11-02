@@ -111,6 +111,19 @@ module CalibreHub
       set_fields(book_id, {"added_formats" => JSON.parse([{ext: ext, data_url: data}].to_json)})
     end
 
+    # calibredb remove: ids, permanent. Without permanent calibre moves the
+    # book folder to its trash (<library>/.caltrash/b/<id>).
+    def remove(ids : Array(Int64), permanent = false) : Nil
+      cmd("remove", [ids, permanent])
+    end
+
+    # calibredb add, action "empty": a book without files from a Metadata
+    # object as calibre serializes it (calibre.utils.serialize.json_dumps)
+    def add_empty(metadata : JSON::Any) : Int64
+      result = cmd("add", ["empty", metadata])
+      result[0].as_a.first?.try(&.as_i64) || raise Error.new("calibre-server add: no book created")
+    end
+
     # Paging with total count via the same search the web UI uses
     def search(query : String, sort : String, ascending : Bool, offset : Int32, limit : Int32) : SearchResult
       params = URI::Params.build do |p|

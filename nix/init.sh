@@ -1,6 +1,6 @@
 # Prepares the library before calibre-server starts (nobody else has it open
-# then): creates it, adds custom columns, marks hierarchical categories and
-# sets the users of calibre-server.
+# then): creates it, adds custom columns, marks hierarchical categories,
+# keeps the trash forever and sets the users of calibre-server.
 #
 # Environment:
 #   LIBRARY       path of the library
@@ -31,6 +31,9 @@ for c in os.environ['HIERARCHICAL'].split():
     if c not in cats:
         cats.append(c)
 api.set_pref('categories_using_hierarchy', cats)
+# calibre expires trash entries older than this (at least one day, 0 empties
+# the trash on close); deleted books stay until someone empties the trash
+api.set_pref('expire_old_trash_after', 100 * 365 * 86400)
 "
 
 users=$(calibre-server --userdb "$USERDB" --manage-users -- list)

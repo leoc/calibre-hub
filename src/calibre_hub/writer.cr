@@ -132,6 +132,14 @@ module CalibreHub
       {@calibre.book(id) || raise(NotFound.new), true}
     end
 
+    # Moves the book to calibre's trash; returns its last state
+    def delete(id : Int64) : Book
+      book = @calibre.book(id) || raise NotFound.new
+      @calibre.remove([id])
+      written([id])
+      book
+    end
+
     # calibre only names title and authors of the books it matched
     def duplicate_books(dups : Array(Calibre::Duplicate)) : Array(Book)
       ids = dups.flat_map do |d|
@@ -145,7 +153,8 @@ module CalibreHub
       [] of Book
     end
 
-    private def written(ids : Array(Int64))
+    # Runs ids the hub just wrote through the detector and wakes the dispatcher
+    def written(ids : Array(Int64))
       if d = @detector
         d.touch(ids).each { |e| puts e.to_json }
       end
@@ -166,7 +175,7 @@ module CalibreHub
   # was at. Re-applying that book is harmless, every bulk change is
   # idempotent per book.
   class Jobs
-    CHANGES = %w(addTags removeTags kategorie series numberSeries)
+    CHANGES = %w(addTags removeTags kategorie series numberSeries delete)
     # finished jobs kept for GET /api/jobs/:id
     KEEP = 50
 
@@ -228,17 +237,22 @@ module CalibreHub
       if bad = changes.keys.find { |k| !CHANGES.includes?(k) }
         raise Edit::Invalid.new(bad, "not allowed in bulk edits")
       end
-      if number = changes.delete("numberSeries")
-        raise Edit::Invalid.new("numberSeries", "true or false expected") if number.as_bool?.nil?
-        if number.as_bool
-          raise Edit::Invalid.new("numberSeries", "needs a series") unless changes["series"]?.try(&.as_s?).try(&.strip.presence)
-          raise Edit::Invalid.new("numberSeries", "needs a list of ids, their order is the numbering") unless body["target"]?.try(&.as_h?).try(&.["ids"]?)
-          changes["numberSeries"] = number
+      if changes.has_key?("delete")
+        # moves the books to calibre's trash; not combined with edits
+        raise Edit::Invalid.new("delete", "must be true and the only change") unless changes.size == 1 && changes["delete"].as_bool? == true
+      else
+        if number = changes.delete("numberSeries")
+          raise Edit::Invalid.new("numberSeries", "true or false expected") if number.as_bool?.nil?
+          if number.as_bool
+            raise Edit::Invalid.new("numberSeries", "needs a series") unless changes["series"]?.try(&.as_s?).try(&.strip.presence)
+            raise Edit::Invalid.new("numberSeries", "needs a list of ids, their order is the numbering") unless body["target"]?.try(&.as_h?).try(&.["ids"]?)
+            changes["numberSeries"] = number
+          end
+          raise Edit::Invalid.new("changes", "nothing to change") if changes.empty?
         end
-        raise Edit::Invalid.new("changes", "nothing to change") if changes.empty?
+        # type errors now rather than once per book
+        Edit.changes(changes.dup.tap(&.delete("numberSeries")), Jobs.blank, @category_column)
       end
-      # type errors now rather than once per book
-      Edit.changes(changes.dup.tap(&.delete("numberSeries")), Jobs.blank, @category_column)
       job = Job.new(ids(body["target"]?), changes)
       @db.exec "insert into jobs (id, status, done, ids, changes, created_at) values (?, ?, 0, ?, ?, ?)",
         job.id, job.status, job.ids.to_json, job.changes.to_json, Time.utc.to_unix
@@ -293,10 +307,20 @@ module CalibreHub
 
     # Progress is saved after every book
     private def run(job : Job)
+      resumed_at = job.done > 0 ? job.done : nil
       (job.done...job.total).each do |i|
         id = job.ids[i]
         begin
-          @writer.update(id, job.changes_for(i))
+          if job.changes.has_key?("delete")
+            begin
+              @writer.delete(id)
+            rescue ex : Writer::NotFound
+              # deleted just before the hub stopped, progress not saved yet
+              raise ex unless i == resumed_at
+            end
+          else
+            @writer.update(id, job.changes_for(i))
+          end
         rescue Writer::NotFound
           job.errors << {bookId: id, error: "not found"}
         rescue ex

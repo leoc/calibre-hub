@@ -75,6 +75,7 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     import json
+    from datetime import datetime
 
     H = "http://127.0.0.1:8084"
     CSRF = "-H 'X-Calibre-Hub: 1'"
@@ -278,6 +279,49 @@ pkgs.testers.runNixOSTest {
         assert b["series"] == "CLI" and b["seriesIndex"] == 2, b
         assert machine.execute(f"{CLI} hub show 99999")[0] == 2
         assert machine.execute("CALIBRE_HUB_URL=http://127.0.0.1:8084 CALIBRE_HUB_TOKEN=wrong-token-0123456789 hub search")[0] == 4
+
+    with subtest("delete, trash, restore"):
+        # calibre's own expiry is off (init.sh)
+        pref = machine.succeed("sqlite3 /srv/books/library/metadata.db \"select val from preferences where key = 'expire_old_trash_after'\"").strip()
+        assert int(pref) >= 100 * 365 * 86400, pref
+        status, b = api("PATCH", f"/api/books/{uid}", {"addTags": ["leseliste"]})
+        assert status == 200, (status, b)
+        mirrored = "find /srv/books/boox -name '*Hochgeladen.epub' | grep -q ."
+        machine.wait_until_succeeds(mirrored, timeout=30)
+        assert code(f"-b /tmp/jar -X DELETE {H}/api/books/{uid}") == "403"
+        status, r = api("DELETE", f"/api/books/{uid}")
+        assert status == 200 and r["book"]["id"] == uid and r["book"]["title"] == "Hochgeladen", (status, r)
+        assert api("GET", f"/api/books/{uid}")[0] == 404
+        assert api("DELETE", f"/api/books/{uid}")[0] == 404
+        machine.wait_until_succeeds(f"grep -q '\"deleted\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
+        machine.wait_until_succeeds(f"! {mirrored}", timeout=30)
+        machine.succeed(f"test -f /srv/books/library/.caltrash/b/{uid}/metadata.opf")
+        status, trash = api("GET", "/api/trash")
+        entry = next(e for e in trash if e["id"] == uid)
+        assert entry["title"] == "Hochgeladen" and entry["authors"] == ["Ulla Upload"], entry
+        assert sorted(entry["formats"]) == ["EPUB", "TXT"] and entry["deletedAt"], entry
+        status, r = api("POST", f"/api/trash/{uid}/restore")
+        assert status == 200, (status, r)
+        rb = r["book"]
+        assert rb["title"] == "Hochgeladen" and rb["authors"] == ["Ulla Upload"], rb
+        assert sorted(rb["formats"]) == ["EPUB", "TXT"] and "leseliste" in rb["tags"], rb
+        assert rb["custom"]["kategorie"] == b["custom"]["kategorie"] and rb["series"] == b["series"], (rb, b)
+        added = lambda x: datetime.fromisoformat(x["added"]).replace(microsecond=0)
+        assert added(rb) == added(b), (rb, b)
+        rid = rb["id"]
+        assert code(f"-b /tmp/jar '{H}/api/books/{rid}/cover'") == "200"
+        machine.wait_until_succeeds(f"grep -q '\"added\",{rid},' /var/lib/calibre-hub/events.log", timeout=30)
+        machine.wait_until_succeeds(mirrored, timeout=30)
+        assert all(e["id"] != uid for e in api("GET", "/api/trash")[1])
+        assert api("POST", f"/api/trash/{uid}/restore")[0] == 404
+        # bulk delete moves to the trash too
+        status, r = api("POST", "/api/books/bulk", {"target": {"ids": [rid]}, "changes": {"delete": True}})
+        assert status == 202, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["errors"] == [], j
+        assert api("GET", f"/api/books/{rid}")[0] == 404
+        assert any(e["id"] == rid for e in api("GET", "/api/trash")[1])
+        machine.wait_until_succeeds(f"! {mirrored}", timeout=30)
 
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")

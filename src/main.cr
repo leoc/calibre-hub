@@ -240,7 +240,7 @@ module CalibreHub
     use auth_handler
     writer = Writer.new(calibre, detector, wake, config.category_column)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, Jobs.new(db, calibre, writer, config.category_column))
+      writer, Jobs.new(db, calibre, writer, config.category_column), Trash.new(calibre, writer, config.library, db))
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

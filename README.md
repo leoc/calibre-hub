@@ -22,6 +22,9 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /api/books/:id` | one book incl. `comments` |
 | `GET /api/books/:id/cover[?size=thumb]` | cover image |
 | `GET /api/books/:id/download/:format` | book file |
+| `DELETE /api/books/:id` | moves the book to calibre's trash; returns `{book}` as it was |
+| `GET /api/trash` | books in calibre's trash, newest first: `[{id, title, authors, formats, deletedAt}]` (`id` is the id the book had) |
+| `POST /api/trash/:id/restore` | adds the book again from the trash (metadata, files, cover); returns `{book}` with a **new** id |
 | `GET /api/categories` | `kategorie` tree with counts, `tags`, `authors`, `series`, `languages` |
 | `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart) |
 | `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}}` (filters as in `GET /api/books`); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids); returns 202 `{jobId, total}` |
@@ -32,6 +35,17 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /healthz` | no auth |
 
 calibre-server down: 502 with a JSON body.
+
+Trash: calibre-server moves deleted books to `<library>/.caltrash/b/<id>`
+but has no command to list or restore them. The hub reads that folder and
+restores by adding the book again through calibre-server (metadata from
+`metadata.opf`, parsed by `calibre-debug`, so custom columns survive), which
+gives it a new id. The folder stays in the trash (the hub can't write the
+library); restored entries are remembered in the state db and hidden. The
+module sets the library pref `expire_old_trash_after` to 100 years, so
+nothing expires on its own; only emptying the trash in calibre deletes for
+good. Bulk delete: `POST /api/books/bulk` with `changes: {"delete": true}`
+(not combined with other changes).
 
 ## Events and handlers
 
