@@ -34,6 +34,11 @@ crystal.buildCrystalPackage {
 
   # `hub` is the CLI (calibre-hub cli), with completions for both names
   postInstall = ''
+    # bubbletea.cr always adds an rpath to its own go/build (empty here, the
+    # library comes from BUBBLETEA_LIB_DIR): keep only store paths
+    chmod u+w $out/bin/calibre-hub
+    patchelf --shrink-rpath --allowed-rpath-prefixes ${builtins.storeDir} $out/bin/calibre-hub
+    chmod u-w $out/bin/calibre-hub
     ln -s calibre-hub $out/bin/hub
     for prog in hub calibre-hub; do
       $out/bin/calibre-hub cli completion fish --prog $prog > $prog.fish
