@@ -44,6 +44,7 @@ export function ReaderPage() {
   // fresh every time: another device may have read on since
   const progress = useQuery({ ...progressQuery(id), gcTime: 0 })
   const back = useBack(id)
+  const settingsReady = useReaderSettingsReady()
   // a book stored offline keeps what the hub last said
   useEffect(() => {
     if (book.data) refreshOffline(id, { book: book.data })
@@ -51,23 +52,19 @@ export function ReaderPage() {
   useEffect(() => {
     if (progress.data) refreshOffline(id, { progress: progress.data.devices })
   }, [id, progress.data])
-  const settingsReady = useReaderSettingsReady()
   const error = book.error ?? progress.error
   // without the hub a book stored offline opens from what was stored
   const local = stored && (!online || unreachable(book.error) || unreachable(progress.error)) ? stored : null
   const data = book.data ?? local?.book
   const devices = progress.data?.devices ?? local?.progress
   if (error && !local) return <Centered><ErrorMessage error={error} onRetry={() => (book.refetch(), progress.refetch())} /><BackButton onClick={back} /></Centered>
-  if (!data || !devices) {
-    if (!online && !stored) return <Centered><p role="alert">{t("reader.notOffline")}</p><BackButton onClick={back} /></Centered>
+  if (!data || !devices || !settingsReady) {
+    if (!online && !stored && (!data || !devices)) return <Centered><p role="alert">{t("reader.notOffline")}</p><BackButton onClick={back} /></Centered>
     return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
   }
   // the stored format unless another one is asked for, so the reader
   // doesn't reopen when the hub answers again
   const format = stored && (!wanted || wanted.toUpperCase() === stored.format) ? stored.format : readerFormat(data, wanted)
-  if (error) return <Centered><ErrorMessage error={error} onRetry={() => (book.refetch(), progress.refetch())} /><BackButton onClick={back} /></Centered>
-  if (!book.data || !progress.data || !settingsReady) return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
-  const format = readerFormat(book.data, wanted)
   if (!format) return <Centered><p role="alert">{t("reader.noFormat")}</p><BackButton onClick={back} /></Centered>
   const start = startPoint(withQueued(devices, queuedProgress(id)), getDeviceId())
   return <Reader key={`${id}-${format}`} book={data} format={format} start={start} onBack={back} />
@@ -371,45 +368,21 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
         </SheetContent>
       </Sheet>
 
-      <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <SheetContent side="right" aria-describedby={undefined} className="sm:max-w-sm" header={<SheetTitle>{t("reader.settings")}</SheetTitle>}>
-          <div className="space-y-6 px-4 pb-4">
-            {!fixed && (
-              <section className="space-y-2">
-                <h2 className="text-sm font-medium">{t("reader.fontSize")}</h2>
-                <div className="flex items-center gap-3">
-                  <Button variant="outline" size="icon" onClick={() => changeFont(-1)} aria-label={t("reader.smaller")}>
-                    <Minus />
-                  </Button>
-                  <span className="w-14 text-center tabular-nums" data-font-size>{fontSize} %</span>
-                  <Button variant="outline" size="icon" onClick={() => changeFont(1)} aria-label={t("reader.larger")}>
-                    <Plus />
-                  </Button>
-                </div>
-              </section>
-            )}
-            {!eink && !fixed && (
-              <section className="space-y-2">
-                <h2 className="text-sm font-medium">{t("reader.layout")}</h2>
-                <div role="radiogroup" aria-label={t("reader.layout")} className="flex gap-2">
-                  {(["paginated", "scrolled"] as const).map((f) => (
-                    <Button key={f} role="radio" aria-checked={flow === f} variant={flow === f ? "default" : "outline"} onClick={() => setFlow(f)}>
-                      {t(f === "paginated" ? "reader.paginated" : "reader.scrolled")}
-                    </Button>
-                  ))}
-                </div>
-              </section>
-            )}
-            {offlineSupported() && (
-              <section className="space-y-2">
-                <h2 className="text-sm font-medium">{t("offline.section")}</h2>
-                <OfflineButton book={book} format={format} />
-              </section>
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
-      <ReaderSettingsSheet open={settingsOpen} onOpenChange={setSettingsOpen} settings={accountSettings} update={updateSettings} eink={eink} />
+      <ReaderSettingsSheet
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        settings={accountSettings}
+        update={updateSettings}
+        eink={eink}
+        extra={
+          offlineSupported() && (
+            <section className="space-y-2">
+              <h2 className="text-sm font-medium">{t("offline.section")}</h2>
+              <OfflineButton book={book} format={format} />
+            </section>
+          )
+        }
+      />
     </div>
   )
 }

@@ -406,5 +406,4 @@ const listMocks = listHandlers(books, (target) => ("ids" in target ? books.filte
 
 const duplicates = duplicateHandlers({ books, touch, moveToTrash, restoreFromTrash, withLists, delay })
 
-export const handlers = [...listMocks, ...progressHandlers, ...writeHandlers, ...metadata, ...duplicates, ...readHandlers]
-export const handlers = [...listMocks, ...progressHandlers, ...readerSettingsHandlers, ...writeHandlers, ...metadata, ...readHandlers]
+export const handlers = [...listMocks, ...progressHandlers, ...readerSettingsHandlers, ...writeHandlers, ...metadata, ...duplicates, ...readHandlers]

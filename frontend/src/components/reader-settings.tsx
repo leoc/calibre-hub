@@ -151,12 +151,15 @@ export function ReaderSettingsSheet({
   settings: s,
   update,
   eink,
+  extra,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   settings: ReaderSettings
   update: (patch: Partial<ReaderSettings>) => void
   eink: boolean
+  // more sections below the settings (offline availability)
+  extra?: ReactNode
 }) {
   const narrow = useMedia("(max-width: 639px)")
   const step = <T extends number>(steps: readonly T[], value: number, dir: 1 | -1) => {
@@ -264,6 +267,8 @@ export function ReaderSettingsSheet({
           <Section title={t("reader.s.override")}>
             <Toggle label={t("reader.s.override")} hint={t("reader.s.overrideHint")} checked={s.override} onChange={(override) => update({ override })} />
           </Section>
+
+          {extra}
 
           <Button variant="outline" className="eink:min-h-12" onClick={() => update(DEFAULT_READER_SETTINGS)}>
             {t("reader.s.reset")}
