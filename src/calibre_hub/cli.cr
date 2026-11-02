@@ -5,7 +5,6 @@ require "./cli/client"
 require "./cli/output"
 require "./cli/completion"
 require "./cli/import"
-require "./tui"
 
 module CalibreHub
   # Command line client for a running hub: `calibre-hub cli <command>` or
