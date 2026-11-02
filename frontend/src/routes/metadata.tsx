@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { ArrowLeft, ArrowRight, Loader2, RotateCcw, UsersRound, WandSparkles } from "lucide-react"
+import { ArrowLeft, ArrowRight, FileOutput, Loader2, RotateCcw, UsersRound, WandSparkles } from "lucide-react"
 import { ApiError, write, type MetadataChange, type MetadataStatus, type MetadataTarget } from "@/lib/api"
 import { metadataChangesQuery, metadataStatusQuery } from "@/lib/queries"
 import { invalidateMetadata, RevertConflictError, useRevertMetadataChange, useRevertMetadataChanges, useStartMetadataRun } from "@/lib/mutations"
@@ -51,6 +51,7 @@ export function MetadataPage() {
         {status && <StatusLine status={status} />}
       </div>
       <MetadataRun />
+      <ConvertRun />
       {revert.data && (
         <p role="status" className="text-sm">
           {t("meta.revertedCount", { count: formatNumber(revert.data.reverted.length) })}
@@ -233,6 +234,51 @@ function ChangeRow({ change: c, title, canRevert }: { change: MetadataChange; ti
         </p>
       )}
     </li>
+  )
+}
+
+// "Bestand nachziehen": converts the books without EPUB (the original stays)
+function ConvertRun() {
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const [starting, setStarting] = useState(false)
+  const { data: job } = useQuery({
+    queryKey: ["job", jobId],
+    queryFn: () => write.job(jobId!),
+    enabled: !!jobId,
+    refetchInterval: (q) => (q.state.data?.status === "running" || !q.state.data ? 1000 : false),
+    retry: false,
+  })
+  const running = starting || job?.status === "running"
+  const start = () => {
+    setStarting(true)
+    setError(null)
+    write
+      .convert("EPUB")
+      .then((r) => setJobId(r.jobId), setError)
+      .finally(() => setStarting(false))
+  }
+
+  return (
+    <div className="space-y-2">
+      <Button variant="outline" disabled={running} onClick={start}>
+        {running ? <Loader2 className="animate-spin eink:animate-none" /> : <FileOutput />} {t("meta.convert")}
+      </Button>
+      {job && (
+        <p role="status" className="text-sm tabular-nums">
+          {job.status === "running"
+            ? t("meta.converting", { done: formatNumber(job.done), total: formatNumber(job.total) })
+            : job.status === "failed" && job.error
+              ? t("meta.runFailed", { error: job.error })
+              : t("meta.runDone", { done: formatNumber(job.done), errors: formatNumber(job.errors.length) })}
+        </p>
+      )}
+      {error != null && (
+        <p role="alert" className="text-sm text-destructive">
+          {t("meta.convertError")}: {errorText(error)}
+        </p>
+      )}
+    </div>
   )
 }
 

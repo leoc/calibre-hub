@@ -373,6 +373,8 @@ export const write = {
     request<{ accepted: Suggestion[]; errors: { bookId: number; error: string }[] }>("/api/suggestions/accept", { method: "POST", ...json({ bookIds }) }),
   // 409 with {categories, minCategories} while the tree is too small
   classify: (target: ClassifyTarget) => request<{ jobId: string; total: number }>("/api/classify", { method: "POST", ...json({ target }) }),
+  // converts every book without the target format (default: the configured one)
+  convert: (target?: string) => request<{ jobId: string; total: number }>("/api/convert", { method: "POST", ...json(target ? { target } : {}) }),
   metadataRun: (target: MetadataTarget = "incomplete") =>
     request<{ jobId: string; total: number }>("/api/metadata/run", { method: "POST", ...json({ target }) }),
   // 409 {error, book} when the field was changed in the meantime
