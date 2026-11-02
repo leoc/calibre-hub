@@ -63,6 +63,9 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /api/embed/status` | `{enabled, delay, pending}`: books waiting for their files to be rewritten; only `{enabled: false}` when off |
 | `GET /api/convert/status` | `{enabled, target, ignore, targets, running, lastRun}` (`enabled`: added books are converted) |
 | `POST /api/convert` `{target?}` | converts every book without `target` (default the configured one; EPUB, AZW3, MOBI, PDF, DOCX, FB2) that has a format not in `ignore`; returns 202 `{jobId, total}`, progress in `GET /api/jobs/:id` |
+| `POST /api/epub-fix` `{dryRun?, target?}` | runs the EPUB fixer over every book with an EPUB, or `target` (`{ids}` or `{query}` as in bulk edits); `dryRun` defaults to `true` (only checks); returns 202 `{jobId, total, dryRun}`, progress in `GET /api/jobs/:id` |
+| `GET /api/epub-fix/status` | `{onImport, keepOriginal, running, lastRun}`; `lastRun` is the job with `dryRun`, `from` (library, selection, added), `booksWithFixes`, `booksWithProblems`, `booksFixed` and counts per fix and problem (`fixes`, `problems`) |
+| `GET /api/epub-fix/jobs/:id` | the same for one run plus `results`: `[{bookId, title, applied, fixes: [{code, file, detail}], problems: [...]}]` (books with something to report, at most 500) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
 | `GET /healthz` | no auth |
@@ -218,6 +221,44 @@ CBR) are never converted from. `POST /api/convert` (the web app's
 "Bestand nach EPUB konvertieren" on the Metadaten page) does the same for
 the whole library, also while automatic conversion is off. Conversions are
 jobs in a queue of their own, resumed after a restart.
+
+EPUB fixer (like Calibre-Web-Automated's, after kindle-epub-fix): repairs
+what keeps an EPUB from opening on a reader or from being accepted by Send
+to Kindle. Conservative: only these, as small text edits on the files that
+need them, every other entry copied byte for byte; running it again finds
+nothing.
+
+- `mimetype`: missing, wrong, compressed or not the first entry
+- `xml-declaration`: a content document without one gets the UTF-8 declaration
+- `encoding`: a declared (or meta charset) encoding that doesn't match
+  UTF-8 content is corrected; a file entirely in a legacy encoding (as
+  declared, else Windows-1252) is converted to UTF-8. Mixed files (UTF-8
+  with stray Latin-1 bytes) are only reported
+- `language`: a missing, empty or meaningless `dc:language` (`und`, `zxx`,
+  `mul`) becomes the book's calibre language (two letters where there are
+  two); without one in calibre it is only reported
+- `spine-toc`: the spine's `toc` points at the NCX (added when missing, fixed
+  when it names no manifest item)
+- `cover-meta`: `<meta name="cover">` added or fixed when exactly one image
+  is the cover (`cover-image`, or an id/file named cover)
+- `stray-img`: `img` tags without a source are dropped
+- `body-id-link`: links (and NCX entries) to a chapter's body id point at
+  the file instead
+- reported only: manifest items or references (`href`, `src`) to files that
+  aren't in the EPUB
+
+Like conversions it works on a copy downloaded through calibre-server and
+adds the repaired EPUB back (`add_format`); the KOReader checksum before is
+kept in `file_checksums`, and before the first repair the EPUB as it is in
+the library is added as format `ORIGINAL_EPUB` (`epubFix.keepOriginal`, on
+by default; an existing one is never replaced). A changed event with the
+same formats on both sides tells the reading list to copy the file again.
+`epubFix.onImport` (off by default) repairs added books with an EPUB
+(inbox, upload, calibre) and books that get one (conversion, added format).
+`POST /api/epub-fix` (the web app's "EPUBs prüfen" and "EPUBs reparieren"
+on the Metadaten page) checks the library or a selection, as a dry run
+unless `dryRun: false`. Runs are jobs in a queue of their own; what each
+run found per book is in `GET /api/epub-fix/jobs/:id`.
 
 ## Reading lists
 
@@ -539,6 +580,7 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     # embed = { enable = true; delay = 60; };  # the defaults
     convert = { enable = true; target = "EPUB"; ignore = [ "PDF" "CBZ" "CBR" ]; };
     # duplicates.threshold = 0.85;  # the default
+    epubFix.onImport = true;  # keepOriginal = true is the default
     alertCommand = "/run/current-system/sw/bin/notify-admin";
     handlers."20-log" = pkgs.writeShellScript "log" "cat >> /var/lib/calibre-hub/events.log";
   };
@@ -594,6 +636,7 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_EMBED`, `_EMBED_DELAY` | `false`, `60` | embed metadata into the files after edits (the module turns it on), seconds after the last edit |
 | `CALIBRE_HUB_CONVERT`, `_CONVERT_TARGET`, `_CONVERT_IGNORE` | `false`, `EPUB`, `PDF,CBZ,CBR` | convert added books, target format, formats never converted from |
 | `CALIBRE_HUB_DUPLICATES_THRESHOLD` | `0.85` | how alike two titles of one author must be to show as duplicates (0.5..1) |
+| `CALIBRE_HUB_EPUB_FIX_ON_IMPORT`, `_EPUB_FIX_KEEP_ORIGINAL` | `false`, `true` | repair the EPUBs of added books, keep the EPUB before the first repair as ORIGINAL_EPUB |
 | `CALIBRE_HUB_OPENLIBRARY_URL`, `_OPENLIBRARY_COVERS_URL`, `_DNB_URL`, `_HARDCOVER_URL` | the public services | base URLs (stubs in the VM test) |
 | `CALIBRE_HUB_HARDCOVER_TOKEN_FILE`, `_HARDCOVER_TOKEN` | none | Hardcover API token (file first); none: source skipped |
 | `CALIBRE_HUB_HARDCOVER_SYNC`, `_SYNC_WRITE`, `_SYNC_USER` | `false`, `false`, `CALIBRE_HUB_LOGIN_USER` | Hardcover sync, write (else dry run), whose progress |

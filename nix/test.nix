@@ -75,6 +75,7 @@ pkgs.testers.runNixOSTest {
         };
         embed.delay = 2;
         convert.enable = true;
+        epubFix.onImport = true;
         handlerAttempts = 2;
         alertCommand = "${pkgs.writeShellScript "alert" ''echo "$1: $2" >> /var/lib/calibre-hub/alerts.log''}";
         handlers = {
@@ -881,6 +882,106 @@ pkgs.testers.runNixOSTest {
         j = wait_job(r["jobId"])
         assert j["status"] == "done" and j["errors"] == [], j
         assert api("POST", "/api/convert", {"target": "exe"})[0] == 400
+        embed_idle()
+
+    PY = "${pkgs.python3}/bin/python3 -I"
+    # an EPUB with what the fixer repairs: mimetype compressed and not first,
+    # dc:language und, no toc on the spine, a chapter without XML
+    # declaration, one in Latin-1, an img without src, links to a body id
+    BROKEN_EPUB = "${pkgs.writeText "broken-epub.py" ''
+      import sys, zipfile
+      container = """<?xml version="1.0"?>
+      <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+        <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+      </container>"""
+      opf = """<?xml version="1.0" encoding="utf-8"?>
+      <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">
+        <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+          <dc:title>Kaputte Wiese</dc:title>
+          <dc:creator opf:role="aut">Emil Fix</dc:creator>
+          <dc:identifier id="id">urn:uuid:8412</dc:identifier>
+          <dc:language>und</dc:language>
+        </metadata>
+        <manifest>
+          <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+          <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+          <item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+        </manifest>
+        <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
+      </package>"""
+      ch1 = """<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Eins</title></head>
+      <body id="eins"><p>Die Grille sang im Gras.<img/></p><p><a href="ch2.xhtml#zwei">weiter</a></p></body></html>"""
+      ch2 = """<?xml version="1.0" encoding="iso-8859-1"?>
+      <html xmlns="http://www.w3.org/1999/xhtml"><head><title>Zwei</title></head>
+      <body id="zwei"><p>Größe der Wiese</p></body></html>""".encode("iso-8859-1")
+      ncx = """<?xml version="1.0" encoding="utf-8"?>
+      <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="urn:uuid:8412"/></head>
+      <docTitle><text>Kaputte Wiese</text></docTitle><navMap>
+      <navPoint id="n1" playOrder="1"><navLabel><text>Eins</text></navLabel><content src="ch1.xhtml"/></navPoint>
+      <navPoint id="n2" playOrder="2"><navLabel><text>Zwei</text></navLabel><content src="ch2.xhtml#zwei"/></navPoint>
+      </navMap></ncx>"""
+      with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+          z.writestr("META-INF/container.xml", container)
+          z.writestr("mimetype", "application/epub+zip")
+          z.writestr("OEBPS/content.opf", opf)
+          z.writestr("OEBPS/toc.ncx", ncx)
+          z.writestr("OEBPS/ch1.xhtml", ch1)
+          z.writestr("OEBPS/ch2.xhtml", ch2)
+    ''}"
+    # what an EPUB checker would complain about in the broken one
+    CHECK_EPUB = "${pkgs.writeText "check-epub.py" ''
+      import sys, zipfile
+      import xml.dom.minidom as minidom
+      with zipfile.ZipFile(sys.argv[1]) as z:
+          first = z.infolist()[0]
+          assert first.filename == "mimetype" and first.compress_type == zipfile.ZIP_STORED, first
+          assert z.read("mimetype") == b"application/epub+zip"
+          assert z.testzip() is None
+          names = {i.filename for i in z.infolist()}
+          assert {"OEBPS/content.opf", "OEBPS/toc.ncx", "OEBPS/ch1.xhtml", "OEBPS/ch2.xhtml"} <= names, names
+          opf = z.read("OEBPS/content.opf").decode("utf-8")
+          minidom.parseString(opf)
+          assert 'toc="ncx"' in opf, opf
+          for name in ("OEBPS/ch1.xhtml", "OEBPS/ch2.xhtml", "OEBPS/toc.ncx"):
+              raw = z.read(name)
+              assert raw.decode("utf-8").startswith('<?xml version="1.0" encoding="utf-8"?>'), (name, raw[:60])
+              minidom.parseString(raw)
+          ch1 = z.read("OEBPS/ch1.xhtml").decode()
+          assert "<img" not in ch1 and 'href="ch2.xhtml"' in ch1 and "Die Grille sang im Gras." in ch1, ch1
+          assert "Größe der Wiese" in z.read("OEBPS/ch2.xhtml").decode()
+          assert 'src="ch2.xhtml"' in z.read("OEBPS/toc.ncx").decode()
+    ''}"
+
+    with subtest("epub fixer"):
+        st = api("GET", "/api/epub-fix/status")[1]
+        assert st["onImport"] is True and st["keepOriginal"] is True, st
+        machine.succeed(f"{PY} {BROKEN_EPUB} /tmp/wiese.epub")
+        machine.fail(f"{PY} {CHECK_EPUB} /tmp/wiese.epub")
+        machine.succeed("install -m 664 -g calibre-hub /tmp/wiese.epub /srv/books/inbox/Wiese.epub")
+        machine.wait_until_succeeds("ls /srv/books/inbox/_imported/*/Wiese.epub", timeout=90)
+        wid = book_by_title("Kaputte Wiese")["id"]
+        # repaired on import; the file as it was kept as ORIGINAL_EPUB
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{wid} | jq -e '.formats | sort == [\"EPUB\", \"ORIGINAL_EPUB\"]'", timeout=120)
+        machine.wait_until_succeeds(f"{PY} {CHECK_EPUB} '{library_file(wid, 'epub')}'", timeout=60)
+        machine.fail(f"{PY} {CHECK_EPUB} '{library_file(wid, 'original_epub')}'")
+        machine.succeed(f"{META} '{library_file(wid, 'epub')}' | grep -q '^Title *: Kaputte Wiese$'")
+        machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-convert '{library_file(wid, 'epub')}' /tmp/wiese.txt")
+        machine.succeed("grep -q 'Größe der Wiese' /tmp/wiese.txt")
+        # the KOReader checksum before the repair
+        n = machine.succeed(f"sqlite3 {STATE} \"select count(*) from file_checksums where book_id = {wid} and format = 'EPUB'\"").strip()
+        assert int(n) >= 1, n
+        st = api("GET", "/api/epub-fix/status")[1]
+        assert st["lastRun"]["from"] == "added" and st["lastRun"]["dryRun"] is False, st
+        # the library as a dry run: nothing left to repair in that book
+        assert api("POST", "/api/epub-fix", {"dryRun": "ja"})[0] == 400
+        status, r = api("POST", "/api/epub-fix", {})
+        assert status == 202 and r["dryRun"] is True and r["total"] >= 1, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["errors"] == [], j
+        status, res = api("GET", f"/api/epub-fix/jobs/{r['jobId']}")
+        assert status == 200 and res["booksFixed"] == 0, (status, res)
+        assert not any(b["bookId"] == wid and b["fixes"] for b in res["results"]), res
+        assert api("GET", "/api/epub-fix/jobs/nope")[0] == 404
         embed_idle()
 
     with subtest("failing handler is parked and alerts"):

@@ -460,6 +460,24 @@ in
       '';
     };
 
+    epubFix = {
+      onImport = mkEnableOption ''
+        the EPUB fixer for added books (inbox, upload, calibre) and books that
+        get an EPUB: mimetype, encodings, a missing or meaningless
+        dc:language, the spine's NCX, the cover meta, img tags without a
+        source, links to a body id. The library can be checked and repaired
+        through POST /api/epub-fix either way
+      '';
+      keepOriginal = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Keep the EPUB as it was before the first repair as format
+          ORIGINAL_EPUB (calibre's name for it, as in Polish books).
+        '';
+      };
+    };
+
     leseliste = {
       enable = mkEnableOption "the reading list handler (mirror the synced lists into a folder, one subfolder per list)";
       tag = mkOption {
@@ -657,6 +675,8 @@ in
         CALIBRE_HUB_CONVERT_TARGET = cfg.convert.target;
         CALIBRE_HUB_CONVERT_IGNORE = lib.concatStringsSep "," cfg.convert.ignore;
         CALIBRE_HUB_DUPLICATES_THRESHOLD = toString cfg.duplicates.threshold;
+        CALIBRE_HUB_EPUB_FIX_ON_IMPORT = lib.boolToString cfg.epubFix.onImport;
+        CALIBRE_HUB_EPUB_FIX_KEEP_ORIGINAL = lib.boolToString cfg.epubFix.keepOriginal;
         CALIBRE_HUB_FRONTEND =lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";

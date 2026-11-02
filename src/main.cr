@@ -5,6 +5,7 @@ require "./calibre_hub/auth"
 require "./calibre_hub/api"
 require "./calibre_hub/duplicates"
 require "./calibre_hub/files"
+require "./calibre_hub/epub_fix"
 require "./calibre_hub/dispatcher"
 require "./calibre_hub/inbox"
 require "./calibre_hub/handlers/leseliste"
@@ -86,6 +87,9 @@ module CalibreHub
     getter hardcover_sync_read_at : Float64 = env("CALIBRE_HUB_HARDCOVER_SYNC_READ_AT", "0.98").to_f
     # duplicates: how alike two titles of one author must be (0.5..1)
     getter duplicates_threshold : Float64 = env("CALIBRE_HUB_DUPLICATES_THRESHOLD", Dedup::DEFAULT_THRESHOLD.to_s).to_f.clamp(Dedup::MIN_THRESHOLD, 1.0)
+    # repair the EPUBs of added books; keep the file before the first repair as ORIGINAL_EPUB
+    getter epub_fix_on_import : Bool = env("CALIBRE_HUB_EPUB_FIX_ON_IMPORT", "false") == "true"
+    getter epub_fix_keep_original : Bool = env("CALIBRE_HUB_EPUB_FIX_KEEP_ORIGINAL", "true") != "false"
 
     # read only by serve, so scan works without them
     def login_password : String
@@ -424,10 +428,18 @@ module CalibreHub
     embedder, convert_jobs = book_files(config, calibre, writer, db, detector, wake)
     progress = Progress.new(db)
     hardcover_sync(config, calibre, db, progress, hardcover)
+    epub_fix = EpubFixJobs.new(db, calibre, writer, config.library, config.epub_fix_on_import,
+      config.epub_fix_keep_original, detector, wake)
+    if config.epub_fix_on_import
+      epub_fix.watch_events
+      puts "epub-fix: EPUBs of added books are repaired"
+    end
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
       writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs, progress)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix] of Jobs, Progress.new(db))
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
+    epub_fix_routes(epub_fix)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

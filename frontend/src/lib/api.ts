@@ -359,6 +359,24 @@ export interface Job {
   error?: string
 }
 
+export interface EpubFixFinding {
+  code: string
+  file: string | null
+  detail: string
+}
+
+// one run of the EPUB fixer with what it found per book
+export interface EpubFixRun extends Job {
+  id: string
+  dryRun: boolean
+  booksWithFixes: number
+  booksWithProblems: number
+  booksFixed: number
+  fixes: Record<string, number>
+  problems: Record<string, number>
+  results: { bookId: number; title: string; applied: boolean; fixes: EpubFixFinding[]; problems: EpubFixFinding[] }[]
+}
+
 export interface CoverHit {
   url: string
   source: string
@@ -413,6 +431,10 @@ export const write = {
   classify: (target: ClassifyTarget) => request<{ jobId: string; total: number }>("/api/classify", { method: "POST", ...json({ target }) }),
   // converts every book without the target format (default: the configured one)
   convert: (target?: string) => request<{ jobId: string; total: number }>("/api/convert", { method: "POST", ...json(target ? { target } : {}) }),
+  // the EPUB fixer over the library or some books; a dry run only checks
+  epubFix: (dryRun: boolean, ids?: number[]) =>
+    request<{ jobId: string; total: number; dryRun: boolean }>("/api/epub-fix", { method: "POST", ...json(ids ? { dryRun, target: { ids } } : { dryRun }) }),
+  epubFixRun: (jobId: string) => request<EpubFixRun>(`/api/epub-fix/jobs/${jobId}`),
   metadataRun: (target: MetadataTarget = "incomplete") =>
     request<{ jobId: string; total: number }>("/api/metadata/run", { method: "POST", ...json({ target }) }),
   // 409 {error, book} when the field was changed in the meantime

@@ -14,6 +14,7 @@ import { BookEdit } from "./book-edit"
 import { ListButtons } from "./lists"
 import { listLabel, listsQuery } from "@/lib/lists"
 import { DeleteBookButton } from "./delete-book"
+import { EpubFixButton } from "./epub-fix"
 import { SuggestionBox } from "./suggestion-box"
 import { Badge } from "./ui/badge"
 import { LibraryLink } from "@/components/library-link"
@@ -106,6 +107,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
               </Button>
             )}
             <ListButtons book={book} />
+            {onEdit && <EpubFixButton book={book} />}
             {onDeleted && <DeleteBookButton book={book} onDeleted={onDeleted} />}
           </div>
         </div>
