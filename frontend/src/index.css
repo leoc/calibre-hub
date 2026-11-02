@@ -3,9 +3,12 @@
 
 @custom-variant dark (&:is(.dark *));
 @custom-variant eink (&:is(.eink *));
+/* phones and tablets: tap targets of at least 44 px */
+@custom-variant touch (@media (pointer: coarse));
 
 /* shadcn/ui neutral (zinc) */
 :root {
+  color-scheme: light;
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.141 0.005 285.823);
@@ -29,6 +32,8 @@
 }
 
 .dark {
+  /* native controls (date picker, select, checkboxes, scrollbars) follow */
+  color-scheme: dark;
   --background: oklch(0.141 0.005 285.823);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.21 0.006 285.885);
@@ -85,6 +90,22 @@
   scroll-behavior: auto !important;
 }
 
+/* no grey placeholders: black, set apart by italics */
+.eink ::placeholder {
+  color: #000;
+  opacity: 1;
+  font-style: italic;
+}
+
+/* disabled: dashed outline instead of a grey wash */
+.eink :disabled,
+.eink [aria-disabled="true"] {
+  opacity: 1 !important;
+  background: #fff !important;
+  color: #000 !important;
+  border-style: dashed !important;
+}
+
 .eink img {
   filter: grayscale(1) contrast(1.15);
 }
@@ -126,5 +147,6 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
+    accent-color: var(--primary);
   }
 }

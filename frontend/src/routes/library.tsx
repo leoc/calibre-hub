@@ -7,14 +7,14 @@ import { hasFilters, PAGE_SIZE, toBookQuery } from "@/lib/search"
 import { useView } from "@/lib/prefs"
 import { useDesktop } from "@/lib/use-media"
 import { t } from "@/i18n"
-import { BookGrid } from "@/components/book-grid"
+import { BookGrid, LoadingBooks } from "@/components/book-grid"
 import { BookList } from "@/components/book-list"
 import { BookDetail } from "@/components/book-detail"
 import { LibraryToolbar } from "@/components/library-toolbar"
 import { Pagination } from "@/components/pagination"
 import { ErrorMessage } from "@/components/error-view"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { BulkBar } from "@/components/bulk-bar"
 import { useSelection } from "@/lib/selection"
 import { LibraryLink } from "@/components/library-link"
@@ -70,12 +70,12 @@ export function LibraryPage() {
       {error && !data ? (
         <ErrorMessage error={error} onRetry={() => refetch()} />
       ) : !data ? (
-        <p className="py-12 text-center text-muted-foreground">{t("loading")}</p>
+        <LoadingBooks view={view} />
       ) : data.books.length === 0 ? (
         <div className="space-y-4 py-12 text-center">
           <p className="text-lg">{t("results.none")}</p>
           {hasFilters(search) && (
-            <LibraryLink search={{}} className="underline">
+            <LibraryLink search={{}} className={buttonVariants({ variant: "outline" })}>
               {t("results.reset")}
             </LibraryLink>
           )}
@@ -93,9 +93,13 @@ export function LibraryPage() {
       {sel.active && data && <BulkBar search={search} pageIds={data.books.map((b) => b.id)} total={data.total} />}
       {desktop && (
         <Sheet open={search.book != null} onOpenChange={(o) => !o && closeBook()}>
-          <SheetContent side="right" className="overflow-y-auto p-6 sm:max-w-2xl" aria-describedby={undefined}>
+          {/* opening it pushed ?book=, so Back closes it already */}
+          <SheetContent side="right" className="sm:max-w-2xl" closeOnBack={false} aria-describedby={undefined}>
             <SheetTitle className="sr-only">{placeholder?.title ?? t("app.title")}</SheetTitle>
-            {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} />}
+            {/* no bottom padding: the edit form's sticky bar sits flush at the bottom */}
+            <div className="min-h-0 flex-1 overflow-y-auto px-6">
+              {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} />}
+            </div>
           </SheetContent>
         </Sheet>
       )}

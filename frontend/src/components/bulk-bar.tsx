@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, Loader2, Trash2, X } from "lucide-react"
+import { CheckCircle2, CircleAlert, Loader2, Trash2, X } from "lucide-react"
 import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget } from "@/lib/api"
 import { categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { categoriesQuery, configQuery } from "@/lib/queries"
@@ -39,27 +39,38 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   const { offset: _o, limit: _l, sort: _s, order: _r, ...query } = toBookQuery(filters, config.categoryColumn)
   const target: BulkTarget = sel.all ? { query } : { ids: [...sel.ids] }
 
+  // Two groups: what is selected, and what to do with it. Side by side on wide
+  // screens; on smaller ones each is a row that scrolls sideways instead of
+  // wrapping into a block that covers the books.
+  const row = "flex shrink-0 items-center gap-2 overflow-x-auto [scrollbar-width:none]"
   return (
-    <div className="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center gap-2 border-t bg-background px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] lg:-mx-6 lg:px-6 eink:border-t-2 eink:shadow-none">
-      <span className="text-sm font-medium tabular-nums">{t("bulk.selected", { count: formatNumber(count) })}</span>
-      <Button variant="ghost" size="sm" onClick={() => selection.addPage(pageIds)}>
-        {t("bulk.page")}
-      </Button>
-      {total > pageIds.length && (
-        <Button variant="ghost" size="sm" onClick={selection.selectAll} aria-pressed={sel.all}>
-          {t("bulk.all", { count: formatNumber(total) })}
+    <div className="sticky bottom-0 z-20 -mx-4 flex flex-col gap-2 border-t bg-background px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-4px_12px_rgba(0,0,0,0.06)] lg:-mx-6 lg:px-6 xl:flex-row xl:items-center xl:justify-between eink:border-t-2 eink:shadow-none">
+      <div className={row}>
+        <Button variant="ghost" size="icon" className="-ml-2" onClick={selection.stop} aria-label={t("bulk.stop")} title={t("bulk.stop")}>
+          <X />
         </Button>
-      )}
-      {count > 0 && (
-        <Button variant="ghost" size="sm" onClick={selection.clear}>
-          {t("bulk.none")}
+        <span className="shrink-0 text-sm font-medium whitespace-nowrap tabular-nums eink:text-base">{t("bulk.selected", { count: formatNumber(count) })}</span>
+        <Button variant="ghost" size="sm" onClick={() => selection.addPage(pageIds)}>
+          {t("bulk.page")}
         </Button>
-      )}
-      <span className="flex-1" />
+        {total > pageIds.length && (
+          <Button variant={sel.all ? "secondary" : "ghost"} size="sm" onClick={selection.selectAll} aria-pressed={sel.all}>
+            {t("bulk.all", { count: formatNumber(total) })}
+          </Button>
+        )}
+        {count > 0 && (
+          <Button variant="ghost" size="sm" onClick={selection.clear}>
+            {t("bulk.none")}
+          </Button>
+        )}
+      </div>
       {job ? (
-        <JobProgress job={job} onClose={() => setJob(null)} onRestart={setJob} />
+        // no overflow here: the error list opens above the bar
+        <div className="flex flex-wrap items-center gap-2">
+          <JobProgress job={job} onClose={() => setJob(null)} onRestart={setJob} />
+        </div>
       ) : (
-        <>
+        <div className={row}>
           {(["addTags", "removeTags", "kategorie", "series"] as Action[]).map((a) => (
             <Button key={a} variant="outline" size="sm" disabled={!count} onClick={() => setAction(a)}>
               {t(`bulk.${a}`)}
@@ -68,11 +79,8 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
           <Button variant="outline" size="sm" disabled={!count} onClick={() => setAction("delete")}>
             <Trash2 /> {t("bulk.delete")}
           </Button>
-        </>
+        </div>
       )}
-      <Button variant="ghost" size="icon" onClick={selection.stop} aria-label={t("bulk.stop")} title={t("bulk.stop")}>
-        <X />
-      </Button>
       {action && <BulkDialog action={action} count={count} target={target} onClose={() => setAction(null)} onStarted={setJob} />}
     </div>
   )
@@ -151,7 +159,7 @@ function BulkDialog({
               <p className="text-xs text-muted-foreground eink:text-black">{t(action === "kategorie" ? "bulk.kategorieHint" : "bulk.seriesHint")}</p>
             )}
             {action === "series" && (
-              <label className="flex items-center gap-2 text-sm aria-disabled:opacity-60 eink:min-h-11" aria-disabled={!canNumber || !series}>
+              <label className="flex items-center gap-2 text-sm aria-disabled:opacity-60 eink:min-h-11 touch:min-h-11" aria-disabled={!canNumber || !series}>
                 <input
                   type="checkbox"
                   checked={numberSeries && canNumber}
@@ -221,13 +229,13 @@ function JobProgress({ job, onClose, onRestart }: { job: StartedJob; onClose: ()
   })
   return (
     <span className="flex items-center gap-2 text-sm" role="status">
-      {finished || lost ? <CheckCircle2 className="size-4" /> : <Loader2 className="size-4 animate-spin" />}
+      {failed.length > 0 || lost ? <CircleAlert className="size-4 shrink-0" /> : finished ? <CheckCircle2 className="size-4 shrink-0" /> : <Loader2 className="size-4 shrink-0 animate-spin" />}
       {lost
         ? t("bulk.lost")
         : finished
           ? deleting
             ? t("bulk.deleted", { done: formatNumber(data.done - data.errors.length), errors: data.errors.length })
-            : t("bulk.done", { done: formatNumber(data.done), errors: data.errors.length })
+            : t("bulk.done", { done: formatNumber(data.done - data.errors.length), errors: data.errors.length })
           : t("bulk.progress", { done: formatNumber(data?.done ?? 0), total: formatNumber(data?.total ?? job.total) })}
       {failed.length > 0 && (
         <details className="relative">

@@ -12,6 +12,7 @@ import { useLibrarySearch } from "@/lib/use-library"
 import { setView } from "@/lib/prefs"
 import { THEMES, useTheme } from "@/lib/theme"
 import { useDesktop } from "@/lib/use-media"
+import { leaveOverlays } from "@/lib/back-to-close"
 import { formatNumber, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "./ui/command"
@@ -58,10 +59,14 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   })
 
   const close = onClose
-  const go = (s: Parameters<typeof withFilter>[0]) => {
+  // navigate once the palette's history entry (back button) is gone, so
+  // Back afterwards returns to where the palette was opened
+  const closeThen = (next: () => void) => {
+    const left = leaveOverlays()
     close()
-    navigate({ to: "/", search: s })
+    left.then(next)
   }
+  const go = (s: Parameters<typeof withFilter>[0]) => closeThen(() => navigate({ to: "/", search: s }))
 
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const toggleFast = useToggleTag()
@@ -88,9 +93,9 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const actions: Action[] = useMemo(
     () => [
       { id: "all", label: t("nav.all"), icon: <LibraryBig />, run: () => go({}) },
-      { id: "trash", label: t("trash.title"), icon: <Trash2 />, run: () => (close(), navigate({ to: "/trash" })) },
+      { id: "trash", label: t("trash.title"), icon: <Trash2 />, run: () => closeThen(() => navigate({ to: "/trash" })) },
       ...(config.classify
-        ? [{ id: "suggestions", label: t("suggest.title"), icon: <Sparkles />, run: () => (close(), navigate({ to: "/suggestions" })) }]
+        ? [{ id: "suggestions", label: t("suggest.title"), icon: <Sparkles />, run: () => closeThen(() => navigate({ to: "/suggestions" })) }]
         : []),
       { id: "grid", label: t("view.grid"), icon: <LayoutGrid />, run: () => (setView("grid"), close()) },
       { id: "list", label: t("view.list"), icon: <List />, run: () => (setView("list"), close()) },
@@ -149,7 +154,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent
-        className="top-0 h-dvh w-full max-w-none translate-x-[-50%] overflow-hidden rounded-none border-0 p-0 sm:top-[10vh] sm:h-auto sm:w-[calc(100%-2rem)] sm:max-w-2xl sm:rounded-lg sm:border"
+        className="top-0 h-dvh max-h-none w-full max-w-none translate-x-[-50%] overflow-hidden rounded-none border-0 p-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:pt-0 sm:pb-0 sm:top-[10vh] sm:h-auto sm:w-[calc(100%-2rem)] sm:max-w-2xl sm:rounded-lg sm:border"
         showClose={false}
         aria-describedby={undefined}
         // Radix would select the text; keep the cursor at the end so typing
@@ -173,7 +178,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
               wrapperClassName="min-w-0 flex-1 border-b-0 eink:border-b-0"
             />
             {!desktop && (
-              <button type="button" onClick={close} aria-label={t("book.close")} className="mr-1 shrink-0 rounded-md p-2 hover:bg-accent eink:p-3">
+              <button type="button" onClick={close} aria-label={t("book.close")} className="mr-1 flex size-11 shrink-0 items-center justify-center rounded-md hover:bg-accent eink:size-12">
                 <X className="size-5" />
               </button>
             )}
@@ -189,11 +194,9 @@ export function CommandPalette({ initialInput, onClose }: Props) {
                   <CommandItem
                     key={`b:${b.id}`}
                     value={`b:${b.id}`}
-                    onSelect={() => {
-                      close()
-                      if (desktop) navigate({ to: "/", search: { ...search, book: b.id } })
-                      else navigate({ to: "/books/$id", params: { id: b.id } })
-                    }}
+                    onSelect={() =>
+                      closeThen(() => (desktop ? navigate({ to: "/", search: { ...search, book: b.id } }) : navigate({ to: "/books/$id", params: { id: b.id } })))
+                    }
                   >
                     <img src={coverUrl(b.id, true, b.lastModified)} alt="" loading="lazy" width={24} height={32} className="h-8 w-6 shrink-0 rounded-xs bg-muted object-cover" />
                     <span className="min-w-0 truncate">
@@ -248,7 +251,7 @@ function ScopeChips({ scope, text, onChange }: { scope: Scope; text: string; onC
             aria-pressed={on}
             onClick={() => onChange(on ? text : `${s.prefix}${text}`)}
             onMouseDown={(e) => e.preventDefault()}
-            className="shrink-0 rounded-full border px-3 py-1 text-sm whitespace-nowrap hover:bg-accent aria-pressed:bg-primary aria-pressed:text-primary-foreground eink:min-h-11 eink:border-2 eink:px-4"
+            className="shrink-0 rounded-full border px-3 py-1 text-sm whitespace-nowrap hover:bg-accent aria-pressed:bg-primary aria-pressed:text-primary-foreground eink:min-h-11 touch:min-h-11 eink:border-2 eink:px-4"
           >
             {t(s.label)}
             <span className="ml-1.5 text-xs opacity-60 eink:opacity-100">{s.prefix.trim()}</span>

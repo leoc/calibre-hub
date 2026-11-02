@@ -95,7 +95,7 @@ export function CoverEditor({ book, onChanged }: { book: Book; onChanged?: (book
                 }
               }}
             />
-            <Button type="button" variant="outline" size="icon" aria-label={t("cover.fromUrl")} disabled={!url.trim()} onClick={() => apply.mutate(() => write.coverFromUrl(book.id, url.trim()))}>
+            <Button type="button" variant="outline" size="icon" className="size-8" aria-label={t("cover.fromUrl")} disabled={!url.trim()} onClick={() => apply.mutate(() => write.coverFromUrl(book.id, url.trim()))}>
               <Link2 />
             </Button>
           </div>
@@ -125,7 +125,7 @@ export function CoverEditor({ book, onChanged }: { book: Book; onChanged?: (book
             aria-label={t("cover.searchPlaceholder")}
             className="h-8 text-sm"
           />
-          <Button type="button" variant="outline" size="icon" aria-label={t("cover.searchPlaceholder")} onClick={() => setSentQ(q.trim())}>
+          <Button type="button" variant="outline" size="icon" className="size-8" aria-label={t("cover.searchPlaceholder")} onClick={() => setSentQ(q.trim())}>
             <Search />
           </Button>
         </div>
@@ -143,9 +143,9 @@ export function CoverEditor({ book, onChanged }: { book: Book; onChanged?: (book
                   title={h.source}
                 >
                   <img src={h.url} alt="" loading="lazy" referrerPolicy="no-referrer" className="aspect-[3/4] w-full rounded-sm bg-muted object-cover" />
-                  <span className="block truncate text-[10px] text-muted-foreground eink:text-black">
-                    {h.source}
-                    {h.width && h.height ? ` · ${h.width}×${h.height}` : ""}
+                  <span className="mt-0.5 block text-xs leading-tight text-muted-foreground eink:text-black">
+                    <span className="block truncate">{h.source}</span>
+                    {h.width && h.height ? <span className="block tabular-nums">{`${h.width}×${h.height}`}</span> : null}
                   </span>
                 </button>
               </li>

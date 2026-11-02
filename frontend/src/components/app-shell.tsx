@@ -15,7 +15,7 @@ import { Sidebar } from "./sidebar"
 import { CommandPalette } from "./command-palette"
 import { EinkSuggestion } from "./theme-switch"
 import { UploadButton, UploadHost } from "./upload"
-import { LibraryLink } from "@/components/library-link"
+import { LibraryLink, ReplaceHistory } from "@/components/library-link"
 
 export function AppShell() {
   const desktop = useDesktop()
@@ -55,21 +55,22 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
+  // viewport-fit=cover: keep clear of notches and the status bar (installed app)
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex min-h-full flex-col pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
       <EinkSuggestion />
-      <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-3 eink:h-16 eink:border-b-2">
+      <header className="sticky top-0 z-30 flex h-[calc(3.5rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b bg-background px-3 pt-[env(safe-area-inset-top)] eink:h-16 eink:border-b-2">
         {!desktop && (
           <Button variant="ghost" size="icon" onClick={() => setMenuOpen(true)} aria-label={t("nav.menu")}>
             <Menu className="size-5" />
           </Button>
         )}
-        <LibraryLink search={{}} className="hidden items-center gap-2 font-semibold sm:flex lg:w-60" aria-label={t("app.title")}>
+        <LibraryLink search={{}} className="hidden shrink-0 items-center gap-2 font-semibold sm:flex lg:w-[16.25rem] eink:min-h-12 touch:min-h-11" aria-label={t("app.title")}>
           <BookOpen className="size-5" aria-hidden />
           <span className="hidden sm:inline">{t("app.title")}</span>
         </LibraryLink>
         <HeaderSearch value={search.q ?? ""} onOpenPalette={setPalette} />
-        <UploadButton />
+        <UploadButton className="sm:ml-auto" />
         <LogoutButton />
       </header>
       <div className="flex flex-1">
@@ -79,10 +80,19 @@ export function AppShell() {
           </aside>
         ) : (
           <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
-            <SheetContent side="left" aria-describedby={undefined}>
-              <SheetTitle className="sr-only">{t("nav.menu")}</SheetTitle>
-              <div className="h-full pt-10">
-                <Sidebar search={search} onNavigate={() => setMenuOpen(false)} />
+            <SheetContent
+              side="left"
+              aria-describedby={undefined}
+              header={
+                <SheetTitle className="flex items-center gap-2">
+                  <BookOpen className="size-5" aria-hidden /> {t("app.title")}
+                </SheetTitle>
+              }
+            >
+              <div className="min-h-0 flex-1">
+                <ReplaceHistory value={true}>
+                  <Sidebar search={search} onNavigate={() => setMenuOpen(false)} />
+                </ReplaceHistory>
               </div>
             </SheetContent>
           </Sheet>
@@ -107,7 +117,7 @@ function HeaderSearch({ value, onOpenPalette }: { value: string; onOpenPalette: 
 }
 
 const searchBox =
-  "h-9 w-full rounded-md border bg-transparent pl-8 text-base outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm eink:h-12 eink:border-2 eink:text-lg"
+  "h-9 w-full rounded-md border bg-transparent pl-8 text-base outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm eink:h-12 touch:h-11 eink:border-2 eink:text-lg"
 
 function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (input: string) => void }) {
   const [text, setText] = useState(value)
@@ -153,7 +163,7 @@ function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (i
       />
       <div className="absolute right-1 flex items-center gap-0.5">
         {text && (
-          <button onClick={() => change("")} aria-label={t("search.clear")} className="rounded-sm p-1.5 hover:bg-accent eink:p-2.5">
+          <button onClick={() => change("")} aria-label={t("search.clear")} className="flex size-7 items-center justify-center rounded-sm hover:bg-accent eink:size-11 touch:size-10">
             <X className="size-4" />
           </button>
         )}
@@ -161,7 +171,7 @@ function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (i
           onClick={() => onOpenPalette(text)}
           aria-label={t("palette.button")}
           title={t("palette.button")}
-          className="flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent eink:border-2 eink:px-2.5 eink:py-1.5 eink:text-sm eink:text-black"
+          className="flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent eink:min-h-11 touch:min-h-11 eink:min-w-11 touch:min-w-11 eink:justify-center eink:border-2 eink:px-2.5 eink:text-sm eink:text-black"
         >
           <Command className="size-3.5" aria-hidden />K
         </button>
@@ -186,7 +196,7 @@ function NarrowSearch({ value, onOpenPalette }: { value: string; onOpenPalette: 
         <span className={value ? "truncate" : "truncate text-muted-foreground"}>{value || t("search.placeholder")}</span>
       </button>
       {value && (
-        <button onClick={() => go(withFilter(search, { q: undefined }))} aria-label={t("search.clear")} className="absolute right-1 rounded-sm p-1.5 hover:bg-accent eink:p-2.5">
+        <button onClick={() => go(withFilter(search, { q: undefined }))} aria-label={t("search.clear")} className="absolute right-0 flex size-9 items-center justify-center rounded-sm hover:bg-accent eink:size-12 touch:size-11">
           <X className="size-4" />
         </button>
       )}

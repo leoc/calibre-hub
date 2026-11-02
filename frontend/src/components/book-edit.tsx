@@ -53,7 +53,12 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
   // leaving after a successful save must not ask
   const leaving = useRef(false)
   useBlocker({
-    shouldBlockFn: () => dirty && !leaving.current && !window.confirm(t("edit.leave")),
+    // same place: a dialog's back-button entry going away, not leaving the form
+    shouldBlockFn: ({ current, next }) =>
+      (current.pathname !== next.pathname || JSON.stringify(current.search) !== JSON.stringify(next.search)) &&
+      dirty &&
+      !leaving.current &&
+      !window.confirm(t("edit.leave")),
     enableBeforeUnload: () => dirty && !leaving.current,
   })
   const done = () => {
@@ -87,7 +92,7 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
   const kategorien = useMemo(() => categorySuggestions(cats?.kategorie ?? []), [cats])
 
   return (
-    <form onSubmit={save} className="space-y-5 pb-20" aria-label={t("edit.heading")}>
+    <form onSubmit={save} className="space-y-5" aria-label={t("edit.heading")}>
       {conflict && (
         <Conflict
           ref={conflictRef}
@@ -109,7 +114,7 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
         {/* a new cover bumps lastModified; keep the form's precondition in step */}
         <CoverEditor book={base} onChanged={(b) => setBase((prev) => ({ ...prev, lastModified: b.lastModified }))} />
         <div className="min-w-0 flex-1 space-y-4">
-          <Field label={t("edit.title")}>
+          <Field label={t("edit.title")} error={form.title.trim() ? null : t("edit.titleRequired")}>
             <Input value={form.title} onChange={(e) => set("title")(e.target.value)} required aria-invalid={!form.title.trim()} />
           </Field>
           <Field label={t("book.authors")} as="div">
@@ -168,7 +173,8 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
         </p>
       )}
 
-      <div className="sticky bottom-0 -mx-4 flex flex-wrap items-center justify-end gap-2 border-t bg-background px-4 py-3 sm:-mx-6 sm:px-6 eink:border-t-2">
+      {/* margins match the page (p-4 lg:p-6) and the desktop panel (px-6) */}
+      <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center justify-end gap-2 border-t bg-background px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] lg:-mx-6 lg:px-6 eink:border-t-2">
         <span className="mr-auto hidden text-sm text-muted-foreground sm:inline eink:text-black">{dirty ? t("edit.unsaved") : t("edit.noChanges")}</span>
         <Button type="button" variant="outline" onClick={onDone}>
           {t("edit.cancel")}
@@ -200,7 +206,7 @@ function Field({ label, hint, error, as = "label", children }: { label: string; 
 
 function Stars({ value, onChange }: { value: number; onChange: (n: number) => void }) {
   return (
-    <div role="radiogroup" aria-label={t("book.rating")} className="flex h-9 items-center gap-0.5 eink:h-12">
+    <div role="radiogroup" aria-label={t("book.rating")} className="flex h-9 items-center gap-0.5 eink:h-12 touch:h-11">
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
@@ -209,7 +215,7 @@ function Stars({ value, onChange }: { value: number; onChange: (n: number) => vo
           aria-checked={value === n}
           aria-label={t("edit.stars", { n })}
           onClick={() => onChange(value === n ? 0 : n)}
-          className="rounded-sm p-1 hover:bg-accent eink:p-2"
+          className="flex items-center justify-center rounded-sm p-1 hover:bg-accent eink:size-12 touch:size-11 eink:p-0"
         >
           <Star className={cn("size-5", n <= value && "fill-current")} />
         </button>

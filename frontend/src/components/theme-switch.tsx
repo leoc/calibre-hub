@@ -18,7 +18,7 @@ export function ThemeSwitch({ className }: { className?: string }) {
             role="radio"
             aria-checked={theme === th}
             onClick={() => setTheme(th)}
-            className="flex flex-col items-center gap-0.5 rounded-sm px-1 py-1.5 text-xs hover:bg-accent aria-checked:bg-primary aria-checked:text-primary-foreground eink:min-h-12 eink:text-sm"
+            className="flex flex-col items-center gap-0.5 rounded-sm px-1 py-1.5 text-xs hover:bg-accent aria-checked:bg-primary aria-checked:text-primary-foreground eink:min-h-12 touch:min-h-11 eink:text-sm"
           >
             <Icon className="size-4" aria-hidden />
             {t(`theme.${th}`)}

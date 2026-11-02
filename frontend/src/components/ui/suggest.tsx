@@ -5,7 +5,7 @@ import { matchNamed } from "@/lib/palette"
 import { cn } from "@/lib/utils"
 
 const field =
-  "flex min-h-9 w-full flex-wrap items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1 text-base shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50 md:text-sm eink:min-h-12 eink:border-2 eink:text-lg"
+  "flex min-h-9 w-full flex-wrap items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1 text-base shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50 md:text-sm eink:min-h-12 touch:min-h-11 eink:border-2 eink:text-lg"
 
 interface ListProps {
   id: string
@@ -30,7 +30,7 @@ function SuggestList({ id, items, active, onPick, render = (n) => n, create }: L
             e.preventDefault()
             onPick(i.name)
           }}
-          className="flex cursor-default items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm aria-selected:bg-accent aria-selected:text-accent-foreground eink:min-h-11 eink:text-base"
+          className="flex cursor-default items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm aria-selected:bg-accent aria-selected:text-accent-foreground eink:min-h-11 touch:min-h-11 eink:text-base"
         >
           <span className="truncate">{render(i.name)}</span>
           <span className="text-xs text-muted-foreground tabular-nums">{i.count}</span>
@@ -44,7 +44,7 @@ function SuggestList({ id, items, active, onPick, render = (n) => n, create }: L
             e.preventDefault()
             onPick(create)
           }}
-          className="rounded-sm px-2 py-1.5 text-sm italic aria-selected:bg-accent eink:min-h-11"
+          className="rounded-sm px-2 py-1.5 text-sm italic aria-selected:bg-accent eink:min-h-11 touch:min-h-11"
         >
           „{render(create)}“ neu
         </li>
@@ -110,8 +110,8 @@ export function ChipsInput({
         {value.map((v) => (
           <span key={v} className="inline-flex items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-sm eink:border eink:border-black">
             {render ? render(v) : v}
-            <button type="button" onClick={() => onChange(value.filter((x) => x !== v))} aria-label={`${v} entfernen`} className="rounded-xs p-0.5 hover:bg-accent eink:p-1.5">
-              <X className="size-3" />
+            <button type="button" onClick={() => onChange(value.filter((x) => x !== v))} aria-label={`${v} entfernen`} className="flex items-center justify-center rounded-xs p-0.5 hover:bg-accent eink:-my-1 eink:size-11 eink:p-0 touch:-my-1.5 touch:size-11 touch:p-0">
+              <X className="size-3 eink:size-5" />
             </button>
           </span>
         ))}
@@ -192,8 +192,8 @@ export function Combobox({
           className="min-w-0 flex-1 bg-transparent py-0.5 outline-none"
         />
         {value && (
-          <button type="button" onClick={() => onChange("")} aria-label="leeren" className="rounded-xs p-0.5 hover:bg-accent eink:p-1.5">
-            <X className="size-3.5" />
+          <button type="button" onClick={() => onChange("")} aria-label="leeren" className="flex items-center justify-center rounded-xs p-0.5 hover:bg-accent eink:-my-1 eink:size-11 eink:p-0 touch:-my-1.5 touch:size-11 touch:p-0">
+            <X className="size-3.5 eink:size-5" />
           </button>
         )}
       </div>

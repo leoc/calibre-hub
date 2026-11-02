@@ -37,12 +37,12 @@ function TreeItem({ node, search, onNavigate, depth }: { node: CategoryNode } & 
           <button
             onClick={() => setOpen(!open)}
             aria-label={node.name}
-            className="flex size-7 shrink-0 items-center justify-center rounded-sm hover:bg-accent eink:size-11"
+            className="flex size-7 shrink-0 items-center justify-center rounded-sm hover:bg-accent eink:size-11 touch:size-11"
           >
             <ChevronRight className={cn("size-4 transition-transform", open && "rotate-90")} aria-hidden />
           </button>
         ) : (
-          <span className="size-7 shrink-0 eink:size-11" />
+          <span className="size-7 shrink-0 eink:size-11 touch:size-11" />
         )}
         <LibraryLink
           search={withFilter(search, { kategorie: selected ? undefined : node.path, unsorted: undefined })}
@@ -51,7 +51,7 @@ function TreeItem({ node, search, onNavigate, depth }: { node: CategoryNode } & 
             onNavigate?.()
           }}
           className={cn(
-            "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-sm px-2 py-1 text-sm hover:bg-accent eink:min-h-11 eink:text-base",
+            "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-sm px-2 py-1 text-sm hover:bg-accent eink:min-h-11 touch:min-h-11 eink:text-base",
             selected && "bg-accent font-medium eink:bg-black eink:text-white",
           )}
         >

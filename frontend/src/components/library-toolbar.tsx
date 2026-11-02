@@ -23,7 +23,7 @@ export function LibraryToolbar({ search, total }: { search: LibrarySearch; total
         <p className="mr-auto text-sm text-muted-foreground tabular-nums eink:text-base eink:text-black" aria-live="polite">
           {total == null ? " " : total === 1 ? t("results.one") : t("results.count", { count: formatNumber(total) })}
         </p>
-        <Button variant={sel.active ? "default" : "outline"} size="sm" aria-pressed={sel.active} onClick={sel.active ? selection.stop : selection.start}>
+        <Button variant={sel.active ? "default" : "outline"} size="sm" aria-pressed={sel.active} aria-label={t("bulk.start")} title={t("bulk.start")} onClick={sel.active ? selection.stop : selection.start}>
           <ListChecks /> <span className="hidden sm:inline">{t("bulk.start")}</span>
         </Button>
         <label className="flex items-center gap-1.5 text-sm">
@@ -34,7 +34,7 @@ export function LibraryToolbar({ search, total }: { search: LibrarySearch; total
               const s = e.target.value as Sort
               go({ ...search, sort: s, order: defaultOrder(s), page: undefined })
             }}
-            className="h-9 rounded-md border bg-background px-2 text-sm eink:h-12 eink:border-2 eink:text-base"
+            className="h-9 rounded-md border bg-background px-2 text-sm eink:h-12 touch:h-11 eink:border-2 eink:text-base"
           >
             {SORTS.map((s) => (
               <option key={s} value={s}>
@@ -61,7 +61,7 @@ export function LibraryToolbar({ search, total }: { search: LibrarySearch; total
               aria-label={t(`view.${v}`)}
               title={t(`view.${v}`)}
               onClick={() => setView(v)}
-              className="flex size-9 items-center justify-center first:rounded-l-md last:rounded-r-md hover:bg-accent aria-checked:bg-primary aria-checked:text-primary-foreground eink:size-12"
+              className="flex size-9 items-center justify-center first:rounded-l-md last:rounded-r-md hover:bg-accent aria-checked:bg-primary aria-checked:text-primary-foreground eink:size-12 touch:size-11"
             >
               {v === "grid" ? <LayoutGrid className="size-4" /> : <List className="size-4" />}
             </button>
@@ -87,8 +87,8 @@ function ActiveFilters({ search }: { search: LibrarySearch }) {
     <ul className="flex flex-wrap gap-2">
       {chips.map((c) => (
         <li key={c.key}>
-          <LibraryLink search={c.next} aria-label={t("filter.remove", { name: c.label ? `${c.label} ${c.value}` : c.value })}>
-            <Badge variant="outline" className={cn("h-7 gap-1.5 pr-1 text-sm hover:bg-accent eink:h-11 eink:border-2")}>
+          <LibraryLink search={c.next} className="block rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50" aria-label={t("filter.remove", { name: c.label ? `${c.label} ${c.value}` : c.value })}>
+            <Badge variant="outline" className={cn("h-7 gap-1.5 pr-1 text-sm hover:bg-accent eink:h-11 touch:h-11 eink:border-2")}>
               {c.label && <span className="text-muted-foreground eink:text-black">{c.label}:</span>} {c.value}
               <X className="size-3.5" aria-hidden />
             </Badge>

@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Trash2 } from "lucide-react"
 import { ApiError, type Book } from "@/lib/api"
 import { useDeleteBook } from "@/lib/mutations"
+import { leaveOverlays } from "@/lib/back-to-close"
 import { t } from "@/i18n"
 import { Button } from "./ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog"
@@ -12,7 +13,7 @@ export function DeleteBookButton({ book, onDeleted }: { book: Book; onDeleted: (
   const del = useDeleteBook()
   return (
     <>
-      <Button type="button" variant="outline" onClick={() => setOpen(true)}>
+      <Button type="button" variant="outline" className="text-destructive hover:text-destructive eink:text-black eink:hover:text-white" onClick={() => setOpen(true)}>
         <Trash2 /> {t("book.delete")}
       </Button>
       <Dialog open={open} onOpenChange={(o) => !del.isPending && setOpen(o)}>
@@ -34,8 +35,10 @@ export function DeleteBookButton({ book, onDeleted }: { book: Book; onDeleted: (
               onClick={() =>
                 del.mutate(book.id, {
                   onSuccess: () => {
+                    // drop the dialog's history entry before leaving the book
+                    const left = leaveOverlays()
                     setOpen(false)
-                    onDeleted()
+                    left.then(onDeleted)
                   },
                 })
               }

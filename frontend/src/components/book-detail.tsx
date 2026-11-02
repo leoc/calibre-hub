@@ -50,10 +50,11 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const kategorie = categoryOf(book, config.categoryColumn)
   const formats = sortFormats(book.formats)
-  const link = "underline-offset-2 hover:underline eink:underline"
+  // E-Ink: links become 44 px tall tap targets
+  const link = "underline-offset-2 hover:underline eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center eink:underline"
 
   return (
-    <article className="space-y-6">
+    <article className="space-y-6 pb-6">
       <div className="flex flex-col gap-5 sm:flex-row">
         <BookCover book={book} thumb={false} className="w-40 shrink-0 self-center sm:w-44 sm:self-start" />
         <div className="min-w-0 space-y-2">
@@ -76,7 +77,16 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
               {book.seriesIndex != null && <span className="text-muted-foreground eink:text-black"> · {t("book.volume")} {formatIndex(book.seriesIndex)}</span>}
             </p>
           )}
+          {/* reading first: the downloads, then the management actions */}
           <div className="flex flex-wrap gap-2 pt-2">
+            {formats.length === 0 && <p className="text-muted-foreground eink:text-black">{t("book.noFormats")}</p>}
+            {formats.map((f, i) => (
+              <a key={f} href={downloadUrl(book.id, f)} download className={buttonVariants({ variant: i === 0 ? "default" : "outline" })}>
+                <Download aria-hidden /> {f}
+              </a>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
             {onEdit && (
               <Button type="button" variant="outline" onClick={onEdit}>
                 <Pencil /> {t("book.edit")}
@@ -84,14 +94,6 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
             )}
             <FastTagButtons book={book} />
             {onDeleted && <DeleteBookButton book={book} onDeleted={onDeleted} />}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {formats.length === 0 && <p className="text-muted-foreground">{t("book.noFormats")}</p>}
-            {formats.map((f, i) => (
-              <a key={f} href={downloadUrl(book.id, f)} download className={buttonVariants({ variant: i === 0 ? "default" : "outline" })}>
-                <Download aria-hidden /> {f}
-              </a>
-            ))}
           </div>
         </div>
       </div>
@@ -108,7 +110,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
           <Row label={t("book.tags")}>
             <span className="flex flex-wrap gap-1.5">
               {book.tags.map((tag) => (
-                <LibraryLink key={tag} search={toggleTag({}, tag)} onClick={onNavigate}>
+                <LibraryLink key={tag} search={toggleTag({}, tag)} onClick={onNavigate} className="eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center">
                   <Badge variant={config.fastTags.includes(tag) ? "default" : "secondary"}>{tag}</Badge>
                 </LibraryLink>
               ))}
@@ -160,7 +162,7 @@ function Breadcrumb({ path, onNavigate }: { path: string; onNavigate?: () => voi
       {parts.map((p, i) => (
         <span key={i}>
           {i > 0 && "/"}
-          <LibraryLink search={withFilter({}, { kategorie: parts.slice(0, i + 1).join(".") })} onClick={onNavigate} className="underline-offset-2 hover:underline eink:underline">
+          <LibraryLink search={withFilter({}, { kategorie: parts.slice(0, i + 1).join(".") })} onClick={onNavigate} className="underline-offset-2 hover:underline eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center eink:underline">
             {p}
           </LibraryLink>
         </span>

@@ -26,12 +26,14 @@ export function TrashPage() {
         <p className="text-sm text-muted-foreground eink:text-black">{t("trash.hint")}</p>
       </div>
       {restored && (
-        <p role="status" className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-sm eink:border-2">
-          <CheckCircle2 className="size-4" aria-hidden />
-          {t("trash.restored", { title: restored.title })}
-          <Link to="/books/$id" params={{ id: restored.id }} search={{}} className="underline underline-offset-2">
-            {t("trash.open")}
-          </Link>
+        <p role="status" className="flex items-start gap-2 rounded-md border p-3 text-sm eink:border-2 eink:text-base">
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            {t("trash.restored", { title: restored.title })}{" "}
+            <Link to="/books/$id" params={{ id: restored.id }} search={{}} className="underline underline-offset-2 eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center">
+              {t("trash.open")}
+            </Link>
+          </span>
         </p>
       )}
       {restore.error && (

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react"
+import { useContext, useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Bookmark, Inbox, Library, Sparkles, Trash2 } from "lucide-react"
@@ -10,7 +10,7 @@ import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
 import { CategoryTree } from "./category-tree"
 import { ThemeSwitch } from "./theme-switch"
-import { LibraryLink } from "@/components/library-link"
+import { LibraryLink, ReplaceHistory } from "@/components/library-link"
 
 interface Props {
   search: LibrarySearch
@@ -18,10 +18,12 @@ interface Props {
 }
 
 const navItem =
-  "flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-sm hover:bg-accent eink:min-h-11 eink:text-base"
+  "flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-sm hover:bg-accent eink:min-h-11 touch:min-h-11 eink:text-base"
 const active = "bg-accent font-medium eink:bg-black eink:text-white"
 
 export function Sidebar({ search, onNavigate }: Props) {
+  // inside the phone drawer: links replace its history entry
+  const replace = useContext(ReplaceHistory) || undefined
   const { data: cats } = useQuery(categoriesQuery)
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const tagCount = (tag: string) => cats?.tags.find((x) => x.name === tag)?.count
@@ -98,14 +100,14 @@ export function Sidebar({ search, onNavigate }: Props) {
 
       <div className="mt-auto space-y-2 pt-2">
         {config.classify && (
-          <Link to="/suggestions" onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+          <Link to="/suggestions" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
             <span className="flex items-center gap-2">
               <Sparkles className="size-4" aria-hidden /> {t("suggest.title")}
             </span>
             {!!classify?.pending && <Count n={classify.pending} />}
           </Link>
         )}
-        <Link to="/trash" onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+        <Link to="/trash" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
           <span className="flex items-center gap-2">
             <Trash2 className="size-4" aria-hidden /> {t("trash.title")}
           </span>
@@ -151,7 +153,7 @@ function NamedSection({
   const [filter, setFilter] = useState("")
   const isSel = (n: string) => (Array.isArray(selected) ? selected.includes(n) : selected === n)
   const shown = useMemo(() => {
-    const list = filter ? matchNamed(items, filter, 50) : expanded ? [...items].sort((a, b) => a.name.localeCompare(b.name)).slice(0, 300) : matchNamed(items, "", COLLAPSED)
+    const list = filter ? matchNamed(items, filter, 50) : expanded ? [...items].sort((a, b) => a.name.localeCompare(b.name, "de", { numeric: true })).slice(0, 300) : matchNamed(items, "", COLLAPSED)
     // keep the selected ones visible
     const missing = items.filter((i) => isSel(i.name) && !list.includes(i))
     return [...missing, ...list]
@@ -167,7 +169,7 @@ function NamedSection({
           onChange={(e) => setFilter(e.target.value)}
           placeholder={t("nav.filter")}
           aria-label={`${title}: ${t("nav.filter")}`}
-          className="mb-1 h-7 w-full rounded-sm border bg-transparent px-2 text-sm eink:h-11 eink:border-2"
+          className="mb-1 h-7 w-full rounded-sm border bg-transparent px-2 text-sm eink:h-11 touch:h-11 touch:text-base eink:border-2"
         />
       )}
       <ul className="space-y-0.5">
@@ -189,7 +191,7 @@ function NamedSection({
         })}
       </ul>
       {!filter && items.length > COLLAPSED && (
-        <button onClick={() => setExpanded(!expanded)} className="px-2 py-1 text-xs text-muted-foreground underline-offset-2 hover:underline eink:min-h-11 eink:text-sm eink:text-black eink:underline">
+        <button onClick={() => setExpanded(!expanded)} className="px-2 py-1 text-xs text-muted-foreground underline-offset-2 hover:underline eink:min-h-11 touch:min-h-11 eink:text-sm eink:text-black eink:underline">
           {expanded ? t("nav.less") : t("nav.more", { count: formatNumber(items.length) })}
         </button>
       )}

@@ -34,7 +34,7 @@ export function FastTagToggles({ book, className }: { book: Book; className?: st
               toggle.mutate({ book, tag, on: !on })
             }}
             className={cn(
-              "rounded-sm bg-background/90 p-1 shadow-sm hover:bg-background eink:border-2 eink:border-black eink:bg-white eink:p-2",
+              "rounded-sm bg-background/90 p-1 shadow-sm hover:bg-background touch:p-2.5 eink:border-2 eink:border-black eink:bg-white eink:p-2",
               !on && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 eink:opacity-100",
             )}
           >

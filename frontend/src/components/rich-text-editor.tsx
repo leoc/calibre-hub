@@ -35,7 +35,7 @@ export default function RichTextEditor({ value, onChange, label }: { value: stri
       aria-label={title}
       aria-pressed={!!on}
       onClick={run}
-      className="flex size-8 items-center justify-center rounded-sm hover:bg-accent aria-pressed:bg-accent eink:size-11 eink:aria-pressed:bg-black eink:aria-pressed:text-white"
+      className="flex size-8 items-center justify-center rounded-sm hover:bg-accent aria-pressed:bg-accent eink:size-11 touch:size-11 eink:aria-pressed:bg-black eink:aria-pressed:text-white"
     >
       <Icon className="size-4" />
     </button>

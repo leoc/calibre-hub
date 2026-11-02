@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { CheckCircle2, CircleAlert, Copy, Loader2, Pencil, Upload as UploadIcon, X } from "lucide-react"
+import { CheckCircle2, ChevronDown, CircleAlert, Copy, Loader2, Pencil, Upload as UploadIcon, X } from "lucide-react"
 import { useNavigate } from "@tanstack/react-router"
 import type { UploadOptions } from "@/lib/api"
 import { addUploads, clearFinished, dismissUpload, retryUpload, useUploads, type UploadItem } from "@/lib/upload-store"
@@ -21,9 +21,15 @@ function useSuggestedOptions(): UploadOptions {
 
 let pickFiles: ((files: File[]) => void) | null = null
 
-export function UploadButton() {
+export function UploadButton({ className }: { className?: string }) {
   return (
-    <label className="inline-flex size-9 cursor-pointer items-center justify-center rounded-md hover:bg-accent eink:size-12" title={t("upload.button")}>
+    <label
+      className={cn(
+        "inline-flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-accent has-focus-visible:ring-[3px] has-focus-visible:ring-ring/50 eink:size-12 touch:size-11",
+        className,
+      )}
+      title={t("upload.button")}
+    >
       <UploadIcon className="size-5" aria-hidden />
       <span className="sr-only">{t("upload.button")}</span>
       <input
@@ -124,13 +130,13 @@ function ConfirmDialog({ files, suggested, onClose }: { files: File[]; suggested
         <p className="text-sm">{t("upload.suggestion")}</p>
         <div className="space-y-2">
           {suggested.kategorie && (
-            <label className="flex items-center gap-2 eink:min-h-11">
+            <label className="flex items-center gap-2 eink:min-h-11 touch:min-h-11">
               <input type="checkbox" checked={useKategorie} onChange={(e) => setUseKategorie(e.target.checked)} className="size-4 eink:size-6" />
               {t("book.kategorie")}: {categoryLabel(suggested.kategorie)}
             </label>
           )}
           {suggested.tags?.map((tag) => (
-            <label key={tag} className="flex items-center gap-2 eink:min-h-11">
+            <label key={tag} className="flex items-center gap-2 eink:min-h-11 touch:min-h-11">
               <input
                 type="checkbox"
                 checked={useTags.includes(tag)}
@@ -164,14 +170,22 @@ function UploadTray() {
   const [collapsed, setCollapsed] = useState(false)
   if (!items.length) return null
   const active = items.filter((i) => i.status === "queued" || i.status === "uploading").length
+  const problems = items.filter((i) => i.status === "error" || i.status === "duplicate").length
   return (
     <section
       aria-label={t("upload.title")}
-      className="fixed right-3 bottom-3 z-40 w-[min(26rem,calc(100vw-1.5rem))] rounded-lg border bg-background shadow-xl eink:border-2 eink:shadow-none"
+      className="fixed right-[max(0.75rem,env(safe-area-inset-right))] bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-40 w-[min(26rem,calc(100vw-1.5rem))] rounded-lg border bg-background shadow-xl eink:border-2 eink:shadow-none"
     >
-      <header className="flex items-center gap-2 border-b px-3 py-2 eink:border-b-2">
-        <button className="flex-1 text-left text-sm font-medium" onClick={() => setCollapsed(!collapsed)} aria-expanded={!collapsed}>
-          {active ? t("upload.running", { count: active }) : t("upload.finished", { count: items.length })}
+      <header className={cn("flex items-center gap-2 py-1 pr-1 pl-3", !collapsed && "border-b eink:border-b-2")}>
+        <button className="flex min-h-9 flex-1 items-center gap-2 text-left text-sm font-medium eink:min-h-12 touch:min-h-11 eink:text-base" onClick={() => setCollapsed(!collapsed)} aria-expanded={!collapsed}>
+          <span className="flex-1">
+            {active
+              ? t("upload.running", { count: active })
+              : problems
+                ? t("upload.finishedProblems", { done: items.length - problems, problems })
+                : t("upload.finished", { count: items.length })}
+          </span>
+          <ChevronDown className={cn("size-4 shrink-0 transition-transform", collapsed && "rotate-180")} aria-hidden />
         </button>
         {!active && (
           <Button variant="ghost" size="icon" onClick={clearFinished} aria-label={t("book.close")}>
@@ -210,7 +224,7 @@ function Row({ item }: { item: UploadItem }) {
           {item.book?.title ?? item.file.name}
         </span>
         {item.status !== "uploading" && (
-          <button onClick={() => dismissUpload(item.id)} aria-label={t("book.close")} className="rounded-sm p-1 hover:bg-accent">
+          <button onClick={() => dismissUpload(item.id)} aria-label={t("book.close")} className="-my-1 flex size-7 shrink-0 items-center justify-center rounded-sm hover:bg-accent eink:size-12 touch:size-11">
             <X className="size-3.5" />
           </button>
         )}
@@ -261,7 +275,8 @@ function Row({ item }: { item: UploadItem }) {
               ))}
             </ul>
           )}
-          <Button size="sm" onClick={() => retryUpload(item.id, { force: true })} className={cn(item.duplicates?.length ? "" : "")}>
+          {/* outline: adding a second copy is the exception, not the default */}
+          <Button size="sm" variant="outline" onClick={() => retryUpload(item.id, { force: true })}>
             {t("upload.force")}
           </Button>
         </div>

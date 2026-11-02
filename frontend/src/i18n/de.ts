@@ -105,6 +105,7 @@ export const de = {
   "suggest.forBook": "Kategorievorschlag",
   "edit.heading": "Buch bearbeiten",
   "edit.title": "Titel",
+  "edit.titleRequired": "Ohne Titel lässt sich das Buch nicht speichern.",
   "edit.comments": "Beschreibung",
   "edit.kategorieHint": "Unterkategorien mit /, z. B. Sachbuch/Geschichte",
   "kategorie.dot": "„{name}“ enthält einen Punkt. Den kann calibre in einer Kategorie nicht speichern, Unterkategorien trennt /.",
@@ -147,6 +148,7 @@ export const de = {
   "upload.title": "Uploads",
   "upload.running": "Lädt hoch … ({count} offen)",
   "upload.finished": "{count} Upload(s) fertig",
+  "upload.finishedProblems": "{done} fertig, {problems} mit Problemen",
   "upload.open": "Öffnen",
   "upload.duplicate": "Schon in der Bibliothek:",
   "upload.addAs": "{format} hinzufügen",
@@ -200,6 +202,7 @@ export const de = {
   "palette.empty": "Nichts gefunden.",
   "error.generic": "Etwas ist schiefgelaufen.",
   "error.unavailable": "calibre-server ist nicht erreichbar.",
+  "error.unavailableHint": "Der Hub läuft, aber calibre-server antwortet gerade nicht, etwa während eines Neustarts. In ein paar Sekunden noch einmal versuchen.",
   "error.retry": "Erneut versuchen",
   "loading": "Lädt …",
 } as const
