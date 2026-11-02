@@ -142,7 +142,6 @@ function SaveDialog({ book, onClose }: { book: Book; onClose: () => void }) {
     setClicked((c) => ({ of: c.of, on: { ...c.on, [l.id]: on } }))
     membership.mutate({ list: l, bookIds: [book.id], on })
   }
-  const editable = useMemo(() => lists?.filter((l) => l.editable) ?? [], [lists])
   const editable = useMemo(() => savableLists(lists), [lists])
   const nodes = useMemo(() => flattenListTree(buildListTree(editable, session?.user)), [editable, session?.user])
   // the node a new sublist is typed under
