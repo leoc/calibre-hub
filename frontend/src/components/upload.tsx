@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CheckCircle2, ChevronDown, CircleAlert, Copy, Loader2, Pencil, Upload as UploadIcon, X } from "lucide-react"
 import { useNavigate } from "@tanstack/react-router"
 import type { UploadOptions } from "@/lib/api"
@@ -58,9 +58,16 @@ export function UploadHost() {
     if (hasSuggestion) setPending(files)
     else addUploads(files, {})
   }
-
+  // the listeners below are registered once; they call the current start
+  const startRef = useRef(start)
   useEffect(() => {
-    pickFiles = start
+    startRef.current = start
+  })
+
+  // Registered once: re-registering on every render would reset the
+  // enter/leave counter, and the overlay would vanish while dragging.
+  useEffect(() => {
+    pickFiles = (files) => startRef.current(files)
     let depth = 0
     const isFiles = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes("Files")
     const enter = (e: DragEvent) => {
@@ -85,7 +92,7 @@ export function UploadHost() {
       e.preventDefault()
       depth = 0
       setDragging(false)
-      start([...(e.dataTransfer?.files ?? [])])
+      startRef.current([...(e.dataTransfer?.files ?? [])])
     }
     window.addEventListener("dragenter", enter)
     window.addEventListener("dragleave", leave)
@@ -98,7 +105,7 @@ export function UploadHost() {
       window.removeEventListener("dragover", over)
       window.removeEventListener("drop", drop)
     }
-  })
+  }, [])
 
   return (
     <>

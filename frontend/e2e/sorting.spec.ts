@@ -82,3 +82,32 @@ test("bulk: number a series in selection order", async ({ page, isMobile }) => {
   expect(titles).toEqual(picked)
   await expect(page.locator("main li a[href*='book=']").first()).toContainText("1")
 })
+
+test("Shift+Enter carries the category to the next unsorted book", async ({ page, isMobile }) => {
+  test.skip(isMobile, "keyboard shortcut")
+  await page.goto("/?unsorted=true")
+  await expect(results(page)).toBeVisible()
+  await page.locator("main li a[href*='book=']").first().click()
+  await page.getByRole("button", { name: "Bearbeiten" }).click()
+  const first = bookId(page)
+  await expect(page.getByText("Shift+Enter speichert")).toBeVisible()
+  const input = page.getByRole("combobox", { name: "Kategorie" })
+  await input.fill("Roman/Neu")
+  await input.press("Shift+Enter")
+  await expect.poll(() => bookId(page)).not.toBe(first)
+  const second = bookId(page)
+  // next book starts with the same category, Shift+Enter again goes on
+  await expect(page.getByRole("combobox", { name: "Kategorie" })).toHaveValue("Roman/Neu")
+  await page.getByRole("combobox", { name: "Kategorie" }).press("Shift+Enter")
+  await expect.poll(() => bookId(page)).not.toBe(second)
+  // a normal save ends the carry-over
+  const third = page.getByRole("combobox", { name: "Kategorie" })
+  await expect(third).toHaveValue("Roman/Neu")
+  await page.getByRole("button", { name: "Speichern" }).click()
+  await expect.poll(() => bookId(page)).not.toBe(second)
+  await expect(page.getByRole("combobox", { name: "Kategorie" })).toHaveValue("")
+  for (const id of [first, second]) {
+    const b = await page.evaluate((i) => fetch(`/api/books/${i}`).then((r) => r.json()), id)
+    expect(b.custom.kategorie).toBe("Roman.Neu")
+  }
+})

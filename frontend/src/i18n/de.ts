@@ -168,6 +168,7 @@ export const de = {
   "edit.title": "Titel",
   "edit.titleRequired": "Ohne Titel lässt sich das Buch nicht speichern.",
   "edit.comments": "Beschreibung",
+  "edit.kategorieCarry": "Shift+Enter speichert und übernimmt die Kategorie ins nächste Buch.",
   "edit.kategorieHint": "Unterkategorien mit /, z. B. Sachbuch/Geschichte",
   "kategorie.dot": "„{name}“ enthält einen Punkt. Den kann calibre in einer Kategorie nicht speichern, Unterkategorien trennt /.",
   "edit.stars": "{n} Sterne",

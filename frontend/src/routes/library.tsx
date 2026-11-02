@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { getRouteApi, useNavigate } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowLeft } from "lucide-react"
@@ -40,9 +41,12 @@ export function LibraryPage() {
 
   // "Ohne Kategorie": once a book has one, go on with the next unsorted book
   // in the list (it drops out of the refetched list), or close at the end.
+  // Shift+Enter in the category field carries the category to the next book
+  const [carry, setCarry] = useState<string | null>(null)
   const onSaved = search.unsorted
-    ? async (patch: BookPatch) => {
+    ? async (patch: BookPatch, opts: { carry: boolean }) => {
         const id = search.book
+        setCarry(opts.carry ? (patch.kategorie ?? null) : null)
         if (!patch.kategorie) return setEdit(false)
         const at = Math.max(0, data?.books.findIndex((b) => b.id === id) ?? 0)
         const fresh = await qc.fetchQuery({ ...booksQuery(query), staleTime: 0 }).catch(() => null)
@@ -59,7 +63,7 @@ export function LibraryPage() {
         <Button variant="ghost" className="mb-4 -ml-2" onClick={() => (history.length > 1 ? history.back() : closeBook())}>
           <ArrowLeft /> {t("book.back")}
         </Button>
-        <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} />
+        <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} prefillKategorie={search.unsorted ? carry : null} />
       </div>
     )
   }
@@ -98,7 +102,7 @@ export function LibraryPage() {
             <SheetTitle className="sr-only">{placeholder?.title ?? t("app.title")}</SheetTitle>
             {/* no bottom padding: the edit form's sticky bar sits flush at the bottom */}
             <div className="min-h-0 flex-1 overflow-y-auto px-6">
-              {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} />}
+              {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} prefillKategorie={search.unsorted ? carry : null} />}
             </div>
           </SheetContent>
         </Sheet>

@@ -29,19 +29,20 @@ interface DetailProps {
   edit?: boolean
   onEdit?: (on: boolean) => void
   // after saving the form; default: back to the detail
-  onSaved?: (patch: BookPatch) => void
+  onSaved?: (patch: BookPatch, opts: { carry: boolean }) => void
+  prefillKategorie?: string | null
   // after the book went to the trash
   onDeleted?: () => void
 }
 
-export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved, onDeleted }: DetailProps) {
+export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved, onDeleted, prefillKategorie }: DetailProps) {
   // list rows have everything except comments; show them right away
   const { data, error, refetch, isPlaceholderData } = useQuery({ ...bookQuery(id), placeholderData: placeholder })
   if (error && !data) return <ErrorMessage error={error} onRetry={() => refetch()} />
   if (!data) return <p className="p-8 text-muted-foreground">{t("loading")}</p>
   // the form needs the full book (comments)
   if (edit && onEdit) {
-    return isPlaceholderData ? <p className="p-8 text-muted-foreground">{t("loading")}</p> : <BookEdit key={data.id} book={data} onDone={() => onEdit(false)} onSaved={onSaved} />
+    return isPlaceholderData ? <p className="p-8 text-muted-foreground">{t("loading")}</p> : <BookEdit key={data.id} book={data} onDone={() => onEdit(false)} onSaved={onSaved} prefillKategorie={prefillKategorie} />
   }
   return <BookView book={data} onNavigate={onNavigate} onEdit={onEdit && (() => onEdit(true))} onDeleted={onDeleted} />
 }

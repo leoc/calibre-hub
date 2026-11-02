@@ -17,7 +17,8 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-9 px-4 py-2 eink:h-12 touch:h-11 eink:px-5",
-        sm: "h-8 gap-1.5 px-3 eink:h-11 touch:h-11",
+        // same height as default, inputs and selects; only narrower
+        sm: "h-9 gap-1.5 px-3 eink:h-12 touch:h-11",
         lg: "h-10 px-6 eink:h-12 touch:h-11",
         icon: "size-9 eink:size-12 touch:size-11",
       },

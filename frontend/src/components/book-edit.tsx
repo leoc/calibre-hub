@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG, type Book, type BookPatch } from "@/lib/api"
 import { categoriesQuery, configQuery } from "@/lib/queries"
 import { ConflictError, useUpdateBook } from "@/lib/mutations"
 import { changedFields, toForm, toPatch, type BookForm } from "@/lib/book-form"
-import { categorySuggestions, parseCategory } from "@/lib/kategorie"
+import { categoryLabel, categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { languageName, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
 import { cn } from "@/lib/utils"
@@ -37,13 +37,28 @@ const LABEL: Record<keyof BookForm, MessageKey> = {
 // ISO 639-2 codes calibre uses; plus whatever the library already has
 const COMMON_LANGS = ["deu", "eng", "fra", "spa", "ita", "nld", "por", "rus", "pol", "swe", "jpn"]
 
-// onSaved replaces onDone after a successful save (e.g. go on to the next book)
-export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => void; onSaved?: (patch: BookPatch) => void }) {
+// onSaved replaces onDone after a successful save (e.g. go on to the next
+// book); carry: saved with Shift+Enter in the category field, so the next
+// book should start with the same category (prefillKategorie)
+export function BookEdit({
+  book,
+  onDone,
+  onSaved,
+  prefillKategorie,
+}: {
+  book: Book
+  onDone: () => void
+  onSaved?: (patch: BookPatch, opts: { carry: boolean }) => void
+  prefillKategorie?: string | null
+}) {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const { data: cats } = useQuery(categoriesQuery)
   const [base, setBase] = useState(book)
   const original = useMemo(() => toForm(base, config.categoryColumn), [base, config.categoryColumn])
-  const [form, setForm] = useState(original)
+  const [form, setForm] = useState(() =>
+    prefillKategorie && !original.kategorie ? { ...original, kategorie: categoryLabel(prefillKategorie) } : original,
+  )
+  const carry = useRef(false)
   const [conflict, setConflict] = useState<Book | null>(null)
   const conflictRef = useRef<HTMLDivElement>(null)
   const update = useUpdateBook(book.id)
@@ -76,11 +91,12 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
 
   async function save(e?: FormEvent) {
     e?.preventDefault()
+    if (e) carry.current = false
     if (!patch) return done()
     try {
       await update.mutateAsync(patch)
       leaving.current = true
-      if (onSaved) onSaved(patch)
+      if (onSaved) onSaved(patch, { carry: carry.current })
       else onDone()
     } catch (err) {
       if (err instanceof ConflictError) {
@@ -148,13 +164,27 @@ export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => 
       </div>
 
       {config.categoryColumn && (
-        <Field label={t("book.kategorie")} as="div" hint={t("edit.kategorieHint")} error={kategorieError}>
-          <Combobox
-            aria-label={t("book.kategorie")}
-            value={form.kategorie}
-            onChange={set("kategorie")}
-            suggestions={kategorien}
-          />
+        <Field
+          label={t("book.kategorie")}
+          as="div"
+          hint={onSaved ? `${t("edit.kategorieHint")} ${t("edit.kategorieCarry")}` : t("edit.kategorieHint")}
+          error={kategorieError}
+        >
+          <div
+            // Shift+Enter: save and start the next book with this category
+            onKeyDownCapture={(e) => {
+              if (e.key === "Enter" && e.shiftKey && onSaved) {
+                e.preventDefault()
+                e.stopPropagation()
+                if (!kategorieError) {
+                  carry.current = true
+                  void save()
+                }
+              }
+            }}
+          >
+            <Combobox aria-label={t("book.kategorie")} value={form.kategorie} onChange={set("kategorie")} suggestions={kategorien} />
+          </div>
         </Field>
       )}
       <Field label={t("book.tags")} as="div">

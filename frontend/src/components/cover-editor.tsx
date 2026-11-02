@@ -87,7 +87,7 @@ export function CoverEditor({ book, onChanged }: { book: Book; onChanged?: (book
               onChange={(e) => setUrl(e.target.value)}
               placeholder={t("cover.urlPlaceholder")}
               aria-label={t("cover.fromUrl")}
-              className="h-8 text-sm"
+              className="text-sm"
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault()
@@ -123,7 +123,7 @@ export function CoverEditor({ book, onChanged }: { book: Book; onChanged?: (book
             }}
             placeholder={t("cover.searchPlaceholder")}
             aria-label={t("cover.searchPlaceholder")}
-            className="h-8 text-sm"
+            className="text-sm"
           />
           <Button type="button" variant="outline" size="icon" className="size-8" aria-label={t("cover.searchPlaceholder")} onClick={() => setSentQ(q.trim())}>
             <Search />
