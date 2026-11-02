@@ -1,5 +1,26 @@
 {
   "nodes": {
+    "bubbletea-cr": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793637934,
+        "narHash": "sha256-ws/Ae84QX9gutKujmGvfn+T9LpzFCfShKpS2D6ccnkU=",
+        "owner": "leoc",
+        "repo": "bubbletea.cr",
+        "rev": "01eae0623419705dfffc82dfe7c74b30012e2f78",
+        "type": "github"
+      },
+      "original": {
+        "owner": "leoc",
+        "ref": "v0.2.0",
+        "repo": "bubbletea.cr",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1793410479,
@@ -18,6 +39,7 @@
     },
     "root": {
       "inputs": {
+        "bubbletea-cr": "bubbletea-cr",
         "nixpkgs": "nixpkgs"
       }
     }

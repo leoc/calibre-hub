@@ -1,7 +1,7 @@
 # NixOS VM test: calibre-server + calibre-hub from the module, an empty
 # library, one book added through calibre-server. Also the smoke test against
 # the calibre version of the pinned nixpkgs.
-{ pkgs, module }:
+{ pkgs, module, package }:
 pkgs.testers.runNixOSTest {
   name = "calibre-hub";
 
@@ -88,7 +88,7 @@ pkgs.testers.runNixOSTest {
       specialisation.hub-update.configuration.services.calibre-hub.package = lib.mkForce (
         pkgs.symlinkJoin {
           name = "calibre-hub-update";
-          paths = [ (pkgs.callPackage ./package.nix { }) ];
+          paths = [ package ];
           meta.mainProgram = "calibre-hub";
         }
       );

@@ -4,6 +4,10 @@ shards:
     git: https://github.com/sija/backtracer.cr.git
     version: 1.2.4
 
+  bubbletea:
+    git: https://github.com/leoc/bubbletea.cr.git
+    version: 0.2.0
+
   db:
     git: https://github.com/crystal-lang/crystal-db.git
     version: 0.15.0

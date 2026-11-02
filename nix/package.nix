@@ -3,6 +3,9 @@
   crystal,
   sqlite,
   installShellFiles,
+  # bubbletea.cr (shard source) and its Go library, from the flake input
+  bubbletea-src,
+  libbubbletea-go,
 }:
 crystal.buildCrystalPackage {
   pname = "calibre-hub";
@@ -18,7 +21,13 @@ crystal.buildCrystalPackage {
     ];
   };
 
+  # shards.nix has the shards from git URLs; bubbletea comes from the flake
+  # input, which also builds its Go library (linked with an rpath)
   shardsFile = ../shards.nix;
+  postConfigure = ''
+    ln -s ${bubbletea-src} lib/bubbletea
+  '';
+  env.BUBBLETEA_LIB_DIR = "${libbubbletea-go}/lib";
   format = "shards";
   buildInputs = [ sqlite ];
   nativeBuildInputs = [ installShellFiles ];
