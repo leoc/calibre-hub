@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Book, BookPatch, BulkChanges, BulkTarget, Job } from "@/lib/api"
+import type { Book, BookPatch, BulkChanges, BulkTarget, Job, TrashEntry } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 
@@ -66,6 +66,15 @@ function applyPatch(b: Book, patch: BookPatch) {
   touch(b)
 }
 
+// calibre's trash: deleted books with the id they had; restoring adds them
+// again under a new id, like the hub does
+const trash: { entry: TrashEntry; book: Book }[] = []
+
+function moveToTrash(b: Book) {
+  books.splice(books.indexOf(b), 1)
+  trash.unshift({ entry: { id: b.id, title: b.title, authors: b.authors, formats: b.formats, deletedAt: new Date().toISOString() }, book: b })
+}
+
 const jobs = new Map<string, Job>()
 const retried = new Set<number>()
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -129,6 +138,24 @@ export const writeHandlers = [
     if (patch.lastModified && patch.lastModified !== b.lastModified) return HttpResponse.json({ error: "changed elsewhere", book: b }, { status: 409 })
     applyPatch(b, patch)
     return HttpResponse.json(b)
+  }),
+  http.delete("/api/books/:id", async ({ params }) => {
+    const b = books.find((x) => x.id === Number(params.id))
+    if (!b) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    await delay(200)
+    moveToTrash(b)
+    return HttpResponse.json({ book: b })
+  }),
+  http.get("/api/trash", () => HttpResponse.json(trash.map((t) => t.entry))),
+  http.post("/api/trash/:id/restore", async ({ params }) => {
+    const i = trash.findIndex((t) => t.entry.id === Number(params.id))
+    if (i < 0) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    await delay(300)
+    const [{ book }] = trash.splice(i, 1)
+    const restored = { ...book, id: Math.max(...books.map((x) => x.id), ...trash.map((t) => t.entry.id), book.id) + 1 }
+    touch(restored)
+    books.push(restored)
+    return HttpResponse.json({ book: restored })
   }),
   http.post("/api/books", async ({ request }) => {
     const form = await request.formData()
@@ -206,7 +233,8 @@ export const writeHandlers = [
         if ("query" in target && b.id % 97 === 0 && !retried.has(b.id)) {
           retried.add(b.id)
           job.errors.push({ bookId: b.id, error: "calibre-server: Connection refused" })
-        } else {
+        } else if (changes.delete) moveToTrash(b)
+        else {
           applyPatch(b, patch)
           if (numberSeries) b.seriesIndex = i + 1
         }

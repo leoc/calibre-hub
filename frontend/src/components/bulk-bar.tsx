@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, Loader2, X } from "lucide-react"
+import { CheckCircle2, Loader2, Trash2, X } from "lucide-react"
 import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget } from "@/lib/api"
 import { categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { categoriesQuery, configQuery } from "@/lib/queries"
@@ -8,10 +8,10 @@ import { toBookQuery, type LibrarySearch } from "@/lib/search"
 import { selection, useSelection } from "@/lib/selection"
 import { formatNumber, t } from "@/i18n"
 import { Button } from "./ui/button"
-import { Dialog, DialogContent, DialogTitle } from "./ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog"
 import { ChipsInput, Combobox } from "./ui/suggest"
 
-type Action = "addTags" | "removeTags" | "kategorie" | "series"
+type Action = "addTags" | "removeTags" | "kategorie" | "series" | "delete"
 interface StartedJob {
   id: string
   total: number
@@ -65,6 +65,9 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
               {t(`bulk.${a}`)}
             </Button>
           ))}
+          <Button variant="outline" size="sm" disabled={!count} onClick={() => setAction("delete")}>
+            <Trash2 /> {t("bulk.delete")}
+          </Button>
         </>
       )}
       <Button variant="ghost" size="icon" onClick={selection.stop} aria-label={t("bulk.stop")} title={t("bulk.stop")}>
@@ -106,7 +109,9 @@ function BulkDialog({
   const kategorieError = action === "kategorie" && "error" in kategorie ? t("kategorie.dot", { name: kategorie.error }) : null
   const series = text.trim() || null
   const changes: BulkChanges =
-    action === "addTags"
+    action === "delete"
+      ? { delete: true }
+      : action === "addTags"
       ? { addTags: tags }
       : action === "removeTags"
         ? { removeTags: tags }
@@ -116,16 +121,19 @@ function BulkDialog({
   const empty = (action === "addTags" || action === "removeTags") && !tags.length
   const submit = () => {
     if (kategorieError) return
-    if (count > CONFIRM_ABOVE && !confirming) return setConfirming(true)
+    // deleting asks in the dialog itself
+    if (action !== "delete" && count > CONFIRM_ABOVE && !confirming) return setConfirming(true)
     start.mutate(changes)
   }
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent aria-describedby={undefined}>
+      <DialogContent {...(action === "delete" ? {} : { "aria-describedby": undefined })}>
         <DialogTitle className="text-lg font-semibold">
           {t(`bulk.${action}`)} · {t("bulk.selected", { count: formatNumber(count) })}
         </DialogTitle>
-        {action === "addTags" || action === "removeTags" ? (
+        {action === "delete" ? (
+          <DialogDescription>{t("bulk.deleteText")}</DialogDescription>
+        ) : action === "addTags" || action === "removeTags" ? (
           <ChipsInput aria-label={t("book.tags")} value={tags} onChange={setTags} suggestions={cats?.tags ?? []} allowNew={action === "addTags"} />
         ) : (
           <>
@@ -166,8 +174,12 @@ function BulkDialog({
           <Button variant="outline" onClick={onClose}>
             {t("edit.cancel")}
           </Button>
-          <Button onClick={submit} disabled={empty || !!kategorieError || start.isPending} variant={confirming ? "default" : "default"}>
-            {confirming ? t("bulk.confirm", { count: formatNumber(count) }) : t("bulk.apply")}
+          <Button onClick={submit} disabled={empty || !!kategorieError || start.isPending} variant={action === "delete" ? "destructive" : "default"}>
+            {action === "delete"
+              ? t("bulk.deleteConfirm", { count: formatNumber(count) })
+              : confirming
+                ? t("bulk.confirm", { count: formatNumber(count) })
+                : t("bulk.apply")}
           </Button>
         </div>
       </DialogContent>
@@ -184,13 +196,19 @@ function JobProgress({ job, onClose, onRestart }: { job: StartedJob; onClose: ()
     retry: false,
   })
   const finished = data && data.status !== "running"
+  const deleting = !!job.changes.delete
   useEffect(() => {
     if (finished) {
       qc.invalidateQueries({ queryKey: ["books"] })
       qc.invalidateQueries({ queryKey: ["book"] })
       qc.invalidateQueries({ queryKey: ["categories"] })
+      if (deleting) {
+        qc.invalidateQueries({ queryKey: ["trash"] })
+        // the selected books are gone
+        selection.clear()
+      }
     }
-  }, [finished, qc])
+  }, [finished, deleting, qc])
   // 404: the hub restarted and forgot the job
   const lost = error instanceof ApiError && error.status === 404
   const failed = finished ? data.errors : []
@@ -207,7 +225,9 @@ function JobProgress({ job, onClose, onRestart }: { job: StartedJob; onClose: ()
       {lost
         ? t("bulk.lost")
         : finished
-          ? t("bulk.done", { done: formatNumber(data.done), errors: data.errors.length })
+          ? deleting
+            ? t("bulk.deleted", { done: formatNumber(data.done - data.errors.length), errors: data.errors.length })
+            : t("bulk.done", { done: formatNumber(data.done), errors: data.errors.length })
           : t("bulk.progress", { done: formatNumber(data?.done ?? 0), total: formatNumber(data?.total ?? job.total) })}
       {failed.length > 0 && (
         <details className="relative">

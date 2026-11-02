@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { ArrowDownUp, Bookmark, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Tag, User } from "lucide-react"
+import { ArrowDownUp, Bookmark, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, LogOut, Search, Tag, Trash2, User } from "lucide-react"
 import { api, coverUrl, DEFAULT_CONFIG, SORTS, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { useToggleTag } from "@/lib/mutations"
@@ -88,6 +88,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const actions: Action[] = useMemo(
     () => [
       { id: "all", label: t("nav.all"), icon: <LibraryBig />, run: () => go({}) },
+      { id: "trash", label: t("trash.title"), icon: <Trash2 />, run: () => (close(), navigate({ to: "/trash" })) },
       { id: "grid", label: t("view.grid"), icon: <LayoutGrid />, run: () => (setView("grid"), close()) },
       { id: "list", label: t("view.list"), icon: <List />, run: () => (setView("list"), close()) },
       ...THEMES.map((th) => ({ id: `theme-${th}`, label: `${t("theme.label")}: ${t(`theme.${th}`)}`, icon: <Palette />, run: () => (setTheme(th), close()) })),

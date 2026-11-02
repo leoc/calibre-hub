@@ -60,3 +60,32 @@ export function useToggleTag() {
     },
   })
 }
+
+// Library views that change when books come or go
+export function invalidateLibrary(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ["books"] })
+  qc.invalidateQueries({ queryKey: ["categories"] })
+  qc.invalidateQueries({ queryKey: ["trash"] })
+}
+
+export function useDeleteBook() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => write.deleteBook(id),
+    onSuccess: (_r, id) => {
+      qc.removeQueries({ queryKey: ["book", id] })
+      invalidateLibrary(qc)
+    },
+  })
+}
+
+export function useRestoreBook() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (trashId: number) => write.restore(trashId),
+    onSuccess: ({ book }) => {
+      storeBook(qc, book)
+      invalidateLibrary(qc)
+    },
+  })
+}

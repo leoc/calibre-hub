@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Bookmark, Inbox, Library } from "lucide-react"
+import { Link } from "@tanstack/react-router"
+import { Bookmark, Inbox, Library, Trash2 } from "lucide-react"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
 import { hasFilters, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
@@ -94,7 +95,12 @@ export function Sidebar({ search, onNavigate }: Props) {
         </>
       )}
 
-      <div className="mt-auto pt-2">
+      <div className="mt-auto space-y-2 pt-2">
+        <Link to="/trash" onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+          <span className="flex items-center gap-2">
+            <Trash2 className="size-4" aria-hidden /> {t("trash.title")}
+          </span>
+        </Link>
         <ThemeSwitch />
       </div>
     </nav>

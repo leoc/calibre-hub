@@ -18,7 +18,7 @@ export function BookPage() {
       <LibraryLink search={{}} className={buttonVariants({ variant: "ghost", className: "mb-4 -ml-2" })}>
         <ArrowLeft /> {t("book.back")}
       </LibraryLink>
-      <BookDetail id={id} edit={edit} onEdit={setEdit} />
+      <BookDetail id={id} edit={edit} onEdit={setEdit} onDeleted={() => navigate({ to: "/", replace: true })} />
     </div>
   )
 }

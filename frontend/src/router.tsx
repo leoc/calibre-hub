@@ -8,6 +8,7 @@ import { AppShell } from "./components/app-shell"
 import { LoginPage } from "./routes/login"
 import { LibraryPage } from "./routes/library"
 import { BookPage } from "./routes/book"
+import { TrashPage } from "./routes/trash"
 import { ErrorView } from "./components/error-view"
 import { parseSearch, stringifySearch } from "./lib/url-search"
 
@@ -58,7 +59,13 @@ const bookRoute = createRoute({
   component: BookPage,
 })
 
-const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([libraryRoute, bookRoute])])
+const trashRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/trash",
+  component: TrashPage,
+})
+
+const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([libraryRoute, bookRoute, trashRoute])])
 
 export function makeRouter(queryClient: QueryClient) {
   return createRouter({

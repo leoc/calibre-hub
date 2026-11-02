@@ -12,6 +12,7 @@ import { ErrorMessage } from "./error-view"
 import { Button, buttonVariants } from "./ui/button"
 import { BookEdit } from "./book-edit"
 import { FastTagButtons } from "./fast-tags"
+import { DeleteBookButton } from "./delete-book"
 import { Badge } from "./ui/badge"
 import { LibraryLink } from "@/components/library-link"
 
@@ -28,9 +29,11 @@ interface DetailProps {
   onEdit?: (on: boolean) => void
   // after saving the form; default: back to the detail
   onSaved?: (patch: BookPatch) => void
+  // after the book went to the trash
+  onDeleted?: () => void
 }
 
-export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved }: DetailProps) {
+export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved, onDeleted }: DetailProps) {
   // list rows have everything except comments; show them right away
   const { data, error, refetch, isPlaceholderData } = useQuery({ ...bookQuery(id), placeholderData: placeholder })
   if (error && !data) return <ErrorMessage error={error} onRetry={() => refetch()} />
@@ -39,10 +42,10 @@ export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved 
   if (edit && onEdit) {
     return isPlaceholderData ? <p className="p-8 text-muted-foreground">{t("loading")}</p> : <BookEdit key={data.id} book={data} onDone={() => onEdit(false)} onSaved={onSaved} />
   }
-  return <BookView book={data} onNavigate={onNavigate} onEdit={onEdit && (() => onEdit(true))} />
+  return <BookView book={data} onNavigate={onNavigate} onEdit={onEdit && (() => onEdit(true))} onDeleted={onDeleted} />
 }
 
-function BookView({ book, onNavigate, onEdit }: { book: Book; onNavigate?: () => void; onEdit?: () => void }) {
+function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavigate?: () => void; onEdit?: () => void; onDeleted?: () => void }) {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const kategorie = categoryOf(book, config.categoryColumn)
   const formats = sortFormats(book.formats)
@@ -79,6 +82,7 @@ function BookView({ book, onNavigate, onEdit }: { book: Book; onNavigate?: () =>
               </Button>
             )}
             <FastTagButtons book={book} />
+            {onDeleted && <DeleteBookButton book={book} onDeleted={onDeleted} />}
           </div>
           <div className="flex flex-wrap gap-2">
             {formats.length === 0 && <p className="text-muted-foreground">{t("book.noFormats")}</p>}

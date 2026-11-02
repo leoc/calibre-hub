@@ -34,3 +34,9 @@ export const bookQuery = (id: number) =>
     queryFn: () => api.book(id),
     staleTime: 60_000,
   })
+
+export const trashQuery = queryOptions({
+  queryKey: ["trash"],
+  queryFn: api.trash,
+  staleTime: 0,
+})

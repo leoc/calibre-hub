@@ -35,6 +35,7 @@ export function LibraryPage() {
   const pages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
   const closeBook = () => navigate({ to: "/", search: { ...search, book: undefined, edit: undefined } })
   const setEdit = (on: boolean) => navigate({ to: "/", search: { ...search, edit: on || undefined }, replace: !on })
+  const deleted = () => navigate({ to: "/", search: { ...search, book: undefined, edit: undefined }, replace: true })
   const placeholder = data?.books.find((b) => b.id === search.book)
 
   // "Ohne Kategorie": once a book has one, go on with the next unsorted book
@@ -58,7 +59,7 @@ export function LibraryPage() {
         <Button variant="ghost" className="mb-4 -ml-2" onClick={() => (history.length > 1 ? history.back() : closeBook())}>
           <ArrowLeft /> {t("book.back")}
         </Button>
-        <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} />
+        <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} />
       </div>
     )
   }
@@ -94,7 +95,7 @@ export function LibraryPage() {
         <Sheet open={search.book != null} onOpenChange={(o) => !o && closeBook()}>
           <SheetContent side="right" className="overflow-y-auto p-6 sm:max-w-2xl" aria-describedby={undefined}>
             <SheetTitle className="sr-only">{placeholder?.title ?? t("app.title")}</SheetTitle>
-            {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} />}
+            {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} onDeleted={deleted} />}
           </SheetContent>
         </Sheet>
       )}

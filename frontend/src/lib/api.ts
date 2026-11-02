@@ -108,6 +108,7 @@ export const api = {
   books: (query: BookQuery) => request<BookPage>(`/api/books?${bookSearchParams(query)}`),
   book: (id: number) => request<Book>(`/api/books/${id}`),
   categories: () => request<Categories>("/api/categories"),
+  trash: () => request<TrashEntry[]>("/api/trash"),
   // not every hub has /api/config yet (#8391); fall back to the defaults
   config: () =>
     request<HubConfig>("/api/config").catch((e) => {
@@ -142,6 +143,17 @@ export interface BulkChanges {
   series?: string | null
   // with series and an ids target: volumes 1..n in the order of the ids
   numberSeries?: boolean
+  // moves the books to the trash; only on its own
+  delete?: true
+}
+
+// A book in calibre's trash. id is the id it had; a restored book gets a new one.
+export interface TrashEntry {
+  id: number
+  title: string
+  authors: string[]
+  formats: string[]
+  deletedAt: string
 }
 
 export type BulkTarget = { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }
@@ -173,6 +185,9 @@ const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
 export const write = {
   patchBook: (id: number, patch: BookPatch) => request<Book>(`/api/books/${id}`, { method: "PATCH", ...json(patch) }),
+  // into calibre's trash; returns the book as it was
+  deleteBook: (id: number) => request<{ book: Book }>(`/api/books/${id}`, { method: "DELETE" }),
+  restore: (trashId: number) => request<{ book: Book }>(`/api/trash/${trashId}/restore`, { method: "POST" }),
   bulk: (target: BulkTarget, changes: BulkChanges) =>
     request<{ jobId: string; total: number }>("/api/books/bulk", { method: "POST", ...json({ target, changes }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
