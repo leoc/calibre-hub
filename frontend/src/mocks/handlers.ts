@@ -134,10 +134,10 @@ export const writeHandlers = [
       const b = books.find((x) => x.id === Number(target))!
       b.formats = [...new Set([...b.formats, ext])]
       touch(b)
-      return HttpResponse.json({ book: b }, { status: 201 })
+      return HttpResponse.json({ book: b }, { status: 200 })
     }
     const dups = books.filter((b) => b.title.toLowerCase() === title.toLowerCase())
-    if (dups.length && form.get("force") !== "1") return HttpResponse.json({ error: "duplicate", duplicates: dups }, { status: 409 })
+    if (dups.length && form.get("force") !== "1") return HttpResponse.json({ error: "duplicate", duplicates: dups, titles: dups.map((d) => `${d.title} (${d.authors.join(" & ")})`) }, { status: 409 })
     const now = new Date().toISOString()
     const b: Book = {
       id: Math.max(...books.map((x) => x.id)) + 1, title, authors: ["Unbekannt"], authorSort: "Unbekannt", tags: form.getAll("tags") as string[],

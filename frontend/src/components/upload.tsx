@@ -254,7 +254,11 @@ function Row({ item }: { item: UploadItem }) {
               )
             })
           ) : (
-            <p className="text-xs text-muted-foreground eink:text-black">{item.file.name}</p>
+            <ul className="text-xs text-muted-foreground eink:text-black">
+              {(item.duplicateTitles?.length ? item.duplicateTitles : [item.file.name]).map((title) => (
+                <li key={title}>{title}</li>
+              ))}
+            </ul>
           )}
           <Button size="sm" onClick={() => retryUpload(item.id, { force: true })} className={cn(item.duplicates?.length ? "" : "")}>
             {t("upload.force")}

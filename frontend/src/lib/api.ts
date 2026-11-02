@@ -165,7 +165,7 @@ export interface UploadOptions {
   addFormatTo?: number
 }
 
-export type UploadResult = { status: "added"; book: Book } | { status: "duplicate"; duplicates: Book[] }
+export type UploadResult = { status: "added"; book: Book } | { status: "duplicate"; duplicates: Book[]; titles: string[] }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
@@ -206,7 +206,7 @@ export function uploadBook(file: File, opts: UploadOptions, onProgress: (fractio
         }
       })()
       if (xhr.status === 201 || xhr.status === 200) resolve({ status: "added", book: body.book })
-      else if (xhr.status === 409 && body?.duplicates) resolve({ status: "duplicate", duplicates: body.duplicates })
+      else if (xhr.status === 409 && body?.error === "duplicate") resolve({ status: "duplicate", duplicates: body.duplicates ?? [], titles: body.titles ?? [] })
       else reject(new ApiError(xhr.status, body?.error ?? xhr.statusText))
     }
     signal?.addEventListener("abort", () => xhr.abort())

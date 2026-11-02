@@ -13,6 +13,8 @@ export interface UploadItem {
   progress: number
   book?: Book
   duplicates?: Book[]
+  // calibre's "Title (Author)" when the hub could not resolve the books
+  duplicateTitles?: string[]
   error?: string
 }
 
@@ -49,7 +51,7 @@ async function run(item: UploadItem) {
       queryClient?.invalidateQueries({ queryKey: ["books"] })
       queryClient?.invalidateQueries({ queryKey: ["categories"] })
       if (item.opts.addFormatTo != null) queryClient?.invalidateQueries({ queryKey: ["book", item.opts.addFormatTo] })
-    } else update(item.id, { status: "duplicate", duplicates: res.duplicates })
+    } else update(item.id, { status: "duplicate", duplicates: res.duplicates, duplicateTitles: res.titles })
   } catch (e) {
     const msg = e instanceof ApiError && e.status === 413 ? "zu groß" : e instanceof ApiError && e.status === 415 ? "Format nicht unterstützt" : e instanceof Error ? e.message : String(e)
     update(item.id, { status: "error", error: msg })
