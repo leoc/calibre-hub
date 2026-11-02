@@ -60,6 +60,7 @@ function applyPatch(b: Book, patch: BookPatch) {
 }
 
 const jobs = new Map<string, Job>()
+const retried = new Set<number>()
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // covers set through the cover endpoints (object URLs are not reachable from the worker, so keep bytes)
 const customCovers = new Map<number, { body: ArrayBuffer; type: string }>()
@@ -180,6 +181,10 @@ export const writeHandlers = [
   }),
   http.post("/api/books/bulk", async ({ request }) => {
     const { target, changes } = (await request.json()) as { target: BulkTarget; changes: BulkChanges }
+    if ("query" in target) {
+      const bad = Object.keys(target.query).find((k) => ["offset", "limit", "sort", "order"].includes(k))
+      if (bad) return HttpResponse.json({ error: "not allowed in bulk query", field: bad }, { status: 400 })
+    }
     const list = "ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query))
     const jobId = Math.random().toString(36).slice(2)
     const job: Job = { status: "running", done: 0, total: list.length, errors: [] }
@@ -187,10 +192,14 @@ export const writeHandlers = [
     ;(async () => {
       for (const b of list) {
         await delay(15)
-        applyPatch(b, changes)
+        // in query jobs, books with id divisible by 97 fail once (error path)
+        if ("query" in target && b.id % 97 === 0 && !retried.has(b.id)) {
+          retried.add(b.id)
+          job.errors.push({ bookId: b.id, error: "calibre-server: Connection refused" })
+        } else applyPatch(b, changes)
         job.done++
       }
-      job.status = "done"
+      job.status = job.errors.length === list.length ? "failed" : "done"
     })()
     return HttpResponse.json({ jobId, total: list.length }, { status: 202 })
   }),

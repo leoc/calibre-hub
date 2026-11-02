@@ -128,6 +128,8 @@ export const de = {
   "bulk.confirm": "Ja, {count} Bücher ändern",
   "bulk.progress": "{done} von {total} …",
   "bulk.done": "{done} geändert, {errors} Fehler",
+  "bulk.showErrors": "Fehler anzeigen",
+  "bulk.retry": "{count} erneut versuchen",
   "bulk.lost": "Status unbekannt (Hub neu gestartet)",
   "theme.label": "Darstellung",
   "theme.system": "System",

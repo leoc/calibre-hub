@@ -12,12 +12,17 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog"
 import { ChipsInput, Combobox } from "./ui/suggest"
 
 type Action = "addTags" | "removeTags" | "kategorie" | "series"
+interface StartedJob {
+  id: string
+  total: number
+  changes: BulkChanges
+}
 const CONFIRM_ABOVE = 50
 
 export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pageIds: number[]; total: number }) {
   const sel = useSelection()
   const [action, setAction] = useState<Action | null>(null)
-  const [job, setJob] = useState<{ id: string; total: number } | null>(null)
+  const [job, setJob] = useState<StartedJob | null>(null)
   const count = sel.all ? total : sel.ids.size
   // "all matches" belongs to one search
   const key = JSON.stringify({ ...search, page: undefined, book: undefined, edit: undefined })
@@ -27,7 +32,8 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   }, [key])
 
   const { page: _p, book: _b, edit: _e, ...filters } = search
-  const { offset: _o, limit: _l, ...query } = toBookQuery(filters)
+  // the bulk query takes filters only, no paging or sorting
+  const { offset: _o, limit: _l, sort: _s, order: _r, ...query } = toBookQuery(filters)
   const target: BulkTarget = sel.all ? { query } : { ids: [...sel.ids] }
 
   return (
@@ -48,7 +54,7 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
       )}
       <span className="flex-1" />
       {job ? (
-        <JobProgress job={job} onClose={() => setJob(null)} />
+        <JobProgress job={job} onClose={() => setJob(null)} onRestart={setJob} />
       ) : (
         <>
           {(["addTags", "removeTags", "kategorie", "series"] as Action[]).map((a) => (
@@ -77,7 +83,7 @@ function BulkDialog({
   count: number
   target: BulkTarget
   onClose: () => void
-  onStarted: (job: { id: string; total: number }) => void
+  onStarted: (job: StartedJob) => void
 }) {
   const { data: cats } = useQuery(categoriesQuery)
   const [tags, setTags] = useState<string[]>([])
@@ -85,8 +91,8 @@ function BulkDialog({
   const [confirming, setConfirming] = useState(false)
   const start = useMutation({
     mutationFn: (changes: BulkChanges) => write.bulk(target, changes),
-    onSuccess: (r) => {
-      onStarted({ id: r.jobId, total: r.total })
+    onSuccess: (r, changes) => {
+      onStarted({ id: r.jobId, total: r.total, changes })
       onClose()
     },
   })
@@ -140,7 +146,7 @@ function BulkDialog({
   )
 }
 
-function JobProgress({ job, onClose }: { job: { id: string; total: number }; onClose: () => void }) {
+function JobProgress({ job, onClose, onRestart }: { job: StartedJob; onClose: () => void; onRestart: (job: StartedJob) => void }) {
   const qc = useQueryClient()
   const { data, error } = useQuery({
     queryKey: ["job", job.id],
@@ -158,6 +164,12 @@ function JobProgress({ job, onClose }: { job: { id: string; total: number }; onC
   }, [finished, qc])
   // 404: the hub restarted and forgot the job
   const lost = error instanceof ApiError && error.status === 404
+  const failed = finished ? data.errors : []
+  // e.g. calibre-server restarted mid-job: run the same change on the failed books
+  const retry = useMutation({
+    mutationFn: () => write.bulk({ ids: failed.map((e) => e.bookId) }, job.changes),
+    onSuccess: (r) => onRestart({ id: r.jobId, total: r.total, changes: job.changes }),
+  })
   return (
     <span className="flex items-center gap-2 text-sm" role="status">
       {finished || lost ? <CheckCircle2 className="size-4" /> : <Loader2 className="size-4 animate-spin" />}
@@ -166,6 +178,23 @@ function JobProgress({ job, onClose }: { job: { id: string; total: number }; onC
         : finished
           ? t("bulk.done", { done: formatNumber(data.done), errors: data.errors.length })
           : t("bulk.progress", { done: formatNumber(data?.done ?? 0), total: formatNumber(data?.total ?? job.total) })}
+      {failed.length > 0 && (
+        <details className="relative">
+          <summary className="cursor-pointer text-sm underline">{t("bulk.showErrors")}</summary>
+          <ul className="absolute right-0 bottom-full mb-2 max-h-60 w-80 overflow-y-auto rounded-md border bg-popover p-2 text-xs shadow-md eink:border-2">
+            {failed.map((e) => (
+              <li key={e.bookId}>
+                #{e.bookId}: {e.error}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {failed.length > 0 && (
+        <Button variant="outline" size="sm" onClick={() => retry.mutate()} disabled={retry.isPending}>
+          {t("bulk.retry", { count: failed.length })}
+        </Button>
+      )}
       {(finished || lost) && (
         <Button variant="ghost" size="sm" onClick={onClose}>
           OK

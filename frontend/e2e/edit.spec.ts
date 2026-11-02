@@ -57,3 +57,17 @@ test("bulk: add a tag to the whole page", async ({ page, isMobile }) => {
   await expect(page).toHaveURL(/tag=bulk-test/)
   await expect(page.getByText(/^\d+ Bücher$/)).toHaveText("20 Bücher")
 })
+
+test("bulk on all matches, with a retry for failed books", async ({ page, isMobile }) => {
+  test.skip(isMobile, "same flow on desktop is enough")
+  await page.goto("/")
+  await page.getByRole("button", { name: "Auswählen" }).click()
+  await page.getByRole("button", { name: /^Alle .* Treffer$/ }).click()
+  await page.getByRole("button", { name: "Kategorie setzen" }).click()
+  await page.getByRole("combobox", { name: "Kategorie" }).fill("Neu › Sortiert")
+  await page.getByRole("button", { name: "Anwenden" }).click()
+  await page.getByRole("button", { name: /Bücher ändern/ }).click()
+  await expect(page.getByText(/geändert, 4 Fehler/)).toBeVisible({ timeout: 20_000 })
+  await page.getByRole("button", { name: "4 erneut versuchen" }).click()
+  await expect(page.getByText(/4 geändert, 0 Fehler/)).toBeVisible({ timeout: 10_000 })
+})
