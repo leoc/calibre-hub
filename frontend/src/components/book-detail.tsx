@@ -21,7 +21,6 @@ import { LibraryLink } from "@/components/library-link"
 import { ReadButton } from "./reading"
 import { OfflineButton } from "./offline"
 import { readerFormat, sortFormats } from "@/lib/reader"
-import { readerFormat } from "@/lib/reader"
 import { useIsAdmin } from "@/lib/session"
 
 export { sortFormats } from "@/lib/reader"
