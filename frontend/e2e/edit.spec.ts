@@ -71,3 +71,17 @@ test("bulk on all matches, with a retry for failed books", async ({ page, isMobi
   await page.getByRole("button", { name: "4 erneut versuchen" }).click()
   await expect(page.getByText(/4 geändert, 0 Fehler/)).toBeVisible({ timeout: 10_000 })
 })
+
+test("cover: from URL and online search", async ({ page }) => {
+  await page.goto("/books/7?edit=true")
+  await page.getByRole("button", { name: "Cover ändern" }).click()
+  await page.getByRole("button", { name: "Online suchen" }).click()
+  await expect(page.getByText(/Open Library/).first()).toBeVisible()
+  await page.getByRole("textbox", { name: "Von URL" }).fill("https://example.org/c.jpg")
+  await page.keyboard.press("Enter")
+  await expect(page.getByText("Cover konnte nicht gesetzt werden")).toHaveCount(0)
+  // saving the form afterwards must not report a conflict: the cover bumped lastModified
+  await page.getByRole("textbox", { name: "Titel", exact: true }).fill("Nach Coverwechsel")
+  await page.getByRole("button", { name: "Speichern" }).click()
+  await expect(page.locator("h1")).toHaveText("Nach Coverwechsel")
+})

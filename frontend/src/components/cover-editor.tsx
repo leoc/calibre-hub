@@ -11,22 +11,25 @@ import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 
 // Cover changes apply right away (not part of the form's save).
-export function CoverEditor({ book }: { book: Book }) {
+export function CoverEditor({ book, onChanged }: { book: Book; onChanged?: (book: Book) => void }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [url, setUrl] = useState("")
   const [searching, setSearching] = useState(false)
+  const [q, setQ] = useState("")
+  const [sentQ, setSentQ] = useState("")
   const [over, setOver] = useState(false)
   const apply = useMutation({
     mutationFn: (fn: () => Promise<Book>) => fn(),
     onSuccess: (b) => {
       storeBook(qc, b)
+      onChanged?.(b)
       setUrl("")
     },
   })
   const hits = useQuery({
-    queryKey: ["coverSearch", book.id],
-    queryFn: () => write.coverSearch(book.id),
+    queryKey: ["coverSearch", book.id, sentQ],
+    queryFn: () => write.coverSearch(book.id, sentQ || undefined),
     enabled: searching,
     staleTime: Infinity,
   })
@@ -104,6 +107,27 @@ export function CoverEditor({ book }: { book: Book }) {
               {t("cover.error")}: {apply.error.message}
             </p>
           )}
+        </div>
+      )}
+      {searching && (
+        // no nested <form>: this sits inside the edit form
+        <div className="flex gap-1">
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                setSentQ(q.trim())
+              }
+            }}
+            placeholder={t("cover.searchPlaceholder")}
+            aria-label={t("cover.searchPlaceholder")}
+            className="h-8 text-sm"
+          />
+          <Button type="button" variant="outline" size="icon" aria-label={t("cover.searchPlaceholder")} onClick={() => setSentQ(q.trim())}>
+            <Search />
+          </Button>
         </div>
       )}
       {searching && hits.data && (

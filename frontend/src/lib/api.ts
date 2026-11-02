@@ -179,7 +179,9 @@ export const write = {
   coverFromFile: (id: number, format?: string) =>
     request<Book>(`/api/books/${id}/cover/from-file`, { method: "POST", ...json({ format }) }),
   coverFromUrl: (id: number, url: string) => request<Book>(`/api/books/${id}/cover/from-url`, { method: "POST", ...json({ url }) }),
-  coverSearch: (id: number) => request<CoverHit[]>(`/api/books/${id}/cover/search`),
+  // q overrides the default (title, first author, ISBN)
+  coverSearch: (id: number, q?: string) =>
+    request<CoverHit[]>(`/api/books/${id}/cover/search${q ? `?${new URLSearchParams({ q })}` : ""}`),
 }
 
 // XHR instead of fetch for upload progress.

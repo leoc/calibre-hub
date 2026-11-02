@@ -93,6 +93,7 @@ export const de = {
   "cover.urlPlaceholder": "https://…/cover.jpg",
   "cover.apply": "Übernehmen",
   "cover.search": "Online suchen",
+  "cover.searchPlaceholder": "Anderer Suchbegriff …",
   "cover.searching": "Sucht …",
   "cover.noHits": "Keine Cover gefunden.",
   "cover.error": "Cover konnte nicht gesetzt werden",

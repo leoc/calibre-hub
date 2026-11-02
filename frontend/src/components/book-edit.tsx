@@ -101,7 +101,8 @@ export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
         />
       )}
       <div className="flex flex-col gap-5 sm:flex-row">
-        <CoverEditor book={base} />
+        {/* a new cover bumps lastModified; keep the form's precondition in step */}
+        <CoverEditor book={base} onChanged={(b) => setBase((prev) => ({ ...prev, lastModified: b.lastModified }))} />
         <div className="min-w-0 flex-1 space-y-4">
           <Field label={t("edit.title")}>
             <Input value={form.title} onChange={(e) => set("title")(e.target.value)} required aria-invalid={!form.title.trim()} />
