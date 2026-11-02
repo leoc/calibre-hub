@@ -208,7 +208,10 @@ module CalibreHub
         t = t.gsub('_', ' ')
         t = t.gsub('.', ' ') if !t.includes?(' ') && t.count('.') >= 2 && !t.matches?(/\A(?:\p{L}\.)+\z/)
         JUNK.each { |j| t = t.gsub(j, "") }
-        t.gsub(/\s+/, " ").strip.strip("-–_.,;: ").strip
+        t = t.gsub(/\s+/, " ").strip.strip("-–_,;: ").strip
+        # a trailing dot goes, unless it ends an initial ("Ursula K.")
+        t = t.rstrip('.').rstrip unless t.matches?(/(?:\A|\s)\p{L}\.\z/)
+        t
       end
 
       def self.junk?(s : String) : Bool
@@ -224,6 +227,8 @@ module CalibreHub
 
       def self.fix_title_case(s : String) : String
         return s unless broken_case?(s)
+        # one word in caps is an acronym ("GAMP 5"), not a shouted title
+        return s if s.split(' ').count { |w| w.chars.any?(&.letter?) } < 2
         words = s.downcase.split(' ')
         words.map_with_index do |w, i|
           if w.matches?(ROMAN) && i > 0
@@ -238,10 +243,19 @@ module CalibreHub
 
       def self.fix_name_case(s : String) : String
         return s unless broken_case?(s)
+        return s if organization?(s)
         tokens = s.downcase.split(' ')
         tokens.map_with_index do |w, i|
           (i > 0 && i < tokens.size - 1 && PARTICLES.includes?(w)) ? w : capitalize(w)
         end.join(' ')
+      end
+
+      # All caps that is an acronym, not a shouted name: one word (ISPE,
+      # UNESCO) or a word without a vowel (CDRH CBER). "FRANZ KAFKA" is a name.
+      def self.organization?(s : String) : Bool
+        tokens = s.split(/\s+/).reject(&.empty?)
+        return false unless tokens.all? { |t| t.chars.select(&.letter?).all?(&.uppercase?) }
+        tokens.size == 1 || tokens.any? { |t| t.chars.any?(&.letter?) && !t.matches?(/[AEIOUYÄÖÜ]/) }
       end
 
       # first letter up, also after hyphens and apostrophes (Jean-Paul, O'Brien)
@@ -263,7 +277,24 @@ module CalibreHub
           commas = s.split(',').map(&.strip)
           return commas if commas.all? { |p| p.split(' ').size >= 2 }
         end
+        # "Al Ries, Jack Trout": two full names. "Le Guin, Ursula K." and
+        # "Garcia Marquez, Gabriel" stay one inverted name.
+        if parts.size == 1 && s.count(',') == 1 && two_names?(s)
+          return s.split(',').map(&.strip)
+        end
         parts
+      end
+
+      SURNAME_PARTICLES = Set{"le", "la", "de", "du", "da", "di", "del", "della", "van", "von", "der", "den", "ten", "ter", "dos", "das", "mac", "mc", "o"}
+
+      def self.two_names?(s : String) : Bool
+        before, after = s.split(',', 2).map { |p| p.strip.split(/\s+/).reject(&.empty?) }
+        return false if before.size < 2 || after.size < 2
+        return false if SURNAME_PARTICLES.includes?(before.first.downcase.rstrip("'’"))
+        # initials belong to a first name ("Ursula K.")
+        return false if (before + after).any? { |t| t.matches?(/\A\p{L}\.\z/) }
+        return false if after.first.matches?(/\A(?:jr|sr|ii|iii|iv|phd|md)\.?\z/i)
+        true
       end
 
       # "Last, First" -> "First Last"

@@ -267,6 +267,12 @@ describe CalibreHub::Meta::Clean do
     {"Microsoft Word - Bericht final", ["Admin"]}                          => {"Bericht final", [] of String, nil, nil, false},
     {"Frank Schätzing", ["Der Schwarm Roman"]}                             => {"Der Schwarm Roman", ["Frank Schätzing"], nil, nil, true},
     {"Wolken - Atlas", ["Unknown"]}                                        => {"Atlas", ["Wolken"], nil, nil, true},
+    # found on the live library (02.11.): two authors in one field, acronyms
+    {"Positioning", ["Al Ries, Jack Trout"]}                               => {"Positioning", ["Al Ries", "Jack Trout"], nil, nil, false},
+    {"GAMP 5", ["ISPE"]}                                                   => {"GAMP 5", ["ISPE"], nil, nil, false},
+    {"Guidance", ["CDRH CBER"]}                                            => {"Guidance", ["CDRH CBER"], nil, nil, false},
+    {"Erdsee", ["Le Guin, Ursula K."]}                                     => {"Erdsee", ["Ursula K. Le Guin"], nil, nil, false},
+    {"Hundert Jahre Einsamkeit", ["Garcia Marquez, Gabriel"]}              => {"Hundert Jahre Einsamkeit", ["Gabriel Garcia Marquez"], nil, nil, false},
   }.each do |(title, authors), (want_title, want_authors, series, index, ambiguous)|
     it "cleans #{title.inspect} by #{authors.inspect}" do
       guesses, amb = CalibreHub::Meta::Clean.guesses(title, authors)
