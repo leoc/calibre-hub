@@ -7,6 +7,7 @@ require "./classify"
 require "./metadata"
 require "./lists"
 require "./opds"
+require "./progress"
 
 module CalibreHub
   module Api
@@ -208,7 +209,7 @@ module CalibreHub
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
                   fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil,
                   classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil, lists : Lists? = nil,
-                  extra_jobs = [] of Jobs)
+                  extra_jobs = [] of Jobs, progress : Progress? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -288,6 +289,7 @@ module CalibreHub
     end
     trash.try { |t| trash_routes(t) }
     lists.try { |l| list_routes(l, auth, jobs, calibre) }
+    progress.try { |pr| progress_routes(pr, auth) }
     classify_routes(classify, calibre)
     metadata_routes(metadata, calibre)
 
@@ -465,6 +467,30 @@ module CalibreHub
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
         lists.lists_of(id, auth.user).to_json
+      end
+    end
+  end
+
+  # Reading progress (progress.cr) of the logged-in user
+  def self.progress_routes(progress : Progress, auth : Auth)
+    get "/api/progress" do |env|
+      write_errors(env) do
+        progress.latest(auth.user).map { |e| {bookId: e.book_id, fraction: e.fraction, format: e.format, updatedAt: e.updated_at} }.to_json
+      end
+    end
+
+    get "/api/books/:id/progress" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        devices = progress.of(auth.user, id)
+        {latest: devices.first?, devices: devices}.to_json
+      end
+    end
+
+    put "/api/books/:id/progress" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        progress.save(auth.user, id, json_body(env)).to_json
       end
     end
   end
@@ -725,7 +751,8 @@ module CalibreHub
       r.headers.each do |k, v|
         next if HOP_HEADERS.includes?(k.downcase) || k.downcase == "set-cookie" || k.downcase == "www-authenticate"
         next unless passthrough_headers || {"content-type", "content-length", "etag", "last-modified",
-                                            "cache-control", "content-disposition"}.includes?(k.downcase)
+                                            "cache-control", "content-disposition", "accept-ranges",
+                                            "content-range"}.includes?(k.downcase)
         env.response.headers[k] = v
       end
       IO.copy(r.body_io, env.response) if r.body_io?

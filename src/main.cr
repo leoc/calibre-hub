@@ -379,7 +379,7 @@ module CalibreHub
     trash.on_restore = ->(old_id : Int64, new_id : Int64) { lists.book_restored(old_id, new_id) }
     embedder, convert_jobs = book_files(config, calibre, writer, db, detector, wake)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs, Progress.new(db))
     file_routes(convert_jobs, embedder)
 
     Kemal.config.host_binding = config.host

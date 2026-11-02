@@ -28,7 +28,10 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `PUT`, `DELETE /api/lists/:id/books/:bookId` | adds (404 for an unknown book) or removes one book; `{list, added}` / `{list, removed}` |
 | `GET /api/books/:id/lists` | the lists the book is in |
 | `GET /api/books/:id/cover[?size=thumb]` | cover image |
-| `GET /api/books/:id/download/:format` | book file |
+| `GET /api/books/:id/download/:format` | book file; `Range` requests are passed to calibre-server (`Accept-Ranges`, `Content-Range` come back) |
+| `GET /api/books/:id/progress` | reading progress of the user: `{latest, devices: [...]}`, every device's last position, newest first; an entry is `{bookId, device, deviceName, format, position, fraction, source, updatedAt}`, `latest` is the newest (null when the book was never opened) |
+| `PUT /api/books/:id/progress` `{format, position, fraction, device, deviceName?, source?}` | stores the device's position (replaces its last one; the time is the hub's): `position` depends on the format (EPUB/MOBI/AZW3/CBZ: CFI from foliate-js, PDF: page number), `fraction` 0..1, `device` an id per browser/device, `deviceName` shown in "Auf … weiterlesen?", `source` web (default) or koreader |
+| `GET /api/progress` | the newest position per book (progress bars on the covers): `[{bookId, fraction, format, updatedAt}]` |
 | `DELETE /api/books/:id` | moves the book to calibre's trash; returns `{book}` as it was |
 | `GET /api/trash` | books in calibre's trash, newest first: `[{id, title, authors, formats, deletedAt}]` (`id` is the id the book had) |
 | `POST /api/trash/:id/restore` | adds the book again from the trash (metadata, files, cover); returns `{book}` with a **new** id |
@@ -71,6 +74,18 @@ module sets the library pref `expire_old_trash_after` to 100 years, so
 nothing expires on its own; only emptying the trash in calibre deletes for
 good. Bulk delete: `POST /api/books/bulk` with `changes: {"delete": true}`
 (not combined with other changes).
+
+## Reading in the browser
+
+`/read/:id[?format=]` in the web app reads EPUB, KEPUB, MOBI/AZW3, FB2, CBZ
+and PDF with [foliate-js](https://github.com/johnfactotum/foliate-js)
+(vendored, `frontend/vendor/foliate-js`). The file comes through
+`/api/books/:id/download/:format`. The position is saved per user, book and
+device (`reading_progress` in the state DB, `PUT /api/books/:id/progress`);
+the newest one wins. A book opens where this device stopped; when another
+device saved a newer position since, the reader asks "Auf <Gerät> bei 71 % –
+dort weiterlesen?". The table keeps a `source` per row so KOReader's sync
+positions can live next to the web reader's later.
 
 ## Events and handlers
 
