@@ -13,12 +13,14 @@ function useFastTags() {
 }
 
 // Small toggles on covers and list rows. Set tags always show; unset ones
-// appear on hover, and always on touch screens and E-Ink.
-export function FastTagToggles({ book, className }: { book: Book; className?: string }) {
+// appear on hover, and always on touch screens and E-Ink. On touch screens
+// an invisible ::after makes the tap target 44 px without covering more of
+// the cover (E-Ink shows the full 44 px).
+export function FastTagToggles({ book, onCover, className }: { book: Book; onCover?: boolean; className?: string }) {
   const tags = useFastTags()
   const toggle = useToggleTag()
   return (
-    <span className={cn("flex gap-1", className)}>
+    <span className={cn("flex gap-1 touch:gap-3", className)}>
       {tags.map((tag) => {
         const on = book.tags.includes(tag)
         return (
@@ -33,15 +35,33 @@ export function FastTagToggles({ book, className }: { book: Book; className?: st
               e.stopPropagation()
               toggle.mutate({ book, tag, on: !on })
             }}
-            className={cn(
-              "rounded-sm bg-background/90 p-1 shadow-sm hover:bg-background touch:p-2.5 eink:border-2 eink:border-black eink:bg-white eink:p-2",
-              !on && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 eink:opacity-100",
-            )}
+            className={cn(toggleClass(onCover), !on && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 eink:opacity-100")}
           >
             <Bookmark className={cn("size-3.5 eink:size-5", on && "fill-current")} aria-hidden />
           </button>
         )
       })}
+    </span>
+  )
+}
+
+const toggleClass = (onCover?: boolean) =>
+  cn(
+    "relative rounded-sm bg-background/90 p-1 shadow-sm hover:bg-background eink:border-2 eink:border-black eink:bg-white eink:p-2 touch:after:absolute eink:after:hidden",
+    // 26 px on a cover, 34 px in a list row; the hit area is 44 either way
+    onCover ? "touch:p-1.5 touch:after:-inset-[9px]" : "touch:p-2.5 touch:after:-inset-[5px]",
+  )
+
+// Takes the toggles' room in the list header, so the columns line up.
+export function FastTagSpacer({ className }: { className?: string }) {
+  const tags = useFastTags()
+  return (
+    <span aria-hidden className={cn("invisible flex gap-1 touch:gap-3", className)}>
+      {tags.map((tag) => (
+        <span key={tag} className={toggleClass()}>
+          <Bookmark className="size-3.5 eink:size-5" />
+        </span>
+      ))}
     </span>
   )
 }

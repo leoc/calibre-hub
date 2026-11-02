@@ -4,7 +4,7 @@ Two design runs against the MSW mocks (`pnpm dev:mock`), screenshots of
 every page and state taken with Playwright and the system chromium.
 Priorities: hoch (broken or unusable), mittel (clearly worse than it should
 be), niedrig (polish). Status: umgesetzt (done in this change) or offen
-(follow-up).
+(follow-up). The open findings of both runs were done in #8433.
 
 States covered in both runs: login (empty, wrong password, rate limit),
 library grid and list (default, filtered with chips, empty result, loading,
@@ -40,15 +40,15 @@ category suggestions page and the suggestion box in the detail (#8416).
 | D15 | Empty result | "Filter zurücksetzen" is a bare underlined link. Outline button. | niedrig | umgesetzt |
 | D16 | Sidebar, expanded list | Sorted as strings ("Nummer 1, 10, 100"). Natural sort. | niedrig | umgesetzt |
 | D17 | Dialogs | Long titles can run under the close button. Title keeps clear of it. | niedrig | umgesetzt |
-| D18 | Empty result | "0 Bücher" in the toolbar and "Keine Bücher gefunden." below say the same twice. | niedrig | offen |
-| D19 | Sidebar while loading | "Ohne Kategorie" appears only once its count has loaded, the tree jumps down. | niedrig | offen |
-| D20 | List view | No column headers for series, category and date. | niedrig | offen |
-| D21 | Palette | Book rows (24 px cover) and other rows (16 px icon) start their text at different x. | niedrig | offen |
-| D22 | Side panel on open | The close button gets a visible focus ring right away (Radix autofocus). Focus could go to the heading instead. | niedrig | offen |
-| D23 | Grid, selection mode | The selection ring sits tight on the title text. | niedrig | offen |
-| D24 | Header | The palette hint shows "⌘ K" on Linux and Windows too. | niedrig | offen |
-| D25 | Grid at 1024 px | Only four large columns next to the sidebar. | niedrig | offen |
-| D26 | Pagination | Only below the grid; on page 4 of 7 the way on is a long scroll. | niedrig | offen |
+| D18 | Empty result | "0 Bücher" in the toolbar and "Keine Bücher gefunden." below say the same twice. The toolbar leaves the count out on an empty result; only "Keine Bücher gefunden." remains. | niedrig | umgesetzt |
+| D19 | Sidebar while loading | "Ohne Kategorie" appears only once its count has loaded, the tree jumps down. The row stays from the start with a placeholder count while its count loads. | niedrig | umgesetzt |
+| D20 | List view | No column headers for series, category and date. Header row from 768 px; "Titel · Autor", "Serie" and "Hinzugefügt" sort (again reverses), "Kategorie" is a plain label. | niedrig | umgesetzt |
+| D21 | Palette | Book rows (24 px cover) and other rows (16 px icon) start their text at different x. Icons get a 24 px slot like the book covers, all rows start their text at one x. | niedrig | umgesetzt |
+| D22 | Side panel on open | The close button gets a visible focus ring right away (Radix autofocus). Focus could go to the heading instead. The sheet takes the focus on open; the close button gets its ring only when tabbed to. | niedrig | umgesetzt |
+| D23 | Grid, selection mode | The selection ring sits tight on the title text. Grid items are padded 4 px beyond their cell, the ring sits 4–6 px off cover and title. | niedrig | umgesetzt |
+| D24 | Header | The palette hint shows "⌘ K" on Linux and Windows too. "Strg K" (and "Strg+K" in the tooltip) unless userAgentData/navigator.platform says macOS or iOS. | niedrig | umgesetzt |
+| D25 | Grid at 1024 px | Only four large columns next to the sidebar. Columns from 7.5rem next to the sidebar: five at 1024 px, eight at 1400; phones unchanged. | niedrig | umgesetzt |
+| D26 | Pagination | Only below the grid; on page 4 of 7 the way on is a long scroll. Compact pager ("‹ 4 / 7 ›") in the toolbar whenever there is more than one page. | niedrig | umgesetzt |
 
 ## Run 2: Phone and E-Ink (#8410)
 
@@ -68,11 +68,11 @@ Pixel 7 (412×915), small phone 360×740, landscape Pixel 7, E-Ink mode
 | M9 | Bulk bar on phones | Wraps into three to four rows that cover most books. Two rows that scroll sideways (D3). | mittel | umgesetzt |
 | M10 | Sidebar filter on phones | 14 px font: iOS zooms in on focus. 16 px on touch screens. | mittel | umgesetzt |
 | M11 | E-Ink dialogs | With the transparent overlay a dialog barely stands out from the page. 3 px border. | mittel | umgesetzt |
-| M12 | Fast-tag toggles on covers, phone | 22 px. Now 36 px on touch screens (44 in E-Ink); 44 would cover a third of a 110 px cover. Better: a long-press menu or the toggle below the cover. | mittel | offen |
-| M13 | Library toolbar, phone | With 44 px controls the view switch wraps to a second line (360 and 412 px). Could move into a menu or next to the count. | niedrig | offen |
-| M14 | Suggestions page, phone | "Ausgewählte annehmen" sits at the top, out of thumb reach once the list is long; could join a sticky bottom bar like the bulk bar. | niedrig | offen |
+| M12 | Fast-tag toggles on covers, phone | 22 px. Now 36 px on touch screens (44 in E-Ink); 44 would cover a third of a 110 px cover. Better: a long-press menu or the toggle below the cover. Visible toggle 26 px on covers (34 in list rows), an invisible ::after makes the hit area 44 px; E-Ink keeps 44 visible. The redesign comes with the quick lists (#8431). | mittel | umgesetzt |
+| M13 | Library toolbar, phone | With 44 px controls the view switch wraps to a second line (360 and 412 px). Could move into a menu or next to the count. Phones: count and pager in the first row, select mode, sort (stretching), order and view in the second. | niedrig | umgesetzt |
+| M14 | Suggestions page, phone | "Ausgewählte annehmen" sits at the top, out of thumb reach once the list is long; could join a sticky bottom bar like the bulk bar. Phones: "Alle auswählen" and "Annehmen (n)" in a fixed bottom bar with safe-area padding. | niedrig | umgesetzt |
 | M15 | Trash, restore notice | On narrow screens the icon wraps onto its own line. Icon and text side by side. | niedrig | umgesetzt |
-| M16 | Book detail, phone | The cover takes most of the first screen on 360×740, the download button sits at the fold. A smaller cover next to the title would bring the actions up. | niedrig | offen |
+| M16 | Book detail, phone | The cover takes most of the first screen on 360×740, the download button sits at the fold. A smaller cover next to the title would bring the actions up. Phones: a 104 px cover next to title, authors and series, downloads and actions below both; the download button is in the first screen at 360×740. | niedrig | umgesetzt |
 | M17 | E-Ink, motion | Checked: transitions, the chevron rotation, the dialog fade, the skeleton pulse and spinners are off (global rule in `index.css`, skeleton hidden in E-Ink). Nothing slips through. | – | umgesetzt |
 | M18 | E-Ink, contrast | Checked: text, borders and icons are pure black on white; the only grey is in covers (grayscale filter on purpose). | – | umgesetzt |
 
@@ -80,5 +80,5 @@ Pixel 7 (412×915), small phone 360×740, landscape Pixel 7, E-Ink mode
 
 | Run | hoch | mittel | niedrig | umgesetzt | offen |
 |---|---|---|---|---|---|
-| Desktop | 3 | 11 | 12 | 17 | 9 |
-| Phone and E-Ink | 6 | 6 | 4 | 12 (+2 checks) | 4 |
+| Desktop | 3 | 11 | 12 | 26 | 0 |
+| Phone and E-Ink | 6 | 6 | 4 | 16 (+2 checks) | 0 |

@@ -35,7 +35,8 @@ export function SuggestionsPage() {
   const tooFew = status?.categories != null && status.minCategories != null && status.categories < status.minCategories
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 p-4 lg:p-6">
+    // phones: room at the bottom for the fixed action bar
+    <div className="mx-auto max-w-4xl space-y-5 p-4 max-sm:pb-28 lg:p-6">
       <LibraryLink search={{}} className={buttonVariants({ variant: "ghost", className: "-ml-2" })}>
         <ArrowLeft /> {t("book.back")}
       </LibraryLink>
@@ -74,8 +75,9 @@ export function SuggestionsPage() {
         <p className="py-12 text-center text-lg">{t("suggest.empty")}</p>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm eink:min-h-11 touch:min-h-11">
+          {/* phones: fixed at the bottom, in thumb reach however long the list is */}
+          <div className="flex flex-wrap items-center gap-3 max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:z-20 max-sm:mb-0 max-sm:flex-nowrap max-sm:border-t max-sm:bg-background max-sm:pr-[max(1rem,env(safe-area-inset-right))] max-sm:pl-[max(1rem,env(safe-area-inset-left))] max-sm:pt-3 max-sm:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-sm:shadow-[0_-4px_12px_rgba(0,0,0,0.06)] eink:max-sm:border-t-2 eink:max-sm:shadow-none">
+            <label className="flex shrink-0 items-center gap-2 text-sm eink:min-h-11 touch:min-h-11">
               <input
                 type="checkbox"
                 className="size-4 eink:size-6"
@@ -88,9 +90,11 @@ export function SuggestionsPage() {
             <Button
               size="sm"
               disabled={!chosen.length || accept.isPending}
+              aria-label={t("suggest.acceptSelected", { count: formatNumber(chosen.length) })}
               onClick={() => accept.mutate(chosen, { onSuccess: () => setSelected(new Set()) })}
             >
-              <Check /> {t("suggest.acceptSelected", { count: formatNumber(chosen.length) })}
+              <Check /> <span className="sm:hidden">{t("suggest.acceptSelectedShort", { count: formatNumber(chosen.length) })}</span>
+              <span className="max-sm:hidden">{t("suggest.acceptSelected", { count: formatNumber(chosen.length) })}</span>
             </Button>
           </div>
           <ul className="divide-y border-y eink:divide-y-2 eink:border-y-2" aria-label={t("suggest.title")}>

@@ -170,7 +170,8 @@ export function CommandPalette({ initialInput, onClose }: Props) {
         }}
       >
         <DialogTitle className="sr-only">{t("palette.open")}</DialogTitle>
-        <Command shouldFilter={false} loop>
+        {/* icons get the width of the book covers (24 px), so all rows start their text at one x */}
+        <Command shouldFilter={false} loop className="[&_[cmdk-item]>svg]:mx-1">
           <div className="flex items-center border-b eink:border-b-2">
             <CommandInput
               ref={inputRef}

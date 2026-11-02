@@ -35,8 +35,41 @@ export function Pagination({ search, page, pages }: { search: LibrarySearch; pag
   )
 }
 
-function PageLink({ search, page, disabled, label, children }: { search: LibrarySearch; page: number; disabled: boolean; label: string; children: React.ReactNode }) {
-  const cls = cn(buttonVariants({ variant: "outline" }), disabled && "pointer-events-none opacity-40")
+// Top of the list: previous, "4 / 7", next, so the next page is in reach
+// without scrolling down first.
+export function CompactPager({ search, page, pages }: { search: LibrarySearch; page: number; pages: number }) {
+  if (pages <= 1) return null
+  return (
+    <nav aria-label={t("page.top", { page, pages })} className="flex items-center gap-1">
+      <PageLink search={search} page={page - 1} disabled={page <= 1} label={t("page.prev")} size="icon">
+        <ChevronLeft />
+      </PageLink>
+      <span className="min-w-12 px-1 text-center text-sm text-muted-foreground tabular-nums eink:text-base eink:text-black" aria-hidden>
+        {page} / {pages}
+      </span>
+      <PageLink search={search} page={page + 1} disabled={page >= pages} label={t("page.next")} size="icon">
+        <ChevronRight />
+      </PageLink>
+    </nav>
+  )
+}
+
+function PageLink({
+  search,
+  page,
+  disabled,
+  label,
+  size,
+  children,
+}: {
+  search: LibrarySearch
+  page: number
+  disabled: boolean
+  label: string
+  size?: "icon"
+  children: React.ReactNode
+}) {
+  const cls = cn(buttonVariants({ variant: "outline", size }), disabled && "pointer-events-none opacity-40")
   return disabled ? (
     <span aria-disabled className={cls}>
       {children}

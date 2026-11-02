@@ -4,17 +4,29 @@ import { BookCover } from "./book-cover"
 import { FastTagToggles } from "./fast-tags"
 import { BookItem } from "./book-item"
 import { t } from "@/i18n"
+import { cn } from "@/lib/utils"
 
 const seriesLabel = (b: Book) => (b.series ? `${b.series}${b.seriesIndex != null ? ` ${formatIndex(b.seriesIndex)}` : ""}` : null)
+// Three columns on phones; next to the sidebar (from 1024 px) narrower
+// columns, so 1024 px gets five and wide screens eight or more.
+const GRID =
+  "grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] sm:gap-x-4 sm:gap-y-6 lg:grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))]"
 export const formatIndex = (n: number) => (Number.isInteger(n) ? String(n) : n.toLocaleString("de-DE"))
 
 export function BookGrid({ books, search, showIndex }: { books: Book[]; search: LibrarySearch; showIndex: boolean }) {
   const order = books.map((b) => b.id)
   return (
-    <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] sm:gap-x-4 sm:gap-y-6 eink:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))]">
+    <ul className={cn(GRID, "eink:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))]")}>
       {books.map((b) => (
         <li key={b.id} className="group relative">
-          <BookItem id={b.id} order={order} search={search} className="block rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          {/* padded beyond the cell, so the focus and selection rings keep clear of the title */}
+          <BookItem
+            id={b.id}
+            order={order}
+            search={search}
+            className="-m-1 block w-[calc(100%+0.5rem)] rounded-lg p-1 outline-none [&>[data-check]]:top-2.5 [&>[data-check]]:left-2.5 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            selectedClassName="ring-offset-0"
+          >
             <div className="relative">
               <BookCover book={b} className="transition-shadow group-hover:shadow-md" />
               {showIndex && b.seriesIndex != null && (
@@ -27,7 +39,7 @@ export function BookGrid({ books, search, showIndex }: { books: Book[]; search: 
             <p className="truncate text-xs text-muted-foreground eink:text-sm eink:text-black">{b.authors.join(", ")}</p>
             {!showIndex && seriesLabel(b) && <p className="truncate text-xs text-muted-foreground italic eink:text-sm eink:text-black">{seriesLabel(b)}</p>}
           </BookItem>
-          <FastTagToggles book={b} className="absolute top-1.5 right-1.5" />
+          <FastTagToggles book={b} className="absolute top-1.5 right-1.5" onCover />
         </li>
       ))}
     </ul>
@@ -42,7 +54,7 @@ export function LoadingBooks({ view }: { view: "grid" | "list" }) {
       <p className="hidden py-12 text-center eink:block">{t("loading")}</p>
       <span className="sr-only eink:hidden">{t("loading")}</span>
       {view === "grid" ? (
-        <ul aria-hidden className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] sm:gap-x-4 sm:gap-y-6 eink:hidden">
+        <ul aria-hidden className={cn(GRID, "eink:hidden")}>
           {Array.from({ length: 14 }, (_, i) => (
             <li key={i} className="animate-pulse space-y-2">
               <div className="aspect-[3/4] rounded-md bg-muted" />

@@ -51,8 +51,12 @@ test("classify the unsorted books and see progress", async ({ page, isMobile }) 
   // new open suggestions besides the 5 from the start
   await expect.poll(() => rows(page).count()).toBeGreaterThan(5)
   // sure ones were applied with the tag
-  await page.goto("/?tag=auto-kategorie")
-  await expect(page.getByText(/^\d+ Bücher$/)).toBeVisible()
+  // without a reload: that would reset the mock library
+  await page.evaluate(() => {
+    history.pushState(null, "", "/?tag=auto-kategorie")
+    dispatchEvent(new PopStateEvent("popstate"))
+  })
+  await expect(page.getByText(/^[1-9][\d.]* Bücher$|^1 Buch$/)).toBeVisible()
 })
 
 test("accept a suggestion in the book detail", async ({ page }) => {

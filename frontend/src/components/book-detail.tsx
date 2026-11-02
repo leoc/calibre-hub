@@ -56,11 +56,13 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
 
   return (
     <article className="space-y-6 pb-6">
-      <div className="flex flex-col gap-5 sm:flex-row">
-        <BookCover book={book} thumb={false} className="w-40 shrink-0 self-center sm:w-44 sm:self-start" />
+      {/* phones: a small cover next to the title, the actions below both, so
+          title and downloads fit on the first screen; wider: cover on the left */}
+      <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-4 gap-y-4 sm:grid-cols-[11rem_minmax(0,1fr)] sm:grid-rows-[auto_1fr] sm:gap-x-5 sm:gap-y-2">
+        <BookCover book={book} thumb={false} className="w-full self-start sm:row-span-2" />
         <div className="min-w-0 space-y-2">
-          <h1 className="text-2xl leading-tight font-semibold text-balance">{book.title}</h1>
-          <p className="text-lg">
+          <h1 className="text-xl leading-tight font-semibold text-balance sm:text-2xl">{book.title}</h1>
+          <p className="sm:text-lg">
             {book.authors.map((a, i) => (
               <span key={a}>
                 {i > 0 && ", "}
@@ -78,8 +80,10 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
               {book.seriesIndex != null && <span className="text-muted-foreground eink:text-black"> · {t("book.volume")} {formatIndex(book.seriesIndex)}</span>}
             </p>
           )}
-          {/* reading first: the downloads, then the management actions */}
-          <div className="flex flex-wrap gap-2 pt-2">
+        </div>
+        {/* reading first: the downloads, then the management actions */}
+        <div className="col-span-2 min-w-0 space-y-2 sm:col-span-1 sm:col-start-2">
+          <div className="flex flex-wrap gap-2 sm:pt-2">
             {formats.length === 0 && <p className="text-muted-foreground eink:text-black">{t("book.noFormats")}</p>}
             {formats.map((f, i) => (
               <a key={f} href={downloadUrl(book.id, f)} download className={buttonVariants({ variant: i === 0 ? "default" : "outline" })}>

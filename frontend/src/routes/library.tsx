@@ -70,7 +70,7 @@ export function LibraryPage() {
 
   return (
     <div className="mx-auto max-w-[110rem] space-y-5 p-4 lg:p-6">
-      <LibraryToolbar search={search} total={data?.total} />
+      <LibraryToolbar search={search} total={data?.total} page={page} pages={pages} />
       {error && !data ? (
         <ErrorMessage error={error} onRetry={() => refetch()} />
       ) : !data ? (

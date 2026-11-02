@@ -28,7 +28,7 @@ export function Sidebar({ search, onNavigate }: Props) {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const tagCount = (tag: string) => cats?.tags.find((x) => x.name === tag)?.count
   // books without a category, counted over the whole library
-  const { data: unsorted } = useQuery({
+  const { data: unsorted, isPending: unsortedPending } = useQuery({
     ...booksQuery({ q: unsortedQuery(config.categoryColumn ?? ""), limit: 1 }),
     enabled: !!config.categoryColumn,
   })
@@ -56,9 +56,10 @@ export function Sidebar({ search, onNavigate }: Props) {
         })}
       </div>
 
-      {config.categoryColumn && (!!cats?.kategorie.length || !!unsorted?.total) && (
+      {config.categoryColumn && (!!cats?.kategorie.length || unsortedPending || !!unsorted?.total) && (
         <Section title={t("nav.kategorie")}>
-          {(!!unsorted?.total || search.unsorted) && (
+          {/* kept while its count loads, so the tree below doesn't jump */}
+          {(unsortedPending || !!unsorted?.total || search.unsorted) && (
             <LibraryLink
               search={withFilter(search, { unsorted: search.unsorted ? undefined : true, kategorie: undefined })}
               onClick={onNavigate}
@@ -67,7 +68,7 @@ export function Sidebar({ search, onNavigate }: Props) {
               <span className="flex items-center gap-2">
                 <Inbox className="size-4" aria-hidden /> {t("nav.unsorted")}
               </span>
-              {unsorted && <Count n={unsorted.total} />}
+              {unsorted ? <Count n={unsorted.total} /> : unsortedPending && <CountPlaceholder />}
             </LibraryLink>
           )}
           {!!cats?.kategorie.length && <CategoryTree nodes={cats.kategorie} search={search} onNavigate={onNavigate} />}
@@ -132,6 +133,10 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       {children}
     </section>
   )
+}
+
+function CountPlaceholder() {
+  return <span aria-hidden className="h-3 w-5 animate-pulse rounded-sm bg-muted eink:hidden" />
 }
 
 function Count({ n }: { n: number }) {

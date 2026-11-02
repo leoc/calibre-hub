@@ -5,7 +5,7 @@ import { BookOpen, Command, LogOut, Menu, Search, X } from "lucide-react"
 import { api } from "@/lib/api"
 import { useDesktop, useMedia } from "@/lib/use-media"
 import { parseInput } from "@/lib/palette"
-import { cn } from "@/lib/utils"
+import { cn, isApple } from "@/lib/utils"
 import { useGoLibrary, useLibrarySearch } from "@/lib/use-library"
 import { withFilter } from "@/lib/search"
 import { t } from "@/i18n"
@@ -133,6 +133,7 @@ function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (i
   }
 
   useEffect(() => () => clearTimeout(timer.current), [])
+  const apple = isApple()
 
   const change = (next: string) => {
     clearTimeout(timer.current)
@@ -170,10 +171,10 @@ function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (i
         <button
           onClick={() => onOpenPalette(text)}
           aria-label={t("palette.button")}
-          title={t("palette.button")}
+          title={`${t("palette.button")} (${apple ? "⌘" : t("palette.ctrl")}+K)`}
           className="flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent eink:min-h-11 touch:min-h-11 eink:min-w-11 touch:min-w-11 eink:justify-center eink:border-2 eink:px-2.5 eink:text-sm eink:text-black"
         >
-          <Command className="size-3.5" aria-hidden />K
+          {apple ? <Command className="size-3.5" aria-hidden /> : <span>{t("palette.ctrl")}</span>}K
         </button>
       </div>
     </div>

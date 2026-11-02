@@ -16,6 +16,7 @@ function SheetContent({
   side = "right",
   header,
   closeOnBack = true,
+  onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "left" | "right"
@@ -28,12 +29,20 @@ function SheetContent({
       <SheetPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 eink:bg-transparent" />
       <SheetPrimitive.Content
         className={cn(
-          "fixed inset-y-0 z-50 flex h-full flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-lg eink:border-black",
+          "fixed inset-y-0 z-50 flex h-full flex-col bg-background outline-none pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-lg eink:border-black",
           side === "right"
             ? "right-0 w-full border-l pr-[env(safe-area-inset-right)] sm:max-w-xl eink:border-l-2"
             : "left-0 w-80 max-w-[85vw] border-r pl-[env(safe-area-inset-left)] eink:border-r-2",
           className,
         )}
+        // Radix would focus the close button and show its ring right away;
+        // the sheet itself takes the focus instead (Tab reaches the button)
+        onOpenAutoFocus={(e) => {
+          onOpenAutoFocus?.(e)
+          if (e.defaultPrevented) return
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement).focus()
+        }}
         {...props}
       >
         <BackToClose enabled={closeOnBack} />
