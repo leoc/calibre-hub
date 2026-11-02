@@ -130,6 +130,15 @@ function SaveDialog({ book, onClose }: { book: Book; onClose: () => void }) {
   // the cached book follows the toggles (optimistic)
   const { data: current = book } = useQuery({ ...bookQuery(book.id), placeholderData: book })
   const membership = useListMembership()
+  // A click shows at once: the optimistic patch reaches `current` only a
+  // tick later, and until then React puts the controlled box back. The
+  // clicks hold until the cached book changes (patched or rolled back).
+  const [clicked, setClicked] = useState<{ of: Book; on: Record<number, boolean> }>({ of: current, on: {} })
+  if (clicked.of !== current) setClicked({ of: current, on: {} })
+  const toggle = (l: ReadingList, on: boolean) => {
+    setClicked((c) => ({ of: c.of, on: { ...c.on, [l.id]: on } }))
+    membership.mutate({ list: l, bookIds: [book.id], on })
+  }
   const editable = useMemo(() => lists?.filter((l) => l.editable) ?? [], [lists])
   const nodes = useMemo(() => flattenListTree(buildListTree(editable, session?.user)), [editable, session?.user])
   // the node a new sublist is typed under
@@ -148,7 +157,7 @@ function SaveDialog({ book, onClose }: { book: Book; onClose: () => void }) {
           <ul className="-mx-2 max-h-[50vh] overflow-y-auto" aria-label={t("nav.lists")}>
             {nodes.map((n) => {
               const l = n.list
-              const on = !!l && inList(current, l.id)
+              const on = !!l && (clicked.on[l.id] ?? inList(current, l.id))
               const row = "flex min-h-9 min-w-0 flex-1 items-center gap-3 rounded-sm px-2 py-1 eink:min-h-12 touch:min-h-11"
               return (
                 <li key={n.key} style={{ paddingLeft: n.depth * 20 }}>
@@ -159,7 +168,7 @@ function SaveDialog({ book, onClose }: { book: Book; onClose: () => void }) {
                           type="checkbox"
                           checked={on}
                           aria-label={listLabel(l)}
-                          onChange={() => membership.mutate({ list: l, bookIds: [book.id], on: !on })}
+                          onChange={() => toggle(l, !on)}
                           className="size-4 eink:size-6"
                         />
                         <span className="min-w-0 flex-1 truncate">{n.name}</span>

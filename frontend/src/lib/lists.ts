@@ -190,6 +190,8 @@ export function useListMembership() {
       storeList(qc, r.list)
       qc.invalidateQueries(listPages(list.id))
     },
+    // a fetch of the book still running at the click answers without it
+    onSettled: (_r, _e, { bookIds }) => bookIds.forEach((id) => qc.invalidateQueries({ queryKey: ["book", id], exact: true })),
   })
 }
 
