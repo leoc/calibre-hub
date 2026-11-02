@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckCircle2, CircleAlert, ListMinus, Loader2, X } from "lucide-react"
 import { ApiError, DEFAULT_CONFIG, write, type BulkTarget, type ReadingList } from "@/lib/api"
-import { BOOK_ACTIONS, bookAction, commandLabel, CONFIRM_ABOVE, type ActionTarget, type BookActionDef } from "@/lib/book-actions"
+import { BOOK_ACTIONS, bookAction, commandLabel, needsConfirm, type ActionTarget, type BookActionDef } from "@/lib/book-actions"
 import { isBulkJob, trackedJobs, useTrackedJobs, type TrackedJob } from "@/lib/jobs"
 import { startChange } from "@/lib/run-action"
 import { jobQuery } from "./job-watcher"
@@ -239,14 +239,14 @@ function BulkDialog({
   const submit = () => {
     if (kategorieError) return
     // deleting asks in the dialog itself
-    if (action !== "delete" && count > CONFIRM_ABOVE && !confirming) return setConfirming(true)
+    if (action !== "delete" && needsConfirm(def, on) && !confirming) return setConfirming(true)
     start.mutate({ value, label })
   }
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent {...(action === "delete" ? {} : { "aria-describedby": undefined })}>
         <DialogTitle className="text-lg font-semibold">
-          {t(`bulk.${action}`)} · {t("bulk.selected", { count: formatNumber(count) })}
+          {t(bookAction(action).bar!)} · {t("bulk.selected", { count: formatNumber(count) })}
         </DialogTitle>
         {action === "delete" ? (
           <DialogDescription>{t("bulk.deleteText")}</DialogDescription>
