@@ -18,7 +18,7 @@ const bookOf = (page: Page, href: string) => page.evaluate((h) => fetch(`/api${h
 
 test("review changes: revert one, show reverted, revert selected", async ({ page, isMobile }) => {
   await openMetadata(page, isMobile)
-  await expect(page.getByText("Quellen: Datei, Open Library, DNB · Modell qwen2.5:3b · jede Nacht um 03:30")).toBeVisible()
+  await expect(page.getByText("Quellen: Datei, Hardcover, DNB, Open Library · Modell qwen2.5:3b · jede Nacht um 03:30")).toBeVisible()
 
   const lotr = group(page, "Der Herr der Ringe")
   await expect(lotr).toContainText("J. R. R. Tolkien")
