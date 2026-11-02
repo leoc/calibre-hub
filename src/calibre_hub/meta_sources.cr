@@ -1,3 +1,4 @@
+require "log"
 require "compress/zip"
 require "http/client"
 require "html"
@@ -17,11 +18,17 @@ module CalibreHub
 
       MAX_TEXT = 300_000
 
+      # nil when the file can't be read; the online sources still run.
+      # Crystal's zip reader rejects entries with an invalid DOS timestamp
+      # (seen in the wild), which calibre and readers don't mind.
       def self.read(path : String, format : String) : Info?
         case format.upcase
         when "EPUB" then epub(path)
         when "PDF"  then pdf(path)
         end
+      rescue ex : ArgumentError | Compress::Zip::Error | XML::Error | IO::Error
+        Log.warn { "metadata: can't read #{File.basename(path)}: #{ex.message}" }
+        nil
       end
 
       def self.epub(path : String) : Info?

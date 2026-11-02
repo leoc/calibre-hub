@@ -415,6 +415,23 @@ describe "metadata sources" do
     path.try { |p| File.delete?(p) }
   end
 
+  it "skips a file whose zip entries have an invalid DOS date" do
+    path = epub(SCHWARM_OPF, {} of String => String)
+    # month 0 in every local and central header date (seen on the live library)
+    bytes = File.read(path).to_slice.dup
+    (0..bytes.size - 46).each do |i|
+      if bytes[i] == 0x50 && bytes[i + 1] == 0x4b && bytes[i + 2] == 0x03 && bytes[i + 3] == 0x04
+        bytes[i + 12] = 0_u8; bytes[i + 13] = 0_u8
+      elsif bytes[i] == 0x50 && bytes[i + 1] == 0x4b && bytes[i + 2] == 0x01 && bytes[i + 3] == 0x02
+        bytes[i + 14] = 0_u8; bytes[i + 15] = 0_u8
+      end
+    end
+    File.write(path, bytes)
+    CalibreHub::Meta::FileMeta.read(path, "EPUB").should be_nil
+  ensure
+    path.try { |p| File.delete?(p) }
+  end
+
   it "reads a PDF's info dict, without tool names" do
     r = CalibreHub::Meta::FileMeta.pdf_info("Title:          Microsoft Word - Kafka_Der_Process.doc\nAuthor:         Administrator\nPages:          3\n")
     r.title.should eq("Kafka Der Process")
