@@ -1,7 +1,8 @@
 import { getRouteApi, useNavigate } from "@tanstack/react-router"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowLeft } from "lucide-react"
-import { booksQuery } from "@/lib/queries"
+import { DEFAULT_CONFIG, type BookPatch } from "@/lib/api"
+import { booksQuery, configQuery } from "@/lib/queries"
 import { hasFilters, PAGE_SIZE, toBookQuery } from "@/lib/search"
 import { useView } from "@/lib/prefs"
 import { useDesktop } from "@/lib/use-media"
@@ -26,13 +27,29 @@ export function LibraryPage() {
   const desktop = useDesktop()
   const view = useView()
   const sel = useSelection()
-  const query = toBookQuery(search)
+  const qc = useQueryClient()
+  const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  const query = toBookQuery(search, config.categoryColumn)
   const { data, error, isFetching, isPlaceholderData, refetch } = useQuery(booksQuery(query))
   const page = search.page ?? 1
   const pages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
   const closeBook = () => navigate({ to: "/", search: { ...search, book: undefined, edit: undefined } })
   const setEdit = (on: boolean) => navigate({ to: "/", search: { ...search, edit: on || undefined }, replace: !on })
   const placeholder = data?.books.find((b) => b.id === search.book)
+
+  // "Ohne Kategorie": once a book has one, go on with the next unsorted book
+  // in the list (it drops out of the refetched list), or close at the end.
+  const onSaved = search.unsorted
+    ? async (patch: BookPatch) => {
+        const id = search.book
+        if (!patch.kategorie) return setEdit(false)
+        const at = Math.max(0, data?.books.findIndex((b) => b.id === id) ?? 0)
+        const fresh = await qc.fetchQuery({ ...booksQuery(query), staleTime: 0 }).catch(() => null)
+        const rest = fresh?.books.filter((b) => b.id !== id) ?? []
+        const next = rest[Math.min(at, rest.length - 1)]
+        navigate({ to: "/", search: { ...search, book: next?.id, edit: next ? true : undefined }, replace: true })
+      }
+    : undefined
 
   // small screens: the detail replaces the list, back returns to it
   if (search.book != null && !desktop) {
@@ -41,7 +58,7 @@ export function LibraryPage() {
         <Button variant="ghost" className="mb-4 -ml-2" onClick={() => (history.length > 1 ? history.back() : closeBook())}>
           <ArrowLeft /> {t("book.back")}
         </Button>
-        <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} />
+        <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} />
       </div>
     )
   }
@@ -77,7 +94,7 @@ export function LibraryPage() {
         <Sheet open={search.book != null} onOpenChange={(o) => !o && closeBook()}>
           <SheetContent side="right" className="overflow-y-auto p-6 sm:max-w-2xl" aria-describedby={undefined}>
             <SheetTitle className="sr-only">{placeholder?.title ?? t("app.title")}</SheetTitle>
-            {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} />}
+            {search.book != null && <BookDetail id={search.book} placeholder={placeholder} edit={search.edit} onEdit={setEdit} onSaved={onSaved} />}
           </SheetContent>
         </Sheet>
       )}

@@ -22,7 +22,7 @@ export function matchNamed<T extends Named>(items: T[], text: string, limit: num
   for (const item of items) {
     const name = fold(item.name)
     if (!words.every((w) => name.includes(w))) continue
-    const starts = name.startsWith(words[0]) || name.split(/[\s.,-]+/).some((p) => p.startsWith(words[0]))
+    const starts = name.startsWith(words[0]) || name.split(/[\s.,/-]+/).some((p) => p.startsWith(words[0]))
     scored.push([item, (starts ? 1e9 : 0) + item.count])
   }
   return scored

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckCircle2, Loader2, X } from "lucide-react"
-import { ApiError, write, type BulkChanges, type BulkTarget } from "@/lib/api"
-import { categoriesQuery } from "@/lib/queries"
-import { flattenTree } from "@/lib/palette"
+import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget } from "@/lib/api"
+import { categorySuggestions, parseCategory } from "@/lib/kategorie"
+import { categoriesQuery, configQuery } from "@/lib/queries"
 import { toBookQuery, type LibrarySearch } from "@/lib/search"
 import { selection, useSelection } from "@/lib/selection"
 import { formatNumber, t } from "@/i18n"
@@ -15,12 +15,14 @@ type Action = "addTags" | "removeTags" | "kategorie" | "series"
 interface StartedJob {
   id: string
   total: number
+  target: BulkTarget
   changes: BulkChanges
 }
 const CONFIRM_ABOVE = 50
 
 export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pageIds: number[]; total: number }) {
   const sel = useSelection()
+  const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const [action, setAction] = useState<Action | null>(null)
   const [job, setJob] = useState<StartedJob | null>(null)
   const count = sel.all ? total : sel.ids.size
@@ -32,8 +34,9 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   }, [key])
 
   const { page: _p, book: _b, edit: _e, ...filters } = search
-  // the bulk query takes filters only, no paging or sorting
-  const { offset: _o, limit: _l, sort: _s, order: _r, ...query } = toBookQuery(filters)
+  // the bulk query takes filters only, no paging or sorting; ids keep the
+  // order they were selected in (numbering a series)
+  const { offset: _o, limit: _l, sort: _s, order: _r, ...query } = toBookQuery(filters, config.categoryColumn)
   const target: BulkTarget = sel.all ? { query } : { ids: [...sel.ids] }
 
   return (
@@ -89,23 +92,30 @@ function BulkDialog({
   const [tags, setTags] = useState<string[]>([])
   const [text, setText] = useState("")
   const [confirming, setConfirming] = useState(false)
+  // numbering needs an order, which only explicitly selected books have
+  const canNumber = "ids" in target
+  const [numberSeries, setNumberSeries] = useState(false)
   const start = useMutation({
     mutationFn: (changes: BulkChanges) => write.bulk(target, changes),
     onSuccess: (r, changes) => {
-      onStarted({ id: r.jobId, total: r.total, changes })
+      onStarted({ id: r.jobId, total: r.total, target, changes })
       onClose()
     },
   })
+  const kategorie = parseCategory(text)
+  const kategorieError = action === "kategorie" && "error" in kategorie ? t("kategorie.dot", { name: kategorie.error }) : null
+  const series = text.trim() || null
   const changes: BulkChanges =
     action === "addTags"
       ? { addTags: tags }
       : action === "removeTags"
         ? { removeTags: tags }
         : action === "kategorie"
-          ? { kategorie: text.trim() ? text.trim().replace(/\s*[›.]\s*/g, ".") : null }
-          : { series: text.trim() || null }
+          ? { kategorie: "value" in kategorie ? kategorie.value : null }
+          : { series, ...(numberSeries && canNumber && series ? { numberSeries: true } : {}) }
   const empty = (action === "addTags" || action === "removeTags") && !tags.length
   const submit = () => {
+    if (kategorieError) return
     if (count > CONFIRM_ABOVE && !confirming) return setConfirming(true)
     start.mutate(changes)
   }
@@ -123,9 +133,28 @@ function BulkDialog({
               aria-label={t(action === "kategorie" ? "book.kategorie" : "book.series")}
               value={text}
               onChange={setText}
-              suggestions={action === "kategorie" ? flattenTree(cats?.kategorie ?? []).map((k) => ({ ...k, name: k.name.replaceAll(".", " › ") })) : (cats?.series ?? [])}
+              suggestions={action === "kategorie" ? categorySuggestions(cats?.kategorie ?? []) : (cats?.series ?? [])}
             />
-            <p className="text-xs text-muted-foreground eink:text-black">{t(action === "kategorie" ? "bulk.kategorieHint" : "bulk.seriesHint")}</p>
+            {kategorieError ? (
+              <p role="alert" className="text-xs text-destructive eink:font-bold eink:text-black">
+                {kategorieError}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground eink:text-black">{t(action === "kategorie" ? "bulk.kategorieHint" : "bulk.seriesHint")}</p>
+            )}
+            {action === "series" && (
+              <label className="flex items-center gap-2 text-sm aria-disabled:opacity-60 eink:min-h-11" aria-disabled={!canNumber || !series}>
+                <input
+                  type="checkbox"
+                  checked={numberSeries && canNumber}
+                  disabled={!canNumber || !series}
+                  onChange={(e) => setNumberSeries(e.target.checked)}
+                  className="size-4 eink:size-6"
+                />
+                {t("bulk.numberSeries")}
+                {!canNumber && <span className="text-xs text-muted-foreground eink:text-black">({t("bulk.numberSeriesIds")})</span>}
+              </label>
+            )}
           </>
         )}
         {start.error && (
@@ -137,7 +166,7 @@ function BulkDialog({
           <Button variant="outline" onClick={onClose}>
             {t("edit.cancel")}
           </Button>
-          <Button onClick={submit} disabled={empty || start.isPending} variant={confirming ? "default" : "default"}>
+          <Button onClick={submit} disabled={empty || !!kategorieError || start.isPending} variant={confirming ? "default" : "default"}>
             {confirming ? t("bulk.confirm", { count: formatNumber(count) }) : t("bulk.apply")}
           </Button>
         </div>
@@ -165,10 +194,12 @@ function JobProgress({ job, onClose, onRestart }: { job: StartedJob; onClose: ()
   // 404: the hub restarted and forgot the job
   const lost = error instanceof ApiError && error.status === 404
   const failed = finished ? data.errors : []
-  // e.g. calibre-server restarted mid-job: run the same change on the failed books
+  // e.g. calibre-server restarted mid-job: run the same change on the failed
+  // books; numbering needs the whole selection again to count right
+  const retryTarget: BulkTarget = job.changes.numberSeries ? job.target : { ids: failed.map((e) => e.bookId) }
   const retry = useMutation({
-    mutationFn: () => write.bulk({ ids: failed.map((e) => e.bookId) }, job.changes),
-    onSuccess: (r) => onRestart({ id: r.jobId, total: r.total, changes: job.changes }),
+    mutationFn: () => write.bulk(retryTarget, job.changes),
+    onSuccess: (r) => onRestart({ id: r.jobId, total: r.total, target: retryTarget, changes: job.changes }),
   })
   return (
     <span className="flex items-center gap-2 text-sm" role="status">

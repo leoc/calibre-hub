@@ -45,7 +45,7 @@ function TreeItem({ node, search, onNavigate, depth }: { node: CategoryNode } & 
           <span className="size-7 shrink-0 eink:size-11" />
         )}
         <LibraryLink
-          search={withFilter(search, { kategorie: selected ? undefined : node.path })}
+          search={withFilter(search, { kategorie: selected ? undefined : node.path, unsorted: undefined })}
           onClick={() => {
             if (hasChildren) setOpen(true)
             onNavigate?.()

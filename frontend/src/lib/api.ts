@@ -140,6 +140,8 @@ export interface BulkChanges {
   removeTags?: string[]
   kategorie?: string | null
   series?: string | null
+  // with series and an ids target: volumes 1..n in the order of the ids
+  numberSeries?: boolean
 }
 
 export type BulkTarget = { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }

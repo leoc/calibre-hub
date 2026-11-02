@@ -64,7 +64,7 @@ test("bulk on all matches, with a retry for failed books", async ({ page, isMobi
   await page.getByRole("button", { name: "Auswählen" }).click()
   await page.getByRole("button", { name: /^Alle .* Treffer$/ }).click()
   await page.getByRole("button", { name: "Kategorie setzen" }).click()
-  await page.getByRole("combobox", { name: "Kategorie" }).fill("Neu › Sortiert")
+  await page.getByRole("combobox", { name: "Kategorie" }).fill("Neu/Sortiert")
   await page.getByRole("button", { name: "Anwenden" }).click()
   await page.getByRole("button", { name: /Bücher ändern/ }).click()
   await expect(page.getByText(/geändert, 4 Fehler/)).toBeVisible({ timeout: 20_000 })

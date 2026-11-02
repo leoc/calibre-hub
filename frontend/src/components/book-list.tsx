@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { categoryOf, DEFAULT_CONFIG, type Book } from "@/lib/api"
 import { configQuery } from "@/lib/queries"
+import { categoryLabel } from "@/lib/kategorie"
 import type { LibrarySearch } from "@/lib/search"
 import { formatDate, t } from "@/i18n"
 import { BookCover } from "./book-cover"
@@ -35,7 +36,7 @@ export function BookList({ books, search }: { books: Book[]; search: LibrarySear
                 </>
               )}
             </p>
-            <p className="hidden truncate text-sm text-muted-foreground md:block eink:text-black">{categoryOf(b, config.categoryColumn)?.replaceAll(".", " › ")}</p>
+            <p className="hidden truncate text-sm text-muted-foreground md:block eink:text-black">{categoryLabel(categoryOf(b, config.categoryColumn) ?? "")}</p>
             <p className="hidden text-right text-xs text-muted-foreground tabular-nums md:block eink:text-black" title={t("book.added")}>
               {b.added && formatDate(b.added)}
             </p>

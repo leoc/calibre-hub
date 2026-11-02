@@ -5,7 +5,8 @@ import { ArrowDownUp, Bookmark, Palette, Pencil, X, BookText, FolderTree, Layout
 import { api, coverUrl, DEFAULT_CONFIG, SORTS, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { useToggleTag } from "@/lib/mutations"
-import { flattenTree, matchNamed, parseInput, type Scope } from "@/lib/palette"
+import { matchNamed, parseInput, type Scope } from "@/lib/palette"
+import { categorySuggestions } from "@/lib/kategorie"
 import { defaultOrder, toggleTag, withFilter } from "@/lib/search"
 import { useLibrarySearch } from "@/lib/use-library"
 import { setView } from "@/lib/prefs"
@@ -115,7 +116,8 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const authors = cats && wants("authors") ? matchNamed(cats.authors, text, limit) : []
   const series = cats && wants("series") ? matchNamed(cats.series, text, limit) : []
   const tags = cats && wants("tags") ? matchNamed(cats.tags, text, limit) : []
-  const kategorien = cats && wants("kategorie") ? matchNamed(flattenTree(cats.kategorie), text, limit) : []
+  // shown and matched as "A/B"
+  const kategorien = cats && wants("kategorie") ? matchNamed(categorySuggestions(cats.kategorie), text, limit) : []
   const matchedActions =
     scope === "actions" || (scope === "all" && text)
       ? [...bookActions, ...actions].filter((a) => a.label.toLowerCase().includes(text.toLowerCase())).slice(0, scope === "all" ? 4 : undefined)
@@ -131,9 +133,9 @@ export function CommandPalette({ initialInput, onClose }: Props) {
     </CommandGroup>
   )
 
-  const named = (items: { name: string; count: number }[], icon: ReactNode, onPick: (n: string) => void, prefix: string) =>
+  const named = <T extends { name: string; count: number }>(items: T[], icon: ReactNode, onPick: (i: T) => void, prefix: string) =>
     items.map((i) => (
-      <CommandItem key={`${prefix}:${i.name}`} value={`${prefix}:${i.name}`} onSelect={() => onPick(i.name)}>
+      <CommandItem key={`${prefix}:${i.name}`} value={`${prefix}:${i.name}`} onSelect={() => onPick(i)}>
         {icon}
         <span className="truncate">{i.name}</span>
         <CommandShortcut>{formatNumber(i.count)}</CommandShortcut>
@@ -198,10 +200,10 @@ export function CommandPalette({ initialInput, onClose }: Props) {
                 ))}
               </CommandGroup>
             )}
-            {!!authors.length && <CommandGroup heading={t("palette.authors")}>{named(authors, <User />, (n) => go(withFilter({}, { author: n })), "a")}</CommandGroup>}
-            {!!series.length && <CommandGroup heading={t("palette.series")}>{named(series, <BookText />, (n) => go(withFilter({}, { series: n })), "s")}</CommandGroup>}
-            {!!kategorien.length && <CommandGroup heading={t("palette.kategorie")}>{named(kategorien, <FolderTree />, (n) => go(withFilter({}, { kategorie: n })), "k")}</CommandGroup>}
-            {!!tags.length && <CommandGroup heading={t("palette.tags")}>{named(tags, <Tag />, (n) => go(toggleTag({}, n)), "t")}</CommandGroup>}
+            {!!authors.length && <CommandGroup heading={t("palette.authors")}>{named(authors, <User />, (i) => go(withFilter({}, { author: i.name })), "a")}</CommandGroup>}
+            {!!series.length && <CommandGroup heading={t("palette.series")}>{named(series, <BookText />, (i) => go(withFilter({}, { series: i.name })), "s")}</CommandGroup>}
+            {!!kategorien.length && <CommandGroup heading={t("palette.kategorie")}>{named(kategorien, <FolderTree />, (i) => go(withFilter({}, { kategorie: i.path })), "k")}</CommandGroup>}
+            {!!tags.length && <CommandGroup heading={t("palette.tags")}>{named(tags, <Tag />, (i) => go(toggleTag({}, i.name)), "t")}</CommandGroup>}
             {!!matchedActions.length && (
               <CommandGroup heading={t("palette.actions")}>
                 {matchedActions.map((a) => (

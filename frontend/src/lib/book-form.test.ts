@@ -12,7 +12,7 @@ describe("book form", () => {
 
   it("sends only changed fields, normalized, with lastModified", () => {
     const f = toForm(book, "kategorie")
-    const p = toPatch(f, { ...f, title: " Neu ", series: "Erdsee", seriesIndex: "2,5", kategorie: "Roman › SF . Neu", rating: 0 }, "LM")
+    const p = toPatch(f, { ...f, title: " Neu ", series: "Erdsee", seriesIndex: "2,5", kategorie: "Roman / SF/Neu", rating: 0 }, "LM")
     expect(p).toEqual({ title: "Neu", series: "Erdsee", seriesIndex: 2.5, kategorie: "Roman.SF.Neu", rating: null, lastModified: "LM" })
   })
 
@@ -20,6 +20,17 @@ describe("book form", () => {
     const f = { ...toForm(book, "kategorie"), identifiers: [["isbn", "1"]] as [string, string][] }
     const p = toPatch(f, { ...f, kategorie: "  ", identifiers: [["ISBN", " 1 "], ["", ""]] }, "LM")
     expect(p).toEqual({ kategorie: null, lastModified: "LM" })
+  })
+
+  it("shows the category as a path and keeps it when only typed differently", () => {
+    const f = toForm(book, "kategorie")
+    expect(f.kategorie).toBe("Roman/Fantasy")
+    expect(toPatch(f, { ...f, kategorie: "Roman › Fantasy" }, "LM")).toBeNull()
+  })
+
+  it("leaves an invalid category out of the patch", () => {
+    const f = toForm(book, "kategorie")
+    expect(toPatch(f, { ...f, kategorie: "Reisen/St. Petersburg" }, "LM")).toBeNull()
   })
 
   it("lists fields changed elsewhere", () => {

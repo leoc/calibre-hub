@@ -3,6 +3,7 @@ import { CheckCircle2, CircleAlert, Copy, Loader2, Pencil, Upload as UploadIcon,
 import { useNavigate } from "@tanstack/react-router"
 import type { UploadOptions } from "@/lib/api"
 import { addUploads, clearFinished, dismissUpload, retryUpload, useUploads, type UploadItem } from "@/lib/upload-store"
+import { categoryLabel } from "@/lib/kategorie"
 import { useLibrarySearch } from "@/lib/use-library"
 import { useDesktop } from "@/lib/use-media"
 import { t } from "@/i18n"
@@ -125,7 +126,7 @@ function ConfirmDialog({ files, suggested, onClose }: { files: File[]; suggested
           {suggested.kategorie && (
             <label className="flex items-center gap-2 eink:min-h-11">
               <input type="checkbox" checked={useKategorie} onChange={(e) => setUseKategorie(e.target.checked)} className="size-4 eink:size-6" />
-              {t("book.kategorie")}: {suggested.kategorie.replaceAll(".", " › ")}
+              {t("book.kategorie")}: {categoryLabel(suggested.kategorie)}
             </label>
           )}
           {suggested.tags?.map((tag) => (

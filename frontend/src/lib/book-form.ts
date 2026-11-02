@@ -1,5 +1,6 @@
 import type { Book, BookPatch } from "./api"
 import { categoryOf } from "./api"
+import { categoryLabel, parseCategory } from "./kategorie"
 
 // Form state: strings for inputs, normalized again in toPatch.
 export interface BookForm {
@@ -7,7 +8,7 @@ export interface BookForm {
   authors: string[]
   series: string
   seriesIndex: string
-  kategorie: string
+  kategorie: string // as a path, "A/B"
   tags: string[]
   languages: string[]
   publisher: string
@@ -23,7 +24,7 @@ export function toForm(b: Book, categoryColumn: string | null): BookForm {
     authors: b.authors,
     series: b.series ?? "",
     seriesIndex: b.seriesIndex != null ? String(b.seriesIndex) : "",
-    kategorie: categoryOf(b, categoryColumn)?.replaceAll(".", " › ") ?? "",
+    kategorie: categoryLabel(categoryOf(b, categoryColumn) ?? ""),
     tags: b.tags,
     languages: b.languages,
     publisher: b.publisher ?? "",
@@ -47,7 +48,9 @@ export function toPatch(original: BookForm, form: BookForm, lastModified: string
     const n = parseFloat(form.seriesIndex.replace(",", "."))
     p.seriesIndex = Number.isFinite(n) ? n : null
   }
-  if (form.kategorie.trim() !== original.kategorie) p.kategorie = orNull(form.kategorie.replace(/\s*[›.]\s*/g, "."))
+  // an invalid path stays out; the form shows the error and can't be saved
+  const kategorie = parseCategory(form.kategorie)
+  if ("value" in kategorie && !same(kategorie, parseCategory(original.kategorie))) p.kategorie = kategorie.value
   if (!same(form.tags, original.tags)) p.tags = form.tags
   if (!same(form.languages, original.languages)) p.languages = form.languages
   if (form.publisher.trim() !== original.publisher) p.publisher = orNull(form.publisher)

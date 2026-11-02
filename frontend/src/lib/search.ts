@@ -22,6 +22,8 @@ export const librarySearchSchema = z.object({
   author: z.string().optional().catch(undefined),
   series: z.string().optional().catch(undefined),
   lang: z.string().optional().catch(undefined),
+  // books without a category ("Ohne Kategorie")
+  unsorted: flag,
   sort: z.enum(SORTS).optional().catch(undefined),
   order: z.enum(["asc", "desc"]).optional().catch(undefined),
   page: z.coerce.number().int().min(1).optional().catch(undefined),
@@ -32,7 +34,7 @@ export const librarySearchSchema = z.object({
 
 export type LibrarySearch = z.infer<typeof librarySearchSchema>
 
-const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang"] as const
+const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang", "unsorted"] as const
 
 export function hasFilters(s: LibrarySearch) {
   return FILTER_KEYS.some((k) => (Array.isArray(s[k]) ? s[k].length > 0 : !!s[k]))
@@ -52,8 +54,17 @@ export function defaultOrder(sort: BookQuery["sort"]): "asc" | "desc" {
 
 const quote = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 
-export function toBookQuery(s: LibrarySearch): BookQuery {
-  const q = [s.q?.trim() && `(${s.q.trim()})`, s.lang && `languages:"=${quote(s.lang)}"`].filter(Boolean).join(" and ")
+// calibre search for books with an empty category column
+export const unsortedQuery = (categoryColumn: string) => `#${categoryColumn}:false`
+
+export function toBookQuery(s: LibrarySearch, categoryColumn: string | null = null): BookQuery {
+  const q = [
+    s.q?.trim() && `(${s.q.trim()})`,
+    s.lang && `languages:"=${quote(s.lang)}"`,
+    s.unsorted && categoryColumn && unsortedQuery(categoryColumn),
+  ]
+    .filter(Boolean)
+    .join(" and ")
   return {
     q: q || undefined,
     kategorie: s.kategorie,

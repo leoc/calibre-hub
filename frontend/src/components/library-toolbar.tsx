@@ -3,6 +3,7 @@ import { selection, useSelection } from "@/lib/selection"
 import { SORTS, type Sort } from "@/lib/api"
 import { defaultOrder, effectiveSort, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
 import { setView, useView } from "@/lib/prefs"
+import { categoryLabel } from "@/lib/kategorie"
 import { useGoLibrary } from "@/lib/use-library"
 import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
@@ -75,7 +76,8 @@ export function LibraryToolbar({ search, total }: { search: LibrarySearch; total
 function ActiveFilters({ search }: { search: LibrarySearch }) {
   const chips: { key: string; label: string; value: string; next: LibrarySearch }[] = []
   if (search.q) chips.push({ key: "q", label: t("filter.q"), value: search.q, next: withFilter(search, { q: undefined }) })
-  if (search.kategorie) chips.push({ key: "k", label: t("filter.kategorie"), value: search.kategorie.replaceAll(".", " › "), next: withFilter(search, { kategorie: undefined }) })
+  if (search.kategorie) chips.push({ key: "k", label: t("filter.kategorie"), value: categoryLabel(search.kategorie), next: withFilter(search, { kategorie: undefined }) })
+  if (search.unsorted) chips.push({ key: "u", label: "", value: t("filter.unsorted"), next: withFilter(search, { unsorted: undefined }) })
   if (search.author) chips.push({ key: "a", label: t("filter.author"), value: search.author, next: withFilter(search, { author: undefined }) })
   if (search.series) chips.push({ key: "s", label: t("filter.series"), value: search.series, next: withFilter(search, { series: undefined }) })
   search.tag?.forEach((tag) => chips.push({ key: `t:${tag}`, label: t("filter.tag"), value: tag, next: toggleTag(search, tag) }))
@@ -85,9 +87,9 @@ function ActiveFilters({ search }: { search: LibrarySearch }) {
     <ul className="flex flex-wrap gap-2">
       {chips.map((c) => (
         <li key={c.key}>
-          <LibraryLink search={c.next} aria-label={t("filter.remove", { name: `${c.label} ${c.value}` })}>
+          <LibraryLink search={c.next} aria-label={t("filter.remove", { name: c.label ? `${c.label} ${c.value}` : c.value })}>
             <Badge variant="outline" className={cn("h-7 gap-1.5 pr-1 text-sm hover:bg-accent eink:h-11 eink:border-2")}>
-              <span className="text-muted-foreground eink:text-black">{c.label}:</span> {c.value}
+              {c.label && <span className="text-muted-foreground eink:text-black">{c.label}:</span>} {c.value}
               <X className="size-3.5" aria-hidden />
             </Badge>
           </LibraryLink>

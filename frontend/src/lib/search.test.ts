@@ -17,6 +17,12 @@ describe("library search", () => {
     expect(q.q).toBe('(pratchett) and languages:"=deu"')
   })
 
+  it("maps unsorted to an empty category column, if there is one", () => {
+    expect(toBookQuery({ unsorted: true, q: "x" }, "kategorie").q).toBe("(x) and #kategorie:false")
+    expect(toBookQuery({ unsorted: true }, null).q).toBeUndefined()
+    expect(librarySearchSchema.parse({ unsorted: "1" }).unsorted).toBe(true)
+  })
+
   it("parses a single tag param as array and drops junk", () => {
     expect(librarySearchSchema.parse({ tag: "leseliste", page: "x", sort: "nope" })).toEqual({
       tag: ["leseliste"],

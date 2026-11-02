@@ -17,11 +17,18 @@ const SORT_KEY: Record<string, (b: Book) => string | number> = {
   rating: (b) => b.rating ?? 0,
 }
 
-// Small subset of calibre's search: free words and languages:"=x".
+// Small subset of calibre's search: free words, languages:"=x" and
+// #column:false (column empty).
 function matches(b: Book, q: string) {
   const lang = /languages:"=([^"]+)"/.exec(q)?.[1]
   if (lang && !b.languages.includes(lang)) return false
-  const text = q.replace(/languages:"=[^"]+"/, "").replace(/[()]|\band\b/g, " ").toLowerCase()
+  const empty = /#(\w+):false/.exec(q)?.[1]
+  if (empty && b.custom[empty]) return false
+  const text = q
+    .replace(/languages:"=[^"]+"/, "")
+    .replace(/#\w+:false/, "")
+    .replace(/[()]|\band\b/g, " ")
+    .toLowerCase()
   const hay = [b.title, ...b.authors, b.series ?? "", ...b.tags].join(" ").toLowerCase()
   return text.split(/\s+/).filter(Boolean).every((w) => hay.includes(w))
 }
@@ -185,18 +192,24 @@ export const writeHandlers = [
       const bad = Object.keys(target.query).find((k) => ["offset", "limit", "sort", "order"].includes(k))
       if (bad) return HttpResponse.json({ error: "not allowed in bulk query", field: bad }, { status: 400 })
     }
-    const list = "ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query))
+    if (changes.numberSeries && !("ids" in target && changes.series)) return HttpResponse.json({ error: "numberSeries needs series and ids", field: "numberSeries" }, { status: 400 })
+    // ids in the given order: numberSeries counts along it
+    const list = "ids" in target ? target.ids.flatMap((id) => books.filter((b) => b.id === id)) : filterBooks(bookSearchParams(target.query))
+    const { numberSeries, ...patch } = changes
     const jobId = Math.random().toString(36).slice(2)
     const job: Job = { status: "running", done: 0, total: list.length, errors: [] }
     jobs.set(jobId, job)
     ;(async () => {
-      for (const b of list) {
+      for (const [i, b] of list.entries()) {
         await delay(15)
         // in query jobs, books with id divisible by 97 fail once (error path)
         if ("query" in target && b.id % 97 === 0 && !retried.has(b.id)) {
           retried.add(b.id)
           job.errors.push({ bookId: b.id, error: "calibre-server: Connection refused" })
-        } else applyPatch(b, changes)
+        } else {
+          applyPatch(b, patch)
+          if (numberSeries) b.seriesIndex = i + 1
+        }
         job.done++
       }
       job.status = job.errors.length === list.length ? "failed" : "done"

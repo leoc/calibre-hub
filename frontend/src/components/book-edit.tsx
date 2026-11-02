@@ -2,11 +2,11 @@ import { lazy, Suspense, useMemo, useRef, useState, type FormEvent, type ReactNo
 import { useQuery } from "@tanstack/react-query"
 import { useBlocker } from "@tanstack/react-router"
 import { Plus, Star, Trash2 } from "lucide-react"
-import { DEFAULT_CONFIG, type Book } from "@/lib/api"
+import { DEFAULT_CONFIG, type Book, type BookPatch } from "@/lib/api"
 import { categoriesQuery, configQuery } from "@/lib/queries"
 import { ConflictError, useUpdateBook } from "@/lib/mutations"
 import { changedFields, toForm, toPatch, type BookForm } from "@/lib/book-form"
-import { flattenTree } from "@/lib/palette"
+import { categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { languageName, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
 import { cn } from "@/lib/utils"
@@ -35,7 +35,8 @@ const LABEL: Record<keyof BookForm, MessageKey> = {
 // ISO 639-2 codes calibre uses; plus whatever the library already has
 const COMMON_LANGS = ["deu", "eng", "fra", "spa", "ita", "nld", "por", "rus", "pol", "swe", "jpn"]
 
-export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
+// onSaved replaces onDone after a successful save (e.g. go on to the next book)
+export function BookEdit({ book, onDone, onSaved }: { book: Book; onDone: () => void; onSaved?: (patch: BookPatch) => void }) {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const { data: cats } = useQuery(categoriesQuery)
   const [base, setBase] = useState(book)
@@ -46,6 +47,8 @@ export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
   const update = useUpdateBook(book.id)
   const patch = toPatch(original, form, base.lastModified)
   const dirty = patch !== null
+  const kategorie = parseCategory(form.kategorie)
+  const kategorieError = "error" in kategorie ? t("kategorie.dot", { name: kategorie.error }) : null
 
   // leaving after a successful save must not ask
   const leaving = useRef(false)
@@ -65,7 +68,9 @@ export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
     if (!patch) return done()
     try {
       await update.mutateAsync(patch)
-      done()
+      leaving.current = true
+      if (onSaved) onSaved(patch)
+      else onDone()
     } catch (err) {
       if (err instanceof ConflictError) {
         setConflict(err.current)
@@ -78,8 +83,8 @@ export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
     const have = cats?.languages ?? []
     return [...have, ...COMMON_LANGS.filter((c) => !have.some((h) => h.name === c)).map((name) => ({ name, count: 0 }))]
   }, [cats])
-  // shown and typed as "A › B", stored as "A.B"
-  const kategorien = useMemo(() => flattenTree(cats?.kategorie ?? []).map((k) => ({ ...k, name: k.name.replaceAll(".", " › ") })), [cats])
+  // shown and typed as "A/B", stored as "A.B"
+  const kategorien = useMemo(() => categorySuggestions(cats?.kategorie ?? []), [cats])
 
   return (
     <form onSubmit={save} className="space-y-5 pb-20" aria-label={t("edit.heading")}>
@@ -122,7 +127,7 @@ export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
       </div>
 
       {config.categoryColumn && (
-        <Field label={t("book.kategorie")} as="div" hint={t("edit.kategorieHint")}>
+        <Field label={t("book.kategorie")} as="div" hint={t("edit.kategorieHint")} error={kategorieError}>
           <Combobox
             aria-label={t("book.kategorie")}
             value={form.kategorie}
@@ -168,7 +173,7 @@ export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
         <Button type="button" variant="outline" onClick={onDone}>
           {t("edit.cancel")}
         </Button>
-        <Button type="submit" disabled={!dirty || update.isPending || !form.title.trim()}>
+        <Button type="submit" disabled={!dirty || update.isPending || !form.title.trim() || !!kategorieError}>
           {update.isPending ? t("edit.saving") : t("edit.save")}
         </Button>
       </div>
@@ -176,13 +181,19 @@ export function BookEdit({ book, onDone }: { book: Book; onDone: () => void }) {
   )
 }
 
-function Field({ label, hint, as = "label", children }: { label: string; hint?: string; as?: "label" | "div"; children: ReactNode }) {
+function Field({ label, hint, error, as = "label", children }: { label: string; hint?: string; error?: string | null; as?: "label" | "div"; children: ReactNode }) {
   const Tag = as
   return (
     <Tag className="block space-y-1.5">
       <span className="text-sm font-medium eink:text-base">{label}</span>
       {children}
-      {hint && <span className="block text-xs text-muted-foreground eink:text-sm eink:text-black">{hint}</span>}
+      {error ? (
+        <span role="alert" className="block text-xs text-destructive eink:text-sm eink:font-bold eink:text-black">
+          {error}
+        </span>
+      ) : (
+        hint && <span className="block text-xs text-muted-foreground eink:text-sm eink:text-black">{hint}</span>
+      )}
     </Tag>
   )
 }

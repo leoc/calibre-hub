@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Download, Pencil } from "lucide-react"
-import { categoryOf, DEFAULT_CONFIG, downloadUrl, type Book } from "@/lib/api"
+import { categoryOf, DEFAULT_CONFIG, downloadUrl, type Book, type BookPatch } from "@/lib/api"
 import { bookQuery, configQuery } from "@/lib/queries"
 import { toggleTag, withFilter } from "@/lib/search"
 import { formatDate, languageName, t } from "@/i18n"
@@ -26,16 +26,18 @@ interface DetailProps {
   onNavigate?: () => void
   edit?: boolean
   onEdit?: (on: boolean) => void
+  // after saving the form; default: back to the detail
+  onSaved?: (patch: BookPatch) => void
 }
 
-export function BookDetail({ id, placeholder, onNavigate, edit, onEdit }: DetailProps) {
+export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved }: DetailProps) {
   // list rows have everything except comments; show them right away
   const { data, error, refetch, isPlaceholderData } = useQuery({ ...bookQuery(id), placeholderData: placeholder })
   if (error && !data) return <ErrorMessage error={error} onRetry={() => refetch()} />
   if (!data) return <p className="p-8 text-muted-foreground">{t("loading")}</p>
   // the form needs the full book (comments)
   if (edit && onEdit) {
-    return isPlaceholderData ? <p className="p-8 text-muted-foreground">{t("loading")}</p> : <BookEdit key={data.id} book={data} onDone={() => onEdit(false)} />
+    return isPlaceholderData ? <p className="p-8 text-muted-foreground">{t("loading")}</p> : <BookEdit key={data.id} book={data} onDone={() => onEdit(false)} onSaved={onSaved} />
   }
   return <BookView book={data} onNavigate={onNavigate} onEdit={onEdit && (() => onEdit(true))} />
 }
@@ -143,13 +145,14 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
+// stored "A.B", shown as "A/B" with a link per level
 function Breadcrumb({ path, onNavigate }: { path: string; onNavigate?: () => void }) {
   const parts = path.split(".")
   return (
     <span>
       {parts.map((p, i) => (
         <span key={i}>
-          {i > 0 && " › "}
+          {i > 0 && "/"}
           <LibraryLink search={withFilter({}, { kategorie: parts.slice(0, i + 1).join(".") })} onClick={onNavigate} className="underline-offset-2 hover:underline eink:underline">
             {p}
           </LibraryLink>

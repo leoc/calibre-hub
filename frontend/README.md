@@ -26,9 +26,13 @@ the lockfile (v9) works with 10 to 12.
 
 ## Design
 
-- Library state lives in the URL (`?q=&kategorie=&tag=&author=&series=&lang=&sort=&order=&page=&book=`),
+- Library state lives in the URL (`?q=&kategorie=&unsorted=&tag=&author=&series=&lang=&sort=&order=&page=&book=`),
   plain query strings with repeated `tag`. Pages of 60 instead of infinite
   scroll (one redraw per page on E-Ink).
+- Categories are shown and typed as paths (`Sachbuch/Geschichte`) but stored,
+  in URLs and the API, with dots as calibre does (`src/lib/kategorie.ts`).
+  `?unsorted` lists books without a category (`#kategorie:false`); saving a
+  category there opens the next one in the form.
 - Desktop (≥ 1024 px): sidebar with fast tags, category tree, authors,
   series, tags, languages; book detail as a side panel (`?book=`). Smaller
   screens: sidebar as drawer, detail as its own view. `/books/:id` is a

@@ -1,9 +1,9 @@
 import { useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Bookmark, Library } from "lucide-react"
-import { categoriesQuery, configQuery } from "@/lib/queries"
+import { Bookmark, Inbox, Library } from "lucide-react"
+import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
-import { hasFilters, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
+import { hasFilters, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
 import { matchNamed } from "@/lib/palette"
 import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
@@ -24,6 +24,11 @@ export function Sidebar({ search, onNavigate }: Props) {
   const { data: cats } = useQuery(categoriesQuery)
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const tagCount = (tag: string) => cats?.tags.find((x) => x.name === tag)?.count
+  // books without a category, counted over the whole library
+  const { data: unsorted } = useQuery({
+    ...booksQuery({ q: unsortedQuery(config.categoryColumn ?? ""), limit: 1 }),
+    enabled: !!config.categoryColumn,
+  })
 
   return (
     <nav className="flex h-full flex-col gap-5 overflow-y-auto p-3">
@@ -47,9 +52,21 @@ export function Sidebar({ search, onNavigate }: Props) {
         })}
       </div>
 
-      {config.categoryColumn && !!cats?.kategorie.length && (
+      {config.categoryColumn && (!!cats?.kategorie.length || !!unsorted?.total) && (
         <Section title={t("nav.kategorie")}>
-          <CategoryTree nodes={cats.kategorie} search={search} onNavigate={onNavigate} />
+          {(!!unsorted?.total || search.unsorted) && (
+            <LibraryLink
+              search={withFilter(search, { unsorted: search.unsorted ? undefined : true, kategorie: undefined })}
+              onClick={onNavigate}
+              className={cn(navItem, search.unsorted && active)}
+            >
+              <span className="flex items-center gap-2">
+                <Inbox className="size-4" aria-hidden /> {t("nav.unsorted")}
+              </span>
+              {unsorted && <Count n={unsorted.total} />}
+            </LibraryLink>
+          )}
+          {!!cats?.kategorie.length && <CategoryTree nodes={cats.kategorie} search={search} onNavigate={onNavigate} />}
         </Section>
       )}
 
