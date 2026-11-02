@@ -44,6 +44,7 @@ module CalibreHub
     ]
 
     SORTS      = %w(title author added modified published series rating)
+    LIST_SORTS = %w(listAdded title author series)
     KINDS      = %w(kategorie tags authors series languages)
     KATEGORIE  = "category, A/B or A.B (stored as A.B)"
     EMPTY_HINT = "an empty value clears the field"
@@ -103,6 +104,19 @@ module CalibreHub
         Flag.new("number-series", help: "number the series 1, 2, ... in the order of --ids"),
         Flag.new("yes", short: 'y', help: "don't ask for confirmation"),
       ]),
+      Command.new("list", "list ls|show|create|add|rm|delete [list] [ids...] [options]",
+        "reading lists: ls, show <list>, create <name>, add|rm <list> <id...>, delete <list> (list: id or name)", [
+        Flag.new("description", "TEXT", "create: description"),
+        Flag.new("sync", help: "create: mirror the list to the reader"),
+        Flag.new("favorite", help: "create: show it in the sidebar first"),
+        Flag.new("default", help: "create: make it the default list (the bookmark on covers)"),
+        Flag.new("visibility", "V", "create: private, readable or editable", choices: %w(private readable editable)),
+        Flag.new("sort", "FIELD", "show: sort by #{LIST_SORTS.join(", ")}", choices: LIST_SORTS),
+        Flag.new("order", "DIR", "show: asc or desc", choices: %w(asc desc)),
+        Flag.new("limit", "N", "show: at most N books (default 50, max 500)"),
+        Flag.new("offset", "N", "show: skip the first N books"),
+        Flag.new("yes", short: 'y', help: "delete: don't ask for confirmation"),
+      ], choices: %w(ls show create add rm delete)),
       Command.new("completion", "completion fish|bash [--prog hub|calibre-hub]",
         "print a shell completion script", [
         Flag.new("prog", "NAME", "complete only this command name", choices: %w(hub calibre-hub)),

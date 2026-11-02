@@ -211,6 +211,33 @@ describe "list routes" do
   end
 end
 
+describe CalibreHub::Opds do
+  it "builds a navigation feed and an acquisition feed per list" do
+    with_lists do |lists|
+      l = lists.create("arthur", body(%({"name": "Urlaub & Meer", "description": "Strand"})))
+      lists.add(l.id, "arthur", [1_i64])
+      l = lists[l.id, "arthur"]
+      nav = XML.parse(CalibreHub::Opds.lists_feed([l]))
+      ns = {"a" => "http://www.w3.org/2005/Atom"}
+      nav.xpath_node("//a:entry/a:title", ns).not_nil!.content.should eq("Urlaub & Meer")
+      nav.xpath_node("//a:entry/a:link", ns).not_nil!["href"].should eq("/opds/lists/#{l.id}")
+
+      b = CalibreHub::Jobs.blank
+      book = CalibreHub::Book.new(id: 7_i64, title: "Dune", authors: ["Frank Herbert"], author_sort: nil, tags: [] of String,
+        series: "Dune", series_index: 1.0, formats: ["PDF", "EPUB"], last_modified: Time.utc(2026, 11, 2),
+        timestamp: nil, pubdate: nil, rating: nil, publisher: "Ace", identifiers: {} of String => String,
+        languages: ["eng"], comments: "<p>Spice &amp; sand</p>", custom: b.custom)
+      feed = XML.parse(CalibreHub::Opds.list_feed(l, [book], 0, 150, "/library"))
+      feed.xpath_node("/a:feed/a:title", ns).not_nil!.content.should eq("Urlaub & Meer")
+      feed.xpath_node("/a:feed/a:link[@rel='next']", ns).not_nil!["href"].should eq("/opds/lists/#{l.id}?offset=1")
+      acq = feed.xpath_nodes("//a:entry/a:link[@rel='http://opds-spec.org/acquisition']", ns)
+      acq.map(&.["href"]).should eq(["/get/epub/7/library", "/get/pdf/7/library"])
+      acq.first["type"].should eq("application/epub+zip")
+      feed.xpath_node("//a:entry/a:summary", ns).not_nil!.content.should eq("Spice & sand")
+    end
+  end
+end
+
 # A library with three books and their files
 private def with_library(&)
   dir = File.tempname("leseliste-lib")

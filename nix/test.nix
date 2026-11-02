@@ -299,6 +299,28 @@ pkgs.testers.runNixOSTest {
         assert api("DELETE", f"/api/lists/{u['id']}")[0] == 200
         machine.wait_until_succeeds("! test -e /srv/books/boox/Sommer", timeout=30)
         machine.wait_until_succeeds("grep -q '\"list\",0,' /var/lib/calibre-hub/events.log", timeout=30)
+        # each list is an OPDS catalog, with Basic auth like /opds
+        assert code(f"{H}/opds/lists/{lid}") == "401"
+        nav = machine.succeed(f"curl -sf -u arthur:login-secret {H}/opds/lists")
+        assert f"/opds/lists/{lid}" in nav and "<title>Leseliste</title>" in nav, nav
+        feed = machine.succeed(f"curl -sf -u arthur:login-secret -D /tmp/opds-headers {H}/opds/lists/{lid}")
+        machine.succeed("grep -qi 'content-type: application/atom+xml;profile=opds-catalog;kind=acquisition' /tmp/opds-headers")
+        assert "<title>Testbuch</title>" in feed and 'rel="http://opds-spec.org/acquisition"' in feed, feed
+        href = feed.split('rel="http://opds-spec.org/acquisition" href="')[1].split('"')[0]
+        assert href.startswith("/get/epub/1"), href
+        assert code(f"-u arthur:login-secret '{H}{href}'") == "200"
+        assert code(f"-u arthur:login-secret {H}/opds/lists/9999") == "404"
+        assert code(f"-u arthur:login-secret {H}/opds") == "200"
+        CLI = "CALIBRE_HUB_URL=http://127.0.0.1:8084 CALIBRE_HUB_TOKEN_FILE=/etc/hub/token"
+        ls = json.loads(machine.succeed(f"{CLI} hub list ls --json"))
+        assert [l["name"] for l in ls] == ["Leseliste"], ls
+        machine.succeed(f"{CLI} hub list create Krimis --sync")
+        machine.succeed(f"{CLI} hub list add krimis 1")
+        machine.wait_until_succeeds("test -f '/srv/books/boox/Krimis/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        shown = json.loads(machine.succeed(f"{CLI} hub list show Krimis --json"))
+        assert shown["books"]["total"] == 1 and shown["list"]["sync"] is True, shown
+        machine.succeed(f"{CLI} hub list delete Krimis --yes")
+        machine.wait_until_succeeds("! test -e /srv/books/boox/Krimis", timeout=30)
         status, r = api("DELETE", f"/api/lists/{lid}/books/1")
         machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
 

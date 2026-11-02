@@ -206,6 +206,11 @@ module CalibreHub
       raise Unavailable.new("calibre-server: #{ex.message}")
     end
 
+    # "/<library id>" for /get/* links, "" for the default library
+    def library_suffix : String
+      library_path
+    end
+
     private def library_path
       @library ? "/#{URI.encode_path_segment(@library.not_nil!)}" : ""
     end

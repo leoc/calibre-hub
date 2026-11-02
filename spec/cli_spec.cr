@@ -324,6 +324,50 @@ describe "hub CLI" do
     end
   end
 
+  it "manages reading lists by id or name" do
+    with_stub do |s|
+      leseliste = {id: 1, name: "Leseliste", description: "Für den Boox", owner: "arthur", visibility: "private",
+                   sync: true, favorite: true, isDefault: true, count: 2, editable: true}
+      urlaub = {id: 2, name: "Urlaub", description: "", owner: "arthur", visibility: "readable",
+                sync: false, favorite: false, isDefault: false, count: 0, editable: true}
+      s.on("GET", "/api/lists", [leseliste, urlaub])
+      s.on("GET", "/api/config", {categoryColumn: "kategorie"})
+      code, stdo, _ = cli(s, "list", "ls")
+      code.should eq(0)
+      stdo.lines[1].split(/\s{2,}/).should eq(["1", "Leseliste", "2", "default, sync, favorite"])
+      stdo.lines[2].split(/\s{2,}/).should eq(["2", "Urlaub", "0", "readable"])
+
+      s.on("GET", "/api/books", {total: 2, offset: 0, limit: 50, books: [book, book(2, "Dune Messiah")]})
+      code, stdo, _ = cli(s, "list", "show", "leseliste", "--sort", "title")
+      code.should eq(0)
+      stdo.lines[0].should eq("Leseliste (#1, 2 books, default, sync, favorite)")
+      stdo.should contain("Dune Messiah")
+      HTTP::Params.parse(s.requests.find! { |r| r.resource.starts_with?("/api/books?") }.resource.partition('?')[2]).to_s.should eq("list=1&sort=title")
+      cli(s, "list", "show", "Nirgends")[0].should eq(2)
+
+      s.on("POST", "/api/lists", urlaub.merge({id: 3, name: "Krimis"}), 201)
+      code, stdo, _ = cli(s, "list", "create", "Krimis", "--sync", "--default", "--visibility", "readable")
+      code.should eq(0)
+      stdo.should eq("created list #3 Krimis\n")
+      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"name":"Krimis","visibility":"readable","sync":true,"isDefault":true})))
+
+      s.on("POST", "/api/lists/2/books", {list: urlaub.merge({count: 1}), added: [5]})
+      code, stdo, err = cli(s, "list", "add", "Urlaub", "5", "6")
+      code.should eq(0)
+      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"bookIds":[5,6]})))
+      stdo.should eq("1 book added to Urlaub (now 1)\n")
+      err.should contain("already in the list or unknown: 6")
+      s.on("POST", "/api/lists/2/books/remove", {list: urlaub, removed: [5]})
+      cli(s, "list", "rm", "2", "5")[1].should eq("1 book removed from Urlaub (now 0)\n")
+
+      # deleting asks unless --yes
+      cli(s, "list", "delete", "Urlaub")[0].should eq(1)
+      s.on("DELETE", "/api/lists/2", {list: urlaub})
+      cli(s, "list", "delete", "Urlaub", "--yes")[1].should eq("deleted list Urlaub\n")
+      cli(s, "list", "frob")[0].should eq(1)
+    end
+  end
+
   it "downloads a book file" do
     dir = File.tempname("download")
     Dir.mkdir(dir)

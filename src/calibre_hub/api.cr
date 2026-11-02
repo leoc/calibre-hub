@@ -6,6 +6,7 @@ require "./trash"
 require "./classify"
 require "./metadata"
 require "./lists"
+require "./opds"
 
 module CalibreHub
   module Api
@@ -264,7 +265,7 @@ module CalibreHub
       write_routes(w, j, [classify, metadata].compact.map(&.as(Jobs)))
     end
     trash.try { |t| trash_routes(t) }
-    lists.try { |l| list_routes(l, auth, jobs) }
+    lists.try { |l| list_routes(l, auth, jobs, calibre) }
     classify_routes(classify, calibre)
     metadata_routes(metadata, calibre)
 
@@ -358,7 +359,30 @@ module CalibreHub
   end
 
   # Reading lists (lists.cr). Owner is the logged-in user.
-  def self.list_routes(lists : Lists, auth : Auth, jobs : Jobs?)
+  def self.list_routes(lists : Lists, auth : Auth, jobs : Jobs?, calibre : Calibre? = nil)
+    # OPDS catalogs per list (Basic auth like /opds); before the /opds/*
+    # passthrough
+    get "/opds/lists" do |env|
+      env.response.content_type = Opds::NAV
+      Opds.lists_feed(lists.all(auth.user))
+    end
+
+    get "/opds/lists/:id" do |env|
+      list = begin
+        lists[list_id(env), auth.user]
+      rescue Lists::NotFound
+        env.response.status_code = 404
+        next "not found"
+      end
+      ids = lists.book_ids(list.id)
+      offset = (env.params.query["offset"]?.try(&.to_i?) || 0).clamp(0, Int32::MAX)
+      page = ids[offset, Opds::PAGE_SIZE]? || [] of Int64
+      books = calibre ? calibre.books(page, Calibre::DETAIL_FIELDS) : [] of Book
+      by_id = books.index_by(&.id)
+      env.response.content_type = Opds::ACQ
+      Opds.list_feed(list, page.compact_map { |id| by_id[id]? }, offset, ids.size, calibre.try(&.library_suffix) || "")
+    end
+
     get "/api/lists" do |env|
       write_errors(env) { lists.all(auth.user).to_json }
     end

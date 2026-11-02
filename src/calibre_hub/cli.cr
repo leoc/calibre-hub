@@ -79,6 +79,7 @@ module CalibreHub
         when "tag"        then tag(args)
         when "upload"     then upload(args)
         when "bulk"       then bulk(args)
+        when "list"       then list(args)
         when "completion" then completion(args)
         when "help"
           help(args.positional.first?.try { |n| Cli.command(n) || raise Usage.new("unknown command: #{n}") })
@@ -357,9 +358,88 @@ module CalibreHub
         end
       end
 
-      private def confirm(question : String)
+      # --- lists ------------------------------------------------------------
+
+      private def list(args : Args)
+        action = args.positional[0]? || raise Usage.new("ls, show, create, add, rm or delete expected", "list")
+        rest = args.positional[1..]
+        case action
+        when "ls"
+          lists = client.get("/api/lists")
+          return @out.puts lists.to_json if @json
+          return @out.puts "no lists" if lists.as_a.empty?
+          Output.table(@out, ["ID", "Name", "Books", "Flags"], lists.as_a.map { |l| [l["id"].to_s, l["name"].as_s, l["count"].to_s, Runner.list_flags(l)] }, [nil, 50])
+        when "show"
+          raise Usage.new("one list expected", "list") unless rest.size == 1
+          l = find_list(rest[0])
+          params = HTTP::Params{"list" => l["id"].to_s}
+          {"sort", "order"}.each { |k| args[k]?.presence.try { |v| params[k] = v } }
+          {"limit", "offset"}.each { |k| args[k]?.try { |v| params[k] = Runner.int(k, v, min: 0).to_s } }
+          page = client.get("/api/books", params)
+          return @out.puts({list: l, books: page}.to_json) if @json
+          @out.puts "#{l["name"].as_s} (##{l["id"]}, #{l["count"]} #{l["count"] == 1 ? "book" : "books"}#{(f = Runner.list_flags(l)) == "-" ? "" : ", #{f}"})"
+          l["description"].as_s.presence.try { |d| @out.puts d }
+          books = page["books"].as_a
+          @out.puts
+          books.empty? ? @out.puts("no books") : Output.books(@out, books, category)
+          total = page["total"].as_i64
+          offset = page["offset"].as_i64
+          @out.puts "#{offset + 1}-#{offset + books.size} of #{total} books (--offset #{offset + books.size} for more)" if books.size < total && !books.empty?
+        when "create"
+          raise Usage.new("one name expected", "list") unless rest.size == 1
+          body = {"name" => JSON::Any.new(rest[0])}
+          args["description"]?.try { |d| body["description"] = JSON::Any.new(d) }
+          args["visibility"]?.try { |v| body["visibility"] = JSON::Any.new(v) }
+          {"sync" => "sync", "favorite" => "favorite", "default" => "isDefault"}.each do |flag, key|
+            body[key] = JSON::Any.new(true) if args.flag?(flag)
+          end
+          l = client.post("/api/lists", body)
+          @json ? @out.puts(l.to_json) : @out.puts("created list ##{l["id"]} #{l["name"].as_s}")
+        when "add", "rm"
+          raise Usage.new("a list and book ids expected", "list") if rest.size < 2
+          l = find_list(rest[0])
+          ids = rest[1..].map { |i| Runner.id(i) }
+          path = action == "add" ? "/api/lists/#{l["id"]}/books" : "/api/lists/#{l["id"]}/books/remove"
+          r = client.post(path, {"bookIds" => ids})
+          return @out.puts r.to_json if @json
+          changed = (r[action == "add" ? "added" : "removed"]?.try(&.as_a) || [] of JSON::Any).map(&.as_i64)
+          verb = action == "add" ? "added to" : "removed from"
+          @out.puts "#{changed.size} #{changed.size == 1 ? "book" : "books"} #{verb} #{r["list"]["name"].as_s} (now #{r["list"]["count"]})"
+          skipped = ids - changed
+          @err.puts "#{action == "add" ? "already in the list or unknown" : "not in the list"}: #{skipped.join(", ")}" unless skipped.empty?
+        when "delete"
+          raise Usage.new("one list expected", "list") unless rest.size == 1
+          l = find_list(rest[0])
+          confirm("Delete the list #{l["name"].as_s} (#{l["count"]} books stay in the library)?", "list") unless args.flag?("yes")
+          r = client.json("DELETE", "/api/lists/#{l["id"]}")
+          @json ? @out.puts(r.to_json) : @out.puts("deleted list #{l["name"].as_s}")
+        else
+          raise Usage.new("ls, show, create, add, rm or delete expected, not #{action}", "list")
+        end
+      end
+
+      # a list by id or name (ignoring case)
+      private def find_list(ref : String) : JSON::Any
+        lists = client.get("/api/lists").as_a
+        found = ref.to_i64?.try { |id| lists.find { |l| l["id"].as_i64 == id } } ||
+                lists.find { |l| l["name"].as_s.downcase == ref.downcase }
+        found || raise Failure.new(NOT_FOUND, "list #{ref} not found")
+      end
+
+      def self.list_flags(l : JSON::Any) : String
+        flags = [] of String
+        flags << "default" if l["isDefault"]?.try(&.as_bool?)
+        flags << "sync" if l["sync"]?.try(&.as_bool?)
+        flags << "favorite" if l["favorite"]?.try(&.as_bool?)
+        vis = l["visibility"]?.try(&.as_s?)
+        flags << vis if vis && vis != "private"
+        flags << "read-only" if l["editable"]?.try(&.as_bool?) == false
+        flags.empty? ? "-" : flags.join(", ")
+      end
+
+      private def confirm(question : String, command = "bulk")
         tty = @in.as?(IO::FileDescriptor).try(&.tty?)
-        raise Usage.new("#{question} Add --yes to confirm without a terminal", "bulk") unless tty
+        raise Usage.new("#{question} Add --yes to confirm without a terminal", command) unless tty
         @err.print "#{question} [y/N] "
         @err.flush
         answer = @in.gets.to_s.strip.downcase

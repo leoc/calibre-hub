@@ -1,6 +1,6 @@
 ---
 name: calibre-hub
-description: Search, inspect, download, edit, tag, upload and bulk-change books in Arthur's calibre library through the calibre-hub CLI (`hub`, same as `calibre-hub cli`). Use whenever Arthur asks about his books, e-books, the calibre library or the hub (hub.nor.sh), wants to find or show a book, fix metadata (title, authors, series, category/Kategorie, tags, description, ISBN), put books on the reading list (tag leseliste), upload e-book files, or change many books at once.
+description: Search, inspect, download, edit, tag, upload and bulk-change books in Arthur's calibre library through the calibre-hub CLI (`hub`, same as `calibre-hub cli`). Use whenever Arthur asks about his books, e-books, the calibre library or the hub (hub.nor.sh), wants to find or show a book, fix metadata (title, authors, series, category/Kategorie, tags, description, ISBN), put books on a reading list (Leseliste or any other list), manage lists, upload e-book files, or change many books at once.
 ---
 
 # calibre-hub CLI
@@ -44,8 +44,8 @@ hub edit 12 --series Dune --index 2 --kategorie Roman/SF --pubdate 1969-01-01
 hub edit 12 --rating 8 --identifier isbn=9780441013593 --publisher Ace
 hub edit 12 --series ''                          # empty value clears
 hub edit 12 --comments-file /tmp/desc.html       # or - for stdin
-hub tag add 12 13 leseliste                      # put on the reading list
-hub tag rm 12 leseliste
+hub tag add 12 13 sf
+hub tag rm 12 sf
 hub upload a.epub b.pdf --tag neu --kategorie Roman/Krimi --json
 hub upload dune.pdf --add-format-to 12           # extra format for a book
 hub bulk --ids 12,13,14 --add-tags sf --yes --json
@@ -62,3 +62,27 @@ hub bulk --ids 7,3,9 --series Dune --number-series --yes --json   # 1, 2, 3 in i
 - bulk without `--yes` refuses outside a terminal, so always pass it, after
   checking the count with `hub search ... --json` (`total`). Its JSON is
   the finished job: `{status, done, total, errors: [{bookId, error}]}`.
+
+## Reading lists
+
+Lists are like playlists and live in the hub (calibre itself doesn't see
+them). The reading list is the list "Leseliste" (default list, synced to
+the Boox); the tag `leseliste` is no longer read, so never use tags for it.
+A list is named by id or name (ignoring case).
+
+```sh
+hub list ls --json                               # [{id, name, count, isDefault, sync, favorite, visibility, ...}]
+hub list show Leseliste --json                   # {list, books: {total, books}}; --sort listAdded|title|author|series
+hub list add Leseliste 12 13                     # put on the reading list
+hub list rm Leseliste 12
+hub list create 'Urlaub 2027' --description 'Für den Strand' --sync --favorite
+hub list delete 'Urlaub 2027' --yes              # books stay in the library
+hub search --json ... | jq '.books[].lists'      # every book has the ids of its lists
+```
+
+- `sync`: the list is mirrored to the reader, one folder per list.
+- add reports the books that were new; ids already in the list (or
+  unknown) are named on stderr.
+- `delete` without `--yes` refuses outside a terminal; ask Arthur first.
+- Reader apps get each list as an OPDS catalog: `/opds/lists` (Basic auth
+  like `/opds`).

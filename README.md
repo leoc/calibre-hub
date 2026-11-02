@@ -53,6 +53,7 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `PUT /api/books/:id/cover`, `POST .../cover/from-file`, `POST .../cover/from-url` | set the cover from an image, a book file, a URL |
 | `GET /api/books/:id/cover/search[?q=]` | cover candidates from Open Library and, by ISBN, DNB (no API keys) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
+| `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
 | `GET /healthz` | no auth |
 
 calibre-server down: 502 with a JSON body.
@@ -109,7 +110,11 @@ lists and goes back into them when it is restored from the trash.
 Migration: on the first start the books with the tag `leseliste.tag`
 (default `leseliste`) become the list "Leseliste", synced, favorite and
 default list. The tag stays on the books but is no longer read; the list is
-the source of truth from then on. The reader folder changes from category
+the source of truth from then on.
+
+Visibility is set in the web app ("Liste bearbeiten") and stored per list;
+with a single login user it changes nothing yet. Reader apps can add
+`https://<hub>/opds/lists` as a catalog of their own. The reader folder changes from category
 subfolders to `<target>/Leseliste/`.
 
 Inbox (`inbox.path`): files unchanged for `inbox.stableSeconds` are added
@@ -237,8 +242,14 @@ hub edit 12 --title 'Dune' --authors 'Frank Herbert' --series Dune --index 1 \
   --kategorie Roman/SF --pubdate 1965-08-01 --rating 8 --identifier isbn=9780441013593
 hub edit 12 --series ''                  # empty clears
 hub edit 12 --comments-file - < text.html
-hub tag add 12 13 14 leseliste
-hub tag rm 12 leseliste
+hub tag add 12 13 14 sf
+hub tag rm 12 sf
+hub list ls                              # reading lists; a list by id or name
+hub list show Leseliste --sort title
+hub list create Urlaub --description 'Für den Strand' --sync --favorite --visibility private
+hub list add Leseliste 12 13
+hub list rm leseliste 12
+hub list delete Urlaub --yes
 hub upload *.epub --tag neu --kategorie Roman/Krimi
 hub upload dune.pdf --add-format-to 12
 hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
