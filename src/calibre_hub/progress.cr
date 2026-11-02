@@ -17,6 +17,8 @@ module CalibreHub
     MAX_NAME     =    80
     FORMAT       = /\A[a-z0-9]{1,10}\z/
     SOURCES      = %w(web koreader)
+    # how far back a position sent late (read offline) may date itself
+    MAX_AGE = 30.days
 
     @[JSON::Serializable::Options(emit_nulls: true)]
     struct Entry
@@ -79,10 +81,13 @@ module CalibreHub
     end
 
     # Stores the device's position; body: {format, position, fraction,
-    # device, deviceName?, source?}. The time is the hub's, so devices with
-    # a wrong clock don't win.
+    # device, deviceName?, source?, age?}. The time is the hub's, so devices
+    # with a wrong clock don't win. age (milliseconds, measured on the
+    # device's own clock) dates a position read offline back to when it was
+    # read, so it doesn't beat what other devices read in the meantime; it
+    # never replaces a newer position of the same device.
     def save(user : String, book_id : Int64, body : Hash(String, JSON::Any), now = Time.utc) : Entry
-      if unknown = body.keys.find { |k| !%w(format position fraction device deviceName source).includes?(k) }
+      if unknown = body.keys.find { |k| !%w(format position fraction device deviceName source age).includes?(k) }
         raise Edit::Invalid.new(unknown, "unknown field")
       end
       device = string(body, "device", MAX_DEVICE)
@@ -96,14 +101,24 @@ module CalibreHub
       source = body.has_key?("source") ? string(body, "source", 20) : "web"
       raise Edit::Invalid.new("source", "one of #{SOURCES.join(", ")}") unless SOURCES.includes?(source)
       name = device if name.empty?
-      @db.exec <<-SQL, user, book_id, device, name, format, position, fraction, source, now.to_unix_ms
+      at = now - age(body)
+      @db.exec <<-SQL, user, book_id, device, name, format, position, fraction, source, at.to_unix_ms
         insert into reading_progress (user, book_id, device, device_name, format, position, fraction, source, updated_at)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?)
         on conflict (user, book_id, device) do update set device_name = excluded.device_name,
           format = excluded.format, position = excluded.position, fraction = excluded.fraction,
           source = excluded.source, updated_at = excluded.updated_at
+        where excluded.updated_at >= reading_progress.updated_at
         SQL
-      Entry.new(book_id, device, name, format, position, fraction, source, Time.unix_ms(now.to_unix_ms))
+      @db.query_one("select #{COLUMNS} from reading_progress where user = ? and book_id = ? and device = ?",
+        user, book_id, device) { |rs| read(rs) }
+    end
+
+    private def age(body) : Time::Span
+      return Time::Span.zero unless v = body["age"]?
+      ms = v.as_i64? || raise Edit::Invalid.new("age", "milliseconds from 0 expected")
+      raise Edit::Invalid.new("age", "milliseconds from 0 expected") if ms < 0
+      {ms.milliseconds, MAX_AGE}.min
     end
 
     private def string(body, key, max) : String

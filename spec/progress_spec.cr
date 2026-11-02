@@ -55,6 +55,30 @@ describe CalibreHub::Progress do
     end
   end
 
+  it "dates positions read offline back by their age" do
+    with_progress do |progress|
+      t = Time.utc(2026, 11, 2, 12, 0, 0)
+      ok = %("format": "epub", "position": "x", "device": "phone")
+      # the Boox read at 11:00; the phone read offline at 10:00 and syncs at 12:00
+      progress.save("arthur", 1, body(%({"format": "epub", "position": "y", "fraction": 0.6, "device": "boox"})), t - 1.hour)
+      e = progress.save("arthur", 1, body(%({#{ok}, "fraction": 0.4, "age": 7200000})), t)
+      e.updated_at.should eq(t - 2.hours)
+      e.fraction.should eq(0.4)
+      progress.of("arthur", 1).map(&.device).should eq(%w(boox phone))
+
+      # an older position of the same device doesn't replace a newer one
+      progress.save("arthur", 1, body(%({#{ok}, "fraction": 0.5})), t)
+      e = progress.save("arthur", 1, body(%({#{ok}, "fraction": 0.45, "age": 60000})), t + 10.seconds)
+      e.fraction.should eq(0.5)
+      e.updated_at.should eq(t)
+
+      # at most 30 days back
+      progress.save("arthur", 2, body(%({#{ok}, "fraction": 0.1, "age": 9999999999})), t).updated_at.should eq(t - 30.days)
+      expect_raises(CalibreHub::Edit::Invalid, "milliseconds") { progress.save("arthur", 1, body(%({#{ok}, "fraction": 0, "age": -1}))) }
+      expect_raises(CalibreHub::Edit::Invalid, "milliseconds") { progress.save("arthur", 1, body(%({#{ok}, "fraction": 0, "age": "1h"}))) }
+    end
+  end
+
   it "rejects broken positions" do
     with_progress do |progress|
       ok = %("format": "epub", "position": "x", "device": "a")
