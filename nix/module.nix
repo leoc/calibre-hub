@@ -356,6 +356,54 @@ in
       };
     };
 
+    embed = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Embed metadata and cover into the book files (through calibre-server,
+          only formats calibre can write) after an edit of title, authors,
+          series, tags, description, identifiers, languages, publisher, date,
+          rating or cover, so copies on readers show the same. Changes the
+          files' checksums; the KOReader partial MD5 a file had before is kept
+          in the state DB (file_checksums).
+        '';
+      };
+      delay = mkOption {
+        type = types.ints.positive;
+        default = 60;
+        description = "Seconds after the last edit of a book before its files are rewritten (several quick edits, one rewrite).";
+      };
+    };
+
+    convert = {
+      enable = mkEnableOption ''
+        conversion of added books (inbox, upload, calibre) into the target
+        format; the original stays, the converted file is added. The whole
+        library can be converted through POST /api/convert either way
+      '';
+      target = mkOption {
+        type = types.enum [
+          "EPUB"
+          "AZW3"
+          "MOBI"
+          "PDF"
+          "DOCX"
+          "FB2"
+        ];
+        default = "EPUB";
+      };
+      ignore = mkOption {
+        type = types.listOf types.str;
+        default = [
+          "PDF"
+          "CBZ"
+          "CBR"
+        ];
+        description = "Formats never converted from (a book with only these is left alone).";
+      };
+    };
+
     leseliste = {
       enable = mkEnableOption "the reading list handler (mirror the synced lists into a folder, one subfolder per list)";
       tag = mkOption {
@@ -491,7 +539,7 @@ in
       ++ lib.optional ((cfg.classify.enable || cfg.metadata.useModel) && config.services.ollama.enable) "ollama.service";
       wants = [ "calibre-server.service" ];
       unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable;
-      # ebook-convert for the reading list, pdfinfo/pdftotext for metadata
+      # ebook-convert for the reading list and conversions, pdfinfo/pdftotext for metadata
       path = [
         calibre
         pkgs.poppler-utils
@@ -537,6 +585,11 @@ in
         CALIBRE_HUB_HARDCOVER_TOKEN_FILE = lib.optionalString (
           cfg.metadata.hardcoverTokenFile != null
         ) "%d/hardcover-token";
+        CALIBRE_HUB_EMBED = lib.boolToString cfg.embed.enable;
+        CALIBRE_HUB_EMBED_DELAY = toString cfg.embed.delay;
+        CALIBRE_HUB_CONVERT = lib.boolToString cfg.convert.enable;
+        CALIBRE_HUB_CONVERT_TARGET = cfg.convert.target;
+        CALIBRE_HUB_CONVERT_IGNORE = lib.concatStringsSep "," cfg.convert.ignore;
         CALIBRE_HUB_FRONTEND =lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";

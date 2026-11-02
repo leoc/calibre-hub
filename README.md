@@ -52,6 +52,9 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `GET /api/books/:id/metadata/candidates[?q=]` | for "Metadaten holen": `{candidates: [{source, score, sure, url, fields: {title, authors, isbn, publisher, pubdate, languages, comments, series, seriesIndex, coverUrl}}]}`, best first; applied through `PATCH /api/books/:id` and `.../cover/from-url` |
 | `PUT /api/books/:id/cover`, `POST .../cover/from-file`, `POST .../cover/from-url` | set the cover from an image, a book file, a URL |
 | `GET /api/books/:id/cover/search[?q=]` | cover candidates from Open Library and, by ISBN, DNB (no API keys) |
+| `GET /api/embed/status` | `{enabled, delay, pending}`: books waiting for their files to be rewritten; only `{enabled: false}` when off |
+| `GET /api/convert/status` | `{enabled, target, ignore, targets, running, lastRun}` (`enabled`: added books are converted) |
+| `POST /api/convert` `{target?}` | converts every book without `target` (default the configured one; EPUB, AZW3, MOBI, PDF, DOCX, FB2) that has a format not in `ignore`; returns 202 `{jobId, total}`, progress in `GET /api/jobs/:id` |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
 | `GET /healthz` | no auth |
@@ -99,6 +102,40 @@ renamed list renames its folder, a list no longer synced loses its folder.
 Nested lists nest their folders (`<target>/Urlaub/2026/…`); a synced list
 takes its sublists along, unsynced ones too.
 It reads the lists from the state DB, read-only.
+
+## Book files
+
+Embedding (`embed.enable`, on by default): after an edit of title, authors,
+author sort, series, tags, description, identifiers, languages, publisher,
+date, rating or cover (and when a format is added) the hub has
+calibre-server write the metadata and cover into the book's files (cdb
+`embed_metadata`), so a copy on a reader shows what calibre shows. Only
+formats calibre has a metadata writer for (EPUB, KEPUB, AZW3, MOBI, PDF,
+DOCX, FB2, RTF, ODT, ...); others are skipped. The queue is in the state DB
+(`embed_queue`): every edit moves the book's due time to `embed.delay`
+seconds later, so several quick edits end in one rewrite; failures are
+retried with backoff. A book is not rewritten again for the same metadata
+unless the cover or its formats changed. calibre embeds nothing into a book
+without a cover; for those the formats calibre-server embeds into on
+download (EPUB, AZW3, MOBI, PDF) are downloaded and added back. Covers set
+outside the hub (calibre's own web UI) don't show in events and are
+embedded with the next edit.
+
+After a rewrite the hub queues a `changed` event with `formats` (the same
+list on both sides: the files changed), so the reading list copies the file
+again. Rewriting changes the file's checksum and so the document id
+KOReader syncs reading positions under (KOSync partial MD5); the checksum a
+file had before each rewrite is kept in `file_checksums` (book, format,
+partial MD5, size, time; the oldest per book and format is the original).
+
+Conversion (`convert.enable`, off by default): added books (inbox, upload,
+calibre) without the `convert.target` format are converted with
+`ebook-convert` from a copy downloaded through calibre-server, and the new
+file is added; the original stays. Sources in `convert.ignore` (PDF, CBZ,
+CBR) are never converted from. `POST /api/convert` (the web app's
+"Bestand nach EPUB konvertieren" on the Metadaten page) does the same for
+the whole library, also while automatic conversion is off. Conversions are
+jobs in a queue of their own, resumed after a restart.
 
 ## Reading lists
 
@@ -382,6 +419,8 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
       nightly = "03:15";
       hardcoverTokenFile = "/run/secrets/hardcover-token";  # null: no Hardcover
     };
+    # embed = { enable = true; delay = 60; };  # the defaults
+    convert = { enable = true; target = "EPUB"; ignore = [ "PDF" "CBZ" "CBR" ]; };
     alertCommand = "/run/current-system/sw/bin/notify-admin";
     handlers."20-log" = pkgs.writeShellScript "log" "cat >> /var/lib/calibre-hub/events.log";
   };
@@ -434,5 +473,7 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT` | `0.85`, `03:45`, `300` | auto-apply from, nightly run (empty: none), seconds per answer |
 | `CALIBRE_HUB_METADATA` | `false` | `true` turns on the metadata cleanup |
 | `CALIBRE_HUB_METADATA_SOURCES`, `_NIGHTLY`, `_MODEL`, `_INTERVAL` | `file,hardcover,dnb,openlibrary`, none, `false`, `1000` | sources, nightly run, clean names with the classify model, ms between requests |
+| `CALIBRE_HUB_EMBED`, `_EMBED_DELAY` | `false`, `60` | embed metadata into the files after edits (the module turns it on), seconds after the last edit |
+| `CALIBRE_HUB_CONVERT`, `_CONVERT_TARGET`, `_CONVERT_IGNORE` | `false`, `EPUB`, `PDF,CBZ,CBR` | convert added books, target format, formats never converted from |
 | `CALIBRE_HUB_OPENLIBRARY_URL`, `_OPENLIBRARY_COVERS_URL`, `_DNB_URL`, `_HARDCOVER_URL` | the public services | base URLs (stubs in the VM test) |
 | `CALIBRE_HUB_HARDCOVER_TOKEN_FILE`, `_HARDCOVER_TOKEN` | none | Hardcover API token (file first); none: source skipped |

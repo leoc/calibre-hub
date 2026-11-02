@@ -207,7 +207,8 @@ module CalibreHub
 
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
                   fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil,
-                  classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil, lists : Lists? = nil)
+                  classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil, lists : Lists? = nil,
+                  extra_jobs = [] of Jobs)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -283,7 +284,7 @@ module CalibreHub
     end
 
     if (w = writer) && (j = jobs)
-      write_routes(w, j, [classify, metadata].compact.map(&.as(Jobs)))
+      write_routes(w, j, [classify, metadata].compact.map(&.as(Jobs)) + extra_jobs)
     end
     trash.try { |t| trash_routes(t) }
     lists.try { |l| list_routes(l, auth, jobs, calibre) }

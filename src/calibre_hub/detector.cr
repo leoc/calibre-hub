@@ -111,6 +111,12 @@ module CalibreHub
       end
     end
 
+    # Events the hub makes up itself (e.g. a book's files were rewritten),
+    # queued like detected ones
+    def record(events : Array(Event))
+      @mutex.synchronize { store([] of Book, events) }
+    end
+
     def diff(old : JSON::Any, new : JSON::Any) : Hash(String, Array(JSON::Any))
       changes = {} of String => Array(JSON::Any)
       keys = old.as_h.keys | new.as_h.keys

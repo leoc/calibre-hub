@@ -3,6 +3,7 @@ require "./calibre_hub/calibre"
 require "./calibre_hub/detector"
 require "./calibre_hub/auth"
 require "./calibre_hub/api"
+require "./calibre_hub/files"
 require "./calibre_hub/dispatcher"
 require "./calibre_hub/inbox"
 require "./calibre_hub/handlers/leseliste"
@@ -66,6 +67,13 @@ module CalibreHub
     getter hardcover_url : String = env("CALIBRE_HUB_HARDCOVER_URL", "https://api.hardcover.app/v1/graphql")
     # pause between two requests to the same source
     getter metadata_interval : Time::Span = env("CALIBRE_HUB_METADATA_INTERVAL", "1000").to_i.milliseconds
+    # embed metadata and cover into the book files after edits, debounced
+    getter embed : Bool = env("CALIBRE_HUB_EMBED", "false") == "true"
+    getter embed_delay : Time::Span = env("CALIBRE_HUB_EMBED_DELAY", "60").to_i.seconds
+    # convert added books into a target format, keeping the original
+    getter convert : Bool = env("CALIBRE_HUB_CONVERT", "false") == "true"
+    getter convert_target : String = env("CALIBRE_HUB_CONVERT_TARGET", "EPUB").upcase
+    getter convert_ignore : Array(String) = env("CALIBRE_HUB_CONVERT_IGNORE", "PDF,CBZ,CBR").split(',', remove_empty: true).map(&.strip.upcase)
 
     # read only by serve, so scan works without them
     def login_password : String
@@ -299,6 +307,28 @@ module CalibreHub
     jobs
   end
 
+  # Metadata embedded into the files after edits (when on); conversion of
+  # added books (when on) and of the library on request (always)
+  def self.book_files(config : Config, calibre : Calibre, writer : Writer, db : DB::Database,
+                      detector : Detector, wake : Channel(Nil)) : {Embedder?, ConvertJobs}
+    unless ConvertJobs::TARGETS.includes?(config.convert_target)
+      abort "CALIBRE_HUB_CONVERT_TARGET: one of #{ConvertJobs::TARGETS.join(", ")}"
+    end
+    embedder = if config.embed
+                 e = Embedder.new(db, calibre, config.library, config.embed_delay, detector, wake)
+                 writer.on_cover = ->(id : Int64) { e.enqueue(id, force: true); nil }
+                 e.start
+                 puts "embed: metadata into the files #{config.embed_delay.total_seconds.to_i} s after the last edit"
+                 e
+               end
+    convert = ConvertJobs.new(db, calibre, writer, config.convert_target, config.convert_ignore, config.convert)
+    if config.convert
+      convert.watch_events
+      puts "convert: added books to #{config.convert_target} (not from #{config.convert_ignore.join(", ")})"
+    end
+    {embedder, convert}
+  end
+
   # Lists: deleted books leave them; the reading list tag becomes a list
   # once (retried until calibre-server answers)
   def self.lists(config : Config, calibre : Calibre, db : DB::Database, wake : Channel(Nil)) : Lists
@@ -347,8 +377,10 @@ module CalibreHub
     [jobs, metadata_jobs, classify_jobs].compact.each { |j| j.list_members = members }
     trash = Trash.new(calibre, writer, config.library, db)
     trash.on_restore = ->(old_id : Int64, new_id : Int64) { lists.book_restored(old_id, new_id) }
+    embedder, convert_jobs = book_files(config, calibre, writer, db, detector, wake)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs)
+    file_routes(convert_jobs, embedder)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

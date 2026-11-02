@@ -47,6 +47,8 @@ module CalibreHub
       force : Bool, add_format_to : Int64?
 
     getter calibre : Calibre
+    # a cover was set; covers don't show in events (only lastModified changes)
+    property on_cover : Proc(Int64, Nil)?
 
     def initialize(@calibre : Calibre, @detector : Detector?, @wake : Channel(Nil)?,
                    @category_column : String?)
@@ -419,6 +421,7 @@ module CalibreHub
       raise Unsupported.new("JPEG or PNG expected#{type == "webp" ? " (convert WebP first)" : ""}") unless {"jpeg", "png"}.includes?(type)
       @calibre.set_cover(id, data, type.not_nil!)
       written([id])
+      @on_cover.try &.call(id)
       @calibre.book(id) || raise NotFound.new
     end
 

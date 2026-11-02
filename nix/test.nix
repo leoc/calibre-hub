@@ -67,6 +67,8 @@ pkgs.testers.runNixOSTest {
           hardcoverTokenFile = "/etc/hub/hardcover";
           requestInterval = 0;
         };
+        embed.delay = 2;
+        convert.enable = true;
         handlerAttempts = 2;
         alertCommand = "${pkgs.writeShellScript "alert" ''echo "$1: $2" >> /var/lib/calibre-hub/alerts.log''}";
         handlers = {
@@ -689,6 +691,65 @@ pkgs.testers.runNixOSTest {
         assert "auto-metadaten" not in b["tags"], b
         assert api("GET", "/api/metadata/status")[1]["changedBooks"] == 0
 
+    def library_file(book_id, fmt):
+        rel = machine.succeed(f"sqlite3 /srv/books/library/metadata.db \"select b.path || '/' || d.name from books b join data d on d.book = b.id where b.id = {book_id} and d.format = '{fmt.upper()}'\"").strip()
+        assert rel, (book_id, fmt)
+        return f"/srv/books/library/{rel}.{fmt.lower()}"
+
+    def embed_idle():
+        machine.wait_until_succeeds(f"test $(sqlite3 {STATE} 'select count(*) from embed_queue') = 0", timeout=60)
+
+    META = "QT_QPA_PLATFORM=offscreen ebook-meta"
+
+    with subtest("embed metadata into the files"):
+        status, r = api("PUT", f"/api/lists/{lid}/books/1")
+        assert status == 200, (status, r)
+        machine.wait_until_succeeds("ls /srv/books/boox/Leseliste/*.epub", timeout=30)
+        embed_idle()
+        status, b = api("PATCH", "/api/books/1", {"title": "Eingebettet", "publisher": "Hub Verlag"})
+        assert status == 200 and b["title"] == "Eingebettet", (status, b)
+        # several quick edits, one rewrite
+        status, b = api("PATCH", "/api/books/1", {"addTags": ["eingebettet"]})
+        assert status == 200, (status, b)
+        machine.wait_until_succeeds(f"{META} '{library_file(1, 'epub')}' | grep -q '^Title *: Eingebettet$'", timeout=60)
+        machine.succeed(f"{META} '{library_file(1, 'epub')}' | grep -q '^Publisher *: Hub Verlag$'")
+        machine.wait_until_succeeds(f"{META} '{library_file(1, 'epub')}' | grep -q '^Tags *: .*eingebettet'")
+        # the reading list copies the rewritten file again
+        machine.wait_until_succeeds(f"{META} /srv/books/boox/Leseliste/*Eingebettet.epub | grep -q '^Title *: Eingebettet$'", timeout=60)
+        machine.wait_until_succeeds(f"cmp '{library_file(1, 'epub')}' /srv/books/boox/Leseliste/*Eingebettet.epub", timeout=60)
+        # the KOReader checksum of the file before the first rewrite is kept
+        n = machine.succeed(f"sqlite3 {STATE} \"select count(*) from file_checksums where book_id = 1 and format = 'EPUB' and length(partial_md5) = 32\"").strip()
+        assert int(n) >= 1, n
+        assert api("GET", "/api/embed/status")[1]["enabled"] is True
+        embed_idle()
+        status, r = api("DELETE", f"/api/lists/{lid}/books/1")
+        machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
+
+    with subtest("convert added books"):
+        st = api("GET", "/api/convert/status")[1]
+        assert st["enabled"] is True and st["target"] == "EPUB" and st["ignore"] == ["PDF", "CBZ", "CBR"], st
+        # an upload: the TXT stays, an EPUB is added
+        machine.succeed("printf 'Umwandlung\\n\\nText\\n' > /tmp/Umwandlung.txt")
+        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Umwandlung.txt")
+        assert status == 201 and r["book"]["formats"] == ["TXT"], (status, r)
+        tid = r["book"]["id"]
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{tid} | jq -e '.formats | sort == [\"EPUB\", \"TXT\"]'", timeout=120)
+        machine.succeed(f"{META} '{library_file(tid, 'epub')}' | grep -q '^Title *: Umwandlung$'")
+        # the inbox: a DOCX
+        machine.succeed("printf 'Dokument\\n\\nText\\n' > /tmp/d.txt")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/d.txt /tmp/Dokument.docx --title Dokument --authors 'Doris Docx'")
+        machine.succeed("install -m 664 -g calibre-hub /tmp/Dokument.docx /srv/books/inbox/Dokument.docx")
+        machine.wait_until_succeeds("ls /srv/books/inbox/_imported/*/Dokument.docx", timeout=90)
+        did = book_by_title("Dokument")["id"]
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{did} | jq -e '.formats | sort == [\"DOCX\", \"EPUB\"]'", timeout=120)
+        # the library: nothing left to convert to EPUB; a PDF-only book would be left alone
+        status, r = api("POST", "/api/convert", {})
+        assert status == 202, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["errors"] == [], j
+        assert api("POST", "/api/convert", {"target": "exe"})[0] == 400
+        embed_idle()
+
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/x.txt /tmp/kaputt.epub --title Kaputt --authors Niemand")
@@ -700,6 +761,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("grep -q '\"deleted\",1,' /var/lib/calibre-hub/events.log", timeout=30)
 
     with subtest("restart does not repeat events"):
+        embed_idle()
         before = machine.succeed("wc -l < /var/lib/calibre-hub/events.log").strip()
         machine.systemctl("restart calibre-hub.service")
         machine.wait_for_open_port(8084)
