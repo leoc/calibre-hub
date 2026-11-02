@@ -210,6 +210,22 @@ in `meta_sources.cr`):
 6. One `PATCH` with `lastModified`; a book changed meanwhile is tried once
    more, then on the next run.
 
+Standards (`Meta::Norms`): a title in the file-name form
+`[DIN EN ISO 11073-10404 2011-07] -- …` (calibre split the rest at the last
+" - " into title and author), or exactly a designation like
+`ISO/IEC 42001:2023` by an issuing body, is a standard; books about
+standards are not. Its fields come from the rules alone, no online source
+is asked: title `DIN EN ISO 11073-10404:2011-07 – Pulsoximeter` (the most
+specific part, "(Entwurf)" for drafts), the full title as description (only
+when there is none; cut-off titles are completed from the PDF's cover
+page), author the issuing body (DIN, ISO, IEC, CEN for EN), publisher Beuth
+for DIN, date from the edition, language from "Englische/Deutsche Fassung",
+series the standard with the part as number, identifier `din`/`iso`/`iec`,
+tags `Norm`, `Entwurf` and `ersetzt` (an older edition when a newer final
+one of the same designation is in the library; the newer one's run tags
+the older ones too). The tags are logged as the field `tags` (only these
+three) and reverted like the other fields.
+
 Author unification: a library-wide pass groups names by a key without
 case, accents, punctuation, spaces and "Last, First" and renames every
 variant to the best form: proper case, then confirmed by Open Library/DNB,

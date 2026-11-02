@@ -1,0 +1,45 @@
+DEUTSCHE NORM
+
+Juli 2011
+
+D
+
+DIN EN ISO 11073-10404
+
+ICS 35.240.80
+
+Ersatz für
+DIN EN ISO 11073-10404:2009-04
+
+Medizinische Informatik –
+Kommunikation von Geräten für die persönliche Gesundheit –
+Teil 10404: Gerätespezifikation – Pulsoximeter
+(ISO/IEEE 11073-10404:2010);
+Englische Fassung EN ISO 11073-10404:2011
+
+Health informatics –
+Personal health device communication –
+Part 10404: Device specialization – Pulse oximeter
+(ISO/IEEE 11073-10404:2010);
+English version EN ISO 11073-10404:2011
+
+Informatique de santé –
+Communication entre dispositifs de santé personnels –
+Partie 10404: Spécialisation des dispositifs – Oxymètre de pouls
+(ISO/IEEE 11073-10404:2010);
+Version anglaise EN ISO 11073-10404:2011
+
+Gesamtumfang 49 Seiten
+
+Normenausschuss Medizin (NAMed) im DIN
+
+© DIN Deutsches Institut für Normung e. V. · Jede Art der Vervielfältigung, auch auszugsweise,
+nur mit Genehmigung des DIN Deutsches Institut für Normung e. V., Berlin, gestattet.
+Alleinverkauf der Normen durch Beuth Verlag GmbH, 10772 Berlin
+
+Preisgruppe 22
+www.din.de
+www.beuth.de
+
+!$tVf"
+1786543

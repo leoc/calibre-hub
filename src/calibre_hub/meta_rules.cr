@@ -1,3 +1,4 @@
+require "html"
 require "json"
 require "uri"
 require "./book"
@@ -16,8 +17,10 @@ module CalibreHub
   # calibre-server, a model or the internet.
   module Meta
     TAG = "auto-metadaten"
-    # fields the cleanup changes, as the change log names them
-    FIELDS = %w(title authors authorSort isbn publisher pubdate languages comments series seriesIndex cover)
+    # fields the cleanup changes, as the change log names them; "tags" are
+    # only the tags the rules manage (Norms::TAGS), "identifier:<scheme>"
+    # one calibre identifier (din, iso, ...)
+    FIELDS = %w(title authors authorSort isbn publisher pubdate languages comments series seriesIndex cover tags identifier:*)
     # a candidate this good fills missing fields
     ACCEPT = 0.75
     # a text match this good may also fill the ISBN of that edition
@@ -554,8 +557,17 @@ module CalibreHub
         when "comments"    then JSON::Any.new(book.comments)
         when "series"      then JSON::Any.new(book.series)
         when "seriesIndex" then JSON::Any.new(book.series_index)
-        else                    JSON::Any.new(nil)
+        when "tags"        then JSON.parse(Norms::TAGS.select { |t| book.tags.any? { |x| x.downcase == t.downcase } }.to_json)
+        when .starts_with?("identifier:")
+          JSON::Any.new(book.identifiers[field.lchop("identifier:")]?)
+        else JSON::Any.new(nil)
         end
+      end
+
+      # Tags to add or remove in a PATCH body, merged with what is there
+      def self.tags(body : Hash(String, JSON::Any), key : String, tags : Array(String))
+        list = (body[key]?.try(&.as_a.map(&.as_s)) || [] of String) + tags
+        body[key] = JSON.parse(list.uniq.to_json) unless list.empty?
       end
 
       # PATCH body for setting fields back or forth (cover separately)
@@ -563,14 +575,20 @@ module CalibreHub
         body = {} of String => JSON::Any
         values.each do |field, v|
           case field
-          when "isbn"
-            ids = book.identifiers.dup
+          when "isbn", .starts_with?("identifier:")
+            scheme = field.lchop("identifier:")
+            ids = body["identifiers"]?.try(&.as_h.transform_values(&.as_s)) || book.identifiers.dup
             if s = v.as_s?
-              ids["isbn"] = s
+              ids[scheme] = s
             else
-              ids.delete("isbn")
+              ids.delete(scheme)
             end
             body["identifiers"] = JSON.parse(ids.to_json)
+          when "tags"
+            now = value(book, "tags").as_a.map(&.as_s)
+            want = v.as_a.map(&.as_s)
+            tags(body, "addTags", want - now)
+            tags(body, "removeTags", now - want)
           when "pubdate"
             body["pubdate"] = JSON::Any.new(v.as_s?.try { |d| Dates.full(d) })
           when "seriesIndex"
@@ -746,6 +764,284 @@ module CalibreHub
         return true if Clean.broken_case?(mine)
         return Text.diacritics(theirs) > Text.diacritics(mine) if Text.diacritics(theirs) != Text.diacritics(mine)
         theirs.count(' ') > mine.count(' ') && !theirs.includes?(',')
+      end
+    end
+
+    # Technical standards (DIN, EN, ISO, IEC, IEEE). The files are named
+    # "[DIN EN ISO 11073-10404 2011-07] -- Medizinische Informatik - … -
+    # Teil 10404 Gerätespezifikation - Pulsoximeter (ISO IEEE 11073-10",
+    # and calibre split that at the last " - " into title and author. Only
+    # that bracket form, or a title that is a designation like
+    # "ISO/IEC 42001:2023" by an issuing body, counts as a standard; books
+    # about standards don't. Rule-based, so no online source is asked.
+    module Norms
+      TAG      = "Norm"
+      DRAFT    = "Entwurf"
+      REPLACED = "ersetzt"
+      # the tags the rules manage (the change log's "tags")
+      TAGS = [TAG, DRAFT, REPLACED]
+      BODY = "(?:DIN|EN|ISO|IEC|IEEE|VDE|VDI|CEN|CENELEC|ETSI)"
+      # "DIN EN ISO 11073-10404", "ISO/IEC 42001", "DIN SPEC 91020"
+      DESIGNATION = "#{BODY}(?:[ /](?:#{BODY}|TS|TR|PAS|SPEC))*\\s+\\d+(?:-\\d+)*"
+      FILE_NAME   = /\A\s*\[\s*(#{DESIGNATION})\s+(?:(Entwurf)\s+)?(\d{4})-(\d{2})\s*\](?:\s*-{1,2}\s*(.*))?\z/
+      # what this module makes of it: "DIN EN ISO 11073-10102:2013-07
+      # (Entwurf) – Mit Annotationen versehenes EKG"
+      DESIGNATED = /\A(#{DESIGNATION}):(\d{4})(?:-(\d{2}))?(?:\s+\((Entwurf|Berichtigung)\))?(?:\s+–\s+(.+))?\z/
+      # who may publish a title that is just a designation
+      ISSUERS = Set{"din", "en", "cen", "iso", "iec", "ieee", "vde", "vdi", "beuth", "beuth verlag", "cenelec", "etsi"}
+      # references to the international original, also cut off by the file
+      # name: "(ISO IEEE 11073-10404 2010)", "(ISO IEEE FDIS"
+      REFERENCE = /\s*\((?:ISO|IEC|IEEE|EN|DIN|HL7|CEN)\b[^()]*(?:\)|\z)/
+      FASSUNG   = /[\s;,]*\b(Englische|Deutsche|Französische)(?:\s+Fassung\b.*)?\z/
+      LANGUAGES = {"Englische" => "eng", "Deutsche" => "deu", "Französische" => "fra"}
+      PART      = /\A(Teil|Part)\s+(\d+)\s*:?\s*(.*)\z/
+
+      class Norm
+        # "DIN EN ISO 11073-10404"
+        getter designation : String
+        getter year : Int32
+        getter month : Int32?
+        getter draft : Bool
+        # "Berichtigungen zu DIN EN ISO 14971": a corrigendum, not the standard
+        property corrigendum : Bool
+        # "Medizinische Informatik – … – Teil 10404: Gerätespezifikation – Pulsoximeter"
+        property full_title : String?
+        # "Pulsoximeter"
+        property short_title : String?
+        property language : String?
+
+        def initialize(designation : String, @year, @month, @draft = false, @corrigendum = false,
+                       @full_title = nil, @short_title = nil, @language = nil)
+          @designation = designation.gsub(/\s+/, " ").strip
+        end
+
+        # "2011-07", or "2023" when only the year is known
+        def edition : String
+          month.try { |m| "#{year}-#{m.to_s.rjust(2, '0')}" } || year.to_s
+        end
+
+        # "DIN EN ISO 11073-10404:2011-07"
+        def id : String
+          "#{designation}:#{edition}"
+        end
+
+        # the calibre identifier's name: din, iso, iec, ...
+        def scheme : String
+          designation.split(/[ \/]/).first.downcase
+        end
+
+        # the issuing body: the first of the designation (DIN for "DIN EN
+        # ISO …"), CEN for a European standard
+        def body : String
+          b = designation.split(/[ \/]/).first
+          b == "EN" ? "CEN" : b
+        end
+
+        def publisher : String
+          body == "DIN" ? "Beuth" : body
+        end
+
+        def title : String
+          flag = draft ? " (#{DRAFT})" : corrigendum ? " (Berichtigung)" : ""
+          "#{id}#{flag}#{short_title.try { |s| " – #{s}" }}"
+        end
+
+        # "DIN EN ISO 11073" for a part of a standard, else none
+        def series : String?
+          designation.match(/\A(.*\d)-\d+\z/).try(&.[1])
+        end
+
+        # the part number
+        def series_index : Float64?
+          designation.match(/-(\d+)\z/).try(&.[1].to_f) if series
+        end
+
+        def pubdate : String
+          month ? "#{edition}-01" : year.to_s
+        end
+
+        def comments : String?
+          full_title.try { |t| "<p>#{HTML.escape(t)}</p>" }
+        end
+
+        def identifier : String
+          corrigendum ? "#{id} Berichtigung" : id
+        end
+
+        def sort_key : {Int32, Int32}
+          {year, month || 0}
+        end
+
+        def record : Record
+          Record.new(title: title, authors: [body], publisher: publisher, pubdate: pubdate,
+            languages: language.try { |l| [l] }, comments: comments, series: series, series_index: series_index)
+        end
+      end
+
+      # nil: not a standard. cover: the text of the PDF's first page.
+      def self.parse(title : String, authors : Array(String), publisher : String? = nil, cover : String? = nil) : Norm?
+        t = title.unicode_normalize.gsub(/[\x{FEFF}\x{200B}-\x{200D}\x{2060}]/, "").strip
+        if m = t.match(FILE_NAME)
+          norm = Norm.new(m[1], m[3].to_i, m[4].to_i, draft: !m[2]?.nil?)
+          text = m[5]?.to_s
+          # the rest of the file name, unless calibre found a real author
+          unless Clean.unknown_authors?(authors) || issuer?(authors)
+            text = "#{text} - #{authors.join(" & ")}"
+          end
+          describe(norm, text)
+          if cover && (c = cover_title(cover, norm, norm.full_title || text))
+            describe(norm, c)
+            norm.language ||= cover_language(cover)
+          end
+          norm
+        elsif (m = t.match(DESIGNATED)) && (issuer?(authors) || publisher.try { |p| issuer?([p]) })
+          norm = Norm.new(m[1], m[2].to_i, m[3]?.try(&.to_i), draft: m[4]? == DRAFT, corrigendum: m[4]? == "Berichtigung")
+          norm.short_title = m[5]?.try(&.strip).presence
+          if cover
+            norm.language = cover_language(cover)
+            # the full title for the description; the short one stays
+            if (s = norm.short_title) && (c = cover_title(cover, norm, s, anywhere: true))
+              describe(norm, c)
+              norm.short_title = s
+            end
+          end
+          norm
+        end
+      end
+
+      def self.parse(book : Book, cover : String? = nil) : Norm?
+        parse(book.title, book.authors, book.publisher, cover)
+      end
+
+      def self.issuer?(names : Array(String)) : Bool
+        !names.empty? && names.all? { |n| ISSUERS.includes?(n.strip.downcase) }
+      end
+
+      # Full and short title and language from the title text: file junk
+      # out, dashes "–", "Teil N: Art"
+      def self.describe(norm : Norm, text : String)
+        t = text.gsub(/\s+/, " ").strip
+        if m = t.match(/[,;]?\s*\bBerichtigung(?:en)?\b.*\z/)
+          norm.corrigendum = true
+          t = t[0, m.begin(0)]
+        end
+        t = t.gsub(/\s*\bnur auf CD-?R(?:OM)?\b/i, "")
+        if m = t.match(FASSUNG)
+          norm.language ||= LANGUAGES[m[1]]?
+          t = t[0, m.begin(0)]
+        end
+        t = t.gsub(REFERENCE, "")
+        # a fragment cut off by the file name: "(EHRS"
+        t = t.sub(/\s*\([^()]*\z/, "")
+        segments = t.split(/\s+[-–—]\s+|\s+[-–—]\z|\A[-–—]\s+/).map { |s| s.strip.strip(",;: ").strip }.reject(&.empty?)
+        return if segments.empty?
+        part = nil
+        segments = segments.map_with_index do |s, i|
+          if pm = s.match(PART)
+            kind = pm[3].strip(",;: ").presence
+            part = {i, kind}
+            kind ? "#{pm[1]} #{pm[2]}: #{kind}" : "#{pm[1]} #{pm[2]}"
+          else
+            s
+          end
+        end
+        norm.full_title = segments.join(" – ")
+        # the most specific: what follows "Teil N: Art", else the Art, else the last
+        norm.short_title = if p = part
+                             i, kind = p
+                             after = segments[(i + 1)..]
+                             after.empty? ? (kind || (i > 0 ? segments[i - 1] : nil)) : after.join(" – ")
+                           else
+                             segments.last
+                           end
+      end
+
+      # The German title on a DIN cover page (pdftotext of the first page):
+      # the lines starting like the title from the file name, up to the
+      # reference to the original or the "Fassung" line. Only when the page
+      # has the designation and (nearly) all words of that title.
+      # anywhere: the hint is a part of the title, not its start.
+      def self.cover_title(cover : String, norm : Norm, hint : String, anywhere = false) : String?
+        number = norm.designation[/\d+(?:-\d+)*\z/]
+        return nil unless cover.includes?(number)
+        want = Text.tokens(hint)
+        return nil if want.empty?
+        lines = cover.lines.map(&.strip)
+        blocks = [] of String
+        i = 0
+        while i < lines.size
+          lt = Text.tokens(lines[i])
+          n = {lt.size, want.size, 2}.min
+          if !anywhere && !(n > 0 && lt[0, n] == want[0, n] && !lines[i].matches?(/\A#{BODY}\b/))
+            i += 1
+            next
+          end
+          taken = [] of String
+          while i < lines.size
+            l = lines[i]
+            break if l.empty? || l.matches?(/\A\(\s*(?:ISO|IEC|IEEE|EN|DIN)\b/) || l.matches?(/\A\S+\s+(?:Fassung|version)\b/i) || taken.size >= 10
+            taken << l
+            i += 1
+          end
+          blocks << taken.join("\n").gsub(/(\p{L})-\n(\p{Ll})/, "\\1\\2").gsub(/\s*\n\s*/, " ").strip unless taken.empty?
+          break unless anywhere
+          i += 1
+        end
+        blocks.find do |text|
+          got = Text.tokens(text).to_set
+          want.count { |w| got.includes?(w) } >= want.size * 0.8 && (!anywhere || text.includes?(" – "))
+        end
+      end
+
+      def self.cover_language(cover : String) : String?
+        cover.match(/\b(Englische|Deutsche|Französische)\s+Fassung\b/).try { |m| LANGUAGES[m[1]]? }
+      end
+
+      # An older edition: the same designation exists with a later date
+      # and is no draft (nor a corrigendum)
+      def self.replaced?(norm : Norm, others : Enumerable(Norm)) : Bool
+        others.any? do |o|
+          o.designation == norm.designation && !o.draft && !o.corrigendum && (o.sort_key <=> norm.sort_key) > 0
+        end
+      end
+
+      # The book's fields from the standard, source "rules". Title,
+      # authors, date, identifier and series are set (sure); publisher,
+      # language and description only filled; tags only added.
+      def self.plan(book : Book, norm : Norm, replaced = false) : Array(Change)
+        changes = [] of Change
+        set = ->(field : String, value : JSON::Any) do
+          old = Merge.value(book, field)
+          changes << Change.new(field, old, value, "rules") unless Merge.same?(field, old, value)
+        end
+        set.call("title", JSON::Any.new(norm.title))
+        authors = [norm.body]
+        set.call("authors", JSON.parse(authors.to_json))
+        if book.authors == authors && AuthorSort.wrong?(book)
+          set.call("authorSort", JSON::Any.new(AuthorSort.for(authors)))
+        end
+        set.call("publisher", JSON::Any.new(norm.publisher)) if book.publisher.nil?
+        set.call("pubdate", JSON::Any.new(norm.pubdate))
+        norm.language.try { |l| set.call("languages", JSON.parse([l].to_json)) if book.languages.empty? }
+        norm.comments.try { |c| set.call("comments", JSON::Any.new(c)) if book.comments.nil? }
+        if book.series.nil? && (s = norm.series)
+          set.call("series", JSON::Any.new(s))
+          norm.series_index.try { |i| set.call("seriesIndex", JSON::Any.new(i)) }
+        end
+        set.call("identifier:#{norm.scheme}", JSON::Any.new(norm.identifier))
+        have = Merge.value(book, "tags").as_a.map(&.as_s)
+        want = [TAG]
+        want << DRAFT if norm.draft
+        want << REPLACED if replaced
+        set.call("tags", JSON.parse(TAGS.select { |t| have.includes?(t) || want.includes?(t) }.to_json))
+        changes
+      end
+
+      # "ersetzt" for an older edition, when the newer one comes later
+      def self.replace(book : Book) : Change?
+        have = Merge.value(book, "tags").as_a.map(&.as_s)
+        return nil if have.includes?(REPLACED)
+        Change.new("tags", JSON.parse(have.to_json), JSON.parse(TAGS.select { |t| have.includes?(t) || t == REPLACED }.to_json), "rules")
       end
     end
 

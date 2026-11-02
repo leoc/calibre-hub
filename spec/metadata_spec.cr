@@ -151,11 +151,11 @@ end
 
 private def book(title = "Dune", authors = ["Frank Herbert"], author_sort : String? = nil, publisher : String? = nil,
                  isbn : String? = nil, languages = [] of String, comments : String? = nil, pubdate : Time? = nil,
-                 series : String? = nil) : CalibreHub::Book
+                 series : String? = nil, tags = [] of String, identifiers : Hash(String, String)? = nil) : CalibreHub::Book
   CalibreHub::Book.new(id: 1_i64, title: title, authors: authors, author_sort: author_sort || CalibreHub::Meta::AuthorSort.for(authors),
-    tags: [] of String, series: series, series_index: series ? 1.0 : nil, formats: [] of String, last_modified: Time::UNIX_EPOCH,
+    tags: tags, series: series, series_index: series ? 1.0 : nil, formats: [] of String, last_modified: Time::UNIX_EPOCH,
     timestamp: nil, pubdate: pubdate, rating: nil, publisher: publisher,
-    identifiers: isbn ? {"isbn" => isbn} : {} of String => String,
+    identifiers: identifiers || (isbn ? {"isbn" => isbn} : {} of String => String),
     languages: languages, comments: comments, custom: {} of String => JSON::Any)
 end
 
@@ -537,6 +537,161 @@ describe CalibreHub::Meta::Authors do
     CalibreHub::Meta::Authors.groups(counts, Set{"Ursula K. Le Guin"})[1].should eq({"Ursula K. Le Guin", ["Ursula K. LeGuin", "ursula k. le guin"]})
     CalibreHub::Meta::Authors.groups({"Stanisław Lem" => 1, "Stanislaw Lem" => 1}).first[0].should eq("Stanisław Lem")
   end
+
+  it "keeps the issuing bodies of standards apart" do
+    counts = {"DIN" => 50, "ISO" => 3, "CEN" => 1, "IEC" => 1, "IEEE" => 1, "Dina Nayeri" => 1, "Din" => 1}
+    CalibreHub::Meta::Authors.groups(counts).should eq([{"DIN", ["Din"]}])
+    CalibreHub::Meta::Clean.authors(["DIN", "IEEE"]).should eq(["DIN", "IEEE"])
+    CalibreHub::Meta::AuthorSort.for("DIN").should eq("DIN")
+  end
+end
+
+describe CalibreHub::Meta::Norms do
+  # the live library (02.11.), as calibre split the file names:
+  # {title, authors} -> {title, full title, language, series, index, tags}
+  {
+    {"[DIN EN ISO 11073-10404 2011-07] -- Medizinische Informatik - Kommunikation von Geräten für die persönliche Gesundheit - Teil 10404 Gerätespezifikation", ["Pulsoximeter (ISO IEEE 11073-10"]} =>
+      {"DIN EN ISO 11073-10404:2011-07 – Pulsoximeter",
+       "Medizinische Informatik – Kommunikation von Geräten für die persönliche Gesundheit – Teil 10404: Gerätespezifikation – Pulsoximeter",
+       nil, "DIN EN ISO 11073", 10404.0, %w(Norm)},
+    {"[DIN EN ISO 11073-10102 Entwurf 2013-07] -- Medizinische Informatik - Kommunikation patientennaher medizinischer Geräte - Teil 10102 Nomenklatur", ["Mit Annotationen versehenes EKG (ISO IEEE FDIS"]} =>
+      {"DIN EN ISO 11073-10102:2013-07 (Entwurf) – Mit Annotationen versehenes EKG",
+       "Medizinische Informatik – Kommunikation patientennaher medizinischer Geräte – Teil 10102: Nomenklatur – Mit Annotationen versehenes EKG",
+       nil, "DIN EN ISO 11073", 10102.0, %w(Norm Entwurf)},
+    {"[DIN EN 13606-2 2007-11] -- Medizinische Informatik - Kommunikation von Patientendaten in elektronischer Form", ["Teil 2 Spezifikation für den Austausch von Archetypen Englische"]} =>
+      {"DIN EN 13606-2:2007-11 – Spezifikation für den Austausch von Archetypen",
+       "Medizinische Informatik – Kommunikation von Patientendaten in elektronischer Form – Teil 2: Spezifikation für den Austausch von Archetypen",
+       "eng", "DIN EN 13606", 2.0, %w(Norm)},
+    {"[DIN EN ISO 11073-10101 2006-05] -- Medizinische Informatik - Kommunikation patientennaher medizinischer Geräte", ["Teil 10101 Nomenklatur (ISO IEEE 11073-10101 2004) Englische Fassung E"]} =>
+      {"DIN EN ISO 11073-10101:2006-05 – Nomenklatur",
+       "Medizinische Informatik – Kommunikation patientennaher medizinischer Geräte – Teil 10101: Nomenklatur",
+       "eng", "DIN EN ISO 11073", 10101.0, %w(Norm)},
+    {"[DIN EN ISO 12052 2011-06] -- Medizinische Informatik", ["Digitale Bildverarbeitung und Kommunikation in der Medizin (DICOM) inklusive Workflow und Datenmanagement (ISO 12052 2006)"]} =>
+      {"DIN EN ISO 12052:2011-06 – Digitale Bildverarbeitung und Kommunikation in der Medizin (DICOM) inklusive Workflow und Datenmanagement",
+       "Medizinische Informatik – Digitale Bildverarbeitung und Kommunikation in der Medizin (DICOM) inklusive Workflow und Datenmanagement",
+       nil, nil, nil, %w(Norm)},
+    {"[DIN EN ISO 14971 2009-10] -- Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007, korrigierte Fassung 2007-10-01) Deutsche Fassung EN ISO 14971 20", ["Unknown"]} =>
+      {"DIN EN ISO 14971:2009-10 – Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte",
+       "Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte",
+       "deu", nil, nil, %w(Norm)},
+    {"[DIN EN ISO 10781 Entwurf 2012-04] -- Funktionales Modell für ein elektronisches Gesundheitsaktensystem (EHRS FM), Ausgabe 2 (ISO HL7 DIS 10781) (ISO DIS 10781 2012) Englische Fassung prE", ["Unknown"]} =>
+      {"DIN EN ISO 10781:2012-04 (Entwurf) – Funktionales Modell für ein elektronisches Gesundheitsaktensystem (EHRS FM), Ausgabe 2",
+       "Funktionales Modell für ein elektronisches Gesundheitsaktensystem (EHRS FM), Ausgabe 2",
+       "eng", nil, nil, %w(Norm Entwurf)},
+    # edge cases: a corrigendum, an ISO standard without "Teil", parts in English, nur auf CD-R
+    {"[DIN EN ISO 14971 2009-10] -- Medizinprodukte", ["Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007), Berichtigungen zu DIN EN I"]} =>
+      {"DIN EN ISO 14971:2009-10 (Berichtigung) – Anwendung des Risikomanagements auf Medizinprodukte",
+       "Medizinprodukte – Anwendung des Risikomanagements auf Medizinprodukte", nil, nil, nil, %w(Norm)},
+    {"[ISO IEC 27001 2013-10] -- Information technology - Security techniques", ["Information security management systems - Requirements"]} =>
+      {"ISO IEC 27001:2013-10 – Requirements",
+       "Information technology – Security techniques – Information security management systems – Requirements", nil, nil, nil, %w(Norm)},
+    {"[IEC 62304 2006-05] -- Medical device software - Software life cycle processes nur auf CD-ROM", ["Unknown"]} =>
+      {"IEC 62304:2006-05 – Software life cycle processes",
+       "Medical device software – Software life cycle processes", nil, nil, nil, %w(Norm)},
+    {"[DIN EN 62304 2016-10] -- Medizingeräte-Software - Software-Lebenszyklus-Prozesse - Part 1 General", ["Unknown"]} =>
+      {"DIN EN 62304:2016-10 – General",
+       "Medizingeräte-Software – Software-Lebenszyklus-Prozesse – Part 1: General", nil, nil, nil, %w(Norm)},
+  }.each do |(title, authors), (want_title, full, language, series, index, tags)|
+    it "reads #{title[0, 60].inspect}" do
+      n = CalibreHub::Meta::Norms.parse(title, authors).not_nil!
+      {n.title, n.full_title, n.language, n.series, n.series_index}.should eq({want_title, full, language, series, index})
+      changes = CalibreHub::Meta::Norms.plan(book(title, authors), n)
+      changes.find! { |c| c.field == "tags" }.new.should eq(JSON.parse(tags.to_json))
+    end
+  end
+
+  it "makes all fields of a standard from the bracket form" do
+    title = "[DIN EN ISO 11073-10404 2011-07] -- Medizinische Informatik - Kommunikation von Geräten für die persönliche Gesundheit - Teil 10404 Gerätespezifikation"
+    authors = ["Pulsoximeter (ISO IEEE 11073-10"]
+    n = CalibreHub::Meta::Norms.parse(title, authors).not_nil!
+    {n.id, n.body, n.publisher, n.pubdate, n.scheme, n.identifier}.should eq(
+      {"DIN EN ISO 11073-10404:2011-07", "DIN", "Beuth", "2011-07-01", "din", "DIN EN ISO 11073-10404:2011-07"})
+    changes = CalibreHub::Meta::Norms.plan(book(title, authors), n).to_h { |c| {c.field, c.new} }
+    changes.should eq({
+      "title"          => JSON::Any.new("DIN EN ISO 11073-10404:2011-07 – Pulsoximeter"),
+      "authors"        => JSON.parse(%(["DIN"])),
+      "publisher"      => JSON::Any.new("Beuth"),
+      "pubdate"        => JSON::Any.new("2011-07-01"),
+      "comments"       => JSON::Any.new("<p>Medizinische Informatik – Kommunikation von Geräten für die persönliche Gesundheit – Teil 10404: Gerätespezifikation – Pulsoximeter</p>"),
+      "series"         => JSON::Any.new("DIN EN ISO 11073"),
+      "seriesIndex"    => JSON::Any.new(10404.0),
+      "identifier:din" => JSON::Any.new("DIN EN ISO 11073-10404:2011-07"),
+      "tags"           => JSON.parse(%(["Norm"])),
+    })
+    # a description, language, publisher and series of its own stay
+    b = book(title, authors, publisher: "Beuth Verlag", comments: "<p>Eigene</p>", languages: ["deu"], series: "Medizin", tags: ["norm", "Lesen"])
+    changes = CalibreHub::Meta::Norms.plan(b, n)
+    changes.map(&.field).sort.should eq(%w(authors identifier:din pubdate title))
+    # a European standard by itself: CEN
+    e = CalibreHub::Meta::Norms.parse("[EN 1789 2021-03] -- Rettungsdienstfahrzeuge", ["Unknown"]).not_nil!
+    {e.body, e.publisher, e.scheme}.should eq({"CEN", "CEN", "en"})
+    i = CalibreHub::Meta::Norms.parse("[ISO IEC 27001 2013-10] -- Information technology", ["Unknown"]).not_nil!
+    {i.body, i.publisher, i.scheme}.should eq({"ISO", "ISO", "iso"})
+  end
+
+  it "reads its own titles again, so a second run changes nothing" do
+    title = "[DIN EN ISO 11073-10102 Entwurf 2013-07] -- Medizinische Informatik - Kommunikation patientennaher medizinischer Geräte - Teil 10102 Nomenklatur"
+    n = CalibreHub::Meta::Norms.parse(title, ["Mit Annotationen versehenes EKG (ISO IEEE FDIS"]).not_nil!
+    again = CalibreHub::Meta::Norms.parse(n.title, ["DIN"], "Beuth").not_nil!
+    {again.title, again.id, again.draft, again.series}.should eq({n.title, n.id, true, "DIN EN ISO 11073"})
+    b = book(n.title, ["DIN"], publisher: "Beuth", pubdate: Time.utc(2013, 7, 1, 12), series: "DIN EN ISO 11073",
+      tags: ["Norm", "Entwurf"], comments: "<p>x</p>", identifiers: {"din" => "DIN EN ISO 11073-10102:2013-07"})
+    CalibreHub::Meta::Norms.plan(b, again).should be_empty
+  end
+
+  it "takes a standard's designation as title only from an issuing body" do
+    n = CalibreHub::Meta::Norms.parse("ISO/IEC 42001:2023", ["ISO"]).not_nil!
+    {n.title, n.body, n.scheme, n.pubdate, n.series, n.draft}.should eq({"ISO/IEC 42001:2023", "ISO", "iso", "2023", nil, false})
+    CalibreHub::Meta::Norms.parse("ISO/IEC 42001:2023", ["Unknown"], "Beuth Verlag").should_not be_nil
+    # books about standards, and standards by persons
+    CalibreHub::Meta::Norms.parse("ISO/IEC 42001:2023", ["Unknown"]).should be_nil
+    CalibreHub::Meta::Norms.parse("ISO/IEC 42001:2023", ["Hans Müller"]).should be_nil
+    CalibreHub::Meta::Norms.parse("ISO 9001:2015 for Small Enterprises - What to do ?", ["ISO"]).should be_nil
+    CalibreHub::Meta::Norms.parse("Understanding ISO 9001 2015 - A Practical Guide", ["David Hoyle"]).should be_nil
+    CalibreHub::Meta::Norms.parse("ISO 13485:2016 - Medical devices - A practical guide", ["ISO"]).should be_nil
+    CalibreHub::Meta::Norms.parse("[Kafka] -- Der Process", ["Unknown"]).should be_nil
+    CalibreHub::Meta::Norms.parse("[2011-07] DIN EN ISO 11073 erklärt", ["Unknown"]).should be_nil
+  end
+
+  it "takes the full title from the cover page of the PDF" do
+    cover = fixture("din_cover_14971.txt")
+    title = "[DIN EN ISO 14971 2009-10] -- Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007, korrigierte Fassung 2007-10-01) Deutsche Fassung EN ISO 14971 20"
+    n = CalibreHub::Meta::Norms.parse(title, ["Unknown"], nil, cover).not_nil!
+    {n.title, n.full_title, n.language}.should eq({"DIN EN ISO 14971:2009-10 – Anwendung des Risikomanagements auf Medizinprodukte",
+                                                   "Medizinprodukte – Anwendung des Risikomanagements auf Medizinprodukte", "deu"})
+    # cut off in the middle: the cover has the rest
+    cover = fixture("din_cover_11073-10404.txt")
+    n = CalibreHub::Meta::Norms.parse("[DIN EN ISO 11073-10404 2011-07] -- Medizinische Informatik - Kommunikation von Geräten für die persönliche Gesundh",
+      ["Unknown"], nil, cover).not_nil!
+    {n.title, n.full_title, n.language}.should eq({"DIN EN ISO 11073-10404:2011-07 – Pulsoximeter",
+                                                   "Medizinische Informatik – Kommunikation von Geräten für die persönliche Gesundheit – Teil 10404: Gerätespezifikation – Pulsoximeter", "eng"})
+    # the description of an already named standard
+    n = CalibreHub::Meta::Norms.parse("DIN EN ISO 11073-10404:2011-07 – Pulsoximeter", ["DIN"], nil, cover).not_nil!
+    {n.title, n.full_title}.should eq({"DIN EN ISO 11073-10404:2011-07 – Pulsoximeter",
+                                       "Medizinische Informatik – Kommunikation von Geräten für die persönliche Gesundheit – Teil 10404: Gerätespezifikation – Pulsoximeter"})
+    # the cover of another standard is no help
+    n = CalibreHub::Meta::Norms.parse("[DIN EN ISO 12052 2011-06] -- Medizinische Informatik", ["Unknown"], nil, cover).not_nil!
+    n.full_title.should eq("Medizinische Informatik")
+  end
+
+  it "knows older editions replaced by newer ones" do
+    parse = ->(t : String) { CalibreHub::Meta::Norms.parse(t, ["Unknown"]).not_nil! }
+    old = parse.call("[DIN EN ISO 14971 2001-03] -- Medizinprodukte")
+    now = parse.call("[DIN EN ISO 14971 2009-10] -- Medizinprodukte")
+    draft = parse.call("[DIN EN ISO 14971 Entwurf 2018-02] -- Medizinprodukte")
+    newest = parse.call("[DIN EN ISO 14971 2020-07] -- Medizinprodukte")
+    other = parse.call("[DIN EN ISO 14972 2020-07] -- Medizinprodukte")
+    named = CalibreHub::Meta::Norms.parse("DIN EN ISO 14971:2020-07 – Medizinprodukte", ["DIN"]).not_nil!
+    CalibreHub::Meta::Norms.replaced?(old, [now]).should be_true
+    CalibreHub::Meta::Norms.replaced?(now, [old, draft, other]).should be_false
+    CalibreHub::Meta::Norms.replaced?(now, [named]).should be_true
+    CalibreHub::Meta::Norms.replaced?(draft, [newest]).should be_true
+    CalibreHub::Meta::Norms.replaced?(newest, [newest]).should be_false
+    tags = CalibreHub::Meta::Norms.plan(book(), old, replaced: true).find! { |c| c.field == "tags" }
+    {tags.old, tags.new}.should eq({JSON.parse("[]"), JSON.parse(%(["Norm", "ersetzt"]))})
+    CalibreHub::Meta::Norms.replace(book(tags: ["Norm", "Lesen"])).not_nil!.new.should eq(JSON.parse(%(["Norm", "ersetzt"])))
+    CalibreHub::Meta::Norms.replace(book(tags: ["Norm", "ersetzt"])).should be_nil
+  end
 end
 
 describe CalibreHub::Metadata do
@@ -654,6 +809,52 @@ describe CalibreHub::Metadata do
     jobs.ready_for_classify?(event, 12, Time.utc).should be_true
     # waits at most CLASSIFY_WAIT
     jobs.ready_for_classify?(event + 1, 13, Time.utc - 1.hour).should be_true
+  end
+
+  it "names standards by the rules, without online sources, and tags older editions ersetzt" do
+    cover = fixture("din_cover_14971.txt")
+    file = CalibreHub::Meta::FileMeta::Info.new(record, [] of String, cover)
+    library, web, m, _, _ = setup(->(b : CalibreHub::Book) { (b.id == 21 ? file : nil).as(CalibreHub::Meta::FileMeta::Info?) })
+    library.add(20, "[DIN EN ISO 14971 2001-03] -- Medizinprodukte - Anwendung des Risikomanagements auf Medizinprodukte", ["Unknown"],
+      formats: ["PDF"], tags: ["Lesen"])
+    library.add(21, "[DIN EN ISO 14971 2009-10] -- Medizinprodukte Anwendung des Risikomanagements auf Medizinprodukte (ISO 14971 2007, korrigierte Fassung 2007-10-01) Deutsche Fassung EN ISO 14971 20",
+      ["Unknown"], formats: ["PDF"])
+    library.add(22, "ISO 9001:2015 for Small Enterprises - What to do ?", ["ISO"])
+    entries = m.run(21)
+    b = library.books[21]
+    b["title"].should eq("DIN EN ISO 14971:2009-10 – Anwendung des Risikomanagements auf Medizinprodukte")
+    b["authors"].should eq(JSON.parse(%(["DIN"])))
+    b["publisher"].should eq("Beuth")
+    b["pubdate"].as_s.should start_with("2009-10-01")
+    b["languages"].should eq(JSON.parse(%(["deu"])))
+    b["comments"].should eq("<p>Medizinprodukte – Anwendung des Risikomanagements auf Medizinprodukte</p>")
+    b["identifiers"].should eq(JSON.parse(%({"din": "DIN EN ISO 14971:2009-10"})))
+    b["tags"].should eq(JSON.parse(%(["Norm", "auto-metadaten"])))
+    entries.map(&.field).sort.should eq(%w(authors comments identifier:din languages pubdate publisher tags title))
+    entries.all? { |e| e.source == "rules" }.should be_true
+    # the older edition got "ersetzt" from the newer one, logged
+    library.books[20]["tags"].should eq(JSON.parse(%(["Lesen", "ersetzt", "auto-metadaten"])))
+    m.log.list(20_i64).map { |e| {e.field, e.old, e.new} }.should eq([{"tags", JSON.parse("[]"), JSON.parse(%(["ersetzt"]))}])
+    web.requests.should be_empty
+    m.log.status(21).should eq("done")
+    m.run(21).should be_empty
+
+    # its own run names it and keeps "ersetzt"
+    m.run(20).map(&.field).sort.should eq(%w(authors comments identifier:din pubdate publisher tags title))
+    library.books[20]["title"].should eq("DIN EN ISO 14971:2001-03 – Anwendung des Risikomanagements auf Medizinprodukte")
+    library.books[20]["tags"].should eq(JSON.parse(%(["Lesen", "ersetzt", "auto-metadaten", "Norm"])))
+    web.requests.should be_empty
+
+    # tags are reverted like the other fields, the last change takes auto-metadaten
+    m.revert_books([20_i64]).each { |id| m.revert(id) }
+    library.books[20]["tags"].should eq(JSON.parse(%(["Lesen"])))
+    library.books[20]["title"].as_s.should start_with("[DIN EN ISO 14971 2001-03]")
+
+    # a book about a standard goes the usual way
+    m.run(22)
+    web.requests.should_not be_empty
+    library.books[22]["title"].should eq("ISO 9001:2015 for Small Enterprises - What to do ?")
+    m.candidates(21).map(&.source).should eq(["rules"])
   end
 
   it "asks the model only when the rules can't decide, and only trusts words from the input" do

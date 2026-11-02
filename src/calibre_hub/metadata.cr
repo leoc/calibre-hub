@@ -293,6 +293,10 @@ module CalibreHub
     def candidates(id : Int64, q : String? = nil) : Array(Meta::Candidate)
       book = @calibre.book(id) || raise Writer::NotFound.new
       info = file_info(book)
+      # a standard: the rules know, the online sources don't have them
+      if norm = Meta::Norms.parse(book, info.try(&.cover))
+        return [Meta::Candidate.new("rules", norm.record).tap { |c| c.score = 1.0 }]
+      end
       gs = guesses(book)
       list, _ = lookup(book, gs, info, q.presence)
       complete(list, book)
@@ -312,6 +316,11 @@ module CalibreHub
     def run(id : Int64, job_id : String? = nil) : Array(MetaLog::Entry)
       book = @calibre.book(id) || raise Writer::NotFound.new
       info = file_info(book)
+      if norm = Meta::Norms.parse(book, info.try(&.cover))
+        entries = run_norm(book, norm, job_id)
+        @log.set_status(id, "done", job_id)
+        return entries
+      end
       gs = guesses(book)
       candidates, errors = lookup(book, gs, info)
       complete(candidates, book)
@@ -319,6 +328,34 @@ module CalibreHub
       entries = apply(book, changes, job_id)
       @log.set_status(id, errors ? "retry" : "done", job_id)
       entries
+    end
+
+    # A standard: its fields by the rules (Meta::Norms), no online source.
+    # The other editions in the library decide "ersetzt": this one gets it
+    # when a newer edition is there, older ones get it from this one.
+    def run_norm(book : Book, norm : Meta::Norms::Norm, job_id : String?) : Array(MetaLog::Entry)
+      editions = editions(book, norm)
+      entries = apply(book, Meta::Norms.plan(book, norm, Meta::Norms.replaced?(norm, editions.map(&.[1]))), job_id)
+      editions.each do |other, n|
+        next unless Meta::Norms.replaced?(n, [norm])
+        change = Meta::Norms.replace(other) || next
+        begin
+          apply(other, [change], job_id)
+        rescue Writer::Conflict
+          # changed meanwhile: its own run tags it
+        end
+      end
+      entries
+    end
+
+    # The other books with the same designation, as standards
+    def editions(book : Book, norm : Meta::Norms::Norm) : Array({Book, Meta::Norms::Norm})
+      number = norm.designation[/\d+(?:-\d+)*\z/]
+      ids = @calibre.search(%(title:"#{Api.escape(number)}"), "id", true, 0, 1000).ids - [book.id]
+      @calibre.books(ids, Calibre::DETAIL_FIELDS).compact_map do |b|
+        n = Meta::Norms.parse(b) || next
+        {b, n} if n.designation == norm.designation
+      end
     end
 
     # One PATCH (lastModified: a book changed meanwhile is a Conflict) plus
@@ -337,7 +374,7 @@ module CalibreHub
       return [] of MetaLog::Entry if fields.empty? && cover.nil?
       body = Meta::Merge.patch(book, fields.to_h { |x| {x.field, x.new} })
       body["lastModified"] = JSON::Any.new(book.version)
-      body["addTags"] = JSON.parse([Meta::TAG].to_json)
+      Meta::Merge.tags(body, "addTags", [Meta::TAG])
       updated = @writer.update(book.id, body)
       entries = fields.compact_map do |x|
         now = Meta::Merge.value(updated, x.field)
@@ -373,7 +410,7 @@ module CalibreHub
         # an author sort that was empty can't be set empty again; calibre's own is next best
         body["authorSort"] = JSON::Any.new(Meta::AuthorSort.for(book.authors)) if e.field == "authorSort" && e.old.raw.nil?
       end
-      body["removeTags"] = JSON.parse([Meta::TAG].to_json) if last
+      Meta::Merge.tags(body, "removeTags", [Meta::TAG]) if last
       body["lastModified"] = JSON::Any.new(book.version) unless body.empty?
       book = @writer.update(book.id, body) unless body.empty?
       @log.reverted!(e.id)

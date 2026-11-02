@@ -14,7 +14,8 @@ module CalibreHub
     # last pages (ISBN on the copyright page), or a PDF's info dict and
     # first pages (poppler's pdfinfo/pdftotext)
     module FileMeta
-      record Info, record : Record, isbns : Array(String)
+      # cover: the text of a PDF's first page (a standard's title page)
+      record Info, record : Record, isbns : Array(String), cover : String? = nil
 
       MAX_TEXT = 300_000
 
@@ -103,7 +104,7 @@ module CalibreHub
       def self.pdf(path : String) : Info?
         info = run("pdfinfo", [path]) || return nil
         text = run("pdftotext", ["-l", "6", "-enc", "UTF-8", path, "-"]) || ""
-        Info.new(pdf_info(info), Isbn.scan(text[0, MAX_TEXT]? || text))
+        Info.new(pdf_info(info), Isbn.scan(text[0, MAX_TEXT]? || text), text.split('\f', 2).first.presence)
       end
 
       # pdfinfo's "Key: value" lines; "Microsoft Word - x.doc" titles and
