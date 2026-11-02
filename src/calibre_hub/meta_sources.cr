@@ -471,6 +471,12 @@ module CalibreHub
         Hardcover.parse_books(data, q, ids)
       end
 
+      # A query or mutation; its data, nil when the token was rejected (the
+      # source is paused then). Shared with the Hardcover sync.
+      def graphql(query : String, variables) : JSON::Any?
+        request(query, variables)
+      end
+
       private def request(query : String, variables) : JSON::Any?
         token = @token || return nil
         status, body = @http.post(@url, {query: query, variables: variables}.to_json,
@@ -494,9 +500,9 @@ module CalibreHub
 
       private def rejected(reason : String)
         @paused_until = Time.utc + PAUSE
-        STDERR.puts "metadata: hardcover rejected the token (#{reason}), source paused for #{PAUSE.total_minutes.to_i} minutes"
+        STDERR.puts "hardcover: rejected the token (#{reason}), source paused for #{PAUSE.total_minutes.to_i} minutes"
         @alert.try &.call("hardcover-token", "calibre-hub: Hardcover-Token abgelaufen oder ungültig",
-          "Hardcover lehnt den API-Token ab (#{reason}). Die Metadaten-Quelle Hardcover ist ausgesetzt, " \
+          "Hardcover lehnt den API-Token ab (#{reason}). Die Metadaten-Quelle Hardcover und der Abgleich sind ausgesetzt, " \
           "die anderen Quellen laufen weiter. Neuen Token unter https://hardcover.app/account/api holen, " \
           "in die Datei von services.calibre-hub.metadata.hardcoverTokenFile schreiben und calibre-hub neu starten.")
       end

@@ -9,6 +9,7 @@ require "./calibre_hub/inbox"
 require "./calibre_hub/handlers/leseliste"
 require "./calibre_hub/frontend"
 require "./calibre_hub/cli"
+require "./calibre_hub/hardcover_sync"
 
 module CalibreHub
   VERSION = "0.1.0"
@@ -74,6 +75,14 @@ module CalibreHub
     getter convert : Bool = env("CALIBRE_HUB_CONVERT", "false") == "true"
     getter convert_target : String = env("CALIBRE_HUB_CONVERT_TARGET", "EPUB").upcase
     getter convert_ignore : Array(String) = env("CALIBRE_HUB_CONVERT_IGNORE", "PDF,CBZ,CBR").split(',', remove_empty: true).map(&.strip.upcase)
+    # Hardcover sync (hardcover_sync.cr) with the metadata source's token;
+    # without write a dry run that only logs the planned writes
+    getter hardcover_sync : Bool = env("CALIBRE_HUB_HARDCOVER_SYNC", "false") == "true"
+    getter hardcover_sync_write : Bool = env("CALIBRE_HUB_HARDCOVER_SYNC_WRITE", "false") == "true"
+    getter hardcover_sync_user : String = ENV["CALIBRE_HUB_HARDCOVER_SYNC_USER"]?.presence || env("CALIBRE_HUB_LOGIN_USER", "arthur")
+    getter hardcover_sync_interval : Time::Span = env("CALIBRE_HUB_HARDCOVER_SYNC_INTERVAL", "900").to_i.seconds
+    getter hardcover_sync_batch : Int32 = env("CALIBRE_HUB_HARDCOVER_SYNC_BATCH", "100").to_i
+    getter hardcover_sync_read_at : Float64 = env("CALIBRE_HUB_HARDCOVER_SYNC_READ_AT", "0.98").to_f
 
     # read only by serve, so scan works without them
     def login_password : String
@@ -263,21 +272,25 @@ module CalibreHub
     end
   end
 
-  def self.metadata(config : Config, calibre : Calibre, writer : Writer, db : DB::Database) : MetadataJobs?
+  # One Hardcover client (token, pause, alerts) for the metadata source and
+  # the sync; nil without a token
+  def self.hardcover(config : Config, http : Meta::Http, db : DB::Database) : Meta::Hardcover?
+    token = config.hardcover_token || return nil
+    alert = DailyAlert.new(db, config.alert_command.try { |c| [c] })
+    Meta::Hardcover.new(http, token, config.hardcover_url, alert.proc)
+  end
+
+  def self.metadata(config : Config, calibre : Calibre, writer : Writer, db : DB::Database,
+                    http : Meta::Http, hardcover : Meta::Hardcover?) : MetadataJobs?
     return nil unless config.metadata
     if bad = config.metadata_sources.find { |s| !Metadata::SOURCES.includes?(s) }
       abort "CALIBRE_HUB_METADATA_SOURCES: unknown source #{bad}"
     end
-    http = Meta::Http.new(config.metadata_interval)
     ollama = config.metadata_model ? Ollama.new(config.classify_endpoint, config.classify_model, config.classify_timeout, 2, 2.seconds) : nil
-    hardcover = nil
     if config.metadata_sources.includes?("hardcover")
-      if token = config.hardcover_token
-        alert = DailyAlert.new(db, config.alert_command.try { |c| [c] })
-        hardcover = Meta::Hardcover.new(http, token, config.hardcover_url, alert.proc)
-      else
-        puts "metadata: no Hardcover token, source hardcover skipped"
-      end
+      puts "metadata: no Hardcover token, source hardcover skipped" unless hardcover
+    else
+      hardcover = nil
     end
     m = Metadata.new(calibre, writer, MetaLog.new(db), config.metadata_sources,
       Meta::OpenLibrary.new(http, config.openlibrary_url, config.openlibrary_covers_url),
@@ -351,6 +364,21 @@ module CalibreHub
     lists
   end
 
+  def self.hardcover_sync(config : Config, calibre : Calibre, db : DB::Database, progress : Progress,
+                          hardcover : Meta::Hardcover?) : HardcoverSync?
+    return nil unless config.hardcover_sync
+    unless hardcover
+      STDERR.puts "hardcover sync: no Hardcover token, off"
+      return nil
+    end
+    sync = HardcoverSync.new(db, calibre, progress, hardcover, config.hardcover_sync_user, config.hardcover_sync_write,
+      config.hardcover_sync_read_at, config.hardcover_sync_batch, config.hardcover_sync_interval)
+    sync.start
+    puts "hardcover sync: progress of #{config.hardcover_sync_user} every #{config.hardcover_sync_interval.total_seconds.to_i} s, " \
+         "#{config.hardcover_sync_write ? "writing" : "dry run (planned writes only logged)"}"
+    sync
+  end
+
   def self.serve(config : Config)
     calibre = config.calibre
     db = config.state
@@ -371,15 +399,20 @@ module CalibreHub
     writer = Writer.new(calibre, detector, wake, config.category_column)
     lists = lists(config, calibre, db, wake)
     members = ->(p : HTTP::Params) { Api.list_members(lists, config.login_user, p) }
-    metadata_jobs = metadata(config, calibre, writer, db)
+    # one per host interval for the metadata sources and the sync
+    http = Meta::Http.new(config.metadata_interval)
+    hardcover = hardcover(config, http, db)
+    metadata_jobs = metadata(config, calibre, writer, db, http, hardcover)
     classify_jobs = classify(config, calibre, writer, db, metadata_jobs)
     jobs = Jobs.new(db, calibre, writer, config.category_column)
     [jobs, metadata_jobs, classify_jobs].compact.each { |j| j.list_members = members }
     trash = Trash.new(calibre, writer, config.library, db)
     trash.on_restore = ->(old_id : Int64, new_id : Int64) { lists.book_restored(old_id, new_id) }
     embedder, convert_jobs = book_files(config, calibre, writer, db, detector, wake)
+    progress = Progress.new(db)
+    hardcover_sync(config, calibre, db, progress, hardcover)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs, Progress.new(db))
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs, progress)
     file_routes(convert_jobs, embedder)
 
     Kemal.config.host_binding = config.host

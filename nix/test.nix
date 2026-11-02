@@ -67,6 +67,12 @@ pkgs.testers.runNixOSTest {
           hardcoverTokenFile = "/etc/hub/hardcover";
           requestInterval = 0;
         };
+        # writes only to the stub (sources-stub), never a real account
+        hardcoverSync = {
+          enable = true;
+          write = true;
+          interval = 2;
+        };
         embed.delay = 2;
         convert.enable = true;
         handlerAttempts = 2;
@@ -130,8 +136,34 @@ pkgs.testers.runNixOSTest {
         wantedBy = [ "multi-user.target" ];
         serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${pkgs.writeText "sources-stub.py" ''
           import json
+          import re
           from http.server import BaseHTTPRequestHandler, HTTPServer
           from urllib.parse import urlparse, parse_qs
+
+          # the user's Hardcover library (book id -> user book) for the sync
+          HC = {}
+          NEXT = [1000]
+
+          def next_id():
+              NEXT[0] += 1
+              return NEXT[0]
+
+          def mutate(name, v):
+              if name == "insert_user_book":
+                  o = v["object"]
+                  HC[o["book_id"]] = {"id": next_id(), "status_id": o["status_id"], "edition": o.get("edition_id"), "reads": []}
+                  return {"id": HC[o["book_id"]]["id"], "error": None}
+              ub = next((u for u in HC.values() if u["id"] == v["id"] or any(r["id"] == v["id"] for r in u["reads"])), None)
+              if ub is None:
+                  return {"id": None, "error": "not found"}
+              if name == "update_user_book":
+                  ub["status_id"] = v["object"]["status_id"]
+              elif name == "insert_user_book_read":
+                  ub["reads"].append(dict(v["read"], id=next_id()))
+              elif name == "update_user_book_read":
+                  r = next(r for r in ub["reads"] if r["id"] == v["id"])
+                  r.update(v["read"])
+              return {"id": v["id"], "error": None}
 
           FIXTURES = "${../spec/fixtures/metadata}"
           EMPTY_SRU = '<searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/"><numberOfRecords>0</numberOfRecords></searchRetrieveResponse>'
@@ -166,7 +198,18 @@ pkgs.testers.runNixOSTest {
                       self.send_response(401)
                       self.end_headers()
                       return
-                  if (body.get("variables") or {}).get("isbn") == "9783608938289":
+                  q, v = body["query"], body.get("variables") or {}
+                  if q.startswith("mutation"):
+                      name = re.search(r"\{\s*(\w+)\(", q).group(1)
+                      print("MUTATION", name, json.dumps(v, sort_keys=True), flush=True)
+                      return self.reply(json.dumps({"data": {name: mutate(name, v)}}), "application/json")
+                  if "user_books(" in q:
+                      ids = v.get("ids")
+                      books = [{"id": u["id"], "book_id": b, "status_id": u["status_id"], "edition": {"id": u["edition"], "pages": None},
+                                "book": {"pages": None}, "user_book_reads": u["reads"][::-1]}
+                               for b, u in HC.items() if ids is None or b in ids]
+                      return self.reply(json.dumps({"data": {"me": [{"user_books": books}]}}), "application/json")
+                  if v.get("isbn") == "9783608938289":
                       return self.file("hardcover_isbn_ringe.json", "application/json")
                   if "search(" in body["query"]:
                       return self.reply('{"data": {"search": {"results": {"hits": []}}}}', "application/json")
@@ -690,6 +733,28 @@ pkgs.testers.runNixOSTest {
         assert "isbn" not in b["identifiers"] and not (b["pubdate"] or "").startswith("2009-08-0"), b
         assert "auto-metadaten" not in b["tags"], b
         assert api("GET", "/api/metadata/status")[1]["changedBooks"] == 0
+
+    with subtest("hardcover sync"):
+        # a book with the ISBN the stub knows (Hardcover book 900000)
+        hid = add_book("Gelesen")
+        status, b = api("PATCH", f"/api/books/{hid}", {"identifiers": {"isbn": "9783608938289"}})
+        assert status == 200, (status, b)
+        machine.wait_until_succeeds(f"test \"$(sqlite3 {STATE} 'select hc_book_id from hardcover_books where book_id = {hid}')\" = 900000", timeout=60)
+        status, r = api("PUT", f"/api/books/{hid}/progress", {"format": "epub", "position": "epubcfi(/6/4)", "fraction": 0.4, "device": "vm"})
+        assert status == 200, (status, r)
+        stub = "journalctl -u sources-stub -o cat"
+        machine.wait_until_succeeds(f"{stub} | grep -qF 'MUTATION insert_user_book {{\"object\": {{\"book_id\": 900000, \"edition_id\": 900001, \"status_id\": 2}}}}'", timeout=60)
+        machine.wait_until_succeeds(f"{stub} | grep 'MUTATION insert_user_book_read' | grep -q started_at", timeout=30)
+        # at the end: Read, the open read finished
+        status, r = api("PUT", f"/api/books/{hid}/progress", {"format": "epub", "position": "epubcfi(/6/40)", "fraction": 1, "device": "vm"})
+        assert status == 200, (status, r)
+        machine.wait_until_succeeds(f"{stub} | grep 'MUTATION update_user_book ' | grep -q '\"status_id\": 3'", timeout=60)
+        machine.wait_until_succeeds(f"{stub} | grep 'MUTATION update_user_book_read' | grep -q finished_at", timeout=30)
+        n = machine.succeed(f"{stub} | grep -c MUTATION").strip()
+        assert n == "4", n
+        row = machine.succeed(f"sqlite3 {STATE} 'select status, dry_run from hardcover_sync where book_id = {hid}'").strip()
+        assert row == "3|0", row
+        machine.succeed("journalctl -u calibre-hub -o cat | grep -q 'hardcover sync: progress of arthur every 2 s, writing'")
 
     def library_file(book_id, fmt):
         rel = machine.succeed(f"sqlite3 /srv/books/library/metadata.db \"select b.path || '/' || d.name from books b join data d on d.book = b.id where b.id = {book_id} and d.format = '{fmt.upper()}'\"").strip()

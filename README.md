@@ -354,6 +354,39 @@ day (kept in the state DB, so a restart doesn't repeat it). A JWT token is
 also checked for its `exp` (decoded, not verified): from 14 days before
 expiry the alert "Hardcover-Token läuft bald ab" comes once a day.
 
+## Hardcover sync
+
+`hardcoverSync.enable` (off by default) keeps Hardcover in step with the hub,
+in one direction (hub -> Hardcover), with the token and client of the
+metadata source (same pause and alerts; requests share
+`metadata.requestInterval`). Every `hardcoverSync.interval` seconds (900):
+
+1. **Books -> Hardcover books** (read-only): up to `hardcoverSync.batch`
+   books (100) per run, newest first, are looked up: in the user's own
+   Hardcover library (ISBN, then a very similar title by the same author),
+   then by ISBN, then by a title and author search (like the metadata
+   source: an edition in the book's language). The match (book, edition,
+   pages) is kept in the state DB (`hardcover_books`, not in calibre); a
+   book not found is looked up again after 30 days, any book again when its
+   ISBN, title or first author changes.
+2. **Reading progress -> status**: the newest position per book of
+   `hardcoverSync.user` (default `login.user`) whose progress changed since
+   the last run. From 2 % the book is "Currently Reading" with the pages
+   read (progress x the edition's pages) in its open read (one is added
+   with today's date as start when there is none); from
+   `hardcoverSync.readAt` (0.98) it is "Read" and the open read gets the
+   finish date. Only books without a status or with "Want to Read" or
+   "Currently Reading" are changed: "Read", "Paused", "Did Not Finish" and
+   "Ignored" were set on Hardcover and stay (no re-read from the hub).
+   Ratings, reviews, lists and "Want to Read" are never written; nothing
+   comes back from Hardcover.
+
+Without `hardcoverSync.write` (default) it is a dry run: matching runs, the
+planned writes are logged once per progress change
+(`journalctl -u calibre-hub | grep 'hardcover sync: dry run'`), nothing is
+sent. Switched to write, the books planned in the dry run are planned again
+and sent.
+
 ## CLI
 
 `calibre-hub cli <command>`, or `hub <command>` (the package links it), talks
@@ -434,6 +467,8 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
       nightly = "03:15";
       hardcoverTokenFile = "/run/secrets/hardcover-token";  # null: no Hardcover
     };
+    # with metadata.hardcoverTokenFile; dry run until write = true
+    # hardcoverSync = { enable = true; write = false; interval = 900; batch = 100; readAt = 0.98; };
     # embed = { enable = true; delay = 60; };  # the defaults
     convert = { enable = true; target = "EPUB"; ignore = [ "PDF" "CBZ" "CBR" ]; };
     alertCommand = "/run/current-system/sw/bin/notify-admin";
@@ -492,3 +527,5 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_CONVERT`, `_CONVERT_TARGET`, `_CONVERT_IGNORE` | `false`, `EPUB`, `PDF,CBZ,CBR` | convert added books, target format, formats never converted from |
 | `CALIBRE_HUB_OPENLIBRARY_URL`, `_OPENLIBRARY_COVERS_URL`, `_DNB_URL`, `_HARDCOVER_URL` | the public services | base URLs (stubs in the VM test) |
 | `CALIBRE_HUB_HARDCOVER_TOKEN_FILE`, `_HARDCOVER_TOKEN` | none | Hardcover API token (file first); none: source skipped |
+| `CALIBRE_HUB_HARDCOVER_SYNC`, `_SYNC_WRITE`, `_SYNC_USER` | `false`, `false`, `CALIBRE_HUB_LOGIN_USER` | Hardcover sync, write (else dry run), whose progress |
+| `CALIBRE_HUB_HARDCOVER_SYNC_INTERVAL`, `_SYNC_BATCH`, `_SYNC_READ_AT` | `900`, `100`, `0.98` | seconds between runs, books looked up per run, progress counted as read |

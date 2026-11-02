@@ -309,8 +309,8 @@ in
         example = "/run/secrets/hardcover-token";
         description = ''
           File with the Hardcover API token (https://hardcover.app/account/api,
-          with or without "Bearer "). Passed as a systemd credential. null:
-          the source hardcover is skipped. A rejected token pauses the
+          with or without "Bearer "). Passed as a systemd credential; also
+          used by hardcoverSync. null: the source hardcover is skipped. A rejected token pauses the
           source and calls alertCommand once a day, as does a token (JWT)
           expiring within 14 days.
         '';
@@ -353,6 +353,51 @@ in
         type = types.ints.unsigned;
         default = 1000;
         description = "Milliseconds between two requests to the same source.";
+      };
+    };
+
+    hardcoverSync = {
+      enable = mkEnableOption ''
+        the Hardcover sync, hub -> Hardcover, with the token of
+        metadata.hardcoverTokenFile: the books of the library get their
+        Hardcover book in the background (read-only, kept in the state DB),
+        and the reading progress of `user` becomes the book's status
+        ("Currently Reading" with the pages read, "Read" with the date) on
+        Hardcover. Only books without a status or with "Want to Read" or
+        "Currently Reading" are changed; ratings, reviews and lists are
+        never written. Without `write` a dry run that only logs the planned
+        writes
+      '';
+      write = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Send the planned status and progress changes to Hardcover. false:
+          dry run, each planned write is logged once per progress change
+          ("hardcover sync: dry run: ... would ..."); switched on, they are
+          planned again and sent.
+        '';
+      };
+      user = mkOption {
+        type = types.str;
+        default = cfg.login.user;
+        defaultText = lib.literalExpression "config.services.calibre-hub.login.user";
+        description = "Hub user whose reading progress is synced (the Hardcover account is the token's).";
+      };
+      interval = mkOption {
+        type = types.ints.positive;
+        default = 900;
+        description = "Seconds between two sync runs.";
+      };
+      batch = mkOption {
+        type = types.ints.positive;
+        default = 100;
+        description = "Books looked up on Hardcover per run (up to two requests each, at metadata.requestInterval).";
+      };
+      readAt = mkOption {
+        type = types.numbers.between 0 1;
+        default = 0.98;
+        description = "Progress from which a book counts as read.";
       };
     };
 
@@ -476,6 +521,10 @@ in
         assertion = cfg.classify.enable -> cfg.categoryColumn != null;
         message = "services.calibre-hub.classify needs services.calibre-hub.categoryColumn.";
       }
+      {
+        assertion = cfg.hardcoverSync.enable -> cfg.metadata.hardcoverTokenFile != null;
+        message = "services.calibre-hub.hardcoverSync needs services.calibre-hub.metadata.hardcoverTokenFile.";
+      }
     ];
 
     users.users.calibre-hub = {
@@ -585,6 +634,12 @@ in
         CALIBRE_HUB_HARDCOVER_TOKEN_FILE = lib.optionalString (
           cfg.metadata.hardcoverTokenFile != null
         ) "%d/hardcover-token";
+        CALIBRE_HUB_HARDCOVER_SYNC = lib.boolToString cfg.hardcoverSync.enable;
+        CALIBRE_HUB_HARDCOVER_SYNC_WRITE = lib.boolToString cfg.hardcoverSync.write;
+        CALIBRE_HUB_HARDCOVER_SYNC_USER = cfg.hardcoverSync.user;
+        CALIBRE_HUB_HARDCOVER_SYNC_INTERVAL = toString cfg.hardcoverSync.interval;
+        CALIBRE_HUB_HARDCOVER_SYNC_BATCH = toString cfg.hardcoverSync.batch;
+        CALIBRE_HUB_HARDCOVER_SYNC_READ_AT = toString cfg.hardcoverSync.readAt;
         CALIBRE_HUB_EMBED = lib.boolToString cfg.embed.enable;
         CALIBRE_HUB_EMBED_DELAY = toString cfg.embed.delay;
         CALIBRE_HUB_CONVERT = lib.boolToString cfg.convert.enable;
