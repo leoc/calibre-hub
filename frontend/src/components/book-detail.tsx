@@ -21,6 +21,8 @@ import { LibraryLink } from "@/components/library-link"
 import { ReadButton } from "./reading"
 import { OfflineButton } from "./offline"
 import { readerFormat, sortFormats } from "@/lib/reader"
+import { readerFormat } from "@/lib/reader"
+import { useIsAdmin } from "@/lib/session"
 
 export { sortFormats } from "@/lib/reader"
 
@@ -37,9 +39,13 @@ interface DetailProps {
   onDeleted?: () => void
 }
 
-export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved, onDeleted, prefillKategorie }: DetailProps) {
+export function BookDetail({ id, placeholder, onNavigate, edit, onEdit: canEdit, onSaved, onDeleted: canDelete, prefillKategorie }: DetailProps) {
   // list rows have everything except comments; show them right away
   const { data, error, refetch, isPlaceholderData } = useQuery({ ...bookQuery(id), placeholderData: placeholder })
+  // readers neither edit nor delete
+  const admin = useIsAdmin()
+  const onEdit = admin ? canEdit : undefined
+  const onDeleted = admin ? canDelete : undefined
   if (error && !data) return <ErrorMessage error={error} onRetry={() => refetch()} />
   if (!data) return <p className="p-8 text-muted-foreground">{t("loading")}</p>
   // the form needs the full book (comments)
@@ -51,6 +57,7 @@ export function BookDetail({ id, placeholder, onNavigate, edit, onEdit, onSaved,
 
 function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavigate?: () => void; onEdit?: () => void; onDeleted?: () => void }) {
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  const admin = useIsAdmin()
   const kategorie = categoryOf(book, config.categoryColumn)
   const formats = sortFormats(book.formats)
   // reading in the browser is the primary action, downloads come after it
@@ -112,7 +119,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
         </div>
       </div>
 
-      <SuggestionBox book={book} />
+      {admin && <SuggestionBox book={book} />}
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm eink:text-base">
         {inLists.length > 0 && (

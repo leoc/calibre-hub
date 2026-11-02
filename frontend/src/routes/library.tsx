@@ -18,6 +18,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { BulkBar } from "@/components/bulk-bar"
 import { useSelection } from "@/lib/selection"
+import { useIsAdmin } from "@/lib/session"
 import { LibraryLink } from "@/components/library-link"
 import { useListKeys } from "@/components/keyboard"
 import { activateWhenLoaded, focusActive, keyboard, usePendingActivation } from "@/lib/keyboard"
@@ -32,6 +33,7 @@ export function LibraryPage() {
   const desktop = useDesktop()
   const view = useView()
   const sel = useSelection()
+  const admin = useIsAdmin()
   const qc = useQueryClient()
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
   const query = toBookQuery(search, config.categoryColumn)
@@ -123,7 +125,7 @@ export function LibraryPage() {
         </div>
       )}
       {keyDialog}
-      {sel.active && data && <BulkBar search={search} pageIds={data.books.map((b) => b.id)} total={data.total} />}
+      {sel.active && admin && data && <BulkBar search={search} pageIds={data.books.map((b) => b.id)} total={data.total} />}
       {desktop && (
         <Sheet open={search.book != null} onOpenChange={(o) => !o && closeBook()}>
           {/* opening it pushed ?book=, so Back closes it already */}

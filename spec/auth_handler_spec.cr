@@ -53,3 +53,60 @@ describe CalibreHub::AuthHandler do
     call("PATCH", HTTP::Headers{"Cookie" => cookie, "X-Calibre-Hub" => "1"}).should eq({200, true})
   end
 end
+
+private READER_TOKEN = "lea-token-0123456789abc"
+private USERS        = CalibreHub::Auth.new([
+  CalibreHub::Auth.account("arthur", "geheim", tokens: [TOKEN]),
+  CalibreHub::Auth.account("lea", "lesen", CalibreHub::Auth::Role::Reader, [READER_TOKEN]),
+], ("k" * 32).to_slice)
+
+# status, the user the route saw (nil: not reached) and the body it read
+private def as_user(token, method, path, body : String? = nil)
+  h = CalibreHub::AuthHandler.new(USERS, [] of String)
+  seen = nil
+  read = nil
+  h.next = ->(c : HTTP::Server::Context) do
+    seen = USERS.user
+    read = c.request.body.try(&.gets_to_end)
+    c.response.status_code = 200
+    nil
+  end
+  req = HTTP::Request.new(method, path, HTTP::Headers{"Authorization" => "Bearer #{token}"}, body)
+  ctx = HTTP::Server::Context.new(req, HTTP::Server::Response.new(IO::Memory.new))
+  h.call(ctx)
+  {ctx.response.status_code, seen, read}
+end
+
+describe "AuthHandler with several users" do
+  it "runs the request as its user" do
+    as_user(TOKEN, "GET", "/api/books")[0..1].should eq({200, "arthur"})
+    as_user(READER_TOKEN, "GET", "/api/books")[0..1].should eq({200, "lea"})
+    expect_raises(CalibreHub::Auth::NoUser) { USERS.user }
+  end
+
+  it "lets a reader read and change only their own things" do
+    as_user(READER_TOKEN, "GET", "/api/trash")[0].should eq(200)
+    as_user(READER_TOKEN, "PUT", "/api/books/1/progress", "{}")[0].should eq(200)
+    as_user(READER_TOKEN, "PUT", "/api/reader/settings", "{}")[0].should eq(200)
+    as_user(READER_TOKEN, "POST", "/api/lists", %({"name":"Meine"}))[0].should eq(200)
+    as_user(READER_TOKEN, "PUT", "/api/lists/3/books/1")[0].should eq(200)
+    as_user(READER_TOKEN, "DELETE", "/api/session")[0].should eq(200)
+  end
+
+  it "keeps a reader from changing the library" do
+    as_user(READER_TOKEN, "PATCH", "/api/books/1", "{}").should eq({403, nil, nil})
+    as_user(READER_TOKEN, "POST", "/api/books/bulk", "{}")[0].should eq(403)
+    as_user(READER_TOKEN, "POST", "/api/books")[0].should eq(403)
+    as_user(READER_TOKEN, "DELETE", "/api/books/1")[0].should eq(403)
+    as_user(READER_TOKEN, "POST", "/api/trash/1/restore")[0].should eq(403)
+    as_user(READER_TOKEN, "POST", "/api/some/route/added/later")[0].should eq(403)
+    as_user(TOKEN, "PATCH", "/api/books/1", "{}").should eq({200, "arthur", "{}"})
+  end
+
+  it "keeps a reader's lists off the reader folder, with the body intact for the route" do
+    as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"sync":true}))[0].should eq(403)
+    as_user(READER_TOKEN, "POST", "/api/lists", %({"name":"x","sync":true}))[0].should eq(403)
+    as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"sync":false,"name":"y"})).should eq({200, "lea", %({"sync":false,"name":"y"})})
+    as_user(TOKEN, "PATCH", "/api/lists/3", %({"sync":true}))[0].should eq(200)
+  end
+end

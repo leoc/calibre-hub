@@ -21,6 +21,26 @@ let
   # LoadCredential ids, so the secret files can stay root-owned
   credId = name: "user-${name}";
   tokenCred = i: "api-token-${toString i}";
+  # hub users besides the login user: credentials and CALIBRE_HUB_USERS
+  # ("name:role:passwordFile[:tokenFile|...]")
+  hubUserCred = name: "hub-user-${name}";
+  hubTokenCred = name: i: "hub-user-${name}-token-${toString i}";
+  hubUsersEnv = lib.concatStringsSep "," (
+    lib.mapAttrsToList (
+      name: u:
+      "${name}:${u.role}:%d/${hubUserCred name}"
+      + lib.optionalString (u.apiTokenFiles != [ ]) (
+        ":" + lib.concatStringsSep "|" (lib.imap0 (i: _: "%d/${hubTokenCred name i}") u.apiTokenFiles)
+      )
+    ) cfg.users
+  );
+  hubUsersCreds = lib.concatLists (
+    lib.mapAttrsToList (
+      name: u:
+      [ "${hubUserCred name}:${toString u.passwordFile}" ]
+      ++ lib.imap0 (i: file: "${hubTokenCred name i}:${toString file}") u.apiTokenFiles
+    ) cfg.users
+  );
 
   columnLines = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (label: c: "${label}|${c.name}|${c.type}") cfg.customColumns
@@ -145,6 +165,43 @@ in
         type = types.path;
         description = "Password of the login user (plain text).";
       };
+    };
+
+    users = mkOption {
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            role = mkOption {
+              type = types.enum [
+                "admin"
+                "reader"
+              ];
+              default = "reader";
+              description = ''
+                admin: edit, upload, delete, bulk changes. reader: reads and
+                downloads, keeps own lists, reading progress and reader settings.
+              '';
+            };
+            passwordFile = mkOption {
+              type = types.path;
+              description = "Password of the user (plain text), e.g. a sops secret. Passed as a systemd credential.";
+            };
+            apiTokenFiles = mkOption {
+              type = types.listOf types.path;
+              default = [ ];
+              description = "API tokens of the user (like `apiTokenFiles`), with the user's rights.";
+            };
+          };
+        }
+      );
+      default = { };
+      example = lib.literalExpression ''{ lea = { role = "reader"; passwordFile = "/run/secrets/calibre-hub-lea"; }; }'';
+      description = ''
+        Further hub users besides the login user (`login.user`, always an
+        admin, with the tokens of `apiTokenFiles`). Each has their own
+        lists, reading progress and reader settings; the library is shared.
+        A user removed here keeps their data but can't log in any more.
+      '';
     };
 
     sessionKeyFile = mkOption {
@@ -581,6 +638,14 @@ in
         assertion = cfg.hardcoverSync.enable -> cfg.metadata.hardcoverTokenFile != null;
         message = "services.calibre-hub.hardcoverSync needs services.calibre-hub.metadata.hardcoverTokenFile.";
       }
+      {
+        assertion = !(cfg.users ? ${cfg.login.user});
+        message = "services.calibre-hub.users: ${cfg.login.user} is the login user (login.user), configured there.";
+      }
+      {
+        assertion = lib.all (n: builtins.match "[A-Za-z0-9._-]+" n != null) (lib.attrNames cfg.users);
+        message = "services.calibre-hub.users: names may only contain letters, digits, '.', '_' and '-'.";
+      }
     ];
 
     users.users.calibre-hub = {
@@ -714,6 +779,7 @@ in
         CALIBRE_HUB_API_TOKEN_FILES = lib.concatStringsSep "," (
           lib.imap0 (i: _: "%d/${tokenCred i}") cfg.apiTokenFiles
         );
+        CALIBRE_HUB_USERS = hubUsersEnv;
       };
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve";
@@ -726,6 +792,7 @@ in
           "session-key:${cfg.sessionKeyFile}"
         ]
         ++ lib.imap0 (i: file: "${tokenCred i}:${file}") cfg.apiTokenFiles
+        ++ hubUsersCreds
         ++ lib.optional (
           cfg.metadata.hardcoverTokenFile != null
         ) "hardcover-token:${toString cfg.metadata.hardcoverTokenFile}";

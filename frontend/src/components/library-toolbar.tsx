@@ -8,6 +8,7 @@ import { defaultOrder, effectiveSort, sortsFor, toggleTag, withFilter, type Libr
 import { setView, useView } from "@/lib/prefs"
 import { categoryLabel } from "@/lib/kategorie"
 import { useGoLibrary } from "@/lib/use-library"
+import { useIsAdmin } from "@/lib/session"
 import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
 import { Badge } from "./ui/badge"
@@ -20,6 +21,8 @@ import { CompactPager } from "./pagination"
 export function LibraryToolbar({ search, total, page = 1, pages = 1 }: { search: LibrarySearch; total: number | undefined; page?: number; pages?: number }) {
   const view = useView()
   const sel = useSelection()
+  // readers don't change many books at once
+  const admin = useIsAdmin()
   const go = useGoLibrary()
   const { sort, order } = effectiveSort(search)
 
@@ -32,9 +35,11 @@ export function LibraryToolbar({ search, total, page = 1, pages = 1 }: { search:
         </p>
         <CompactPager search={search} page={page} pages={pages} />
         <div className="flex items-center gap-2 max-sm:w-full">
-          <Button variant={sel.active ? "default" : "outline"} size="sm" aria-pressed={sel.active} aria-label={t("bulk.start")} title={t("bulk.start")} onClick={sel.active ? selection.stop : selection.start}>
-            <ListChecks /> <span className="hidden sm:inline">{t("bulk.start")}</span>
-          </Button>
+          {admin && (
+            <Button variant={sel.active ? "default" : "outline"} size="sm" aria-pressed={sel.active} aria-label={t("bulk.start")} title={t("bulk.start")} onClick={sel.active ? selection.stop : selection.start}>
+              <ListChecks /> <span className="hidden sm:inline">{t("bulk.start")}</span>
+            </Button>
+          )}
           <label className="flex min-w-0 items-center gap-1.5 text-sm max-sm:flex-1">
             <span className="sr-only">{t("sort.label")}</span>
             <select

@@ -25,9 +25,11 @@ import { OfflineBadge } from "./offline"
 import { clearOffline } from "@/lib/offline"
 import { clearQueue, flushProgress } from "@/lib/progress-sync"
 import { activateWhenLoaded, focusActive, focusSearch, registerSearchFocus } from "@/lib/keyboard"
+import { useIsAdmin } from "@/lib/session"
 
 export function AppShell() {
   const desktop = useDesktop()
+  const admin = useIsAdmin()
   const search = useLibrarySearch()
   const searchRef = useRef(search)
   useEffect(() => {
@@ -78,7 +80,8 @@ export function AppShell() {
           <span className="hidden sm:inline">{t("app.title")}</span>
         </LibraryLink>
         <HeaderSearch value={search.q ?? ""} onOpenPalette={setPalette} />
-        <UploadButton className="sm:ml-auto" />
+        {/* readers don't upload */}
+        {admin ? <UploadButton className="sm:ml-auto" /> : <span className="sm:ml-auto" aria-hidden />}
         <OfflineBadge />
         <LogoutButton />
       </header>
@@ -110,7 +113,7 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
-      <UploadHost />
+      {admin && <UploadHost />}
       <SaveDialogHost />
       <ShelfDialogHost />
       <Toaster />

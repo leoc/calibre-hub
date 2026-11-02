@@ -10,6 +10,7 @@ import { hasFilters, toggleTag, unsortedQuery, withFilter, type LibrarySearch } 
 import { matchNamed } from "@/lib/palette"
 import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
+import { useIsAdmin } from "@/lib/session"
 import { CategoryTree } from "./category-tree"
 import { ThemeSwitch } from "./theme-switch"
 import { KeyboardSwitch } from "./keyboard"
@@ -29,12 +30,14 @@ export function Sidebar({ search, onNavigate }: Props) {
   const replace = useContext(ReplaceHistory) || undefined
   const { data: cats } = useQuery(categoriesQuery)
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
+  // the library's upkeep (suggestions, metadata, duplicates, trash) is for admins
+  const admin = useIsAdmin()
   // books without a category, counted over the whole library
   const { data: unsorted, isPending: unsortedPending } = useQuery({
     ...booksQuery({ q: unsortedQuery(config.categoryColumn ?? ""), limit: 1 }),
     enabled: !!config.categoryColumn,
   })
-  const { data: classify } = useQuery({ ...classifyStatusQuery, enabled: !!config.classify })
+  const { data: classify } = useQuery({ ...classifyStatusQuery, enabled: !!config.classify && admin })
 
   return (
     <nav className="flex h-full flex-col gap-5 overflow-y-auto p-3">
@@ -92,7 +95,7 @@ export function Sidebar({ search, onNavigate }: Props) {
       )}
 
       <div className="mt-auto space-y-2 pt-2">
-        {config.classify && (
+        {config.classify && admin && (
           <Link to="/suggestions" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
             <span className="flex items-center gap-2">
               <Sparkles className="size-4" aria-hidden /> {t("suggest.title")}
@@ -100,23 +103,27 @@ export function Sidebar({ search, onNavigate }: Props) {
             {!!classify?.pending && <Count n={classify.pending} />}
           </Link>
         )}
-        {config.metadata && (
+        {config.metadata && admin && (
           <Link to="/metadata" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
             <span className="flex items-center gap-2">
               <WandSparkles className="size-4" aria-hidden /> {t("meta.title")}
             </span>
           </Link>
         )}
-        <Link to="/duplicates" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
-          <span className="flex items-center gap-2">
-            <CopyCheck className="size-4" aria-hidden /> {t("dup.title")}
-          </span>
-        </Link>
-        <Link to="/trash" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
-          <span className="flex items-center gap-2">
-            <Trash2 className="size-4" aria-hidden /> {t("trash.title")}
-          </span>
-        </Link>
+        {admin && (
+          <Link to="/duplicates" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+            <span className="flex items-center gap-2">
+              <CopyCheck className="size-4" aria-hidden /> {t("dup.title")}
+            </span>
+          </Link>
+        )}
+        {admin && (
+          <Link to="/trash" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+            <span className="flex items-center gap-2">
+              <Trash2 className="size-4" aria-hidden /> {t("trash.title")}
+            </span>
+          </Link>
+        )}
         <ThemeSwitch />
         {/* keyboard control is for wide screens; phones stay as they are */}
         <KeyboardSwitch className="hidden sm:grid" />

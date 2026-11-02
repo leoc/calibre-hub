@@ -336,10 +336,16 @@ export function bookSearchParams(query: BookQuery): URLSearchParams {
   return p
 }
 
+// role: admin edits the library, reader only reads (and keeps own lists)
+export interface Session {
+  user: string
+  role?: "admin" | "reader"
+}
+
 export const api = {
-  session: () => request<{ user: string }>("/api/session"),
+  session: () => request<Session>("/api/session"),
   login: (user: string, password: string) =>
-    request<{ user: string }>("/api/session", { method: "POST", body: JSON.stringify({ user, password }) }),
+    request<Session>("/api/session", { method: "POST", body: JSON.stringify({ user, password }) }),
   logout: () => request<void>("/api/session", { method: "DELETE" }),
   books: (query: BookQuery) => request<BookPage>(`/api/books?${bookSearchParams(query)}`),
   book: (id: number) => request<Book>(`/api/books/${id}`),

@@ -2,6 +2,7 @@ require "kemal"
 require "./calibre_hub/calibre"
 require "./calibre_hub/detector"
 require "./calibre_hub/auth"
+require "./calibre_hub/users"
 require "./calibre_hub/api"
 require "./calibre_hub/duplicates"
 require "./calibre_hub/files"
@@ -120,6 +121,20 @@ module CalibreHub
       env("CALIBRE_HUB_API_TOKEN_FILES", "").split(',', remove_empty: true).map do |path|
         Config.read_secret(path.strip)
       end
+    end
+
+    # The login user (admin, with the API tokens above) and the further
+    # users of CALIBRE_HUB_USERS: "name:role:passwordFile[:tokenFile|...]",
+    # comma separated, role admin or reader
+    def accounts : Array(Auth::Account)
+      others = env("CALIBRE_HUB_USERS", "").split(',', remove_empty: true).map do |entry|
+        name, role, password_file, token_files = entry.strip.split(':', 4) + [""] * 3
+        r = Auth::Role.parse?(role) || abort "CALIBRE_HUB_USERS: user #{name}: role admin or reader expected, not #{role.inspect}"
+        abort "CALIBRE_HUB_USERS: user #{name}: password file missing" if password_file.empty?
+        tokens = token_files.split('|', remove_empty: true).map { |path| Config.read_secret(path.strip) }
+        Auth.account(name, Config.read_secret(password_file), r, tokens)
+      end
+      [Auth.account(login_user, login_password, Auth::Role::Admin, api_tokens)] + others
     end
 
     getter session_days : Int32 = env("CALIBRE_HUB_SESSION_DAYS", "30").to_i
@@ -408,15 +423,17 @@ module CalibreHub
     dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert), wake)
     inbox = config.inbox.try { |dir| Inbox.new(dir, calibre, detector, config.category_column, config.inbox_stable) }
 
-    auth = Auth.new(config.login_user, config.login_password, config.session_key,
-      lifetime: config.session_days.days, secure: config.secure_cookies, tokens: config.api_tokens)
+    auth = Auth.new(config.accounts, config.session_key, lifetime: config.session_days.days, secure: config.secure_cookies)
+    Users.new(db).sync(auth.accounts)
+    puts "users: #{auth.accounts.map { |a| "#{a.name} (#{a.role})" }.join(", ")}"
     auth_handler = AuthHandler.new(auth, config.trusted_proxies)
     use UnavailableHandler.new
     config.frontend.try { |dir| use FrontendHandler.new(dir) }
     use auth_handler
     writer = Writer.new(calibre, detector, wake, config.category_column)
     lists = lists(config, calibre, db, wake)
-    members = ->(p : HTTP::Params) { Api.list_members(lists, config.login_user, p) }
+    # in the request that submits the job, so the lists of its user
+    members = ->(p : HTTP::Params) { Api.list_members(lists, auth.user, p) }
     # one per host interval for the metadata sources and the sync
     http = Meta::Http.new(config.metadata_interval)
     hardcover = hardcover(config, http, db)

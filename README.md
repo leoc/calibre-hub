@@ -14,10 +14,20 @@ need the header `X-Calibre-Hub: 1`, unless only a token is sent (a request
 with a cookie always needs it). A wrong token is a 401, without falling back
 to the cookie. Field names are camelCase, missing values `null`.
 
+Users: the login user (`login.user`, an admin, with the tokens of
+`apiTokenFiles`) and the further `users` of the module, each `admin` or
+`reader`, with their own password file and tokens. Lists, reading progress
+and reader settings are per user, the library is shared. A reader reads and
+downloads everything but writes only their own lists (not synced to the
+reader folder), progress and reader settings; every other unsafe request,
+also of routes added later, is a 403 for readers. The users are kept in the
+state DB (`users`); one removed from the configuration keeps their data but
+can't log in.
+
 | Route | |
 |---|---|
 | `POST /api/session` `{user, password}` | login, sets `hub_session` (30 days, renewed on use); 429 after 5 failures in 15 min |
-| `GET /api/session`, `DELETE /api/session` | current user, logout |
+| `GET /api/session`, `DELETE /api/session` | current user `{user, role}` (role `admin` or `reader`), logout |
 | `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in). With `list=<id>` only the books of that list and its sublists (`direct=1`: only its own), `sort` then listAdded (default, newest first), title, author or series; `listPath=Urlaub` (`listOwner`, default the user) does the same for a level that may have no list of its own (404 when nothing is below it) |
 | `GET /api/books/:id` | one book incl. `comments` and `lists` |
 | `GET /api/lists` | the reading lists the user sees (own ones first, favorites first, by name): `[{id, name, description, owner, visibility, sync, favorite, isDefault, count, totalCount, parent, leaf, coverBookIds, createdAt, updatedAt, lastUsedAt, editable, rule, query, queryError}]`; `coverBookIds`: the 4 most recently added books; nested lists: `parent` the path above (`"Urlaub"` for `"Urlaub/2026"`, null at the top), `leaf` the last level, `totalCount` the distinct books incl. the sublists the user sees; `rule`/`query`: a magic shelf's rule and its calibre search (null for a list with books of its own), `queryError` when that search failed (count 0) |
@@ -75,6 +85,7 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see Backlog import); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
 | `GET /api/import/cleanups/:id`, `POST /api/import/cleanups/:id/undo` `{dryRun?}` | a cleanup with its backup; undo puts category and tags back (dry run by default, else 202 with `undoJob`) |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
+| `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with any hub user |
 | `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
 | `GET /healthz` | no auth |
 
@@ -330,7 +341,7 @@ default list. The tag stays on the books but is no longer read; the list is
 the source of truth from then on.
 
 Visibility is set in the web app ("Liste bearbeiten") and stored per list;
-with a single login user it changes nothing yet. Reader apps can add
+it matters once there is more than one user. Reader apps can add
 `https://<hub>/opds/lists` as a catalog of their own. The reader folder changes from category
 subfolders to `<target>/Leseliste/`.
 
@@ -721,6 +732,8 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     login.passwordFile = "/run/secrets/login";
     sessionKeyFile = "/run/secrets/session-key";
     apiTokenFiles = [ "/run/secrets/hub-token-laptop" ];  # for the CLI
+    # further users; role "admin" or "reader" (default)
+    users.lea = { role = "reader"; passwordFile = "/run/secrets/hub-lea"; };
     calibre.servicePasswordFile = "/run/secrets/calibre-service";
     inbox.path = "/srv/books/inbox";
     leseliste = { enable = true; target = "/srv/books/reader"; };
@@ -797,7 +810,8 @@ Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
 | `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
 | `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |
 | `CALIBRE_HUB_LIST_MIGRATE_TAG` | `leseliste` | books with this tag become the list "Leseliste" on the first start |
-| `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each |
+| `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each, of the login user |
+| `CALIBRE_HUB_USERS` | none | further users, comma separated `name:role:passwordFile[:tokenFile\|tokenFile…]`, role `admin` or `reader` |
 | `CALIBRE_HUB_CLASSIFY` | `false` | `true` turns on category suggestions (needs `CALIBRE_HUB_CATEGORY_COLUMN`) |
 | `CALIBRE_HUB_CLASSIFY_ENDPOINT`, `_MODEL` | `http://127.0.0.1:11434`, `qwen2.5:3b` | Ollama API and model |
 | `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT` | `0.85`, `03:45`, `300` | auto-apply from, nightly run (empty: none), seconds per answer |

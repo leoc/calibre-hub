@@ -143,11 +143,14 @@ module CalibreHub
 
   # Session or API token for /api/*, Basic for the OPDS passthrough, CSRF
   # header for unsafe methods unless only a token is sent. Re-issues the
-  # cookie on every request authenticated by the session.
+  # cookie on every request authenticated by the session. The request runs
+  # as its user (Auth#user); a reader's writes stop here with 403 unless
+  # they only touch the reader's own things (.reader_may?).
   class AuthHandler
     include HTTP::Handler
 
     PUBLIC = {"/healthz"}
+    SAFE   = {"GET", "HEAD", "OPTIONS"}
 
     def initialize(@auth : Auth, @trusted_proxies : Array(String))
     end
@@ -158,7 +161,9 @@ module CalibreHub
       return call_next(context) if PUBLIC.includes?(path)
 
       if path.starts_with?("/opds") || path.starts_with?("/get/")
-        return call_next(context) if @auth.basic_user(client_ip(context), req.headers["Authorization"]?)
+        if user = @auth.basic_user(client_ip(context), req.headers["Authorization"]?)
+          return serve(context, user)
+        end
         context.response.headers["WWW-Authenticate"] = %(Basic realm="calibre-hub")
         return deny(context, 401, "login required")
       end
@@ -168,26 +173,57 @@ module CalibreHub
       # A browser never adds a bearer token on its own, so token requests
       # need no CSRF header; once a cookie comes along they do again.
       csrf_exempt = bearer && !req.headers.has_key?("Cookie")
-      unless {"GET", "HEAD", "OPTIONS"}.includes?(req.method) || req.headers[Auth::CSRF_HEADER]? || csrf_exempt
+      unless SAFE.includes?(req.method) || req.headers[Auth::CSRF_HEADER]? || csrf_exempt
         return deny(context, 403, "missing #{Auth::CSRF_HEADER} header")
       end
 
       # a token is never mixed with the session: wrong token, no fallback
       if bearer
-        return call_next(context) if @auth.bearer_user(client_ip(context), authorization)
+        if user = @auth.bearer_user(client_ip(context), authorization)
+          return serve(context, user)
+        end
         return deny(context, 401, "invalid token")
       end
 
       return call_next(context) if path == "/api/session" && req.method == "POST"
 
-      if @auth.session_user(req.cookies[Auth::COOKIE]?.try(&.value))
-        context.response.cookies << @auth.cookie unless path == "/api/session" && req.method == "DELETE"
-        call_next(context)
+      if user = @auth.session_user(req.cookies[Auth::COOKIE]?.try(&.value))
+        context.response.cookies << @auth.cookie(user: user) unless path == "/api/session" && req.method == "DELETE"
+        serve(context, user)
       else
         deny(context, 401, "login required")
       end
     rescue RateLimiter::Limited
       deny(context, 429, "too many failed logins")
+    end
+
+    private def serve(context, user : String)
+      unless @auth.admin?(user) || AuthHandler.reader_may?(context.request)
+        return deny(context, 403, "only admins can change the library")
+      end
+      @auth.as_user(user) { call_next(context) }
+    end
+
+    # A reader reads everything and changes only their own things: lists,
+    # reading progress, reader settings; and logs out. Syncing a list to
+    # the reader folder (the admin's e-reader) is the admin's call. Every
+    # other write, also of routes added later, is for admins.
+    def self.reader_may?(req : HTTP::Request) : Bool
+      return true if SAFE.includes?(req.method)
+      path = req.path
+      return true if path == "/api/session" && req.method == "DELETE"
+      return true if path == "/api/reader/settings" || path.matches?(%r{\A/api/books/\d+/progress\z})
+      return false unless path == "/api/lists" || path.starts_with?("/api/lists/")
+      !sets_sync?(req)
+    end
+
+    # Reads the body and puts it back for the route
+    private def self.sets_sync?(req : HTTP::Request) : Bool
+      body = req.body.try(&.gets_to_end) || ""
+      req.body = body
+      JSON.parse(body)["sync"]?.try(&.as_bool?) == true
+    rescue JSON::ParseException | TypeCastError
+      false
     end
 
     def client_ip(context) : String
@@ -222,7 +258,7 @@ module CalibreHub
       password = body["password"]?.try(&.as_s?) || ""
       if cookie = auth.login(auth_handler.client_ip(env), user, password)
         env.response.cookies << cookie
-        {user: auth.user}.to_json
+        {user: user, role: auth.role(user).to_s}.to_json
       else
         halt env, 401, %({"error":"wrong user or password"})
       end
@@ -230,7 +266,7 @@ module CalibreHub
       halt env, 429, %({"error":"too many failed logins"})
     end
 
-    get "/api/session" { {user: auth.user}.to_json }
+    get "/api/session" { {user: auth.user, role: auth.role.to_s}.to_json }
 
     get "/api/config" { {fastTags: fast_tags, categoryColumn: kategorie, classify: !classify.nil?, metadata: !metadata.nil?}.to_json }
 

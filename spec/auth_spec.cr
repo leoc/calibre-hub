@@ -67,3 +67,60 @@ describe "API tokens" do
     expect_raises(CalibreHub::RateLimiter::Limited) { a.bearer_user("ip", "Bearer #{TOKEN}") }
   end
 end
+
+private def users(**opts)
+  CalibreHub::Auth.new([
+    CalibreHub::Auth.account("arthur", "geheim", tokens: [TOKEN]),
+    CalibreHub::Auth.account("lea", "lesen", CalibreHub::Auth::Role::Reader, ["lea-token-0123456789abc"]),
+  ], ("k" * 32).to_slice, **opts)
+end
+
+describe "several users" do
+  it "logs each user in with their own password" do
+    a = users
+    a.check_password("arthur", "geheim").should be_true
+    a.check_password("lea", "lesen").should be_true
+    a.check_password("lea", "geheim").should be_false
+    a.check_password("nobody", "geheim").should be_false
+    a.session_user(a.login("ip", "lea", "lesen").not_nil!.value).should eq("lea")
+    a.basic_user("ip", "Basic #{Base64.strict_encode("lea:lesen")}").should eq("lea")
+  end
+
+  it "maps tokens to their user" do
+    a = users
+    a.bearer_user("ip", "Bearer #{TOKEN}").should eq("arthur")
+    a.bearer_user("ip", "Bearer lea-token-0123456789abc").should eq("lea")
+  end
+
+  it "knows the roles" do
+    a = users
+    a.role("arthur").should eq(CalibreHub::Auth::Role::Admin)
+    a.admin?("lea").should be_false
+    a.role("nobody").should be_nil
+    a.role("lea").to_s.should eq("reader")
+  end
+
+  it "drops the session of a user no longer configured" do
+    old = users
+    now = CalibreHub::Auth.new("arthur", "geheim", ("k" * 32).to_slice)
+    now.session_user(old.cookie(user: "lea").value).should be_nil
+    now.session_user(old.cookie(user: "arthur").value).should eq("arthur")
+  end
+
+  it "runs a block as a user and asks for one otherwise" do
+    a = users
+    expect_raises(CalibreHub::Auth::NoUser) { a.user }
+    a.as_user("lea") { a.user.should eq("lea") }
+    expect_raises(CalibreHub::Auth::NoUser) { a.user }
+    auth.user.should eq("arthur")
+  end
+
+  it "rejects users or tokens configured twice" do
+    expect_raises(ArgumentError, "twice") do
+      CalibreHub::Auth.new([CalibreHub::Auth.account("a", "x"), CalibreHub::Auth.account("a", "y")], ("k" * 32).to_slice)
+    end
+    expect_raises(ArgumentError, "twice") do
+      CalibreHub::Auth.new([CalibreHub::Auth.account("a", "x", tokens: [TOKEN]), CalibreHub::Auth.account("b", "y", tokens: [TOKEN])], ("k" * 32).to_slice)
+    end
+  end
+end

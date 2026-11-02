@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Suggestion, SuggestionStatus, TrashEntry } from "@/lib/api"
+import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Session, Suggestion, SuggestionStatus, TrashEntry } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
@@ -13,6 +13,8 @@ const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
 seedLists(books, matches)
 let loggedIn = true
+// "lea" logs in as a reader, anyone else as the admin
+let session: Session = { user: "arthur", role: "admin" }
 
 const SORT_KEY: Record<string, (b: Book) => string | number> = {
   title: (b) => b.title.toLowerCase(),
@@ -161,12 +163,13 @@ const customCovers = new Map<number, { body: ArrayBuffer; type: string }>()
 const auth = () => (loggedIn ? null : HttpResponse.json({ error: "login required" }, { status: 401 }))
 
 export const readHandlers = [
-  http.get("/api/session", () => auth() ?? HttpResponse.json({ user: "arthur" })),
+  http.get("/api/session", () => auth() ?? HttpResponse.json(session)),
   http.post("/api/session", async ({ request }) => {
-    const { password } = (await request.json()) as { password: string }
+    const { user, password } = (await request.json()) as { user: string; password: string }
     if (password !== "hub") return HttpResponse.json({ error: "wrong user or password" }, { status: 401 })
     loggedIn = true
-    return HttpResponse.json({ user: "arthur" })
+    session = user === "lea" ? { user, role: "reader" } : { user: "arthur", role: "admin" }
+    return HttpResponse.json(session)
   }),
   http.delete("/api/session", () => {
     loggedIn = false

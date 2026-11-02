@@ -36,6 +36,8 @@ pkgs.testers.runNixOSTest {
         "hub/scripts".text = "scripts-secret";
         "hub/token".text = "cli-token-0123456789abcdef\n";
         "hub/hardcover".text = "Bearer hardcover-test-token\n";
+        "hub/lea".text = "lea-secret\n";
+        "hub/lea-token".text = "lea-token-0123456789abcdef\n";
       };
       services.calibre-hub = {
         enable = true;
@@ -51,6 +53,12 @@ pkgs.testers.runNixOSTest {
         calibre.extraUsers.scripts = "/etc/hub/scripts";
         apiTokenFiles = [ "/etc/hub/token" ];
         backlogImport.roots = [ "/srv/books/alt" ];
+        # a second user besides the login user arthur
+        users.lea = {
+          role = "reader";
+          passwordFile = "/etc/hub/lea";
+          apiTokenFiles = [ "/etc/hub/lea-token" ];
+        };
         inbox = {
           path = "/srv/books/inbox";
           stableSeconds = 2;
@@ -98,6 +106,8 @@ pkgs.testers.runNixOSTest {
           meta.mainProgram = "calibre-hub";
         }
       );
+      # the configuration of a single-user host (dmt): login user and tokens only
+      specialisation.single-user.configuration.services.calibre-hub.users = lib.mkForce { };
       # stands in for Ollama: the part of /api/chat the hub uses, canned
       # answers by title
       systemd.services.model-stub = {
@@ -267,6 +277,8 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_open_port(8083, timeout=120)
     machine.wait_for_unit("calibre-hub.service")
     machine.wait_for_open_port(8084)
+    # the specialisations are below the system booted, not below a specialisation
+    BASE = machine.succeed("readlink -f /run/current-system").strip()
 
     with subtest("calibre-server prepared by init.sh"):
         machine.succeed("calibredb --with-library " + LIB + " --username calibre-hub --password service-secret custom_columns | grep -q '^kategorie '")
@@ -1200,9 +1212,70 @@ pkgs.testers.runNixOSTest {
         assert int(n) > 10, n
         assert code(f"-b /tmp/jar {H}/api/books") == "200"
 
+    def as_lea(method, path, body=None):
+        data = f"-H 'Content-Type: application/json' -d '{json.dumps(body)}'" if body is not None else ""
+        out = machine.succeed(f"curl -s -b /tmp/lea -X {method} {CSRF} {data} -w '\\n%{{http_code}}' '{H}{path}'")
+        text, status = out.rsplit("\n", 1)
+        return int(status), (json.loads(text) if text.strip() else None)
+
+    LEA_TOK = "-H 'Authorization: Bearer lea-token-0123456789abcdef'"
+
+    with subtest("two users: own login, own lists and progress, readers don't write"):
+        assert code(f"-c /tmp/lea -X POST {CSRF} -d '{{\"user\":\"lea\",\"password\":\"login-secret\"}}' {H}/api/session") == "401"
+        assert code(f"-c /tmp/lea -X POST {CSRF} -d '{{\"user\":\"lea\",\"password\":\"lea-secret\"}}' {H}/api/session") == "200"
+        assert as_lea("GET", "/api/session") == (200, {"user": "lea", "role": "reader"})
+        assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin"})
+        users = machine.succeed(f"sqlite3 {STATE} 'select name, role, active from users order by name'").split()
+        assert users == ["arthur|admin|1", "lea|reader|1"], users
+        bid = api("GET", "/api/books?limit=1")[1]["books"][0]["id"]
+        # reads and downloads
+        assert as_lea("GET", f"/api/books/{bid}")[0] == 200
+        assert code(f"-b /tmp/lea {H}/api/books/{bid}/download/epub") == "200"
+        # no changes to the library, also not with her token
+        assert as_lea("PATCH", f"/api/books/{bid}", {"title": "Lea war hier"})[0] == 403
+        assert as_lea("POST", "/api/books/bulk", {"target": {"ids": [bid]}, "changes": {"addTags": ["x"]}})[0] == 403
+        assert as_lea("DELETE", f"/api/books/{bid}")[0] == 403
+        assert code(f"{LEA_TOK} -X PATCH -H 'Content-Type: application/json' -d '{{\"title\":\"x\"}}' {H}/api/books/{bid}") == "403"
+        assert json.loads(machine.succeed(f"curl -sf {LEA_TOK} {H}/api/session")) == {"user": "lea", "role": "reader"}
+        assert api("GET", f"/api/books/{bid}")[1]["title"] != "Lea war hier"
+        # her own list, unseen by arthur; his private lists unseen by her
+        status, l = as_lea("POST", "/api/lists", {"name": "Leas Liste"})
+        assert status in (200, 201) and l["owner"] == "lea", (status, l)
+        assert as_lea("PUT", f"/api/lists/{l['id']}/books/{bid}")[0] in (200, 201)
+        assert as_lea("PATCH", f"/api/lists/{l['id']}", {"sync": True})[0] == 403
+        leas = [x["name"] for x in as_lea("GET", "/api/lists")[1]]
+        arthurs = [x["name"] for x in api("GET", "/api/lists")[1]]
+        assert "Leas Liste" in leas and "Leseliste" not in leas, leas
+        assert "Leas Liste" not in arthurs and "Leseliste" in arthurs, arthurs
+        assert as_lea("GET", f"/api/books?list={l['id']}")[1]["total"] == 1
+        assert l["id"] not in api("GET", f"/api/books/{bid}")[1].get("lists", [])
+        # her own reading progress
+        assert as_lea("PUT", f"/api/books/{bid}/progress", {"format": "epub", "position": "epubcfi(/6/8)", "fraction": 0.7, "device": "lea-phone"})[0] == 200
+        assert as_lea("GET", f"/api/books/{bid}/progress")[1]["latest"]["device"] == "lea-phone"
+        assert "lea-phone" not in [d["device"] for d in api("GET", f"/api/books/{bid}/progress")[1]["devices"]]
+        # OPDS with her password shows her lists
+        nav = machine.succeed(f"curl -sf -u lea:lea-secret {H}/opds/lists")
+        assert "Leas Liste" in nav and "Leseliste" not in nav, nav
+        assert code(f"-u lea:lea-secret {H}/opds") == "200"
+
     with subtest("opds with basic auth"):
         assert code(f"{H}/opds") == "401"
         assert code(f"-u arthur:login-secret {H}/opds") == "200"
+
+    with subtest("a single-user configuration (login user and tokens) keeps working"):
+        machine.succeed(f"{BASE}/specialisation/single-user/bin/switch-to-configuration test")
+        machine.wait_for_open_port(8084)
+        machine.wait_until_succeeds("journalctl -u calibre-hub -o cat | grep -qx 'users: arthur (admin)'", timeout=30)
+        # his session, his token and his password as before; her login is gone
+        assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin"})
+        assert code(f"-H 'Authorization: Bearer cli-token-0123456789abcdef' {H}/api/books") == "200"
+        assert code(f"-u arthur:login-secret {H}/opds") == "200"
+        assert as_lea("GET", "/api/session")[0] == 401
+        assert code(f"{LEA_TOK} {H}/api/books") == "401"
+        # her data stays, she can't log in
+        users = machine.succeed(f"sqlite3 {STATE} 'select name, role, active from users order by name'").split()
+        assert users == ["arthur|admin|1", "lea|reader|0"], users
+        assert machine.succeed(f"sqlite3 {STATE} \"select count(*) from lists where owner = 'lea'\"").strip() == "1"
 
     with subtest("calibre-server down -> 502"):
         machine.systemctl("stop calibre-server.service")
