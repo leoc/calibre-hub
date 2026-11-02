@@ -102,7 +102,8 @@ When("I open the list {string}", async ({ page }, name: string) => {
   await openPalette(page)
   await palette(page).getByRole("combobox").pressSequentially(`l ${name}`)
   await palette(page).getByRole("option", { name: new RegExp(`^${name}\\s*\\d`) }).click()
-  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible()
+  // a sublist's page is headed by its last level, the path above it
+  await expect(page.getByRole("heading", { level: 1, name: name.split("/").at(-1), exact: true })).toBeVisible()
 })
 
 When("I add the selection to the list {string}", async ({ page }, name: string) => {
@@ -279,4 +280,68 @@ When("I click {string} in the toast", async ({ page }, label: string) => {
 
 Then("the toast is gone", async ({ page }) => {
   await expect(toast(page)).toBeHidden()
+})
+
+// --- nested lists -------------------------------------------------------------
+
+When("I add the selection to the new list {string}", async ({ page }, name: string) => {
+  await page.getByRole("button", { name: "Zu Liste" }).click()
+  const dialog = page.getByRole("dialog")
+  await dialog.getByRole("button", { name: "Neue Liste" }).click()
+  await dialog.getByRole("textbox", { name: "Name der neuen Liste" }).fill(name)
+  await dialog.getByRole("button", { name: "Anlegen" }).click()
+  await expect(dialog).toBeHidden()
+})
+
+When("I create the sublist {string} of {string} in the dialog", async ({ page }, name: string, parent: string) => {
+  const dialog = saveDialog(page)
+  await dialog.getByRole("button", { name: `Neue Unterliste in ${parent}`, exact: true }).click()
+  await dialog.getByRole("textbox", { name: `Name der neuen Unterliste in ${parent}` }).fill(name)
+  await dialog.getByRole("button", { name: "Anlegen" }).click()
+})
+
+const trail = (page: Page) => page.getByRole("navigation", { name: "Übergeordnete Listen" })
+
+Then("the breadcrumb leads to {string}", async ({ page }, name: string) => {
+  await expect(trail(page).getByRole("link", { name, exact: true })).toBeVisible()
+})
+
+When("I click {string} in the breadcrumb", async ({ page }, name: string) => {
+  await trail(page).getByRole("link", { name, exact: true }).click()
+})
+
+When("I click {string} in the list header", async ({ page }, label: string) => {
+  const button = page.getByRole("main").getByRole("button", { name: label, exact: true })
+  const pressed = await button.getAttribute("aria-pressed")
+  await button.click()
+  await expect(button).toHaveAttribute("aria-pressed", pressed === "true" ? "false" : "true")
+})
+
+Then("the library shows the books of {string} with its sublists", async ({ page }, name: string) => {
+  const l = (await lists(page)).find((x) => x.name === name) as ListFlags & { totalCount: number }
+  expect(l.totalCount).toBeGreaterThan(l.count)
+  await expect(page.getByRole("main").getByText(`${l.totalCount} mit Unterlisten`, { exact: true })).toBeVisible()
+  await expect(page.locator("main").getByText(resultCount(l.totalCount), { exact: true }).last()).toBeVisible()
+  await expect(page.locator("main li.group")).toHaveCount(l.totalCount)
+})
+
+Then("the overview shows {string}, {string}, {string}, {string}", async ({ page }, a: string, b: string, c: string, d: string) => {
+  await expect(overview(page).getByRole("heading", { level: 2 })).toHaveText([a, b, c, d])
+})
+
+When("I fold {string} in the overview", async ({ page }, name: string) => {
+  await overview(page).getByRole("button", { name: `${name} zuklappen`, exact: true }).click()
+})
+
+When("I unfold {string} in the sidebar", async ({ page }, name: string) => {
+  await page.getByRole("navigation").getByRole("button", { name: `${name} aufklappen`, exact: true }).click()
+})
+
+When("I open the palette and type {string}", async ({ page }, text: string) => {
+  await openPalette(page)
+  await palette(page).getByRole("combobox").pressSequentially(text)
+})
+
+When("I pick {string} in the palette", async ({ page }, name: string) => {
+  await palette(page).getByRole("option", { name, exact: true }).click()
 })

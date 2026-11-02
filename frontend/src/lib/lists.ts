@@ -1,7 +1,8 @@
-import { useRef, useSyncExternalStore, type MouseEvent, type PointerEvent } from "react"
-import { queryOptions, useMutation, useQueryClient, type Query, type QueryClient } from "@tanstack/react-query"
+import { useMemo, useRef, useSyncExternalStore, type MouseEvent, type PointerEvent } from "react"
+import { queryOptions, useMutation, useQuery, useQueryClient, type Query, type QueryClient } from "@tanstack/react-query"
 import { formatNumber, t } from "@/i18n"
 import { toast } from "./toast"
+import { sessionQuery } from "./queries"
 import { api, ApiError, write, type Book, type BookPage, type BookQuery, type BulkTarget, type ListPatch, type ReadingList } from "./api"
 
 // Reading lists: queries, mutations and the "Speichern" dialog store.
@@ -35,6 +36,116 @@ export const inList = (book: Pick<Book, "lists">, listId: number) => !!book.list
 export const sortLists = (lists: ReadingList[]) =>
   [...lists].sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name, "de", { sensitivity: "base" }))
 
+// --- nested lists -------------------------------------------------------------
+// A list's name is its path, "Urlaub/2026" is the sublist 2026 of Urlaub (per
+// owner). A level without a list of that name is just a folder in the tree.
+// Shown as a path wherever a list stands alone (palette, badges, toasts) and
+// as the last level inside the tree.
+
+export const listLevels = (name: string) =>
+  name
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean)
+export const listLabel = (l: Pick<ReadingList, "name"> | string) => listLevels(typeof l === "string" ? l : l.name).join("/")
+export const listLeaf = (l: Pick<ReadingList, "name"> | string) => listLevels(typeof l === "string" ? l : l.name).at(-1) ?? ""
+// the path above it, "" at the top
+export const listParent = (name: string) => listLevels(name).slice(0, -1).join("/")
+const fold = (path: string) => listLabel(path).toLowerCase()
+// name lies below path ("Urlaub/2026" below "Urlaub")
+export const isBelow = (path: string, name: string) => fold(name).startsWith(`${fold(path)}/`)
+
+export interface ListNode {
+  // owner + path, unique in the tree
+  key: string
+  path: string
+  // the last level
+  name: string
+  owner: string
+  depth: number
+  // null: a level without a list of its own
+  list: ReadingList | null
+  children: ListNode[]
+}
+
+const byFavoriteThenName = (a: ListNode, b: ListNode) =>
+  Number(!!b.list?.favorite) - Number(!!a.list?.favorite) || a.name.localeCompare(b.name, "de", { sensitivity: "base", numeric: true })
+
+// The lists as a tree per owner, the user's own first (others' lists keep
+// their own tree); siblings favorites first, then by name
+export function buildListTree(lists: ReadingList[], user?: string): ListNode[] {
+  const roots: ListNode[] = []
+  const nodes = new Map<string, ListNode>()
+  const owners = [...new Set(lists.map((l) => l.owner))].sort((a, b) => Number(b === user) - Number(a === user))
+  for (const owner of owners) {
+    const own = lists.filter((l) => l.owner === owner).sort((a, b) => listLevels(a.name).length - listLevels(b.name).length)
+    for (const l of own) {
+      const levels = listLevels(l.name)
+      let siblings = roots
+      levels.forEach((level, i) => {
+        const path = levels.slice(0, i + 1).join("/")
+        const key = `${owner}\u0000${path.toLowerCase()}`
+        let node = nodes.get(key)
+        if (!node) {
+          node = { key, path, name: level, owner, depth: i, list: null, children: [] }
+          nodes.set(key, node)
+          siblings.push(node)
+        }
+        if (i === levels.length - 1) node.list = l
+        siblings = node.children
+      })
+    }
+  }
+  const sort = (ns: ListNode[]): ListNode[] => {
+    ns.sort(byFavoriteThenName)
+    ns.forEach((n) => sort(n.children))
+    return ns
+  }
+  // owners stay in their order, each one's roots sorted
+  return owners.flatMap((o) => sort(roots.filter((r) => r.owner === o)))
+}
+
+export const flattenListTree = (nodes: ListNode[]): ListNode[] => nodes.flatMap((n) => [n, ...flattenListTree(n.children)])
+
+// Favorites as they show in the sidebar: a favorite with its sublists; a
+// favorite below another one only inside it
+export function favoriteTree(nodes: ListNode[]): ListNode[] {
+  return nodes.flatMap((n) => (n.list?.favorite ? [n] : favoriteTree(n.children)))
+}
+
+// Books of a node: incl. its sublists; a level without a list of its own
+// has none itself
+export const nodeCount = (n: ListNode): number | undefined => (n.list ? (n.list.totalCount ?? n.list.count) : undefined)
+
+// The library search that opens a node
+export const nodeSearch = (n: Pick<ListNode, "list" | "path" | "owner">, user?: string) =>
+  n.list ? { list: n.list.id } : { listPath: n.path, listOwner: user && n.owner !== user ? n.owner : undefined }
+
+// The node a list page shows (search.list or search.listPath)
+export function findNode(nodes: ListNode[], search: { list?: number; listPath?: string; listOwner?: string }, user?: string): ListNode | undefined {
+  const all = flattenListTree(nodes)
+  if (search.list != null) return all.find((n) => n.list?.id === search.list)
+  if (!search.listPath) return undefined
+  const owner = search.listOwner ?? user
+  return all.find((n) => fold(n.path) === fold(search.listPath!) && (!owner || n.owner === owner))
+}
+
+// The lists as a tree (listsQuery), with the user for others' trees
+export function useListTree(enabled = true) {
+  const { data: lists, ...rest } = useQuery({ ...listsQuery, enabled })
+  const { data: session } = useQuery(sessionQuery)
+  const user = session?.user
+  const tree = useMemo(() => (lists ? buildListTree(lists, user) : undefined), [lists, user])
+  return { lists, tree, user, ...rest }
+}
+
+// The levels above a node and the node itself, for the breadcrumb
+export function nodeTrail(nodes: ListNode[], node: ListNode): ListNode[] {
+  const all = flattenListTree(nodes).filter((n) => n.owner === node.owner)
+  const levels = listLevels(node.path)
+  return levels.map((_, i) => all.find((n) => fold(n.path) === fold(levels.slice(0, i + 1).join("/")))!).filter(Boolean)
+}
+
 function patchBookLists(qc: QueryClient, ids: Set<number>, listId: number, on: boolean) {
   const fn = (b: Book): Book => {
     if (!ids.has(b.id)) return b
@@ -53,12 +164,18 @@ export function storeList(qc: QueryClient, list: ReadingList) {
     const others = all.filter((l) => l.id !== list.id).map((l) => (list.isDefault && l.isDefault && l.owner === list.owner ? { ...l, isDefault: false } : l))
     return sortLists([...others, list])
   })
+  // the levels above count its books too
+  if (list.parent) qc.invalidateQueries({ queryKey: ["lists"], exact: true })
 }
 
-// The pages of a list change when books come or go
-const listPages = (listId: number) => ({
+// The pages of a list change when books come or go, and so do those of
+// the levels above it
+const listPages = (_listId: number) => ({
   queryKey: ["books"],
-  predicate: (q: Query) => (q.queryKey[1] as BookQuery | undefined)?.list === listId,
+  predicate: (q: Query) => {
+    const k = q.queryKey[1] as BookQuery | undefined
+    return k?.list != null || !!k?.listPath
+  },
 })
 
 // Adds or removes books of one list. Optimistic on the books' `lists`.
@@ -104,7 +221,7 @@ export async function restoreToList(qc: QueryClient, listId: number, bookIds: nu
 // "2 Bücher aus Urlaub entfernt · Rückgängig"
 export function offerUndoRemove(qc: QueryClient, list: Pick<ReadingList, "id" | "name">, removed: number[]) {
   if (!removed.length) return
-  const name = list.name
+  const name = listLabel(list)
   const text = removed.length === 1 ? t("list.removedOne", { name }) : t("list.removedMany", { count: formatNumber(removed.length), name })
   toast.show(text, {
     label: t("toast.undo"),
@@ -130,7 +247,9 @@ export function useUpdateList() {
     mutationFn: ({ id, patch }: { id: number; patch: ListPatch }) => write.updateList(id, patch),
     onSuccess: (list) => {
       storeList(qc, list)
+      // a new name renames the sublists too
       qc.invalidateQueries({ queryKey: ["lists"] })
+      qc.invalidateQueries({ queryKey: ["list"] })
     },
   })
 }

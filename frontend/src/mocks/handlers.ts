@@ -3,7 +3,8 @@ import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Sug
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
-import { dropFromLists, listBookIds, listHandlers, seedLists, withLists } from "./lists"
+import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from "./lists"
+
 
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
@@ -44,7 +45,8 @@ const cover = (b: Book) => {
 
 function filterBooks(p: URLSearchParams) {
   const k = p.get("kategorie")
-  const inList = p.get("list") ? new Set(listBookIds(Number(p.get("list"))) ?? []) : null
+  const members = listQueryIds(p)
+  const inList = members !== undefined ? new Set(members ?? []) : null
   return books.filter((b) => {
     if (inList && !inList.has(b.id)) return false
     const cat = b.custom.kategorie as string | null
@@ -143,13 +145,14 @@ export const readHandlers = [
     const denied = auth()
     if (denied) return denied
     const p = new URL(request.url).searchParams
-    const listId = p.get("list")
-    if (listId && !listBookIds(Number(listId))) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    const members = listQueryIds(p)
+    if (members === null) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    const listId = members !== undefined
     let list = filterBooks(p)
     const dir = p.get("order") === "desc" ? -1 : 1
     if (listId && (p.get("sort") ?? "listAdded") === "listAdded") {
       // newest first, like the hub
-      const order = listBookIds(Number(listId))!
+      const order = members!
       list = [...list].sort((a, b) => (order.indexOf(a.id) - order.indexOf(b.id)) * (p.get("order") === "asc" ? -1 : 1))
     } else {
       const key = SORT_KEY[p.get("sort") ?? "title"]

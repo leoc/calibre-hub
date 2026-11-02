@@ -12,7 +12,7 @@ import { ErrorMessage } from "./error-view"
 import { Button, buttonVariants } from "./ui/button"
 import { BookEdit } from "./book-edit"
 import { ListButtons } from "./lists"
-import { listsQuery } from "@/lib/lists"
+import { listLabel, listsQuery } from "@/lib/lists"
 import { DeleteBookButton } from "./delete-book"
 import { SuggestionBox } from "./suggestion-box"
 import { Badge } from "./ui/badge"
@@ -114,7 +114,7 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
             <span className="flex flex-wrap gap-1.5">
               {inLists.map((l) => (
                 <LibraryLink key={l.id} search={withFilter({}, { list: l.id })} onClick={onNavigate} className="eink:inline-flex eink:min-h-11 eink:items-center touch:inline-flex touch:min-h-11 touch:items-center">
-                  <Badge variant="outline">{l.name}</Badge>
+                  <Badge variant="outline">{listLabel(l)}</Badge>
                 </LibraryLink>
               ))}
             </span>

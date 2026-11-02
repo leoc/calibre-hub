@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckCircle2, CircleAlert, ListMinus, ListPlus, Loader2, Trash2, X } from "lucide-react"
 import { ApiError, DEFAULT_CONFIG, write, type BulkChanges, type BulkTarget, type ReadingList } from "@/lib/api"
-import { listsQuery, offerUndoRemove, useBulkList } from "@/lib/lists"
+import { findNode, listLabel, listsQuery, offerUndoRemove, useBulkList, useListTree } from "@/lib/lists"
 import { NewListInline } from "./lists"
 import { categorySuggestions, parseCategory } from "@/lib/kategorie"
 import { categoriesQuery, configQuery } from "@/lib/queries"
@@ -33,6 +33,8 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   const bulkList = useBulkList()
   const qc = useQueryClient()
   const count = sel.all ? total : sel.ids.size
+  const { tree, user } = useListTree(search.list != null)
+  const hasSublists = !!(tree && findNode(tree, search, user)?.children.length)
   // "all matches" belongs to one search
   const key = JSON.stringify({ ...search, page: undefined, book: undefined, edit: undefined })
   const listDone = listResult?.key === key ? listResult.text : null
@@ -94,7 +96,8 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
           <Button variant="outline" size="sm" disabled={!count} onClick={() => setListAction("add")}>
             <ListPlus /> {t("bulk.addToList")}
           </Button>
-          {search.list != null ? (
+          {/* on a list with its sublists' books the removal would miss those: then the dialog */}
+          {search.list != null && (search.direct || !hasSublists) ? (
             <Button
               variant="outline"
               size="sm"
@@ -142,14 +145,14 @@ function BulkListDialog({
   const { data: lists } = useQuery(listsQuery)
   const bulkList = useBulkList()
   const [picked, setPicked] = useState<number | null>(null)
-  const editable = lists?.filter((l) => l.editable) ?? []
+  const editable = (lists?.filter((l) => l.editable) ?? []).sort((a, b) => listLabel(a).localeCompare(listLabel(b), "de", { sensitivity: "base", numeric: true }))
   const run = (list: ReadingList) =>
     bulkList.mutate(
       { listId: list.id, target, remove },
       {
         onSuccess: (r) => {
           const n = formatNumber((r.added ?? r.removed ?? []).length)
-          onDone(t(remove ? "bulk.listRemoved" : "bulk.listAdded", { count: n, name: r.list.name }))
+          onDone(t(remove ? "bulk.listRemoved" : "bulk.listAdded", { count: n, name: listLabel(r.list) }))
           onClose()
         },
       },
@@ -166,7 +169,8 @@ function BulkListDialog({
             <li key={l.id}>
               <label className="flex min-h-9 cursor-pointer items-center gap-3 rounded-sm px-2 py-1 hover:bg-accent eink:min-h-12 touch:min-h-11">
                 <input type="radio" name="bulk-list" checked={picked === l.id} onChange={() => setPicked(l.id)} className="size-4 eink:size-6" />
-                <span className="min-w-0 flex-1 truncate">{l.name}</span>
+                <span className="min-w-0 flex-1 truncate">{listLabel(l)}</span>
+
                 <span className="text-xs text-muted-foreground tabular-nums eink:text-black">{formatNumber(l.count)}</span>
               </label>
             </li>

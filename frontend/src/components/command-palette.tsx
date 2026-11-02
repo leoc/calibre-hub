@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
-import { ArrowDownUp, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, FolderTree, LayoutGrid, LibraryBig, List, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
+import { ArrowDownUp, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, Folder, FolderTree, LayoutGrid, LibraryBig, List, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
 import { api, coverUrl, DEFAULT_CONFIG, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
-import { inList, lastUsedList, listsQuery, saveDialog, useCreateList, useListMembership } from "@/lib/lists"
+import { flattenListTree, inList, lastUsedList, listLabel, nodeCount, nodeSearch, saveDialog, useCreateList, useListMembership, useListTree } from "@/lib/lists"
 import { matchNamed, parseInput, type Scope } from "@/lib/palette"
 import { categorySuggestions } from "@/lib/kategorie"
 import { defaultOrder, sortsFor, toBookQuery, toggleTag, withFilter } from "@/lib/search"
@@ -75,7 +75,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const go = (s: Parameters<typeof withFilter>[0]) => closeThen(() => navigate({ to: "/", search: s }))
 
   const { data: config = DEFAULT_CONFIG } = useQuery(configQuery)
-  const { data: lists } = useQuery({ ...listsQuery, enabled: open })
+  const { lists, tree, user } = useListTree(open)
   const membership = useListMembership()
   const createList = useCreateList()
   // the book open in the detail, if any
@@ -85,7 +85,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const bookActions: Action[] = openBook
     ? [
         ...(last && !inList(openBook, last.id)
-          ? [{ id: "list-last", label: t("list.quick", { name: last.name }), icon: <BookmarkPlus />, run: () => (membership.mutate({ list: last, bookIds: [openBook.id], on: true }), close()) }]
+          ? [{ id: "list-last", label: t("list.quick", { name: listLabel(last) }), icon: <BookmarkPlus />, run: () => (membership.mutate({ list: last, bookIds: [openBook.id], on: true }), close()) }]
           : []),
         { id: "list-dialog", label: t("list.addToMenu"), icon: <ListPlus />, run: () => closeThen(() => saveDialog.open(openBook)) },
         // "Zu Liste: Urlaub", found by typing part of the name
@@ -93,7 +93,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
           const on = inList(openBook, l.id)
           return {
             id: `list-${l.id}`,
-            label: on ? t("list.removeFrom", { name: l.name }) : t("list.addTo", { name: l.name }),
+            label: on ? t("list.removeFrom", { name: listLabel(l) }) : t("list.addTo", { name: listLabel(l) }),
             icon: on ? <BookmarkMinus /> : <Bookmark />,
             run: () => {
               membership.mutate({ list: l, bookIds: [openBook.id], on: !on })
@@ -180,10 +180,19 @@ export function CommandPalette({ initialInput, onClose }: Props) {
   const tags = cats && wants("tags") ? matchNamed(cats.tags, text, limit) : []
   // shown and matched as "A/B"
   const kategorien = cats && wants("kategorie") ? matchNamed(categorySuggestions(cats.kategorie), text, limit) : []
-  const listItems = lists && wants("lists") ? matchNamed(lists.map((l) => ({ ...l, name: l.name, count: l.count })), text, limit) : []
+  // every level of the tree as a path ("Urlaub/2026"), also one without a
+  // list of its own; matched and shown as the path
+  const listItems =
+    tree && wants("lists")
+      ? matchNamed(
+          flattenListTree(tree).map((n) => ({ node: n, name: listLabel(n.path), count: nodeCount(n) ?? 0 })),
+          text,
+          limit,
+        )
+      : []
   // typed in the lists scope, or as "> Neue Liste: Name"
   const newName = scope === "lists" ? text : scope === "actions" ? (/^neue liste:?\s+(.+)$/i.exec(text)?.[1]?.trim() ?? "") : ""
-  const offerNew = !!newName && !lists?.some((l) => l.name.toLowerCase() === newName.toLowerCase())
+  const offerNew = !!newName && !lists?.some((l) => listLabel(l).toLowerCase() === listLabel(newName).toLowerCase())
   const matchedActions = [
     ...(offerNew ? [newList(newName)] : []),
     ...(scope === "actions" || (scope === "all" && text)
@@ -201,12 +210,13 @@ export function CommandPalette({ initialInput, onClose }: Props) {
     </CommandGroup>
   )
 
-  const named = <T extends { name: string; count: number }>(items: T[], icon: ReactNode, onPick: (i: T) => void, prefix: string) =>
+  // hide: no count (a level of the list tree without a list)
+  const named = <T extends { name: string; count: number }>(items: T[], icon: ReactNode | ((i: T) => ReactNode), onPick: (i: T) => void, prefix: string, hide?: (i: T) => boolean) =>
     items.map((i) => (
       <CommandItem key={`${prefix}:${i.name}`} value={`${prefix}:${i.name}`} onSelect={() => onPick(i)}>
-        {icon}
+        {typeof icon === "function" ? icon(i) : icon}
         <span className="truncate">{i.name}</span>
-        <CommandShortcut>{formatNumber(i.count)}</CommandShortcut>
+        {!hide?.(i) && <CommandShortcut>{formatNumber(i.count)}</CommandShortcut>}
       </CommandItem>
     ))
 
@@ -271,7 +281,18 @@ export function CommandPalette({ initialInput, onClose }: Props) {
             {!!series.length && <CommandGroup heading={t("palette.series")}>{named(series, <BookText />, (i) => go(withFilter({}, { series: i.name })), "s")}</CommandGroup>}
             {!!kategorien.length && <CommandGroup heading={t("palette.kategorie")}>{named(kategorien, <FolderTree />, (i) => go(withFilter({}, { kategorie: i.path })), "k")}</CommandGroup>}
             {!!tags.length && <CommandGroup heading={t("palette.tags")}>{named(tags, <Tag />, (i) => go(toggleTag({}, i.name)), "t")}</CommandGroup>}
-            {!!listItems.length && <CommandGroup heading={t("palette.lists")}>{named(listItems, <ListIcon />, (i) => go(withFilter({}, { list: i.id })), "l")}</CommandGroup>}
+            {!!listItems.length && (
+              <CommandGroup heading={t("palette.lists")}>
+                {named(
+                  listItems,
+                  (i) => (i.node.list ? <ListIcon /> : <Folder />),
+                  (i) => go(withFilter({}, nodeSearch(i.node, user))),
+                  "l",
+                  (i) => !i.node.list,
+                )}
+              </CommandGroup>
+            )}
+
             {!!matchedActions.length && (
               <CommandGroup heading={t("palette.actions")}>
                 {matchedActions.map((a) => (

@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowLeft } from "lucide-react"
 import { DEFAULT_CONFIG, type BookPatch } from "@/lib/api"
 import { booksQuery, configQuery } from "@/lib/queries"
-import { hasFilters, PAGE_SIZE, toBookQuery } from "@/lib/search"
+import { hasFilters, inListView, PAGE_SIZE, toBookQuery } from "@/lib/search"
 import { useView } from "@/lib/prefs"
 import { useDesktop } from "@/lib/use-media"
 import { t } from "@/i18n"
@@ -21,8 +21,8 @@ import { useSelection } from "@/lib/selection"
 import { LibraryLink } from "@/components/library-link"
 import { useListKeys } from "@/components/keyboard"
 import { activateWhenLoaded, focusActive, keyboard, usePendingActivation } from "@/lib/keyboard"
-import { ListHeader } from "@/components/lists"
-import { listQuery } from "@/lib/lists"
+import { ListHeader, ListNodeHeader } from "@/components/lists"
+import { findNode, listQuery, useListTree } from "@/lib/lists"
 
 const route = getRouteApi("/_app/")
 
@@ -43,8 +43,11 @@ export function LibraryPage() {
   const deleted = () => navigate({ to: "/", search: { ...search, book: undefined, edit: undefined }, replace: true })
   const placeholder = data?.books.find((b) => b.id === search.book)
   const { data: list, error: listError } = useQuery({ ...listQuery(search.list ?? 0), enabled: search.list != null })
+  // the list's place in the tree (breadcrumb, sublists), or a level without a list
+  const { tree, user } = useListTree(inListView(search))
+  const node = tree && findNode(tree, search, user)
   // a list's page without further filters: an empty list says how to fill it
-  const listOnly = search.list != null && !hasFilters({ ...search, list: undefined })
+  const listOnly = inListView(search) && !hasFilters({ ...search, list: undefined, listPath: undefined })
 
   // keyboard: moving, selecting, opening; after a search or a page change
   // the first new book becomes the active one
@@ -90,7 +93,9 @@ export function LibraryPage() {
 
   return (
     <div className="mx-auto max-w-[110rem] space-y-5 p-4 lg:p-6">
-      {search.list != null && list && <ListHeader list={list} />}
+      {search.list != null && list && <ListHeader list={list} node={node} tree={tree} user={user} search={search} />}
+      {search.list == null && search.listPath && node && tree && <ListNodeHeader node={node} tree={tree} user={user} />}
+
       <LibraryToolbar search={search} total={data?.total} page={page} pages={pages} />
       {search.list != null && listError ? (
         <ErrorMessage error={listError} />

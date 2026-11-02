@@ -135,6 +135,34 @@ test("E-Ink: a list page, the save dialog and the list settings", async ({ page 
   expect(await smallTargets(page, "[role=dialog]")).toEqual([])
 })
 
+test("E-Ink: nested lists in the overview, the sidebar, the list header and the save dialog", async ({ page }) => {
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await page.getByRole("navigation").getByRole("link", { name: /^Alle Listen/ }).click()
+  const main = page.getByRole("main")
+  await main.getByRole("button", { name: "Neue Unterliste in Urlaub" }).click()
+  expect(await smallTargets(page)).toEqual([])
+  await main.getByRole("textbox", { name: "Name der neuen Unterliste in Urlaub" }).fill("2026")
+  await main.getByRole("button", { name: "Anlegen" }).click()
+  // the sublist's page: the path above it, the sidebar tree open down to it
+  await expect(page.getByRole("heading", { level: 1, name: "2026" })).toBeVisible()
+  await expect(page.getByRole("navigation", { name: "Übergeordnete Listen" })).toBeVisible()
+  expect(await smallTargets(page)).toEqual([])
+  await page.getByRole("navigation", { name: "Übergeordnete Listen" }).getByRole("link", { name: "Urlaub" }).click()
+  await expect(page.getByRole("button", { name: "Nur direkt" })).toBeVisible()
+  expect(await smallTargets(page)).toEqual([])
+  // the save dialog as a tree, with a new sublist under a node
+  await page.locator("main li.group").first().getByRole("button", { name: /Leseliste/ }).click({ button: "right" })
+  const dialog = page.getByRole("dialog", { name: "In Listen speichern" })
+  await expect(dialog.getByRole("checkbox", { name: "Urlaub/2026" })).toBeVisible()
+  await dialog.getByRole("button", { name: "Neue Unterliste in Urlaub/2026" }).click()
+  expect(await smallTargets(page, "[role=dialog]")).toEqual([])
+  await page.keyboard.press("Escape")
+  await page.getByRole("navigation").getByRole("link", { name: /^Alle Listen/ }).click()
+  await expect(main.getByRole("button", { name: "Urlaub zuklappen" })).toBeVisible()
+  expect(await smallTargets(page)).toEqual([])
+})
+
 test("E-Ink: the lists overview and the undo toast", async ({ page }) => {
   await page.goto("/")
   await expect(results(page)).toBeVisible()

@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { categoryOf, DEFAULT_CONFIG, type Book } from "@/lib/api"
 import { configQuery } from "@/lib/queries"
 import { categoryLabel } from "@/lib/kategorie"
-import { defaultOrder, effectiveSort, type LibrarySearch } from "@/lib/search"
+import { defaultOrder, effectiveSort, inListView, type LibrarySearch } from "@/lib/search"
 import type { Sort } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { LibraryLink } from "./library-link"
@@ -34,7 +34,7 @@ export function BookList({ books, search }: { books: Book[]; search: LibrarySear
           </span>
           <span>{t("book.kategorie")}</span>
           <span className="flex justify-end">
-            <SortHeader search={search} sort={search.list != null ? "listAdded" : "added"} label={t("sort.added")} />
+            <SortHeader search={search} sort={inListView(search) ? "listAdded" : "added"} label={t("sort.added")} />
           </span>
         </div>
         <QuickListSpacer className="shrink-0 px-2" />

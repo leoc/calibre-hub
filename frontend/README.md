@@ -26,7 +26,7 @@ the lockfile (v9) works with 10 to 12.
 
 ## Design
 
-- Library state lives in the URL (`?q=&kategorie=&unsorted=&tag=&author=&series=&lang=&list=&sort=&order=&page=&book=`),
+- Library state lives in the URL (`?q=&kategorie=&unsorted=&tag=&author=&series=&lang=&list=&listPath=&listOwner=&direct=&sort=&order=&page=&book=`),
   plain query strings with repeated `tag`. Pages of 60 instead of infinite
   scroll (one redraw per page on E-Ink).
 - Categories are shown and typed as paths (`Sachbuch/Geschichte`) but stored,
@@ -142,4 +142,17 @@ the lockfile (v9) works with 10 to 12.
   ignored. The mocks start with "Leseliste" (default, favorite, synced, the
   books tagged `leseliste`), "Urlaub" (favorite, used last, books 11–13)
   and an empty "Klassiker".
+- Nested lists: the name is a path, "Urlaub/2026" is the sublist 2026 of
+  Urlaub; a level without a list of its own ("Reise" above "Reise/Meer")
+  is a folder (`?listPath=Reise`). `src/lib/lists.ts` builds the tree
+  (`buildListTree`, per owner, favorites first) and holds the one place
+  for shown names (`listLabel` the path, `listLeaf` the last level). The
+  sidebar shows favorites as a tree with their sublists (chevrons like the
+  category tree), the overview indents sublists and folds them, the palette
+  (`l `) offers every level as a path, "In Listen speichern" is a tree with
+  "+" for a new sublist under a node. A list's page shows the levels above
+  it as links, its books with those of its sublists, and "Nur direkt"
+  (`?direct=1`) for its own only; "Aus dieser Liste" is offered only there
+  or without sublists. Renaming a list (a new path) takes its sublists along.
+
 - The category column comes from `GET /api/config`.

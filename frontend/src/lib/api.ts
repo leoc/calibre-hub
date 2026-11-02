@@ -39,6 +39,12 @@ export interface ReadingList {
   // the bookmark on the cover saves to it
   isDefault: boolean
   count: number
+  // nested lists: the name is a path ("Urlaub/2026"); the path above it
+  // (null at the top) and the last level
+  parent: string | null
+  leaf: string
+  // distinct books incl. the sublists the user sees (older hubs: missing)
+  totalCount?: number
   // the most recently added books, for the cover mosaic
   coverBookIds: number[]
   createdAt: string
@@ -189,8 +195,13 @@ export interface BookQuery {
   tag?: string[]
   author?: string
   series?: string
-  // books of a reading list
+  // books of a reading list (and its sublists unless direct)
   list?: number
+  // a level of the list tree that may have no list of its own
+  listPath?: string
+  listOwner?: string
+  direct?: boolean
+
   sort?: Sort
   order?: "asc" | "desc"
   offset?: number

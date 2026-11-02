@@ -138,3 +138,63 @@ Feature: Reading lists
     Then the toast is gone
     And the library shows 3 books
     And the list "Urlaub" has 3 books
+
+  # Nested lists: the name is a path, "Urlaub/2026" is the sublist 2026 of
+  # Urlaub. A level without a list of its own ("Reise" above "Reise/Meer")
+  # is just a folder.
+
+  Scenario: Creating a sublist by its path puts it below its parent
+    Given I select the first 2 books
+    When I add the selection to the new list "Urlaub/2026"
+    Then the bulk bar says "2 zu Urlaub/2026 hinzugefügt"
+    And the list "Urlaub/2026" exists
+    When I open the list "Urlaub/2026"
+    Then I see the heading "2026"
+    And the breadcrumb leads to "Urlaub"
+    When I click "Urlaub" in the breadcrumb
+    Then I see the heading "Urlaub"
+
+  Scenario: A parent list shows the books of its sublists, "Nur direkt" only its own
+    Given I select the first 2 books
+    And I add the selection to the new list "Urlaub/2026"
+    When I open the list "Urlaub"
+    Then the library shows the books of "Urlaub" with its sublists
+    When I click "Nur direkt" in the list header
+    Then the library shows 3 books
+    When I click "Nur direkt" in the list header
+    Then the library shows the books of "Urlaub" with its sublists
+
+  Scenario: Saving into a new sublist from the save dialog
+    Given the detail of a book is open
+    When I click "Speichern" in the detail
+    And I create the sublist "2026" of "Urlaub" in the dialog
+    Then "Urlaub/2026" is checked in the dialog
+    And the book is in the list "Urlaub/2026"
+
+  Scenario: The overview shows sublists indented and folds them away
+    Given I select the first 1 books
+    And I add the selection to the new list "Urlaub/2026"
+    When I run the command "Listen" in the palette
+    Then the overview shows "Leseliste", "Urlaub", "2026", "Klassiker"
+    When I fold "Urlaub" in the overview
+    Then the overview shows "Leseliste", "Urlaub", "Klassiker"
+
+  Scenario: The palette offers a level without a list of its own
+    Given I select the first 1 books
+    And I add the selection to the new list "Reise/Meer"
+    When I open the palette and type "l reise"
+    Then the palette suggests the list "Reise/Meer"
+    When I pick "Reise" in the palette
+    Then I see the heading "Reise"
+    And I see the text "Ordner ohne eigene Liste"
+    And the library shows 1 books
+
+  @wide
+  Scenario: Wide: the sidebar shows a favorite with its sublists
+    Given I select the first 1 books
+    And I add the selection to the new list "Urlaub/2026"
+    Then the sidebar section "Listen" shows "Leseliste", "Urlaub" in this order
+    When I unfold "Urlaub" in the sidebar
+    Then the sidebar section "Listen" shows "Leseliste", "Urlaub", "2026" in this order
+    When I click "2026" in the sidebar
+    Then I see the heading "2026"

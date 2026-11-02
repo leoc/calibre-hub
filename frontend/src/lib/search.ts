@@ -24,8 +24,14 @@ export const librarySearchSchema = z.object({
   lang: z.string().optional().catch(undefined),
   // books without a category ("Ohne Kategorie")
   unsorted: flag,
-  // a reading list: its page, with description and covers
+  // a reading list: its page, with description and covers; with the books
+  // of its sublists unless direct
   list: z.coerce.number().int().optional().catch(undefined),
+  // a level of the list tree without a list of its own ("Reise" above
+  // "Reise/Meer"), of listOwner when it is someone else's
+  listPath: z.string().optional().catch(undefined),
+  listOwner: z.string().optional().catch(undefined),
+  direct: flag,
   sort: z.enum(ALL_SORTS).optional().catch(undefined),
   order: z.enum(["asc", "desc"]).optional().catch(undefined),
   page: z.coerce.number().int().min(1).optional().catch(undefined),
@@ -36,20 +42,23 @@ export const librarySearchSchema = z.object({
 
 export type LibrarySearch = z.infer<typeof librarySearchSchema>
 
-const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang", "unsorted", "list"] as const
+const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang", "unsorted", "list", "listPath"] as const
 
 export function hasFilters(s: LibrarySearch) {
   return FILTER_KEYS.some((k) => (Array.isArray(s[k]) ? s[k].length > 0 : !!s[k]))
 }
 
+// A list's page, or a level of the list tree
+export const inListView = (s: Pick<LibrarySearch, "list" | "listPath">) => s.list != null || !!s.listPath
+
 // The sorts offered: inside a list only those a list knows
-export const sortsFor = (s: LibrarySearch): readonly Sort[] => (s.list != null ? LIST_SORTS : SORTS)
+export const sortsFor = (s: LibrarySearch): readonly Sort[] => (inListView(s) ? LIST_SORTS : SORTS)
 
 // Effective sort: explicit choice, otherwise series order inside a series,
 // otherwise newest first (in a list: most recently added to it).
 export function effectiveSort(s: LibrarySearch): Pick<BookQuery, "sort" | "order"> {
   if (s.sort && sortsFor(s).includes(s.sort)) return { sort: s.sort, order: s.order ?? defaultOrder(s.sort) }
-  if (s.list != null) return { sort: "listAdded", order: s.sort === "listAdded" ? (s.order ?? "desc") : "desc" }
+  if (inListView(s)) return { sort: "listAdded", order: s.sort === "listAdded" ? (s.order ?? "desc") : "desc" }
   if (s.series) return { sort: "series", order: "asc" }
   return { sort: "added", order: "desc" }
 }
@@ -86,6 +95,10 @@ export function toBookQuery(s: LibrarySearch, categoryColumn: string | null = nu
     author: s.author,
     series: s.series,
     list: s.list,
+    listPath: s.list != null ? undefined : s.listPath,
+    listOwner: s.list != null || !s.listPath ? undefined : s.listOwner,
+    direct: inListView(s) && s.direct ? true : undefined,
+
     ...effectiveSort(s),
     offset: ((s.page ?? 1) - 1) * PAGE_SIZE,
     limit: PAGE_SIZE,

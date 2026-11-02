@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Keyboard, Settings2 } from "lucide-react"
 import { DEFAULT_CONFIG, downloadUrl, type Book, type ReadingList } from "@/lib/api"
 import { configQuery } from "@/lib/queries"
-import { defaultList, inList, lastUsedList, listsQuery, offerUndoRemove, saveDialog, useBulkList, useListMembership } from "@/lib/lists"
+import { defaultList, inList, lastUsedList, listLabel, listsQuery, offerUndoRemove, saveDialog, useBulkList, useListMembership } from "@/lib/lists"
 import { eventToken, KeyEngine, MODES, type Action } from "@/lib/keymap"
 import { activateWhenLoaded, bookElement, focusActive, keyboard, registerList, runListAction, useKeyboard } from "@/lib/keyboard"
 import { bulkTarget, type LibrarySearch } from "@/lib/search"
@@ -327,7 +327,7 @@ export function useListKeys(props: ListProps): ReactNode {
       })
       membership
         .mutateAsync({ list, bookIds: ids, on: !allIn })
-        .then((r) => (allIn ? offerUndoRemove(qc, r.list, r.removed ?? ids) : keyboard.flash(savedText(r.added?.length ?? ids.length, r.list.name))))
+        .then((r) => (allIn ? offerUndoRemove(qc, r.list, r.removed ?? ids) : keyboard.flash(savedText(r.added?.length ?? ids.length, listLabel(r.list)))))
         .catch(() => undefined)
     }
     return registerList((action, count) => {
@@ -393,7 +393,7 @@ export function useListKeys(props: ListProps): ReactNode {
               // all matches: added, no toggle (that would need them all loaded)
               bulkList
                 .mutateAsync({ listId: last.id, target: bulkTarget(search, config.categoryColumn) })
-                .then((r) => keyboard.flash(savedText(r.added?.length ?? 0, last.name)))
+                .then((r) => keyboard.flash(savedText(r.added?.length ?? 0, listLabel(last))))
                 .catch(() => undefined)
             } else toggleLast(last, [...sel.ids])
             return true
