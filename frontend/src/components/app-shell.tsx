@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react"
 import { Outlet } from "@tanstack/react-router"
 import { useQueryClient } from "@tanstack/react-query"
-import { BookOpen, LogOut, Menu, Search, X } from "lucide-react"
+import { BookOpen, Command, LogOut, Menu, Search, X } from "lucide-react"
 import { api } from "@/lib/api"
-import { useDesktop } from "@/lib/use-media"
+import { useDesktop, useMedia } from "@/lib/use-media"
+import { parseInput } from "@/lib/palette"
+import { cn } from "@/lib/utils"
 import { useGoLibrary, useLibrarySearch } from "@/lib/use-library"
 import { withFilter } from "@/lib/search"
 import { t } from "@/i18n"
@@ -18,8 +20,27 @@ import { LibraryLink } from "@/components/library-link"
 export function AppShell() {
   const desktop = useDesktop()
   const search = useLibrarySearch()
+  const searchRef = useRef(search)
+  useEffect(() => {
+    searchRef.current = search
+  })
   const [menuOpen, setMenuOpen] = useState(false)
-  const [paletteOpen, setPaletteOpen] = useState(false)
+  // null = closed, otherwise the text the palette starts with
+  const [palette, setPaletteState] = useState<string | null>(null)
+  // focus goes back where it came from (e.g. the search bar after a prefix)
+  const returnFocus = useRef<HTMLElement | null>(null)
+  const setPalette = (next: string | null | ((p: string | null) => string | null)) =>
+    setPaletteState((prev) => {
+      const value = typeof next === "function" ? next(prev) : next
+      if (prev === null && value !== null) returnFocus.current = document.activeElement as HTMLElement | null
+      return value
+    })
+  const closePalette = () => {
+    setPaletteState(null)
+    const el = returnFocus.current
+    // after the dialog has unmounted
+    setTimeout(() => el?.isConnected && el.focus(), 0)
+  }
 
   // Ctrl/Cmd+K anywhere, "/" outside text fields
   useEffect(() => {
@@ -27,7 +48,7 @@ export function AppShell() {
       const typing = e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))
       if ((e.key === "k" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey)) {
         e.preventDefault()
-        setPaletteOpen((o) => !o)
+        setPalette((p) => (p === null ? (searchRef.current.q ?? "") : null))
       }
     }
     window.addEventListener("keydown", onKey)
@@ -47,7 +68,7 @@ export function AppShell() {
           <BookOpen className="size-5" aria-hidden />
           <span className="hidden sm:inline">{t("app.title")}</span>
         </LibraryLink>
-        <HeaderSearch value={search.q ?? ""} onOpenPalette={() => setPaletteOpen(true)} />
+        <HeaderSearch value={search.q ?? ""} onOpenPalette={setPalette} />
         <UploadButton />
         <LogoutButton />
       </header>
@@ -72,13 +93,23 @@ export function AppShell() {
       </div>
       <UploadHost />
       {/* mounted only while open, so the input starts empty each time */}
-      {paletteOpen && <CommandPalette open onOpenChange={setPaletteOpen} />}
+      {palette !== null && <CommandPalette initialInput={palette} onClose={closePalette} />}
     </div>
   )
 }
 
-// Live search: updates the URL 300 ms after typing stops.
-function HeaderSearch({ value, onOpenPalette }: { value: string; onOpenPalette: () => void }) {
+// Wide screens: a real search field that filters the library live; a
+// prefix ("a ", "s ", ">" …) at the start hands the text to the palette.
+// Narrow screens: looks like a search field, opens the palette.
+function HeaderSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (input: string) => void }) {
+  const wide = useMedia("(min-width: 640px)")
+  return wide ? <WideSearch value={value} onOpenPalette={onOpenPalette} /> : <NarrowSearch value={value} onOpenPalette={onOpenPalette} />
+}
+
+const searchBox =
+  "h-9 w-full rounded-md border bg-transparent pl-8 text-base outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm eink:h-12 eink:border-2 eink:text-lg"
+
+function WideSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (input: string) => void }) {
   const [text, setText] = useState(value)
   const [shown, setShown] = useState(value)
   const go = useGoLibrary()
@@ -94,8 +125,15 @@ function HeaderSearch({ value, onOpenPalette }: { value: string; onOpenPalette: 
   useEffect(() => () => clearTimeout(timer.current), [])
 
   const change = (next: string) => {
-    setText(next)
     clearTimeout(timer.current)
+    if (parseInput(next).scope !== "all") {
+      // the prefix never reaches the library search; Escape in the palette
+      // comes back to the field as it was
+      setText(value)
+      onOpenPalette(next)
+      return
+    }
+    setText(next)
     timer.current = setTimeout(() => {
       // one history entry per search, refinements replace it
       go(withFilter(search, { q: next || undefined }), { replace: !!search.q && !!next })
@@ -103,7 +141,7 @@ function HeaderSearch({ value, onOpenPalette }: { value: string; onOpenPalette: 
   }
 
   return (
-    <div className="relative flex max-w-xl flex-1 items-center">
+    <div className="relative flex max-w-xl min-w-0 flex-1 items-center">
       <Search className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground eink:text-black" aria-hidden />
       <input
         type="search"
@@ -111,22 +149,47 @@ function HeaderSearch({ value, onOpenPalette }: { value: string; onOpenPalette: 
         onChange={(e) => change(e.target.value)}
         placeholder={t("search.placeholder")}
         aria-label={t("search.placeholder")}
-        className="h-9 w-full rounded-md border bg-transparent pr-16 pl-8 text-base outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm eink:h-12 eink:border-2 eink:text-lg [&::-webkit-search-cancel-button]:hidden"
+        className={cn(searchBox, "pr-20 [&::-webkit-search-cancel-button]:hidden")}
       />
-      <div className="absolute right-1 flex items-center">
+      <div className="absolute right-1 flex items-center gap-0.5">
         {text && (
           <button onClick={() => change("")} aria-label={t("search.clear")} className="rounded-sm p-1.5 hover:bg-accent eink:p-2.5">
             <X className="size-4" />
           </button>
         )}
         <button
-          onClick={onOpenPalette}
-          aria-label={t("palette.open")}
-          className="hidden rounded-sm border px-1.5 text-xs text-muted-foreground hover:bg-accent sm:block eink:text-black"
+          onClick={() => onOpenPalette(text)}
+          aria-label={t("palette.button")}
+          title={t("palette.button")}
+          className="flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent eink:border-2 eink:px-2.5 eink:py-1.5 eink:text-sm eink:text-black"
         >
-          ⌘K
+          <Command className="size-3.5" aria-hidden />K
         </button>
       </div>
+    </div>
+  )
+}
+
+function NarrowSearch({ value, onOpenPalette }: { value: string; onOpenPalette: (input: string) => void }) {
+  const go = useGoLibrary()
+  const search = useLibrarySearch()
+  return (
+    <div className="relative flex min-w-0 flex-1 items-center">
+      <button
+        type="button"
+        onClick={() => onOpenPalette(value)}
+        aria-label={t("search.placeholder")}
+        aria-haspopup="dialog"
+        className={cn(searchBox, "flex min-w-0 items-center pr-10 text-left")}
+      >
+        <Search className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground eink:text-black" aria-hidden />
+        <span className={value ? "truncate" : "truncate text-muted-foreground"}>{value || t("search.placeholder")}</span>
+      </button>
+      {value && (
+        <button onClick={() => go(withFilter(search, { q: undefined }))} aria-label={t("search.clear")} className="absolute right-1 rounded-sm p-1.5 hover:bg-accent eink:p-2.5">
+          <X className="size-4" />
+        </button>
+      )}
     </div>
   )
 }

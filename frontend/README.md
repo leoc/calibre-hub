@@ -13,7 +13,7 @@ pnpm dev          # proxies /api to https://hub.nor.sh (HUB_URL=… to change), 
 pnpm dev:mock     # MSW mock library (400 books, VITE_MOCK_BOOKS=10000 for more), password "hub"
 pnpm test         # vitest
 pnpm lint && pnpm typecheck
-CHROMIUM_PATH=$(which chromium) pnpm e2e   # Playwright smoke test against the mocks, desktop + phone
+CHROMIUM_PATH=$(which chromium) pnpm e2e   # Playwright against the mocks: *.spec.ts and the Gherkin scenarios in e2e/features (playwright-bdd), desktop + phone
 ```
 
 Don't start a local calibre-server for development: calibre allows one
@@ -33,9 +33,12 @@ the lockfile (v9) works with 10 to 12.
   series, tags, languages; book detail as a side panel (`?book=`). Smaller
   screens: sidebar as drawer, detail as its own view. `/books/:id` is a
   permanent link.
-- Search in the header is live (300 ms). Command palette with Ctrl+K or `/`:
-  books, authors, series, tags, categories, commands; prefixes `a ` author,
-  `s ` series, `t ` tag, `k ` category, `b ` books, `>` commands.
+- Search and command palette, specified in `e2e/features/search.feature`:
+  wide screens (≥ 640 px) search the library live from the header; a prefix
+  at the start (`a ` author, `s ` series, `t ` tag, `k ` category, `b `
+  books, `>` commands) hands over to the palette, as do the command button,
+  Ctrl+K and `/`. Narrow screens open the palette full screen from the
+  search bar, with scope chips instead of typed prefixes.
 - Themes: system, light, dark, E-Ink (black on white, no animations, larger
   targets), stored per device. Boox/Onyx user agents get a one-time prompt.
 - Fast tags and the category column come from `GET /api/config`

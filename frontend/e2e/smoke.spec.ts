@@ -18,15 +18,7 @@ test("browse, filter, open a book", async ({ page, isMobile }) => {
   if (!isMobile) await expect(page.getByRole("dialog")).toBeHidden()
 })
 
-test("live search and pages keep their state in the URL", async ({ page }) => {
-  await page.goto("/?page=2")
-  await expect(page.locator('[aria-current="page"]')).toHaveText("2")
-  await page.getByRole("searchbox").fill("pratchett")
-  await expect(page).toHaveURL(/q=pratchett/)
-  await expect(page).not.toHaveURL(/page=/)
-  await page.reload()
-  await expect(page.getByRole("searchbox")).toHaveValue("pratchett")
-})
+// search bar and palette: e2e/features/search.feature
 
 test("command palette with prefixes", async ({ page, isMobile }) => {
   test.skip(isMobile, "keyboard shortcut")

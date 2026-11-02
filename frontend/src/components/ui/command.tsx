@@ -12,9 +12,9 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
   )
 }
 
-function CommandInput({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.Input>) {
+function CommandInput({ className, wrapperClassName, ...props }: React.ComponentProps<typeof CommandPrimitive.Input> & { wrapperClassName?: string }) {
   return (
-    <div className="flex h-12 items-center gap-2 border-b px-3 eink:h-14 eink:border-b-2">
+    <div className={cn("flex h-12 items-center gap-2 border-b px-3 eink:h-14 eink:border-b-2", wrapperClassName)}>
       <SearchIcon className="size-4 shrink-0 opacity-50 eink:opacity-100" />
       <CommandPrimitive.Input
         className={cn(
@@ -65,7 +65,7 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
 }
 
 function CommandShortcut({ className, ...props }: React.ComponentProps<"span">) {
-  return <span className={cn("ml-auto text-xs tracking-widest text-muted-foreground", className)} {...props} />
+  return <span className={cn("ml-auto text-xs tracking-widest text-muted-foreground eink:text-inherit", className)} {...props} />
 }
 
 export { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem, CommandShortcut }
