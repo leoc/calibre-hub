@@ -46,6 +46,7 @@ export const ACTIONS = [
   "goSuggestions",
   "goCategories",
   "goLists",
+  "goDuplicates",
   "hints",
   "hintsSelect",
   "help",
@@ -110,6 +111,7 @@ const VIM: Bindings = {
   goSuggestions: ["gv"],
   goCategories: ["gc"],
   goLists: ["gL"],
+  goDuplicates: ["gD"],
   hints: ["f"],
   hintsSelect: ["F"],
 }
@@ -119,7 +121,7 @@ export const GROUPS: { title: "move" | "select" | "book" | "go"; actions: Action
   { title: "move", actions: ["down", "up", "left", "right", "first", "last", "halfDown", "halfUp", "nextPage", "prevPage"] },
   { title: "select", actions: ["toggleSelect", "extendDown", "extendUp", "extendLeft", "extendRight", "visual", "selectAll"] },
   { title: "book", actions: ["open", "edit", "toggleList", "saveLast", "saveDialog", "delete", "copyLink", "download", "hints", "hintsSelect"] },
-  { title: "go", actions: ["search", "commands", "back", "forward", "goLibrary", "goTrash", "goMetadata", "goSuggestions", "goCategories", "goLists", "help"] },
+  { title: "go", actions: ["search", "commands", "back", "forward", "goLibrary", "goTrash", "goMetadata", "goSuggestions", "goCategories", "goLists", "goDuplicates", "help"] },
 ]
 
 export function defaultBindings(mode: KeyMode): Bindings {

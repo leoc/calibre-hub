@@ -94,6 +94,9 @@ export function KeyboardHost({ onSearch, onCommands }: { onSearch: () => void; o
         case "goLists":
           navigate({ to: "/lists" })
           return true
+        case "goDuplicates":
+          navigate({ to: "/duplicates" })
+          return true
         case "saveLast":
         case "saveDialog":
           // never the browser's "save page", also where there are no books

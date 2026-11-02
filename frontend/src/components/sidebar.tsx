@@ -1,7 +1,7 @@
 import { useContext, useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { Inbox, Library, ListIcon, Sparkles, Trash2, WandSparkles } from "lucide-react"
+import { CopyCheck, Inbox, Library, ListIcon, Sparkles, Trash2, WandSparkles } from "lucide-react"
 import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery } from "@/lib/queries"
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
 import { favoriteTree, findNode, flattenListTree, useListTree } from "@/lib/lists"
@@ -107,6 +107,11 @@ export function Sidebar({ search, onNavigate }: Props) {
             </span>
           </Link>
         )}
+        <Link to="/duplicates" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
+          <span className="flex items-center gap-2">
+            <CopyCheck className="size-4" aria-hidden /> {t("dup.title")}
+          </span>
+        </Link>
         <Link to="/trash" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
           <span className="flex items-center gap-2">
             <Trash2 className="size-4" aria-hidden /> {t("trash.title")}

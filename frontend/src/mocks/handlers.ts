@@ -4,6 +4,7 @@ import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
 import { progressHandlers } from "./progress"
+import { duplicateHandlers } from "./duplicates"
 import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from "./lists"
 
 
@@ -82,6 +83,17 @@ function moveToTrash(b: Book) {
   books.splice(books.indexOf(b), 1)
   dropFromLists(b.id)
   trash.unshift({ entry: { id: b.id, title: b.title, authors: b.authors, formats: b.formats, deletedAt: new Date().toISOString() }, book: b })
+}
+
+// adds a deleted book again under a new id; null when it isn't in the trash
+function restoreFromTrash(id: number): Book | null {
+  const i = trash.findIndex((t) => t.entry.id === id)
+  if (i < 0) return null
+  const [{ book }] = trash.splice(i, 1)
+  const restored = { ...book, id: Math.max(...books.map((x) => x.id), ...trash.map((t) => t.entry.id), book.id) + 1 }
+  touch(restored)
+  books.push(restored)
+  return restored
 }
 
 // Category suggestions of the "model": a few open ones for unsorted books
@@ -198,14 +210,9 @@ export const writeHandlers = [
   }),
   http.get("/api/trash", () => HttpResponse.json(trash.map((t) => t.entry))),
   http.post("/api/trash/:id/restore", async ({ params }) => {
-    const i = trash.findIndex((t) => t.entry.id === Number(params.id))
-    if (i < 0) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    if (!trash.some((t) => t.entry.id === Number(params.id))) return HttpResponse.json({ error: "not found" }, { status: 404 })
     await delay(300)
-    const [{ book }] = trash.splice(i, 1)
-    const restored = { ...book, id: Math.max(...books.map((x) => x.id), ...trash.map((t) => t.entry.id), book.id) + 1 }
-    touch(restored)
-    books.push(restored)
-    return HttpResponse.json({ book: restored })
+    return HttpResponse.json({ book: restoreFromTrash(Number(params.id)) })
   }),
   http.post("/api/books", async ({ request }) => {
     const form = await request.formData()
@@ -396,4 +403,6 @@ export const setLoggedIn = (v: boolean) => {
 
 const listMocks = listHandlers(books, (target) => ("ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query))))
 
-export const handlers = [...listMocks, ...progressHandlers, ...writeHandlers, ...metadata, ...readHandlers]
+const duplicates = duplicateHandlers({ books, touch, moveToTrash, restoreFromTrash, withLists, delay })
+
+export const handlers = [...listMocks, ...progressHandlers, ...writeHandlers, ...metadata, ...duplicates, ...readHandlers]

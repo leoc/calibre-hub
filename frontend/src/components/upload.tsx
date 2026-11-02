@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { CheckCircle2, ChevronDown, CircleAlert, Copy, Loader2, Pencil, Upload as UploadIcon, X } from "lucide-react"
-import { useNavigate } from "@tanstack/react-router"
+import { Link, useNavigate } from "@tanstack/react-router"
 import type { UploadOptions } from "@/lib/api"
 import { addUploads, clearFinished, dismissUpload, retryUpload, useUploads, type UploadItem } from "@/lib/upload-store"
 import { categoryLabel } from "@/lib/kategorie"
@@ -242,6 +242,14 @@ function Row({ item }: { item: UploadItem }) {
         </div>
       )}
       {item.status === "error" && <p className="text-xs text-destructive eink:text-black">{item.error}</p>}
+      {item.status === "done" && !!item.similar?.length && (
+        <p className="text-xs">
+          {t("dup.upload", { books: item.similar.map((b) => `#${b.id} „${b.title}“`).join(", ") })}{" "}
+          <Link to="/duplicates" className="underline underline-offset-2">
+            {t("dup.uploadLink")}
+          </Link>
+        </p>
+      )}
       {item.status === "done" && item.book && (
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={() => open(item.book!.id)}>

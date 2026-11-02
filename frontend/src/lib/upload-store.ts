@@ -15,6 +15,8 @@ export interface UploadItem {
   duplicates?: Book[]
   // calibre's "Title (Author)" when the hub could not resolve the books
   duplicateTitles?: string[]
+  // added, but the hub's duplicate detection pairs it with these
+  similar?: Book[]
   error?: string
 }
 
@@ -47,7 +49,7 @@ async function run(item: UploadItem) {
   try {
     const res = await uploadBook(item.file, item.opts, (progress) => update(item.id, { progress }))
     if (res.status === "added") {
-      update(item.id, { status: "done", progress: 1, book: res.book })
+      update(item.id, { status: "done", progress: 1, book: res.book, similar: res.possibleDuplicates })
       queryClient?.invalidateQueries({ queryKey: ["books"] })
       queryClient?.invalidateQueries({ queryKey: ["categories"] })
       if (item.opts.addFormatTo != null) queryClient?.invalidateQueries({ queryKey: ["book", item.opts.addFormatTo] })

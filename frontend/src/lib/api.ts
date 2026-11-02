@@ -245,7 +245,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase()
   const headers = new Headers(init.headers)
   if (method !== "GET" && method !== "HEAD") headers.set("X-Calibre-Hub", "1")
@@ -373,7 +373,8 @@ export interface UploadOptions {
   addFormatTo?: number
 }
 
-export type UploadResult = { status: "added"; book: Book } | { status: "duplicate"; duplicates: Book[]; titles: string[] }
+// possibleDuplicates: books the hub's own detection pairs with the new one
+export type UploadResult = { status: "added"; book: Book; possibleDuplicates?: Book[] } | { status: "duplicate"; duplicates: Book[]; titles: string[] }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
@@ -455,7 +456,7 @@ export function uploadBook(file: File, opts: UploadOptions, onProgress: (fractio
           return null
         }
       })()
-      if (xhr.status === 201 || xhr.status === 200) resolve({ status: "added", book: body.book })
+      if (xhr.status === 201 || xhr.status === 200) resolve({ status: "added", book: body.book, possibleDuplicates: body.possibleDuplicates })
       else if (xhr.status === 409 && body?.error === "duplicate") resolve({ status: "duplicate", duplicates: body.duplicates ?? [], titles: body.titles ?? [] })
       else reject(new ApiError(xhr.status, body?.error ?? xhr.statusText))
     }

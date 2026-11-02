@@ -12,6 +12,7 @@ import { TrashPage } from "./routes/trash"
 import { SuggestionsPage } from "./routes/suggestions"
 import { MetadataPage } from "./routes/metadata"
 import { ListsPage } from "./routes/lists"
+import { DuplicatesPage } from "./routes/duplicates"
 import { ErrorView } from "./components/error-view"
 import { parseSearch, stringifySearch } from "./lib/url-search"
 
@@ -103,7 +104,13 @@ const listsRoute = createRoute({
   component: ListsPage,
 })
 
-const routeTree = rootRoute.addChildren([loginRoute, readerRoute, appRoute.addChildren([libraryRoute, bookRoute, trashRoute, suggestionsRoute, metadataRoute, listsRoute])])
+const duplicatesRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/duplicates",
+  component: DuplicatesPage,
+})
+
+const routeTree = rootRoute.addChildren([loginRoute, readerRoute, appRoute.addChildren([libraryRoute, bookRoute, trashRoute, suggestionsRoute, metadataRoute, listsRoute, duplicatesRoute])])
 
 export function makeRouter(queryClient: QueryClient) {
   return createRouter({

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
-import { ArrowDownUp, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, Folder, FolderTree, LayoutGrid, LibraryBig, List, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
+import { ArrowDownUp, CopyCheck, Bookmark, BookmarkMinus, BookmarkPlus, Keyboard, ListChecks, Palette, Pencil, X, BookText, Folder, FolderTree, LayoutGrid, LibraryBig, List, ListIcon, ListPlus, LogOut, Search, Sparkles, Tag, Trash2, User, WandSparkles } from "lucide-react"
 import { api, coverUrl, DEFAULT_CONFIG, type Book, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { flattenListTree, inList, lastUsedList, listLabel, nodeCount, nodeSearch, saveDialog, useCreateList, useListMembership, useListTree } from "@/lib/lists"
@@ -148,6 +148,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       { id: "all", label: t("nav.all"), icon: <LibraryBig />, run: () => go({}) },
       { id: "lists", label: t("nav.lists"), icon: <ListIcon />, run: () => closeThen(() => navigate({ to: "/lists" })) },
       { id: "trash", label: t("trash.title"), icon: <Trash2 />, run: () => closeThen(() => navigate({ to: "/trash" })) },
+      { id: "duplicates", label: t("dup.title"), icon: <CopyCheck />, run: () => closeThen(() => navigate({ to: "/duplicates" })) },
       ...(config.classify
         ? [{ id: "suggestions", label: t("suggest.title"), icon: <Sparkles />, run: () => closeThen(() => navigate({ to: "/suggestions" })) }]
         : []),

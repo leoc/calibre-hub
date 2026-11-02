@@ -55,7 +55,7 @@ the lockfile (v9) works with 10 to 12.
     (asks; with a selection the bulk delete), Alt+←/→ go back and forward.
   - Vim: the app keys plus hjkl, counts (`5j`), `gg`/`G`, Ctrl+D/U, `[`/`]`
     pages, `v` visual mode, `H`/`L` back and forward, `gl` library, `gt`
-    trash, `gm` metadata, `gv` suggestions, `gL` lists, `gc` category tree (j/k move,
+    trash, `gm` metadata, `gv` suggestions, `gL` lists, `gD` duplicates, `gc` category tree (j/k move,
     l/h open and close, Enter filters, Escape back to the books), `f`/`F`
     hints (letters on every book and link; `f` opens, `F` selects a book or
     opens a link in a new tab), and on the active book `e` edit, `t`
@@ -89,8 +89,8 @@ the lockfile (v9) works with 10 to 12.
     halfDown halfUp nextPage prevPage open toggleSelect extendDown extendUp
     extendLeft extendRight visual selectAll search commands edit toggleList
     saveLast saveDialog delete copyLink download back forward goLibrary
-    goTrash goMetadata goSuggestions goCategories goLists hints hintsSelect
-    help`. Example:
+    goTrash goMetadata goSuggestions goCategories goLists goDuplicates hints
+    hintsSelect help`. Example:
     `{"down": ["n", "j", "<Down>"], "toggleList": []}`.
 - Themes: system, light, dark, E-Ink (black on white, no animations, larger
   targets), stored per device. Boox/Onyx user agents get a one-time prompt.
@@ -173,4 +173,19 @@ the lockfile (v9) works with 10 to 12.
   grid and list a thin bar (`GET /api/progress`), the palette "Lesen: <Titel>"
   for the open book. The mocks serve every file as a small three-chapter
   EPUB (`src/mocks/fixtures`), PDFs as a three-page PDF.
+- Duplicates (`/duplicates`, sidebar entry and palette command "Duplikate",
+  Vim `gD`; `e2e/features/duplicates.feature`): the groups of
+  `GET /api/duplicates` with their reasons ("Gleiche ISBN …", "Titel und
+  Autor (95 %)", "Defekte Datei"), the books side by side (formats with
+  sizes, ISBN, publisher, date, language, category, tags, description,
+  cover, lists; differing rows bold), a radio "Behalten" per book (the
+  hub's suggestion preselected), "Zusammenführen" (asks with the dry run:
+  formats, fields, cover, lists, reading position, what goes to the trash)
+  and "Keine Duplikate" (toast with "Rückgängig"). After a merge a note
+  with "Rückgängig"; "Zuletzt zusammengeführt" lists the merges with undo.
+  The threshold select asks the hub again. An upload the hub pairs with
+  other books says so with a link to the page. The mocks seed two pairs in
+  the middle of the library (ids 150/160: one book twice, the copy with a
+  PDF and a publisher; 170/180: a PDF and an 80-byte Anna's Archive
+  leftover with the ISBN in its title).
 - The category column comes from `GET /api/config`.
