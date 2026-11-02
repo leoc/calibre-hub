@@ -128,6 +128,52 @@ pkgs.testers.runNixOSTest {
         added = machine.succeed(f"grep -c '\"added\",{b['id']},' /var/lib/calibre-hub/events.log").strip()
         assert added == "1", added
 
+    def api(method, path, body=None, extra=""):
+        data = f"-H 'Content-Type: application/json' -d '{json.dumps(body)}'" if body is not None else ""
+        out = machine.succeed(f"curl -s -b /tmp/jar -X {method} {CSRF} {data} {extra} -w '\\n%{{http_code}}' '{H}{path}'")
+        text, status = out.rsplit("\n", 1)
+        return int(status), (json.loads(text) if text.strip() else None)
+
+    with subtest("edit"):
+        assert code(f"-b /tmp/jar -X PATCH -d '{{}}' {H}/api/books/1") == "403"
+        n = int(machine.succeed("grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log").strip())
+        status, b = api("PATCH", "/api/books/1", {"addTags": ["neu"]})
+        assert status == 200 and "neu" in b["tags"], (status, b)
+        machine.wait_until_succeeds(f"test $(grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log) -gt {n}", timeout=30)
+        status, b2 = api("PATCH", "/api/books/1", {"title": "Neuer Titel", "series": "Reihe", "seriesIndex": 3,
+            "rating": 8, "pubdate": "2020-05-01", "kategorie": "Roman", "identifiers": {"isbn": "9780000000001"},
+            "comments": "<p onclick=x>Hallo<script>alert(1)</script></p>", "lastModified": b["lastModified"]})
+        assert status == 200, (status, b2)
+        assert b2["title"] == "Neuer Titel" and b2["series"] == "Reihe" and b2["seriesIndex"] == 3 and b2["rating"] == 8, b2
+        assert b2["pubdate"].startswith("2020-05-") and b2["custom"]["kategorie"] == "Roman", b2
+        assert b2["identifiers"] == {"isbn": "9780000000001"} and b2["comments"] == "<p>Hallo</p>", b2
+        assert b2["lastModified"] != b["lastModified"], b2
+        status, c = api("PATCH", "/api/books/1", {"title": "Alt", "lastModified": b["lastModified"]})
+        assert status == 409 and c["book"]["title"] == "Neuer Titel", (status, c)
+        status, c = api("PATCH", "/api/books/1", {"series": None, "rating": None, "pubdate": None, "kategorie": None})
+        assert status == 200 and c["series"] is None and c["seriesIndex"] is None and c["rating"] is None, c
+        assert c["custom"]["kategorie"] is None and c["pubdate"] is None, c
+        status, c = api("PATCH", "/api/books/1", {"rating": 11})
+        assert status == 400 and c["field"] == "rating", (status, c)
+        assert api("PATCH", "/api/books/999", {"title": "x"})[0] == 404
+
+    with subtest("upload"):
+        machine.succeed("printf 'Upload\\n\\nText\\n' > /tmp/u.txt")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/u.txt /tmp/Upload.epub --title Hochgeladen --authors 'Ulla Upload' --tags Eingebettet")
+        form = "-F file=@/tmp/Upload.epub -F tags=Roman -F tags=Neu -F kategorie=Roman.Krimi"
+        status, r = api("POST", "/api/books", extra=form)
+        assert status == 201 and sorted(r["book"]["tags"]) == ["Neu", "Roman"] and r["book"]["custom"]["kategorie"] == "Roman.Krimi", (status, r)
+        uid = r["book"]["id"]
+        machine.wait_until_succeeds(f"grep -q '\"added\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
+        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Upload.epub")
+        assert status == 409 and r["error"] == "duplicate" and r["duplicates"][0]["id"] == uid, (status, r)
+        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Upload.epub -F force=1")
+        assert status == 201 and r["book"]["id"] != uid, (status, r)
+        status, r = api("POST", "/api/books", extra=f"-F file=@/tmp/u.txt -F addFormatTo={uid}")
+        assert status == 200 and "TXT" in r["book"]["formats"], (status, r)
+        machine.succeed("echo x > /tmp/evil.exe")
+        assert api("POST", "/api/books", extra="-F file=@/tmp/evil.exe")[0] == 415
+
     with subtest("failing handler is parked and alerts"):
         machine.succeed("printf 'x\\n' > /tmp/x.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/x.txt /tmp/kaputt.epub --title Kaputt --authors Niemand")

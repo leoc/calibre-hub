@@ -1,6 +1,7 @@
 require "kemal"
 require "./calibre"
 require "./auth"
+require "./writer"
 
 module CalibreHub
   module Api
@@ -131,7 +132,7 @@ module CalibreHub
   end
 
   def self.routes(calibre : Calibre, auth : Auth, auth_handler : AuthHandler, kategorie : String?,
-                  fast_tags = [] of String)
+                  fast_tags = [] of String, writer : Writer? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -200,6 +201,10 @@ module CalibreHub
       }.to_json
     end
 
+    if w = writer
+      write_routes(w)
+    end
+
     # OPDS for reader apps; its links point to /opds/* and /get/*
     {"/opds", "/opds/*", "/get/*"}.each do |route|
       get route do |env|
@@ -207,6 +212,55 @@ module CalibreHub
         CalibreHub.stream(env, calibre, path, passthrough_headers: true)
       end
     end
+  end
+
+  def self.write_routes(writer : Writer)
+    patch "/api/books/:id" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        writer.update(id, body).to_json
+      end
+    end
+
+    post "/api/books" do |env|
+      write_errors(env) do
+        upload = Writer.read_upload(env.request)
+        begin
+          book, created = writer.upload(upload)
+          env.response.status_code = created ? 201 : 200
+          {book: book}.to_json
+        ensure
+          File.delete?(upload.file)
+        end
+      end
+    end
+  end
+
+  # Maps the writer's errors to the API's {error, field?} bodies. Closes the
+  # response like Kemal's halt, so Kemal's own error pages don't replace it.
+  def self.write_errors(env, &)
+    yield
+  rescue ex : JSON::ParseException
+    fail(env, 400, {error: "invalid JSON: #{ex.message}"})
+  rescue ex : Edit::Invalid
+    fail(env, 400, {error: ex.message, field: ex.field})
+  rescue Writer::NotFound
+    fail(env, 404, {error: "not found"})
+  rescue ex : Writer::Conflict
+    fail(env, 409, {error: "changed in the meantime", book: ex.book})
+  rescue ex : Writer::Duplicates
+    fail(env, 409, {error: "duplicate", duplicates: ex.books, titles: ex.titles})
+  rescue ex : Writer::Unsupported
+    fail(env, 415, {error: ex.message})
+  rescue Writer::TooLarge
+    fail(env, 413, {error: "too large", limit: Writer::MAX_UPLOAD})
+  end
+
+  def self.fail(env, status : Int32, body) : Nil
+    env.response.status_code = status
+    env.response.print body.to_json
+    env.response.close
   end
 
   HOP_HEADERS = %w(connection keep-alive transfer-encoding te trailer upgrade proxy-authenticate proxy-authorization)

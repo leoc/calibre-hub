@@ -17,7 +17,8 @@ module CalibreHub
     @[JSON::Field(key: "seriesIndex")]
     getter series_index : Float64?
     getter formats : Array(String)
-    @[JSON::Field(key: "lastModified")]
+    # full precision, so the PATCH conflict check sees writes within a second
+    @[JSON::Field(key: "lastModified", converter: CalibreHub::Book::Micros)]
     getter last_modified : Time
     @[JSON::Field(key: "added")]
     getter timestamp : Time?
@@ -29,6 +30,25 @@ module CalibreHub
     @[JSON::Field(emit_null: false)]
     getter comments : String?
     getter custom : Hash(String, JSON::Any)
+
+    module Micros
+      def self.to_json(value : Time, json : JSON::Builder)
+        json.string(format(value))
+      end
+
+      def self.format(value : Time) : String
+        value.to_utc.to_rfc3339(fraction_digits: 6)
+      end
+
+      def self.from_json(pull : JSON::PullParser) : Time
+        Time.parse_iso8601(pull.read_string)
+      end
+    end
+
+    # lastModified as the API shows it
+    def version : String
+      Micros.format(last_modified)
+    end
 
     def initialize(@id, @title, @authors, @author_sort, @tags, @series, @series_index, @formats,
                    @last_modified, @timestamp, @pubdate, @rating, @publisher, @identifiers,
@@ -75,8 +95,9 @@ module CalibreHub
       v.as_f? || v.as_i64?.try(&.to_f)
     end
 
+    # calibre's "undefined" date is 0101-01-01
     private def self.time(v : JSON::Any) : Time?
-      v.as_s?.try { |s| Time.parse_iso8601(s) }
+      v.as_s?.try { |s| Time.parse_iso8601(s) }.try { |t| t.year <= 101 ? nil : t }
     end
   end
 end

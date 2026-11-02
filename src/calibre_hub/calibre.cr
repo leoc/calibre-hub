@@ -67,7 +67,12 @@ module CalibreHub
       end
     end
 
-    record Added, book_id : Int64?, duplicates : Array(String)
+    record Duplicate, title : String, authors : Array(String) do
+      def to_s(io)
+        io << title << " (" << authors.join(", ") << ')'
+      end
+    end
+    record Added, book_id : Int64?, duplicates : Array(Duplicate)
 
     # POST /cdb/add-book: the file is the body; calibre reads its metadata
     def add_book(file : String, filename : String, duplicates = false) : Added
@@ -80,7 +85,7 @@ module CalibreHub
         raise Error.new("calibre-server add-book: HTTP #{r.status_code} #{r.body[0, 200]}") unless r.success?
         JSON.parse(r.body)
       end
-      dups = body["duplicates"]?.try(&.as_a.map { |d| "#{d["title"]} (#{d["authors"].as_a.join(", ")})" }) || [] of String
+      dups = body["duplicates"]?.try(&.as_a.map { |d| Duplicate.new(d["title"].as_s, d["authors"].as_a.map(&.as_s)) }) || [] of Duplicate
       Added.new(body["book_id"]?.try(&.as_i64), dups)
     rescue ex : IO::Error | Socket::Error
       raise Unavailable.new("calibre-server: #{ex.message}")

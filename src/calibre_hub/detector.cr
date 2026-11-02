@@ -32,7 +32,7 @@ module CalibreHub
     IGNORED = %w(lastModified)
     # Bump when the Book JSON changes; the snapshot is then rebuilt silently
     # instead of reporting every book as changed.
-    SNAPSHOT_VERSION = "4"
+    SNAPSHOT_VERSION = "5"
     BATCH            = 5000
 
     @library : DB::Database?
