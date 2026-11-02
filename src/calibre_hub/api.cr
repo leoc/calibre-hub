@@ -374,7 +374,10 @@ module CalibreHub
         begin
           book, created = writer.upload(upload)
           env.response.status_code = created ? 201 : 200
-          {book: book}.to_json
+          # a new book that looks like others (the hub's own detection,
+          # beyond calibre's exact title and author check)
+          similar = created ? (writer.similar.try(&.call(book.id)) rescue nil) : nil
+          similar ? {book: book, possibleDuplicates: similar}.to_json : {book: book}.to_json
         ensure
           File.delete?(upload.file)
         end

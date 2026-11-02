@@ -49,6 +49,8 @@ module CalibreHub
     getter calibre : Calibre
     # a cover was set; covers don't show in events (only lastModified changes)
     property on_cover : Proc(Int64, Nil)?
+    # books an uploaded one looks like a duplicate of (duplicates.cr)
+    property similar : Proc(Int64, Array(Book))?
 
     def initialize(@calibre : Calibre, @detector : Detector?, @wake : Channel(Nil)?,
                    @category_column : String?)

@@ -35,8 +35,13 @@ to the cookie. Field names are camelCase, missing values `null`.
 | `DELETE /api/books/:id` | moves the book to calibre's trash; returns `{book}` as it was |
 | `GET /api/trash` | books in calibre's trash, newest first: `[{id, title, authors, formats, deletedAt}]` (`id` is the id the book had) |
 | `POST /api/trash/:id/restore` | adds the book again from the trash (metadata, files, cover); returns `{book}` with a **new** id |
+| `GET /api/duplicates[?threshold=]` | groups of books that look like the same book: `{threshold, groups: [{id, bookIds, keepId, sure, score, reasons: [{kind, bookIds, detail}], books: [{book, hasCover, broken, files: [{format, size, tiny}]}]}]}`; `kind`: isbn, file, title, broken; `keepId` the suggested book to keep; `threshold` 0.5..1 (default `duplicates.threshold`) |
+| `POST /api/duplicates/merge` `{keepId, bookIds, dryRun?, lastModified?}` | merges `bookIds` into `keepId` (see Duplicates); `dryRun: true` returns `{plan: {keepId, otherIds, fields: [{field, old, new}], formats: [{format, from, replace}], coverFrom, lists, progress, trash}}`, else `{merge, book}`; 409 when the keeper changed since `lastModified` |
+| `GET /api/duplicates/merges` | the last merges, newest first: `[{id, keepId, otherIds, status: running\|done\|failed\|undone, at, undoneAt, error, fields, formats, coverFrom, listItems, progress, trashed, restored, errors}]` |
+| `POST /api/duplicates/merges/:id/undo` | undoes a merge: `{merge, books}` (the keeper and the books back from the trash, with new ids); 409 when undone already |
+| `POST /api/duplicates/ignore` `{bookIds}`, `POST /api/duplicates/ignore/remove` `{bookIds}` | marks every pair of the books as no duplicates (or not any more): `{ignored}` / `{removed}` |
 | `GET /api/categories` | `kategorie` tree with counts, `tags`, `authors`, `series`, `languages` |
-| `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart) |
+| `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart; a new book the duplicate detection pairs with others gets `possibleDuplicates: [book]`) |
 | `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}}` (filters as in `GET /api/books`); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids); returns 202 `{jobId, total}` |
 | `GET /api/jobs/:id` | `{id, status: running\|done\|failed, done, total, errors: [{bookId, error}], error?}`; jobs are kept in the state DB, a running job resumes after a restart, the last 50 finished ones stay; `error` when a job stopped early. Also finds classify runs |
 | `GET /api/config` | `{fastTags, categoryColumn, classify, metadata}` for the web app (`fastTags` only for older web apps; lists replace them) |
@@ -74,6 +79,68 @@ module sets the library pref `expire_old_trash_after` to 100 years, so
 nothing expires on its own; only emptying the trash in calibre deletes for
 good. Bulk delete: `POST /api/books/bulk` with `changes: {"delete": true}`
 (not combined with other changes).
+
+## Duplicates
+
+`GET /api/duplicates` (the web app's "Duplikate") looks over the whole
+library on request (`src/calibre_hub/dedup.cr`, rules without calibre; `duplicates.cr` around it).
+Two books are a pair when they share
+
+- **isbn**: an ISBN, from the identifiers or in a download-site title
+  (Anna's Archive's `Title -- Author -- … -- 978… -- …`, whose author also
+  counts),
+- **file**: a format file with the same size and MD5 (sizes from
+  `metadata.db`, read-only; a checksum only for files whose format and size
+  another file has too, cached),
+- **title**: an author (normalized like the author unification: case,
+  accents, "Last, First") and a title at least `duplicates.threshold`
+  alike: the same title ignoring case and punctuation 1.0, a subtitle on
+  one side only 0.95, one title the start of the other (3 words or more)
+  0.9, else the token overlap of the main titles (of the whole titles when
+  both have a subtitle). A book without a known author ("Unknown") needs
+  0.9 at least and is compared with the books sharing its first title
+  word. Volume 1 and 2 ("Band 1", "Vol. II") or two numbers of one series
+  never pair.
+
+A **broken** book (no files, or only files below 2 KiB: a download
+leftover) pairs with a good copy from 0.6 and gets the reason `broken`.
+Pairs join into groups; a group is `sure` with an ISBN, a file or the
+same title. Pairs marked "Keine Duplikate" (`duplicate_ignored`) stay out.
+
+The suggested book to keep: not broken, the most complete metadata
+(known authors, ISBN, publisher, date, language, description, series,
+cover, tags other than `auto-metadaten`, category, a clean title), the
+best format (EPUB, KEPUB, AZW3, MOBI, … PDF …), the most formats, the
+oldest on a tie.
+
+Merging (`POST /api/duplicates/merge`, through calibre-server like every
+write):
+
+1. Empty fields of the keeper are filled from the others (the best first):
+   authors only instead of unknown ones, series with its number,
+   publisher, date, languages, description, rating, category;
+   identifiers and tags are joined (the keeper's value wins, the
+   `auto-metadaten` marker stays out). One `PATCH` with `lastModified`.
+2. Formats the keeper lacks come from the others (from the library
+   folder, else downloaded); a tiny file of its own is replaced (calibre
+   moves the old file to its trash). Tiny files of the others are not
+   moved.
+3. The cover of another book when the keeper has none.
+4. Reading list memberships (any owner) and reading positions (per device,
+   the newer wins) move to the keeper in the state DB.
+5. The others go to calibre's trash (`.caltrash`), never deleted.
+
+Every step is logged in `duplicate_merges`, so a merge can be undone
+(also a failed one, as far as it got): the others come back from the trash
+(new ids, their lists and positions with them), the moved formats go to
+calibre's trash again, the cover goes, the filled fields are set back where
+nobody changed them since (tags and identifiers lose only what the merge
+added); what stays is listed in `errors`.
+
+Uploads (`POST /api/books`) answer with `possibleDuplicates`, the inbox
+logs `inbox: #42 looks like #7 (see Duplikate)`; both use the same
+detection. calibre's own exact check (title and author) still refuses a
+copy unless forced, the inbox still moves those to `_duplicates/`.
 
 ## Reading in the browser
 
@@ -471,6 +538,7 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     # hardcoverSync = { enable = true; write = false; interval = 900; batch = 100; readAt = 0.98; };
     # embed = { enable = true; delay = 60; };  # the defaults
     convert = { enable = true; target = "EPUB"; ignore = [ "PDF" "CBZ" "CBR" ]; };
+    # duplicates.threshold = 0.85;  # the default
     alertCommand = "/run/current-system/sw/bin/notify-admin";
     handlers."20-log" = pkgs.writeShellScript "log" "cat >> /var/lib/calibre-hub/events.log";
   };
@@ -525,6 +593,7 @@ After changing dependencies: `shards install && crystal2nix`.
 | `CALIBRE_HUB_METADATA_SOURCES`, `_NIGHTLY`, `_MODEL`, `_INTERVAL` | `file,hardcover,dnb,openlibrary`, none, `false`, `1000` | sources, nightly run, clean names with the classify model, ms between requests |
 | `CALIBRE_HUB_EMBED`, `_EMBED_DELAY` | `false`, `60` | embed metadata into the files after edits (the module turns it on), seconds after the last edit |
 | `CALIBRE_HUB_CONVERT`, `_CONVERT_TARGET`, `_CONVERT_IGNORE` | `false`, `EPUB`, `PDF,CBZ,CBR` | convert added books, target format, formats never converted from |
+| `CALIBRE_HUB_DUPLICATES_THRESHOLD` | `0.85` | how alike two titles of one author must be to show as duplicates (0.5..1) |
 | `CALIBRE_HUB_OPENLIBRARY_URL`, `_OPENLIBRARY_COVERS_URL`, `_DNB_URL`, `_HARDCOVER_URL` | the public services | base URLs (stubs in the VM test) |
 | `CALIBRE_HUB_HARDCOVER_TOKEN_FILE`, `_HARDCOVER_TOKEN` | none | Hardcover API token (file first); none: source skipped |
 | `CALIBRE_HUB_HARDCOVER_SYNC`, `_SYNC_WRITE`, `_SYNC_USER` | `false`, `false`, `CALIBRE_HUB_LOGIN_USER` | Hardcover sync, write (else dry run), whose progress |

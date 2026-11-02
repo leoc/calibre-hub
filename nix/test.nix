@@ -599,6 +599,74 @@ pkgs.testers.runNixOSTest {
         assert any(e["id"] == rid for e in api("GET", "/api/trash")[1])
         machine.wait_until_succeeds(f"! {mirrored}", timeout=30)
 
+    with subtest("duplicates: detect, merge, undo"):
+        machine.succeed("printf 'Doppelt\\n\\nText\\n' > /tmp/d.txt")
+        for fmt in ("epub", "azw3"):
+            machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/d.txt /tmp/Doppelbuch.{fmt} --title Doppelbuch --authors 'Dora Doppel'")
+        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Doppelbuch.epub")
+        assert status == 201, (status, r)
+        keep = r["book"]["id"]
+        # calibre's own check refuses the copy; forced, the hub's detection names the first
+        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie")
+        assert status == 409, (status, r)
+        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie -F force=1")
+        assert status == 201 and [b["id"] for b in r["possibleDuplicates"]] == [keep], (status, r)
+        other = r["book"]["id"]
+        # the copy is converted to EPUB too (convert.enable); wait for it, so nothing changes under the merge
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{other} | jq -e '.formats | sort == [\"AZW3\", \"EPUB\"]'", timeout=120)
+        status, dl = api("POST", "/api/lists", {"name": "Doppelt"})
+        assert status == 201, (status, dl)
+        assert api("PUT", f"/api/lists/{dl['id']}/books/{other}")[0] == 200
+        assert api("PUT", f"/api/books/{other}/progress", {"format": "azw3", "position": "epubcfi(/6/2)", "fraction": 0.3, "device": "boox"})[0] == 200
+
+        status, d = api("GET", "/api/duplicates")
+        assert status == 200 and d["threshold"] == 0.85, (status, d)
+        g = next(g for g in d["groups"] if keep in g["bookIds"])
+        assert g["bookIds"] == sorted([keep, other]) and g["sure"], g
+        assert any(x["kind"] == "title" for x in g["reasons"]), g
+        # the file sizes come from metadata.db
+        assert all(b["files"] and not any(f["tiny"] for f in b["files"]) for b in g["books"]), g
+
+        status, p = api("POST", "/api/duplicates/merge", {"keepId": keep, "bookIds": [other], "dryRun": True})
+        assert status == 200 and p["plan"]["formats"] == [{"format": "AZW3", "from": other, "replace": False}], (status, p)
+        assert p["plan"]["lists"] == 1 and p["plan"]["progress"] == 1 and p["plan"]["trash"] == [other], p
+        assert api("GET", f"/api/books/{other}")[0] == 200
+
+        # the metadata cleanup or the classifier may write the book right then (409; nothing merged yet)
+        for _ in range(5):
+            status, m = api("POST", "/api/duplicates/merge", {"keepId": keep, "bookIds": [other]})
+            if status != 409:
+                break
+            machine.sleep(2)
+        assert status == 200 and m["merge"]["status"] == "done", (status, m)
+        b = m["book"]
+        assert sorted(b["formats"]) == ["AZW3", "EPUB"] and "Zweitkopie" in b["tags"], b
+        assert api("GET", f"/api/books/{other}")[0] == 404
+        assert any(e["id"] == other for e in api("GET", "/api/trash")[1])
+        machine.succeed(f"test -f /srv/books/library/.caltrash/b/{other}/metadata.opf")
+        assert api("GET", f"/api/books/{keep}")[1]["lists"] == [dl["id"]]
+        assert api("GET", f"/api/books/{keep}/progress")[1]["latest"]["position"] == "epubcfi(/6/2)"
+        assert all(keep not in g["bookIds"] for g in api("GET", "/api/duplicates")[1]["groups"])
+
+        status, u = api("POST", f"/api/duplicates/merges/{m['merge']['id']}/undo")
+        assert status == 200 and u["merge"]["status"] == "undone", (status, u)
+        back = u["merge"]["restored"][str(other)]
+        assert back not in (keep, other), u
+        assert api("GET", f"/api/books/{keep}")[1]["formats"] == ["EPUB"]
+        assert "Zweitkopie" not in api("GET", f"/api/books/{keep}")[1]["tags"]
+        rb = api("GET", f"/api/books/{back}")[1]
+        assert sorted(rb["formats"]) == ["AZW3", "EPUB"] and "Zweitkopie" in rb["tags"], rb
+        assert all(e["id"] != other for e in api("GET", "/api/trash")[1])
+        assert api("GET", f"/api/books/{keep}")[1]["lists"] == []
+        assert rb["lists"] == [dl["id"]], rb
+        assert api("GET", f"/api/books/{back}/progress")[1]["latest"]["position"] == "epubcfi(/6/2)"
+        assert api("GET", f"/api/books/{keep}/progress")[1]["latest"] is None
+        assert api("POST", f"/api/duplicates/merges/{m['merge']['id']}/undo")[0] == 409
+        # no duplicates: the pair stays out until taken back
+        status, r = api("POST", "/api/duplicates/ignore", {"bookIds": [keep, back]})
+        assert status == 200 and r["ignored"] == 1, (status, r)
+        assert all(keep not in g["bookIds"] for g in api("GET", "/api/duplicates")[1]["groups"])
+
     def book_by_title(title):
         q = urllib.parse.quote(f'title:"={title}"')
         books = json.loads(machine.succeed(f"curl -sf -b /tmp/jar '{H}/api/books?q={q}'"))["books"]

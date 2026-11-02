@@ -14,6 +14,9 @@ module CalibreHub
     # failures before a file is moved to _failed/
     MAX_FAILURES = 3
 
+    # called with the id of every imported book (duplicates)
+    property on_import : Proc(Int64, Nil)?
+
     def initialize(@dir : String, @calibre : Calibre, @detector : Detector,
                    @category_column : String?, @stable : Time::Span = 2.minutes)
       @failures = Hash(String, Int32).new(0)
@@ -66,6 +69,11 @@ module CalibreHub
         @detector.touch([id]).each { |e| puts e.to_json }
         move(path, rel, "_imported", now)
         puts "inbox: imported #{rel} as ##{id}"
+        begin
+          @on_import.try(&.call(id))
+        rescue ex
+          STDERR.puts "inbox: after importing ##{id}: #{ex.message}"
+        end
       else
         move(path, rel, "_duplicates", now)
         puts "inbox: duplicate #{rel} (#{result.duplicates.join("; ")})"

@@ -3,6 +3,7 @@ require "./calibre_hub/calibre"
 require "./calibre_hub/detector"
 require "./calibre_hub/auth"
 require "./calibre_hub/api"
+require "./calibre_hub/duplicates"
 require "./calibre_hub/files"
 require "./calibre_hub/dispatcher"
 require "./calibre_hub/inbox"
@@ -83,6 +84,8 @@ module CalibreHub
     getter hardcover_sync_interval : Time::Span = env("CALIBRE_HUB_HARDCOVER_SYNC_INTERVAL", "900").to_i.seconds
     getter hardcover_sync_batch : Int32 = env("CALIBRE_HUB_HARDCOVER_SYNC_BATCH", "100").to_i
     getter hardcover_sync_read_at : Float64 = env("CALIBRE_HUB_HARDCOVER_SYNC_READ_AT", "0.98").to_f
+    # duplicates: how alike two titles of one author must be (0.5..1)
+    getter duplicates_threshold : Float64 = env("CALIBRE_HUB_DUPLICATES_THRESHOLD", Dedup::DEFAULT_THRESHOLD.to_s).to_f.clamp(Dedup::MIN_THRESHOLD, 1.0)
 
     # read only by serve, so scan works without them
     def login_password : String
@@ -388,7 +391,7 @@ module CalibreHub
     alert = config.alert_command.try { |c| [c] }
     env = {"CALIBRE_HUB_LIBRARY" => config.library || ""}
     dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert), wake)
-    config.inbox.try { |dir| watch_inbox(Inbox.new(dir, calibre, detector, config.category_column, config.inbox_stable), wake) }
+    inbox = config.inbox.try { |dir| Inbox.new(dir, calibre, detector, config.category_column, config.inbox_stable) }
 
     auth = Auth.new(config.login_user, config.login_password, config.session_key,
       lifetime: config.session_days.days, secure: config.secure_cookies, tokens: config.api_tokens)
@@ -408,12 +411,23 @@ module CalibreHub
     [jobs, metadata_jobs, classify_jobs].compact.each { |j| j.list_members = members }
     trash = Trash.new(calibre, writer, config.library, db)
     trash.on_restore = ->(old_id : Int64, new_id : Int64) { lists.book_restored(old_id, new_id) }
+    dups = Duplicates.new(calibre, writer, db, config.library, config.category_column, lists, trash, config.duplicates_threshold)
+    # uploads and the inbox look for duplicates the same way as the page
+    writer.similar = ->(id : Int64) { dups.similar(id) }
+    inbox.try do |i|
+      i.on_import = ->(id : Int64) do
+        found = dups.similar(id)
+        puts "inbox: ##{id} looks like #{found.map { |b| "##{b.id}" }.join(", ")} (see Duplikate)" unless found.empty?
+      end
+      watch_inbox(i, wake)
+    end
     embedder, convert_jobs = book_files(config, calibre, writer, db, detector, wake)
     progress = Progress.new(db)
     hardcover_sync(config, calibre, db, progress, hardcover)
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
       writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs] of Jobs, progress)
     file_routes(convert_jobs, embedder)
+    duplicate_routes(dups, auth)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

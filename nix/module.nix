@@ -449,6 +449,17 @@ in
       };
     };
 
+    duplicates.threshold = mkOption {
+      type = types.addCheck types.float (x: x >= 0.5 && x <= 1.0);
+      default = 0.85;
+      description = ''
+        How alike two titles of the same author must be (0.5 to 1; token
+        overlap of the main titles) to show as duplicates. A shared ISBN or
+        the same file always counts. The Duplikate page can ask with another
+        threshold.
+      '';
+    };
+
     leseliste = {
       enable = mkEnableOption "the reading list handler (mirror the synced lists into a folder, one subfolder per list)";
       tag = mkOption {
@@ -645,6 +656,7 @@ in
         CALIBRE_HUB_CONVERT = lib.boolToString cfg.convert.enable;
         CALIBRE_HUB_CONVERT_TARGET = cfg.convert.target;
         CALIBRE_HUB_CONVERT_IGNORE = lib.concatStringsSep "," cfg.convert.ignore;
+        CALIBRE_HUB_DUPLICATES_THRESHOLD = toString cfg.duplicates.threshold;
         CALIBRE_HUB_FRONTEND =lib.optionalString (cfg.frontend.package != null) "${cfg.frontend.package}";
         CALIBRE_HUB_LOGIN_USER = cfg.login.user;
         CALIBRE_HUB_LOGIN_PASSWORD_FILE = "%d/login-password";
