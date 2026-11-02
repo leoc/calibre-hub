@@ -1,0 +1,70 @@
+import { z } from "zod"
+import { SORTS, type BookQuery } from "./api"
+
+export const PAGE_SIZE = 60
+
+// Library state lives in the URL, so back/forward and shared links restore it.
+export const librarySearchSchema = z.object({
+  q: z.string().optional().catch(undefined),
+  kategorie: z.string().optional().catch(undefined),
+  tag: z
+    .union([z.string(), z.array(z.string())])
+    .transform((v) => (Array.isArray(v) ? v : [v]))
+    .optional()
+    .catch(undefined),
+  author: z.string().optional().catch(undefined),
+  series: z.string().optional().catch(undefined),
+  lang: z.string().optional().catch(undefined),
+  sort: z.enum(SORTS).optional().catch(undefined),
+  order: z.enum(["asc", "desc"]).optional().catch(undefined),
+  page: z.coerce.number().int().min(1).optional().catch(undefined),
+  // book opened in the detail panel (desktop) or as a page (small screens)
+  book: z.coerce.number().int().optional().catch(undefined),
+})
+
+export type LibrarySearch = z.infer<typeof librarySearchSchema>
+
+const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang"] as const
+
+export function hasFilters(s: LibrarySearch) {
+  return FILTER_KEYS.some((k) => (Array.isArray(s[k]) ? s[k].length > 0 : !!s[k]))
+}
+
+// Effective sort: explicit choice, otherwise series order inside a series,
+// otherwise newest first.
+export function effectiveSort(s: LibrarySearch): Pick<BookQuery, "sort" | "order"> {
+  if (s.sort) return { sort: s.sort, order: s.order ?? defaultOrder(s.sort) }
+  if (s.series) return { sort: "series", order: "asc" }
+  return { sort: "added", order: "desc" }
+}
+
+export function defaultOrder(sort: BookQuery["sort"]): "asc" | "desc" {
+  return sort === "added" || sort === "modified" || sort === "published" || sort === "rating" ? "desc" : "asc"
+}
+
+const quote = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+
+export function toBookQuery(s: LibrarySearch): BookQuery {
+  const q = [s.q?.trim() && `(${s.q.trim()})`, s.lang && `languages:"=${quote(s.lang)}"`].filter(Boolean).join(" and ")
+  return {
+    q: q || undefined,
+    kategorie: s.kategorie,
+    tag: s.tag,
+    author: s.author,
+    series: s.series,
+    ...effectiveSort(s),
+    offset: ((s.page ?? 1) - 1) * PAGE_SIZE,
+    limit: PAGE_SIZE,
+  }
+}
+
+// Filter changes start again at page 1 and close the detail.
+export function withFilter(s: LibrarySearch, patch: Partial<LibrarySearch>): LibrarySearch {
+  return { ...s, ...patch, page: undefined, book: undefined }
+}
+
+export function toggleTag(s: LibrarySearch, tag: string): LibrarySearch {
+  const tags = s.tag ?? []
+  const next = tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag]
+  return withFilter(s, { tag: next.length ? next : undefined })
+}
