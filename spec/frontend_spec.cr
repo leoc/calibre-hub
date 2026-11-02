@@ -7,9 +7,17 @@ private def with_dist(&)
   Dir.mkdir_p(File.join(root, "assets"))
   File.write(File.join(root, "index.html"), "<html>app</html>")
   File.write(File.join(root, "assets", "app-abc123.js"), "js")
+  File.write(File.join(root, "manifest.webmanifest"), "{}")
   yield root
 ensure
   FileUtils.rm_rf(root) if root
+end
+
+private def content_type(handler, path)
+  io = IO::Memory.new
+  ctx = HTTP::Server::Context.new(HTTP::Request.new("GET", path), HTTP::Server::Response.new(io))
+  handler.call(ctx)
+  ctx.response.headers["Content-Type"]?
 end
 
 private def get(handler, path, method = "GET")
@@ -32,6 +40,7 @@ describe CalibreHub::FrontendHandler do
       cache.should eq("no-cache")
       body.should contain("<html>app</html>")
       get(h, "/")[2].should contain("<html>app</html>")
+      content_type(h, "/manifest.webmanifest").should eq("application/manifest+json")
     end
   end
 

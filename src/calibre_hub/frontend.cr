@@ -9,6 +9,8 @@ module CalibreHub
     include HTTP::Handler
 
     PASS = {"/api/", "/opds", "/get/", "/healthz"}
+    # not in Crystal's MIME table
+    TYPES = {".webmanifest" => "application/manifest+json", ".woff2" => "font/woff2"}
 
     def initialize(@root : String)
       @root = File.realpath(@root)
@@ -36,7 +38,7 @@ module CalibreHub
 
     private def serve(context, file : String)
       res = context.response
-      res.content_type = MIME.from_filename(file, "application/octet-stream")
+      res.content_type = TYPES[File.extname(file)]? || MIME.from_filename(file, "application/octet-stream")
       # Vite puts content hashes into /assets/* names
       res.headers["Cache-Control"] = file.starts_with?(File.join(@root, "assets") + "/") ? "public, max-age=31536000, immutable" : "no-cache"
       res.headers["X-Content-Type-Options"] = "nosniff"
