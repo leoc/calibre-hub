@@ -10,7 +10,9 @@ module CalibreHub
 
     PASS = {"/api/", "/opds", "/get/", "/healthz"}
     # not in Crystal's MIME table
-    TYPES = {".webmanifest" => "application/manifest+json", ".woff2" => "font/woff2"}
+    # (.mjs: pdf.js' worker is a module, refused under nosniff otherwise)
+    TYPES = {".webmanifest" => "application/manifest+json", ".woff2" => "font/woff2",
+             ".mjs" => "text/javascript", ".wasm" => "application/wasm"}
 
     def initialize(@root : String)
       @root = File.realpath(@root)

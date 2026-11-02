@@ -8,6 +8,7 @@ private def with_dist(&)
   File.write(File.join(root, "index.html"), "<html>app</html>")
   File.write(File.join(root, "assets", "app-abc123.js"), "js")
   File.write(File.join(root, "manifest.webmanifest"), "{}")
+  File.write(File.join(root, "assets", "pdf.worker-abc123.mjs"), "js")
   yield root
 ensure
   FileUtils.rm_rf(root) if root
@@ -41,6 +42,7 @@ describe CalibreHub::FrontendHandler do
       body.should contain("<html>app</html>")
       get(h, "/")[2].should contain("<html>app</html>")
       content_type(h, "/manifest.webmanifest").should eq("application/manifest+json")
+      content_type(h, "/assets/pdf.worker-abc123.mjs").should eq("text/javascript")
     end
   end
 
