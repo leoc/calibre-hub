@@ -491,6 +491,9 @@ module CalibreHub
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"
+    # the frontend comes from FrontendHandler; Kemal's own static handler
+    # (./public, before the AuthHandler) stays off
+    Kemal.config.serve_static = false
     Kemal.run(config.port, args: [] of String)
   end
 
