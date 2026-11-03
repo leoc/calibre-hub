@@ -1403,7 +1403,8 @@ pkgs.testers.runNixOSTest {
         assert api("GET", "/api/trash")[0] == 200
 
     with subtest("private tags: each user's own, never in calibre"):
-        bid, other = [b["id"] for b in api("GET", "/api/books?limit=2&sort=title")[1]["books"]]
+        # bid: the book in Leas Liste (two users), other: any other one
+        other = next(b["id"] for b in api("GET", "/api/books?limit=2&sort=title")[1]["books"] if b["id"] != bid)
         status, r = api("POST", "/api/private-tags", {"bookIds": [bid, other, 999999], "add": ["Geheim"]})
         assert status == 200 and r == {"total": 2, "changed": sorted([bid, other])}, (status, r)
         status, r = as_lea("PUT", f"/api/books/{bid}/private-tags", {"tags": ["Leas", "geheim"]})
