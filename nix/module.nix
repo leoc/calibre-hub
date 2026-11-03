@@ -49,17 +49,35 @@ let
     lib.filterAttrs (_: c: c.hierarchical) cfg.customColumns
   );
 
-  leseliste = pkgs.writeShellScript "calibre-hub-leseliste" ''
-    export LESELISTE_TARGET=${lib.escapeShellArg (toString cfg.leseliste.target)}
-    export LESELISTE_FORMATS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.leseliste.formats)}
-    exec ${lib.getExe cfg.package} handler leseliste
-  '';
-  handlers = cfg.handlers // lib.optionalAttrs cfg.leseliste.enable { "50-leseliste" = leseliste; };
+  # users with a reader folder of their own: their synced lists go there,
+  # not into leseliste.target
+  ownTargets = lib.filterAttrs (_: u: u.leseliste.target != null) cfg.users;
+  syncUsers = lib.attrNames ownTargets;
+  leselisteHandler =
+    name: target: env:
+    pkgs.writeShellScript name ''
+      export LESELISTE_TARGET=${lib.escapeShellArg (toString target)}
+      export LESELISTE_FORMATS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.leseliste.formats)}
+      ${lib.concatStrings (lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}\n") env)}
+      exec ${lib.getExe cfg.package} handler leseliste
+    '';
+  leseliste = leselisteHandler "calibre-hub-leseliste" cfg.leseliste.target (
+    lib.optionalAttrs (syncUsers != [ ]) { LESELISTE_EXCLUDE_OWNERS = lib.concatStringsSep "," syncUsers; }
+  );
+  userLeselisten = lib.mapAttrs' (
+    name: u:
+    lib.nameValuePair "50-leseliste-${name}" (
+      leselisteHandler "calibre-hub-leseliste-${name}" u.leseliste.target { LESELISTE_OWNERS = name; }
+    )
+  ) ownTargets;
+  handlers =
+    cfg.handlers // lib.optionalAttrs cfg.leseliste.enable ({ "50-leseliste" = leseliste; } // userLeselisten);
   handlersDir = pkgs.linkFarm "calibre-hub-handlers" (
     lib.mapAttrsToList (name: path: { inherit name path; }) handlers
   );
   writable = lib.optional (cfg.inbox.path != null) (toString cfg.inbox.path)
-    ++ lib.optional cfg.leseliste.enable (toString cfg.leseliste.target);
+    ++ lib.optional cfg.leseliste.enable (toString cfg.leseliste.target)
+    ++ lib.optionals cfg.leseliste.enable (lib.mapAttrsToList (_: u: toString u.leseliste.target) ownTargets);
 
   column = types.submodule (
     { name, ... }:
@@ -190,6 +208,18 @@ in
               type = types.listOf types.path;
               default = [ ];
               description = "API tokens of the user (like `apiTokenFiles`), with the user's rights.";
+            };
+            leseliste.target = mkOption {
+              type = types.nullOr types.path;
+              default = null;
+              example = "/srv/books/reader-lea";
+              description = ''
+                A reader folder of the user's own (e.g. a Syncthing folder for
+                their e-reader): the user's synced lists are mirrored there
+                instead of into `leseliste.target`, and a reader may then sync
+                their lists (without one only admins sync). Needs
+                `leseliste.enable`.
+              '';
             };
           };
         }
@@ -643,6 +673,10 @@ in
         message = "services.calibre-hub.users: ${cfg.login.user} is the login user (login.user), configured there.";
       }
       {
+        assertion = ownTargets != { } -> cfg.leseliste.enable;
+        message = "services.calibre-hub.users.<name>.leseliste.target needs services.calibre-hub.leseliste.enable.";
+      }
+      {
         assertion = lib.all (n: builtins.match "[A-Za-z0-9._-]+" n != null) (lib.attrNames cfg.users);
         message = "services.calibre-hub.users: names may only contain letters, digits, '.', '_' and '-'.";
       }
@@ -780,6 +814,8 @@ in
           lib.imap0 (i: _: "%d/${tokenCred i}") cfg.apiTokenFiles
         );
         CALIBRE_HUB_USERS = hubUsersEnv;
+        # readers with a reader folder of their own may sync their lists
+        CALIBRE_HUB_SYNC_USERS = lib.concatStringsSep "," (lib.optionals cfg.leseliste.enable syncUsers);
       };
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve";

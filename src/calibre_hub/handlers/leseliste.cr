@@ -29,10 +29,17 @@ module CalibreHub
   # not in the hub's state DB, which the handler only reads, and so it
   # never claims files of another target.
   #
+  # Per user: a target mirrors the synced lists of some owners only.
+  # LESELISTE_OWNERS (comma separated) takes only those owners' lists, for
+  # a user's own folder; LESELISTE_EXCLUDE_OWNERS leaves those out, for the
+  # shared folder next to them. Which folder a list goes to follows its
+  # owner, also when an admin syncs someone else's list.
+  #
   # Reads the hub's state DB (lists) and metadata.db (paths) read-only;
   # writes only via calibre-server. Environment: LESELISTE_TARGET,
-  # LESELISTE_FORMATS, CALIBRE_HUB_STATE_DB, CALIBRE_HUB_LIBRARY and the
-  # calibre-server settings of the hub (for adding converted formats).
+  # LESELISTE_FORMATS, LESELISTE_OWNERS, LESELISTE_EXCLUDE_OWNERS,
+  # CALIBRE_HUB_STATE_DB, CALIBRE_HUB_LIBRARY and the calibre-server
+  # settings of the hub (for adding converted formats).
   module Leseliste
     CONVERTIBLE = %w(AZW3 MOBI AZW KEPUB FB2 LIT DOCX RTF HTMLZ TXT)
     # the files the handler copied, relative to the target
@@ -46,11 +53,32 @@ module CalibreHub
     # own: synced itself, not only as a sublist of a synced list
     record SyncedList, id : Int64, name : String, books : Array(Int64), owner : String = "", own : Bool = true
 
+    # Whose lists a target takes: only (nil: everyone's) minus except
+    record Owners, only : Set(String)? = nil, except : Set(String) = Set(String).new do
+      def self.from(env) : Owners
+        split = ->(v : String?) { v.try(&.split(',', remove_empty: true).map(&.strip).reject(&.empty?).to_set) }
+        new(split.call(env["LESELISTE_OWNERS"]?).try { |o| o.empty? ? nil : o }, split.call(env["LESELISTE_EXCLUDE_OWNERS"]?) || Set(String).new)
+      end
+
+      def includes?(owner : String?) : Bool
+        return false unless owner
+        (only.nil? || only.not_nil!.includes?(owner)) && !except.includes?(owner)
+      end
+
+      # the event's list (before or after the change) belongs here
+      def event?(event : JSON::Any) : Bool
+        return true if only.nil? && except.empty?
+        {event["list"]?, event["previous"]?}.any? { |l| includes?(l.try(&.["owner"]?).try(&.as_s?)) }
+      end
+    end
+
     # synced: the books in synced lists; lists: the synced lists
-    def self.relevant?(event : JSON::Any?, synced : Set(Int64), lists = [] of SyncedList) : Bool
+    def self.relevant?(event : JSON::Any?, synced : Set(Int64), lists = [] of SyncedList, owners = Owners.new) : Bool
       return true unless event
       case event["type"]?.try(&.as_s?)
       when "list"
+        # another user's list, mirrored into their own folder
+        return false unless owners.event?(event)
         before_after = {event["list"]?, event["previous"]?}
         # a synced list, or one that was synced before the change
         return true if before_after.any? { |l| l.try(&.["sync"]?.try(&.as_bool?)) }
@@ -76,13 +104,14 @@ module CalibreHub
       library = env["CALIBRE_HUB_LIBRARY"]? || abort "CALIBRE_HUB_LIBRARY is not set"
       state_path = env["CALIBRE_HUB_STATE_DB"]? || abort "CALIBRE_HUB_STATE_DB is not set"
       formats = (env["LESELISTE_FORMATS"]? || "epub,pdf").split(',', remove_empty: true).map(&.strip.upcase)
+      owners = Owners.from(env)
 
       raw = input.gets_to_end.strip
       event = raw.empty? ? nil : JSON.parse(raw)
 
       state = LibraryDB.open_read_only(state_path)
       lists = begin
-        synced_lists(state)
+        synced_lists(state, owners)
       ensure
         state.close
       end
@@ -91,8 +120,8 @@ module CalibreHub
         puts "lists not migrated yet, skipped"
         return 0
       end
-      return 0 unless relevant?(event, lists.flat_map(&.books).to_set, lists)
-      rename(event, target, lists)
+      return 0 unless relevant?(event, lists.flat_map(&.books).to_set, lists, owners)
+      rename(event, target, lists, owners)
 
       db = LibraryDB.open_read_only(File.join(library, "metadata.db"))
       with_tmpdir do |tmp|
@@ -105,11 +134,12 @@ module CalibreHub
     # The synced lists and the sublists of synced lists (same owner), no
     # magic shelves (their books come from a search, not the list); nil
     # until the lists exist (migration done)
-    def self.synced_lists(state) : Array(SyncedList)?
+    def self.synced_lists(state, owners = Owners.new) : Array(SyncedList)?
       return nil if state.query_one?("select value from meta where key = 'lists_migrated'", as: String).nil?
       all = [] of SyncedList
       state.query_each("select id, name, owner, sync from lists where rule is null order by id") do |rs|
-        all << SyncedList.new(rs.read(Int64), rs.read(String), [] of Int64, rs.read(String), rs.read(Int64) == 1)
+        l = SyncedList.new(rs.read(Int64), rs.read(String), [] of Int64, rs.read(String), rs.read(Int64) == 1)
+        all << l if owners.includes?(l.owner)
       end
       roots = all.select(&.own)
       all.select { |l| l.own || roots.any? { |r| r.owner == l.owner && Lists.below?(r.name, l.name) } }.map do |l|
@@ -142,8 +172,8 @@ module CalibreHub
     # A renamed synced list keeps its files: the folder moves along, with
     # the folders of its sublists inside. Their own rename events find the
     # old folder gone then.
-    def self.rename(event : JSON::Any?, target : String, lists = [] of SyncedList)
-      return unless event && event["type"]? == "list" && event["action"]? == "updated"
+    def self.rename(event : JSON::Any?, target : String, lists = [] of SyncedList, owners = Owners.new)
+      return unless event && event["type"]? == "list" && event["action"]? == "updated" && owners.event?(event)
       before = event["previous"]?.try(&.["name"]?).try(&.as_s?)
       after = event["list"]?.try(&.["name"]?).try(&.as_s?)
       return unless before && after && before != after

@@ -605,6 +605,47 @@ describe CalibreHub::Leseliste do
     end
   end
 
+  it "mirrors each user's synced lists into the folder for that user" do
+    with_library do |library|
+      with_lists do |lists, db, state|
+        shared = File.tempname("leseliste-shared")
+        own = File.tempname("leseliste-lea")
+        begin
+          base = {"CALIBRE_HUB_LIBRARY" => library, "CALIBRE_HUB_STATE_DB" => state}
+          run_shared = ->(event : String) do
+            CalibreHub::Leseliste.run(base.merge({"LESELISTE_TARGET" => shared, "LESELISTE_EXCLUDE_OWNERS" => "lea"}), IO::Memory.new(event)).should eq(0)
+          end
+          run_own = ->(event : String) do
+            CalibreHub::Leseliste.run(base.merge({"LESELISTE_TARGET" => own, "LESELISTE_OWNERS" => "lea"}), IO::Memory.new(event)).should eq(0)
+          end
+          lists.migrate("arthur", "leseliste", [1_i64])
+          urlaub = lists.create("lea", body(%({"name": "Urlaub", "sync": true})))
+          lists.add(urlaub.id, "lea", [2_i64])
+          # the same name for the admin, in the shared folder
+          arthurs = lists.create("arthur", body(%({"name": "Urlaub", "sync": true})))
+          lists.add(arthurs.id, "arthur", [1_i64])
+          run_shared.call("")
+          run_own.call("")
+          files(shared).should eq(["Leseliste/Lovelace, Ada - Erstes.epub", "Urlaub/Lovelace, Ada - Erstes.epub"])
+          files(own).should eq(["Urlaub/Lovelace, Ada - Dune 02 - Zweites.epub"])
+
+          # lea's rename moves lea's folder only
+          lists.update(urlaub.id, "lea", body(%({"name": "Sommer"})))
+          event = db.query_one("select payload from events order by id desc limit 1", as: String)
+          CalibreHub::Leseliste.relevant?(JSON.parse(event), Set(Int64).new, [] of CalibreHub::Leseliste::SyncedList,
+            CalibreHub::Leseliste::Owners.from({"LESELISTE_EXCLUDE_OWNERS" => "lea"})).should be_false
+          run_shared.call(event)
+          run_own.call(event)
+          files(shared).should eq(["Leseliste/Lovelace, Ada - Erstes.epub", "Urlaub/Lovelace, Ada - Erstes.epub"])
+          files(own).should eq(["Sommer/Lovelace, Ada - Dune 02 - Zweites.epub"])
+        ensure
+          FileUtils.rm_rf(shared)
+          FileUtils.rm_rf(own)
+        end
+      end
+    end
+  end
+
   it "removes only its own files and keeps KOReader's sidecars" do
     with_library do |library|
       with_lists do |lists, db, state|
