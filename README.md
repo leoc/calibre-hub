@@ -93,7 +93,8 @@ log in.
 | `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see Backlog import); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
 | `GET /api/import/cleanups/:id`, `POST /api/import/cleanups/:id/undo` `{dryRun?}` | a cleanup with its backup; undo puts category and tags back (dry run by default, else 202 with `undoJob`) |
 | `POST /api/import/repair` `{since?, minId?, maxId?, dryRun?}` | plans the repair of books imported from plain files (title, authors, publisher, year, series from their file names where the book is untouched since the import, see Backlog import): 202 `{dryRun, books, job}`; `dryRun: false` accepts every proposal right away |
-| `GET /api/import/repair` | the open proposals `{entries: [{bookId, file, decided, status, at, changes: [{field, old, new}]}], books, counts: {pending, applied, rejected, failed}, job, unsureTag}` |
+| `GET /api/import/repair` | the open proposals `{entries: [{bookId, file, decided, status, at, changes: [{field, old, new}]}], books, counts: {pending, applied, rejected, failed}, job, unsureTag}`; `file` is empty for a book without an import file; the change with the field `candidate` (`{title, authors, source}`) is what the catalogs suggest but couldn't confirm, shown and never applied |
+| `GET /api/import/quality` `?run=&since=&minId=&maxId=` | how many books of a portion look wrong: `{total, suspect, reasons: {unknownAuthor, notAPerson, publisherAuthor, titleSaysNothing, leftoverTitle, fileNameTitle, unsure}, runs: [{run, at, total, suspect}], books: [{id, title, authors, reasons}]}`; without a filter the library and its last five import runs |
 | `POST /api/import/repair/accept` `{bookIds \| all: true}`, `POST /api/import/repair/reject` `{bookIds \| all: true}` | accept (202 `{books, job}`, a job that applies them) or reject (`{rejected}`) proposals |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with any hub user |
@@ -523,17 +524,38 @@ hub import cleanup --min-id 114 --apply
 hub import undo <cleanup id> --apply
 ```
 
-Repair of books imported from plain files before the import read file
-names (`POST /api/import/repair`, `hub import repair`): for every book an
-import added from a plain file (`import_files`, the unit's primary format;
-calibre folders are left out), optionally from `since` (when the file was
-imported) or with a book id from `minId` to `maxId`, the file name is read
-again as above. A field changes only where the book still has the value the
-import gave it: calibre's reading of the name (or, from the book's `added`
-event, a file title that says nothing), possibly changed since by the
-metadata cleanup's rules (`rules`, `model`, `authors` in the change log),
-never by a person or an online source. Publisher, year and series only fill
-empty fields. Every change goes to the metadata change log with source
+Repair of imported books (`POST /api/import/repair`, `hub import repair`):
+for every book an import added from a plain file (`import_files`, the unit's
+primary format), optionally from `since` (when the file was imported) or
+with a book id from `minId` to `maxId`, the file name is read again as above.
+Every other book the quality report finds suspicious is planned too (an
+upload, the inbox, a calibre folder): its title is read like a file name. So
+a plan without limits covers the whole library.
+
+Title and authors are decided together. Where the book still has what an
+import left there (calibre's reading of the name, a title that says nothing,
+a list number, publisher, ripper or edition in the title, a tool, publisher,
+edition or subtitle as author), a name with an author replaces both, and a
+file title that is another book than the name goes with its author. A field
+someone edited stays: it has changed since the book's `added` event other
+than by the metadata cleanup's rules (`rules`, `model`, `authors` in the
+change log). A book with an ISBN keeps its title and authors unless they say
+nothing. Publisher, year and series only fill empty fields; a publisher in
+the authors moves to the publisher field.
+
+A reading without an author asks the catalogs (Open Library, DNB, Hardcover)
+when the book has no author worth keeping or gets another title: an ISBN
+match, or two catalogs that agree on title and author (with nobody else
+agreeing on another; at least three words of title), give the authors. Less
+than that is unsure: the authors become `Unknown` or stay, the book gets the
+unsure tag, and the review shows what the catalogs suggest (never applied).
+So does a file whose own title and author are another book than its name, a
+new title next to the file's own author, and a book nothing is known of. The
+metadata run follows the same rule for a book without an author, also on
+import, so new portions come in the same way. A catalog that fails or says
+"too many requests" (the host then rests until its `Retry-After`) counts as
+not knowing; the run goes on.
+ Every change goes to the metadata change log with source
 `rules` (revertible on the Metadaten page or with the revert API, the book
 gets `auto-metadaten`), and the repaired books get a metadata run (target
 ids). Unclear names are decided as on import (the file, the sources, the
@@ -545,6 +567,14 @@ proposal only if the book still has the values the plan saw, else that book
 fails ("changed since the plan") and the next plan proposes it anew; books
 accepted or rejected are left out of later plans. `--apply` (`dryRun:
 false`) accepts every proposal right away.
+
+The quality report (`GET /api/import/quality`, `hub import quality`, the
+section "Qualität" on the import page) counts the suspicious books of the
+library, of the last import runs, or of one portion (`--run`, `--since`,
+`--min-id`, `--max-id`) and says why, by the rules above: `unknownAuthor`,
+`notAPerson`, `publisherAuthor`, `titleSaysNothing`, `leftoverTitle`,
+`fileNameTitle`, `unsure`. Authors of books with an ISBN count as checked,
+standards are left out.
 
 ```sh
 hub import repair --min-id 1153                    # plan, then list the proposals
@@ -805,6 +835,7 @@ hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
 hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
 hub import alt                           # backlog import: dry run, --apply imports, --limit N a portion
 hub import repair --min-id 1153          # names of plain-file imports read again: proposals, --apply accepts them
+hub import quality --run 77ec37bda5d6d688  # how many books of a portion look wrong, and why
 ```
 
 Every command has `--help` and `--json` (the API's JSON; on errors

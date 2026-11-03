@@ -1279,6 +1279,13 @@ pkgs.testers.runNixOSTest {
         log = api("GET", f"/api/metadata/changes?bookId={old_id}")[1]["changes"]
         assert any(c["field"] == "title" and c["source"] == "rules" and c["old"] == "Brass" for c in log), log
         assert api("GET", "/api/import/repair")[1]["counts"].get("applied") == 1
+        # the quality report: the portion is clean now, the library has its measure
+        status, report = api("GET", f"/api/import/quality?minId={old_id}&maxId={old_id}")
+        assert status == 200 and report["total"] == 1 and report["suspect"] == 0, (status, report)
+        report = api("GET", "/api/import/quality")[1]
+        assert report["total"] >= 1 and "unknownAuthor" in report["reasons"] and len(report["runs"]) >= 1, report
+        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import quality --min-id {old_id} --max-id {old_id}")
+        assert "0 of 1 books suspicious" in out, out
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
