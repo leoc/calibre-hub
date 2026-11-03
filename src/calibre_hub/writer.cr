@@ -447,7 +447,6 @@ module CalibreHub
         @db.exec "update #{@table} set status = ?, error = ? where id = ?", job.status, job.error, job.id
         return
       end
-      resumed_at = job.done > 0 ? job.done : nil
       interrupted = @interrupted.delete(job.id)
       resumed_at = job.done > 0 || interrupted ? job.done : nil
       (job.done...job.total).each do |i|
