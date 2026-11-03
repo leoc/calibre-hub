@@ -926,7 +926,9 @@ module CalibreHub
       # ACCEPT); an existing value is only replaced when it is broken, or by
       # a sure (ISBN) match, or by the same value spelled better (case,
       # accents, spacing, "McKeown"). Descriptions are only filled, never
-      # replaced. cover: the book has none.
+      # replaced. A book without an author (or with one that is no person)
+      # gets one only from what CrossCheck confirms, else the unsure tag.
+      # cover: the book has none.
       def self.plan(book : Book, guess : Guess?, file : Record?, candidates : Array(Candidate),
                     has_cover = true) : Array(Change)
         changes = [] of Change

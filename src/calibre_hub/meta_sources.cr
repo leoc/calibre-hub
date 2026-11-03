@@ -341,9 +341,9 @@ module CalibreHub
 
     # Deutsche Nationalbibliothek over SRU, MARC21-xml, no API key. Good
     # for German books, but it has English books mostly as their German
-    # translations: a title search only for German books, always with the
-    # author and the language. Publisher series (Taschenbuch numbers) are
-    # dropped.
+    # translations: a title search only for German books, with the language
+    # and the author (without one, a title of a few words). Publisher series
+    # (Taschenbuch numbers) are dropped.
     class Dnb
       NAME = "dnb"
 
@@ -444,9 +444,9 @@ module CalibreHub
     end
 
     # Hardcover (GraphQL, a personal API token), for English books. An
-    # edition by ISBN; a title search only with the author, both very
-    # similar, and only when the work has an edition in the book's
-    # language. Good for descriptions, subtitles and author spellings; weak
+    # edition by ISBN; a title search with the author, both very similar
+    # (without one, a title of a few words, for CrossCheck), and only when
+    # the work has an edition in the book's language. Good for descriptions, subtitles and author spellings; weak
     # for years and publishers, so the work's release_year is never used
     # and the publisher only comes from an edition. A rejected token pauses
     # the source for an hour (the rest of a run) and raises an alert.
