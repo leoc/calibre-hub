@@ -14,7 +14,14 @@ pnpm dev:mock     # MSW mock library (400 books, VITE_MOCK_BOOKS=10000 for more)
 pnpm test         # vitest
 pnpm lint && pnpm typecheck
 CHROMIUM_PATH=$(which chromium) pnpm e2e   # Playwright against the mocks: *.spec.ts and the Gherkin scenarios in e2e/features (playwright-bdd), desktop + phone
+HUB_CSP=1 CHROMIUM_PATH=$(which chromium) pnpm e2e   # the same under the hub's Content-Security-Policy; violations print as "CSP violation"
 ```
+
+The hub sends a Content-Security-Policy (`src/calibre_hub/security_headers.cr`):
+scripts only from the app's own files, so no inline scripts in `index.html`
+(the theme script is `public/theme-init.js`), no `eval` (zod runs
+`jitless`), and the reader's book pages can't run scripts. `HUB_CSP=1`
+makes the dev server send the same policy.
 
 Don't start a local calibre-server for development: calibre allows one
 program per user and that blocks calibre Desktop.

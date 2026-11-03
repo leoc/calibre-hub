@@ -1,3 +1,5 @@
+// first: before any module builds a zod schema
+import "./lib/zod-config"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query"

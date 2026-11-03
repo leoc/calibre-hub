@@ -11,6 +11,7 @@ require "./calibre_hub/dispatcher"
 require "./calibre_hub/inbox"
 require "./calibre_hub/handlers/leseliste"
 require "./calibre_hub/frontend"
+require "./calibre_hub/security_headers"
 require "./calibre_hub/cli"
 require "./calibre_hub/hardcover_sync"
 require "./calibre_hub/backlog_jobs"
@@ -427,6 +428,7 @@ module CalibreHub
     Users.new(db).sync(auth.accounts)
     puts "users: #{auth.accounts.map { |a| "#{a.name} (#{a.role})" }.join(", ")}"
     auth_handler = AuthHandler.new(auth, config.trusted_proxies)
+    use SecurityHeadersHandler.new
     use UnavailableHandler.new
     config.frontend.try { |dir| use FrontendHandler.new(dir) }
     use auth_handler

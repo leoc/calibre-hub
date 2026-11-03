@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config"
+import type { Plugin } from "vite"
 import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 import path from "node:path"
@@ -9,10 +10,52 @@ import crypto from "node:crypto"
 // `pnpm dev:mock` serves MSW mock data instead.
 const target = process.env.HUB_URL ?? "https://hub.nor.sh"
 
+// HUB_CSP=1: the dev server sends the hub's Content-Security-Policy (read
+// from src/calibre_hub/security_headers.cr, so it is the same), plus what
+// dev needs only: a nonce for Vite's inline scripts and its HMR websocket.
+// Violations are reported to /__csp-report and printed as "CSP violation".
+// `HUB_CSP=1 pnpm e2e` runs every test under it.
+function hubCsp(): Plugin {
+  const nonce = crypto.randomBytes(16).toString("base64")
+  const policy = () => {
+    const cr = fs.readFileSync(path.resolve(import.meta.dirname, "../src/calibre_hub/security_headers.cr"), "utf8")
+    const block = /APP_CSP = \{([\s\S]*?)\}\.join/.exec(cr)?.[1]
+    if (!block) throw new Error("APP_CSP not found in security_headers.cr")
+    return [...block.matchAll(/"([^"]+)"/g)]
+      .map(([, d]) => d)
+      .map((d) => (d.startsWith("script-src ") ? `${d} 'nonce-${nonce}'` : d.startsWith("connect-src ") ? `${d} ws://localhost:*` : d))
+      .concat("report-uri /__csp-report")
+      .join("; ")
+  }
+  return {
+    name: "hub-csp",
+    apply: "serve",
+    config: () => ({ html: { cspNonce: nonce } }),
+    configureServer(server) {
+      const csp = policy()
+      server.middlewares.use((req, res, next) => {
+        if (req.url === "/__csp-report" && req.method === "POST") {
+          let body = ""
+          req.on("data", (c) => (body += c))
+          req.on("end", () => {
+            console.error(`CSP violation: ${body}`)
+            res.statusCode = 204
+            res.end()
+          })
+          return
+        }
+        res.setHeader("Content-Security-Policy", csp)
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => ({
   plugins: [
     react(),
     tailwindcss(),
+    ...(process.env.HUB_CSP ? [hubCsp()] : []),
     {
       // the MSW worker lives in public/ for dev:mock only; the app's own
       // service worker (src/service-worker.js) precaches every built file
