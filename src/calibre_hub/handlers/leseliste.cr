@@ -3,6 +3,7 @@ require "file_utils"
 require "../calibre"
 require "../library_db"
 require "../lists"
+require "../secret"
 
 module CalibreHub
   # Handler: mirrors the synced reading lists (lists.cr) into a folder,
@@ -90,7 +91,7 @@ module CalibreHub
       rename(event, target, lists)
 
       db = LibraryDB.open_read_only(File.join(library, "metadata.db"))
-      Dir.mktmpdir_compat do |tmp|
+      with_tmpdir do |tmp|
         mirror(wanted(db, library, lists, formats, tmp, env), target)
       end
       db.close
@@ -297,28 +298,26 @@ module CalibreHub
       end
     end
 
+    # temporary directory, removed afterwards
+    private def self.with_tmpdir(&)
+      path = File.join(Dir.tempdir, "calibre-hub-#{Random::Secure.hex(6)}")
+      Dir.mkdir(path)
+      begin
+        yield path
+      ensure
+        FileUtils.rm_rf(path)
+      end
+    end
+
     private def self.convert(id : Int64, src : String, fmt : String, tmp : String, env) : String
       dst = File.join(tmp, "#{id}.#{fmt.downcase}")
       log = IO::Memory.new
       status = Process.run("ebook-convert", [src, dst], output: log, error: log)
       raise(log.to_s.lines.last? || "ebook-convert exit #{status.exit_code}") unless status.success?
       calibre = Calibre.new(env["CALIBRE_HUB_CALIBRE_URL"], env["CALIBRE_HUB_CALIBRE_USER"],
-        File.read(env["CALIBRE_HUB_CALIBRE_PASSWORD_FILE"]).sub(/\n+\z/, ""), env["CALIBRE_HUB_LIBRARY_ID"]?)
+        Secret.read(env["CALIBRE_HUB_CALIBRE_PASSWORD_FILE"]), env["CALIBRE_HUB_LIBRARY_ID"]?)
       calibre.add_format(id, dst, fmt.downcase)
       dst
-    end
-  end
-end
-
-class Dir
-  # temporary directory, removed afterwards
-  def self.mktmpdir_compat(&)
-    path = File.join(Dir.tempdir, "calibre-hub-#{Random::Secure.hex(6)}")
-    Dir.mkdir(path)
-    begin
-      yield path
-    ensure
-      FileUtils.rm_rf(path)
     end
   end
 end

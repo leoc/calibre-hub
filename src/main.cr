@@ -1,5 +1,6 @@
 require "kemal"
 require "./calibre_hub/calibre"
+require "./calibre_hub/secret"
 require "./calibre_hub/detector"
 require "./calibre_hub/auth"
 require "./calibre_hub/users"
@@ -159,16 +160,11 @@ module CalibreHub
     end
 
     def self.read_secret(path) : String
-      String.new(read_secret_bytes(path))
+      Secret.read(path)
     end
 
     def self.read_secret_bytes(path) : Bytes
-      bytes = File.open(path, &.getb_to_end)
-      size = bytes.size
-      while size > 0 && bytes[size - 1] == '\n'.ord
-        size -= 1
-      end
-      bytes[0, size]
+      Secret.read_bytes(path)
     end
 
     private def env(key, default = nil)
