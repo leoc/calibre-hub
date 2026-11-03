@@ -239,9 +239,10 @@ class View {
             display: 'none',
             width: '100%', height: '100%',
         })
-        // `allow-scripts` is needed for events because of WebKit bug
-        // https://bugs.webkit.org/show_bug.cgi?id=218086
-        this.#iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts')
+        // calibre-hub: no `allow-scripts`, scripts in books would run with
+        // the app's origin (README.md). Upstream allows them because WebKit
+        // doesn't fire events in such frames, https://bugs.webkit.org/show_bug.cgi?id=218086
+        this.#iframe.setAttribute('sandbox', 'allow-same-origin')
         this.#iframe.setAttribute('scrolling', 'no')
     }
     get element() {

@@ -3,7 +3,7 @@ import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Ses
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
-import { progressHandlers } from "./progress"
+import { progressHandlers, storeFormat } from "./progress"
 import { duplicateHandlers } from "./duplicates"
 import { readerSettingsHandlers } from "./reader-settings"
 import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from "./lists"
@@ -248,6 +248,7 @@ export const writeHandlers = [
     if (target) {
       const b = books.find((x) => x.id === Number(target))!
       b.formats = [...new Set([...b.formats, ext])]
+      storeFormat(b.id, ext, file)
       touch(b)
       return HttpResponse.json({ book: b }, { status: 200 })
     }

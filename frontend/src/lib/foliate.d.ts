@@ -53,3 +53,8 @@ declare module "foliate-js/view.js" {
   export class NotFoundError extends Error {}
   export class UnsupportedTypeError extends Error {}
 }
+
+// calibre-hub's own addition to the vendored copy (README there)
+declare module "foliate-js/strip-scripts.js" {
+  export function stripScripts<T extends Document>(doc: T): T
+}

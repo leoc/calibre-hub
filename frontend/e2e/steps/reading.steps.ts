@@ -1,5 +1,7 @@
 import { expect, type Page } from "@playwright/test"
 import { createBdd } from "playwright-bdd"
+import fs from "node:fs"
+import path from "node:path"
 
 const { Given, When, Then } = createBdd()
 
@@ -58,6 +60,39 @@ Given("the device {string} saved the position {int} % for the book", async ({ pa
     [bookOf(page), name, pct / 100] as const,
   )
   expect(status).toBe(200)
+})
+
+// A book without formats gets the fixture file (e2e/fixtures) as its only
+// format (the mocks keep uploaded files); then the reader opens inside the
+// app, since a page load would reset the mocks. Requests to /api/pwned are
+// what the scripts in script.epub would send.
+const pwned = new WeakMap<Page, string[]>()
+Given("the reader is open for the book file {string} as {string}", async ({ page }, file: string, format: string) => {
+  const hits: string[] = []
+  pwned.set(page, hits)
+  page.on("request", (r) => {
+    if (r.url().includes("/api/pwned")) hits.push(r.url())
+  })
+  const data = fs.readFileSync(path.join(import.meta.dirname, "../fixtures", file)).toString("base64")
+  const id = await page.evaluate(
+    async ([data, ext]) => {
+      const all = await fetch("/api/books?limit=500&sort=title").then((r) => r.json())
+      const book = all.books.find((b: { formats: string[] }) => b.formats.length === 0)
+      const form = new FormData()
+      form.append("file", new File([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], `book.${ext}`))
+      form.append("addFormatTo", String(book.id))
+      const res = await fetch("/api/books", { method: "POST", headers: { "X-Calibre-Hub": "1" }, body: form })
+      if (!res.ok) throw new Error(`upload ${res.status}`)
+      return book.id as number
+    },
+    [data, format.toLowerCase()] as const,
+  )
+  books.set(page, id)
+  await page.evaluate((id) => {
+    history.pushState({}, "", `/read/${id}`)
+    dispatchEvent(new PopStateEvent("popstate"))
+  }, id)
+  await waitForReader(page)
 })
 
 // --- When -------------------------------------------------------------------
@@ -231,6 +266,14 @@ Then("the reader shows the book at the saved percentage", async ({ page }) => {
 
 Then("the reader asks {string}", async ({ page }, text: string) => {
   await expect(page.getByRole("alertdialog", { name: text })).toBeVisible()
+})
+
+Then("no script from the book has run", async ({ page }) => {
+  // the handlers would have fired on load; give late ones a moment
+  await page.waitForTimeout(500)
+  const marks = await page.evaluate(() => ({ storage: localStorage.getItem("pwned"), global: (window as unknown as { pwned?: string }).pwned ?? null }))
+  expect(marks).toEqual({ storage: null, global: null })
+  expect(pwned.get(page)).toEqual([])
 })
 
 Then("the reader's toolbar is hidden", async ({ page }) => {

@@ -51,6 +51,29 @@ Feature: Reading
     When I press "ArrowRight" in the reader 1 times
     Then the reading progress is above 50 %
 
+  # e2e/fixtures: sample.azw3 and sample.mobi are the mock EPUB converted
+  # with calibre's ebook-convert (MOBI with --mobi-file-type old), sample.cbz
+  # three PNG pages
+  Scenario Outline: Reading a <format>
+    Given the reader is open for the book file "<file>" as "<format>"
+    When I press "ArrowRight" in the reader 2 times
+    Then the reading progress is above 0 %
+
+    Examples:
+      | file        | format |
+      | sample.azw3 | AZW3   |
+      | sample.mobi | MOBI   |
+      | sample.cbz  | CBZ    |
+
+  # script.epub: the mock EPUB with an inline <script>, a script file from
+  # the manifest, body onload, img onerror and svg onload, each of which
+  # would write "pwned" into the app's localStorage and fetch /api/pwned
+  Scenario: Scripts in a book never run
+    Given the reader is open for the book file "script.epub" as "EPUB"
+    Then the reader shows the chapter "Kapitel 1"
+    When I press "PageDown" in the reader 2 times
+    Then no script from the book has run
+
   Scenario: E-Ink: tap zones instead of swiping
     Given E-Ink mode is on
     And the reader is open for a book with the format "EPUB"

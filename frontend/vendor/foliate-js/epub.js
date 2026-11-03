@@ -1,4 +1,5 @@
 import * as CFI from './epubcfi.js'
+import { stripScripts } from './strip-scripts.js'
 
 const NS = {
     CONTAINER: 'urn:oasis:names:tc:opendocument:xmlns:container',
@@ -765,7 +766,8 @@ class Loader {
         const { href, mediaType } = item
 
         const isScript = MIME.JS.test(item.mediaType)
-        const detail = { type: mediaType, isScript, allow: true}
+        // calibre-hub: script files of a book are never loaded
+        const detail = { type: mediaType, isScript, allow: !isScript }
         const event = new CustomEvent('load', { detail })
         this.eventTarget.dispatchEvent(event)
         const allow = await event.detail.allow
@@ -820,6 +822,8 @@ class Loader {
                 item.mediaType = MIME.HTML
                 doc = new DOMParser().parseFromString(str, item.mediaType)
             }
+            // calibre-hub: before anything is loaded for the document
+            stripScripts(doc)
             // replace hrefs in XML processing instructions
             // this is mainly for SVGs that use xml-stylesheet
             if ([MIME.XHTML, MIME.SVG].includes(item.mediaType)) {
@@ -858,7 +862,7 @@ class Loader {
             for (const el of doc.querySelectorAll('[style]'))
                 el.setAttribute('style',
                     await this.replaceCSS(el.getAttribute('style'), href, parents))
-            // TODO: replace inline scripts? probably not worth the trouble
+            // calibre-hub: inline scripts are removed above (stripScripts)
             const result = new XMLSerializer().serializeToString(doc)
             return this.createURL(href, result, item.mediaType, parent)
         }

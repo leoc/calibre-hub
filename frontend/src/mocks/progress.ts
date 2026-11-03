@@ -18,8 +18,11 @@ const now = () => {
 }
 
 // Book files: a small EPUB (three chapters) and a three-page PDF; other
-// formats get the EPUB too (foliate-js tells them apart by content)
+// formats get the EPUB too (foliate-js tells them apart by content). A file
+// uploaded as a format of a book (addFormatTo) is served as that format.
 const fixture = async (url: string) => (await fetch(url)).arrayBuffer()
+const uploaded = new Map<string, File>()
+export const storeFormat = (id: number, format: string, file: File) => uploaded.set(`${id}/${format.toLowerCase()}`, file)
 
 export const progressHandlers = [
   http.get("/api/progress", () =>
@@ -56,8 +59,9 @@ export const progressHandlers = [
   }),
   http.get("/api/books/:id/download/:format", async ({ params }) => {
     const format = String(params.format).toLowerCase()
+    const file = uploaded.get(`${params.id}/${format}`)
     const pdf = format === "pdf"
-    return new HttpResponse(await fixture(pdf ? pdfUrl : epubUrl), {
+    return new HttpResponse(file ? await file.arrayBuffer() : await fixture(pdf ? pdfUrl : epubUrl), {
       headers: {
         "Content-Type": pdf ? "application/pdf" : "application/epub+zip",
         "Content-Disposition": `attachment; filename="book-${params.id}.${format}"`,

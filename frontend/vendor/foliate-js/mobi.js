@@ -1,3 +1,5 @@
+import { stripScripts } from './strip-scripts.js'
+
 const unescapeHTML = str => {
     if (!str) return ''
     const textarea = document.createElement('textarea')
@@ -864,6 +866,8 @@ class MOBI6 {
         }`))
 
         await this.replaceResources(doc)
+        // calibre-hub: no scripts from the book (strip-scripts.js)
+        stripScripts(doc)
         const result = this.serializer.serializeToString(doc)
         const url = URL.createObjectURL(new Blob([result], { type: this.#type }))
         this.#cache.set(section, url)
@@ -1184,6 +1188,8 @@ class KF8 {
             for (const el of doc.querySelectorAll(`img[src="${url}"]`))
                 el.replaceWith(node)
         }
+        // calibre-hub: no scripts from the book (strip-scripts.js)
+        stripScripts(doc)
         const url = URL.createObjectURL(
             new Blob([this.serializer.serializeToString(doc)], { type: this.#type }))
         this.#cache.set(section, url)
