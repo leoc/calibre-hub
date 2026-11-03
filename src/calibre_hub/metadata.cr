@@ -1,6 +1,7 @@
 require "db"
 require "file_utils"
 require "json"
+require "./alert"
 require "./meta_rules"
 require "./meta_sources"
 require "./calibre"
@@ -148,16 +149,10 @@ module CalibreHub
       last = @db.query_one?("select at from alerts where key = ?", key, as: Int64)
       return false if last && now.to_unix - last < 1.day.total_seconds
       STDERR.puts "alert: #{subject}: #{text}"
-      if (cmd = @command) && !cmd.empty?
-        status = Process.run(cmd[0], cmd[1..] + [subject, text], output: :inherit, error: :inherit)
-        unless status.success?
-          STDERR.puts "alert failed: #{cmd[0]} exited with #{status.exit_code}"
-          return false
-        end
-      end
+      return false unless Alert.run(@command, subject, text)
       @db.exec "insert or replace into alerts (key, at) values (?, ?)", key, now.to_unix
       true
-    rescue ex : File::Error | IO::Error | DB::Error
+    rescue ex : DB::Error
       STDERR.puts "alert failed: #{ex.message}"
       false
     end

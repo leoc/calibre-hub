@@ -1,5 +1,6 @@
 require "db"
 require "json"
+require "./alert"
 
 module CalibreHub
   # Delivers events to the executables in handlers.d, at least once.
@@ -126,11 +127,7 @@ module CalibreHub
     end
 
     private def alert(subject : String, text : String)
-      cmd = @alert
-      return unless cmd && !cmd.empty?
-      Process.run(cmd[0], cmd[1..] + [subject, text], output: :inherit, error: :inherit)
-    rescue ex
-      STDERR.puts "alert failed: #{ex.message}"
+      Alert.run(@alert, subject, text)
     end
   end
 end
