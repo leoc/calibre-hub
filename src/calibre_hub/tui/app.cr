@@ -227,11 +227,6 @@ module CalibreHub
         end
       end
 
-      # what typed keys mean here, for the status line
-      def pending_keys : String
-        @keys.pending
-      end
-
       private def act(action : Action, count : Int32?, token : String) : Tea::Cmd?
         case action
         when .quit?   then return Tea.quit
