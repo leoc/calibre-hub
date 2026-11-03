@@ -58,6 +58,8 @@ pkgs.testers.runNixOSTest {
           role = "reader";
           passwordFile = "/etc/hub/lea";
           apiTokenFiles = [ "/etc/hub/lea-token" ];
+          # her own e-reader: her synced lists go there
+          leseliste.target = "/srv/books/boox-lea";
         };
         inbox = {
           path = "/srv/books/inbox";
@@ -256,6 +258,7 @@ pkgs.testers.runNixOSTest {
         "d /srv/books/library 2775 calibre-server calibre-hub -"
         "d /srv/books/inbox 2775 root calibre-hub -"
         "d /srv/books/boox 2775 root calibre-hub -"
+        "d /srv/books/boox-lea 2775 root calibre-hub -"
         "d /srv/books/alt 0755 root root -"
       ];
     };
@@ -1294,8 +1297,8 @@ pkgs.testers.runNixOSTest {
     with subtest("two users: own login, own lists and progress, readers don't write"):
         assert code(f"-c /tmp/lea -X POST {CSRF} -d '{{\"user\":\"lea\",\"password\":\"login-secret\"}}' {H}/api/session") == "401"
         assert code(f"-c /tmp/lea -X POST {CSRF} -d '{{\"user\":\"lea\",\"password\":\"lea-secret\"}}' {H}/api/session") == "200"
-        assert as_lea("GET", "/api/session") == (200, {"user": "lea", "role": "reader"})
-        assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin"})
+        assert as_lea("GET", "/api/session") == (200, {"user": "lea", "role": "reader", "sync": True})
+        assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin", "sync": True})
         users = machine.succeed(f"sqlite3 {STATE} 'select name, role, active from users order by name'").split()
         assert users == ["arthur|admin|1", "lea|reader|1"], users
         bid = api("GET", "/api/books?limit=1")[1]["books"][0]["id"]
@@ -1307,13 +1310,16 @@ pkgs.testers.runNixOSTest {
         assert as_lea("POST", "/api/books/bulk", {"target": {"ids": [bid]}, "changes": {"addTags": ["x"]}})[0] == 403
         assert as_lea("DELETE", f"/api/books/{bid}")[0] == 403
         assert code(f"{LEA_TOK} -X PATCH -H 'Content-Type: application/json' -d '{{\"title\":\"x\"}}' {H}/api/books/{bid}") == "403"
-        assert json.loads(machine.succeed(f"curl -sf {LEA_TOK} {H}/api/session")) == {"user": "lea", "role": "reader"}
+        assert json.loads(machine.succeed(f"curl -sf {LEA_TOK} {H}/api/session")) == {"user": "lea", "role": "reader", "sync": True}
         assert api("GET", f"/api/books/{bid}")[1]["title"] != "Lea war hier"
         # her own list, unseen by arthur; his private lists unseen by her
         status, l = as_lea("POST", "/api/lists", {"name": "Leas Liste"})
         assert status in (200, 201) and l["owner"] == "lea", (status, l)
         assert as_lea("PUT", f"/api/lists/{l['id']}/books/{bid}")[0] in (200, 201)
-        assert as_lea("PATCH", f"/api/lists/{l['id']}", {"sync": True})[0] == 403
+        # synced into her own reader folder, not into arthur's
+        assert as_lea("PATCH", f"/api/lists/{l['id']}", {"sync": True})[0] == 200
+        machine.wait_until_succeeds("ls '/srv/books/boox-lea/Leas Liste/' | grep -q .", timeout=60)
+        machine.succeed("test ! -e '/srv/books/boox/Leas Liste'")
         # arthur's editable list: books yes, its settings no (sync off would empty his e-reader folder)
         status, shared = api("POST", "/api/lists", {"name": "Gemeinsam", "visibility": "editable", "sync": True})
         assert status == 201, (status, shared)
@@ -1338,6 +1344,44 @@ pkgs.testers.runNixOSTest {
         nav = machine.succeed(f"curl -sf -u lea:lea-secret {H}/opds/lists")
         assert "Leas Liste" in nav and "Leseliste" not in nav, nav
         assert code(f"-u lea:lea-secret {H}/opds") == "200"
+        # the library's upkeep pages are arthur's
+        assert as_lea("GET", "/api/trash")[0] == 403
+        assert as_lea("GET", "/api/metadata/changes")[0] == 403
+        assert api("GET", "/api/trash")[0] == 200
+
+    with subtest("private tags: each user's own, never in calibre"):
+        bid, other = [b["id"] for b in api("GET", "/api/books?limit=2&sort=title")[1]["books"]]
+        status, r = api("POST", "/api/private-tags", {"bookIds": [bid, other, 999999], "add": ["Geheim"]})
+        assert status == 200 and r == {"total": 2, "changed": sorted([bid, other])}, (status, r)
+        status, r = as_lea("PUT", f"/api/books/{bid}/private-tags", {"tags": ["Leas", "geheim"]})
+        assert status == 200 and r["privateTags"] == ["geheim", "Leas"], (status, r)
+        assert api("GET", f"/api/books/{bid}")[1]["privateTags"] == ["Geheim"]
+        assert as_lea("GET", f"/api/books/{bid}")[1]["privateTags"] == ["geheim", "Leas"]
+        assert as_lea("GET", f"/api/books/{other}")[1]["privateTags"] == []
+        # calibre's tags, shared by everyone, stay as they were
+        tags = api("GET", f"/api/books/{bid}")[1]["tags"]
+        assert not any(t.lower() in ("geheim", "leas") for t in tags), tags
+        assert not any(t["name"].lower() in ("geheim", "leas") for t in api("GET", "/api/categories")[1]["tags"])
+        assert api("GET", "/api/categories")[1]["privateTags"] == [{"name": "Geheim", "count": 2}]
+        assert as_lea("GET", "/api/private-tags")[1] == [{"name": "geheim", "count": 1}, {"name": "Leas", "count": 1}]
+        # filtering: only her own tags find books for her
+        assert api("GET", "/api/books?ptag=Geheim")[1]["total"] == 2
+        assert api("GET", "/api/books?ptag=Leas")[1]["total"] == 0
+        page = as_lea("GET", "/api/books?ptag=Leas&ptag=GEHEIM")[1]
+        assert page["total"] == 1 and page["books"][0]["id"] == bid, page
+        assert as_lea("GET", f"/api/books?ptag=Leas&list={l['id']}")[1]["total"] == 1
+        # a selection by her tag: the tag off again
+        status, r = as_lea("POST", "/api/private-tags", {"target": {"query": {"ptag": ["Leas"]}, "expect": 1}, "remove": ["Leas"]})
+        assert status == 200 and r["changed"] == [bid], (status, r)
+        assert as_lea("GET", "/api/books?ptag=Leas")[1]["total"] == 0
+        assert as_lea("POST", "/api/private-tags", {"bookIds": [bid], "add": ["a,b"]})[0] == 400
+        # arthur's bulk edit by his private tag
+        status, job = api("POST", "/api/books/bulk", {"target": {"query": {"ptag": ["Geheim"]}, "expect": 2}, "changes": {"rating": 6}})
+        assert status == 202 and job["total"] == 2, (status, job)
+        wait_job(job["jobId"])
+        assert as_lea("GET", "/api/private-tags")[1] == [{"name": "geheim", "count": 1}]
+        rows = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} 'select owner, book_id, tag from private_tags order by owner, book_id'").split()
+        assert sorted(rows) == sorted([f"arthur|{bid}|Geheim", f"arthur|{other}|Geheim", f"lea|{bid}|geheim"]), rows
 
     with subtest("opds with basic auth"):
         assert code(f"{H}/opds") == "401"
@@ -1348,7 +1392,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_open_port(8084)
         machine.wait_until_succeeds("journalctl -u calibre-hub -o cat | grep -qx 'users: arthur (admin)'", timeout=30)
         # his session, his token and his password as before; her login is gone
-        assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin"})
+        assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin", "sync": True})
         assert code(f"-H 'Authorization: Bearer cli-token-0123456789abcdef' {H}/api/books") == "200"
         assert code(f"-u arthur:login-secret {H}/opds") == "200"
         assert as_lea("GET", "/api/session")[0] == 401
