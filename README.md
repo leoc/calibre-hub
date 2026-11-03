@@ -708,8 +708,8 @@ link bubbletea.cr, so the Go library is not in the server's closure;
 
 ### TUI
 
-`hub tui` browses the library in the terminal, with the same token as the
-CLI (read-only so far): the books as a table (title, authors, series,
+`hub tui` browses and edits the library in the terminal, with the same token
+as the CLI: the books as a table (title, authors, series,
 category, tags), newest first, loaded page by page where the cursor goes;
 the web app's sidebar (lists, categories with "Ohne Kategorie", fast tags,
 authors, series, tags, languages); a book's detail with its description.
@@ -723,8 +723,32 @@ Colours follow the terminal's light or dark background.
 | `h`/`l`, `Tab` | sidebar and library; in the sidebar `l`/`h` unfold/fold |
 | `o`/`O` | change the sort / reverse it |
 | `gl` | all books (filters off) |
-| `q`, `Esc` | back (close the book, previous filter); `q` at the start quits |
+| `q`, `Esc` | back (clear the selection, close the book, previous filter); `q` at the start quits |
 | `?` | all keys |
+| `e`, `F2` | edit the book: a form for all fields, `Tab` completes (authors, series, category, tags, languages) or moves on, `↑`/`↓` field, `Ctrl-s` saves only the changed fields; on a conflict (409) both versions show, `m` keeps mine on top of the new one, `t` takes the new one |
+| `Space` | select or unselect the book; commands then act on the selection |
+| `T` then `1`-`9` | toggle a fast tag (shown at once, taken back if the hub refuses) |
+| `t` | the default list on or off |
+| `dd`, `Del` | to calibre's trash (asks) |
+| `D` | download the file (EPUB first) into the current directory |
+| `u` | undo the last change |
+| `:`, `>` | command line: `Tab` completes commands and values (cycles on repeat), `↑`/`↓` history (kept in `$XDG_STATE_HOME/calibre-hub/tui-history`) |
+
+Commands (`:`) use the CLI's words, German ones like the web palette, or
+the web app's action ids (`:addTags x`): `tag add|rm TAGS`, `kategorie A/B`,
+`serie NAME`, `nummerieren NAME` (volumes 1..n in selection order),
+`autor A & B`, `verlag`, `sprache deu, eng`, `bewertung 0-5`, `jahr 1999`
+(`-` clears), `list add|rm|new NAME`, `trash`, `download [FORMAT]`, `edit`,
+`open`, `search Q`, `sort FIELD [asc|desc]`, `select none`, `undo`, `help`,
+`quit`, a number jumps to that line. They follow the web app's book actions
+(`frontend/src/lib/book-actions.ts`): one book is changed right away
+(`PATCH`), a selection as a bulk job (`POST /api/books/bulk`, progress in
+the status line); more than 50 books and deleting ask first. Undo: one book
+back to its previous values (`PATCH` with the `lastModified` of the change),
+lists the other way round, deleted books from the trash, bulk field changes
+through `POST /api/jobs/:id/undo` (hubs without it say so). Bulk changes of
+authors, publisher, languages, rating or year need a hub whose bulk API has
+those fields.
 
 It is built on [bubbletea.cr](https://github.com/leoc/bubbletea.cr) (Crystal
 bindings for Bubble Tea, Lip Gloss, Bubbles and Glamour through a Go

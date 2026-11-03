@@ -28,6 +28,14 @@ module CalibreHub
       Back
       Help
       Quit
+      Edit
+      ToggleSelect
+      ToggleList
+      FastTag
+      Delete
+      Download
+      Undo
+      Commands
 
       def name : String
         to_s.camelcase(lower: true)
@@ -61,6 +69,16 @@ module CalibreHub
       Action::Back       => ["q", "<Esc>", "H", "<A-Left>"],
       Action::Help       => ["?"],
       Action::Quit       => ["<C-c>"],
+      # the web app's Vim keys where it has the action; ":" like Vim, ">"
+      # like the web app's command palette
+      Action::Edit         => ["e", "<F2>"],
+      Action::ToggleSelect => ["<Space>"],
+      Action::ToggleList   => ["t"],
+      Action::FastTag      => ["T"],
+      Action::Delete       => ["dd", "<Del>"],
+      Action::Download     => ["D"],
+      Action::Undo         => ["u"],
+      Action::Commands     => [":", ">"],
     }
 
     # Help groups, in this order (like the web app's help)
@@ -68,31 +86,41 @@ module CalibreHub
       {"Bewegen", [Action::Down, Action::Up, Action::First, Action::Last, Action::HalfDown, Action::HalfUp,
                    Action::NextPage, Action::PrevPage, Action::Left, Action::Right, Action::SwitchPane]},
       {"Buch", [Action::Open, Action::SearchNext, Action::SearchPrev]},
+      {"Bearbeiten", [Action::Edit, Action::ToggleSelect, Action::ToggleList, Action::FastTag, Action::Delete,
+                      Action::Download, Action::Undo, Action::Commands]},
       {"Bibliothek", [Action::Search, Action::Sort, Action::Order, Action::GoLibrary, Action::Back, Action::Help, Action::Quit]},
     ]
 
     HELP_TEXT = {
-      Action::Down       => "nach unten (mit Zahl davor: so oft)",
-      Action::Up         => "nach oben",
-      Action::First      => "zum ersten (Zahl: zur Zeile)",
-      Action::Last       => "zum letzten (Zahl: zur Zeile)",
-      Action::HalfDown   => "halbe Seite nach unten",
-      Action::HalfUp     => "halbe Seite nach oben",
-      Action::NextPage   => "Seite nach unten",
-      Action::PrevPage   => "Seite nach oben",
-      Action::Left       => "Seitenleiste; dort: zuklappen, zur Ebene darüber",
-      Action::Right      => "Seitenleiste: aufklappen, zur Bibliothek",
-      Action::SwitchPane => "zwischen Seitenleiste und Bibliothek wechseln",
-      Action::Open       => "Buch öffnen; Seitenleiste: Filter an/aus",
-      Action::SearchNext => "nächster Treffer (im Buch: nächstes Buch)",
-      Action::SearchPrev => "vorheriger Treffer (im Buch: voriges Buch)",
-      Action::Search     => "suchen (calibre-Suche, wie im Web)",
-      Action::Sort       => "Sortierung wechseln",
-      Action::Order      => "Reihenfolge umkehren",
-      Action::GoLibrary  => "alle Bücher (Filter zurücksetzen)",
-      Action::Back       => "zurück (Buch schließen, vorige Ansicht, beenden)",
-      Action::Help       => "diese Hilfe",
-      Action::Quit       => "beenden",
+      Action::Down         => "nach unten (mit Zahl davor: so oft)",
+      Action::Up           => "nach oben",
+      Action::First        => "zum ersten (Zahl: zur Zeile)",
+      Action::Last         => "zum letzten (Zahl: zur Zeile)",
+      Action::HalfDown     => "halbe Seite nach unten",
+      Action::HalfUp       => "halbe Seite nach oben",
+      Action::NextPage     => "Seite nach unten",
+      Action::PrevPage     => "Seite nach oben",
+      Action::Left         => "Seitenleiste; dort: zuklappen, zur Ebene darüber",
+      Action::Right        => "Seitenleiste: aufklappen, zur Bibliothek",
+      Action::SwitchPane   => "zwischen Seitenleiste und Bibliothek wechseln",
+      Action::Open         => "Buch öffnen; Seitenleiste: Filter an/aus",
+      Action::SearchNext   => "nächster Treffer (im Buch: nächstes Buch)",
+      Action::SearchPrev   => "vorheriger Treffer (im Buch: voriges Buch)",
+      Action::Search       => "suchen (calibre-Suche, wie im Web)",
+      Action::Sort         => "Sortierung wechseln",
+      Action::Order        => "Reihenfolge umkehren",
+      Action::GoLibrary    => "alle Bücher (Filter zurücksetzen)",
+      Action::Back         => "zurück (Buch schließen, vorige Ansicht, beenden)",
+      Action::Help         => "diese Hilfe",
+      Action::Quit         => "beenden",
+      Action::Edit         => "Buch bearbeiten (Formular)",
+      Action::ToggleSelect => "Buch aus- oder abwählen (Befehle wirken auf die Auswahl)",
+      Action::ToggleList   => "auf die Standardliste oder herunter",
+      Action::FastTag      => "Fast-Tag umschalten (danach Ziffer)",
+      Action::Delete       => "in den Papierkorb (fragt)",
+      Action::Download     => "Datei ins aktuelle Verzeichnis",
+      Action::Undo         => "letzte Änderung zurücknehmen",
+      Action::Commands     => "Befehlszeile (Tab ergänzt, ↑/↓ Verlauf)",
     }
 
     KEY_NAMES = {

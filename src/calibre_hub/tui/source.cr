@@ -5,8 +5,9 @@ require "../cli/client"
 
 module CalibreHub
   module Tui
-    # Where the TUI reads from (read-only in this phase). The real one is the
-    # hub's JSON API through the CLI client; specs pass a fake.
+    # What the TUI reads and writes. The real one is the hub's JSON API
+    # through the CLI client; specs pass a fake. Errors of the hub are
+    # `Cli::HttpError` (409 with the current book on a conflict).
     abstract class Source
       # GET /api/books
       abstract def books(params : HTTP::Params) : JSON::Any
@@ -18,6 +19,25 @@ module CalibreHub
       abstract def config : JSON::Any
       # GET /api/lists
       abstract def lists : JSON::Any
+
+      # PATCH /api/books/:id: the book as changed
+      abstract def patch_book(id : Int64, body : Hash(String, JSON::Any)) : JSON::Any
+      # DELETE /api/books/:id (to calibre's trash): {book}
+      abstract def delete_book(id : Int64) : JSON::Any
+      # POST /api/trash/:id/restore: {book}
+      abstract def restore_book(id : Int64) : JSON::Any
+      # POST /api/books/bulk {target, changes}: {jobId, total}
+      abstract def bulk(target : JSON::Any, changes : Hash(String, JSON::Any)) : JSON::Any
+      # GET /api/jobs/:id
+      abstract def job(id : String) : JSON::Any
+      # POST /api/jobs/:id/undo: {jobId, total} (hubs after 88ba458)
+      abstract def undo_job(id : String) : JSON::Any
+      # POST /api/lists/:id/books(/remove) {bookIds}: {list, added | removed}
+      abstract def list_books(list : Int64, ids : Array(Int64), remove : Bool) : JSON::Any
+      # POST /api/lists {name}: the new list
+      abstract def create_list(name : String) : JSON::Any
+      # GET /api/books/:id/download/:format into path; the bytes written
+      abstract def download(id : Int64, format : String, path : String) : Int64
     end
 
     class ApiSource < Source
@@ -43,6 +63,53 @@ module CalibreHub
       def lists : JSON::Any
         @client.get("/api/lists")
       end
+
+      def patch_book(id : Int64, body : Hash(String, JSON::Any)) : JSON::Any
+        @client.patch("/api/books/#{id}", body)
+      end
+
+      def delete_book(id : Int64) : JSON::Any
+        @client.json("DELETE", "/api/books/#{id}")
+      end
+
+      def restore_book(id : Int64) : JSON::Any
+        @client.post("/api/trash/#{id}/restore", {} of String => String)
+      end
+
+      def bulk(target : JSON::Any, changes : Hash(String, JSON::Any)) : JSON::Any
+        @client.post("/api/books/bulk", {"target" => target, "changes" => changes})
+      end
+
+      def job(id : String) : JSON::Any
+        @client.get("/api/jobs/#{URI.encode_path_segment(id)}")
+      end
+
+      def undo_job(id : String) : JSON::Any
+        @client.post("/api/jobs/#{URI.encode_path_segment(id)}/undo", {} of String => String)
+      end
+
+      def list_books(list : Int64, ids : Array(Int64), remove : Bool) : JSON::Any
+        @client.post("/api/lists/#{list}/books#{remove ? "/remove" : ""}", {"bookIds" => ids})
+      end
+
+      def create_list(name : String) : JSON::Any
+        @client.post("/api/lists", {"name" => name})
+      end
+
+      # via a .part file, like `hub download`
+      def download(id : Int64, format : String, path : String) : Int64
+        part = "#{path}.part"
+        bytes = 0_i64
+        begin
+          @client.download("/api/books/#{id}/download/#{format}") do |r|
+            File.open(part, "w") { |f| bytes = IO.copy(r.body_io, f) }
+          end
+          File.rename(part, path)
+        ensure
+          File.delete?(part)
+        end
+        bytes
+      end
     end
 
     # A book of the API as the TUI shows it
@@ -54,6 +121,22 @@ module CalibreHub
 
       def id : Int64
         @json["id"].as_i64
+      end
+
+      def last_modified : String?
+        str("lastModified")
+      end
+
+      # this book with some fields replaced (optimistic updates)
+      def merge(fields : Hash(String, JSON::Any)) : Book
+        Book.new(JSON::Any.new((@json.as_h? || {} of String => JSON::Any).merge(fields)))
+      end
+
+      # the category column with a new value (stored, "A.B")
+      def with_category(column : String, value : String?) : Book
+        custom = (@json["custom"]?.try(&.as_h?) || {} of String => JSON::Any).dup
+        custom[column] = JSON::Any.new(value)
+        merge({"custom" => JSON::Any.new(custom)})
       end
 
       def title : String

@@ -7,7 +7,15 @@ module CalibreHub
       # ask the terminal for its background now: once the program owns stdin
       # the answer would never arrive (adaptive colours, Glamour "auto")
       Lipgloss.dark_background?
-      Tea::Program.new(App.new(ApiSource.new(client)), alt_screen: true).run
+      app = App.new(ApiSource.new(client))
+      app.history_file = history_file(ENV.to_h)
+      Tea::Program.new(app, alt_screen: true).run
+    end
+
+    # the `:` history: $XDG_STATE_HOME/calibre-hub/tui-history
+    def self.history_file(env : Hash(String, String)) : String?
+      state = env["XDG_STATE_HOME"]?.presence || env["HOME"]?.presence.try { |h| File.join(h, ".local", "state") }
+      state.try { |s| File.join(s, "calibre-hub", "tui-history") }
     end
   end
 end

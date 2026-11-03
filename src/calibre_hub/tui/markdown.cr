@@ -67,6 +67,41 @@ module CalibreHub
         tidy(text.split(/\n\s*\n/).map { |para| para.strip.split('\n').map { |l| escape(l.strip) }.join("  \n") }.join("\n\n"))
       end
 
+      # Back to HTML for calibre after editing in the form: what `from_html`
+      # writes (paragraphs, breaks, emphasis, headings, lists, links)
+      def self.to_html(md : String) : String
+        md.strip.split(/\n\s*\n/).compact_map do |block|
+          lines = block.split('\n')
+          if lines.all?(&.matches?(/\A\s*[-*]\s+/))
+            "<ul>" + lines.map { |l| "<li>#{inline(l.sub(/\A\s*[-*]\s+/, ""))}</li>" }.join + "</ul>"
+          elsif lines.all?(&.matches?(/\A\s*\d+\.\s+/))
+            "<ol>" + lines.map { |l| "<li>#{inline(l.sub(/\A\s*\d+\.\s+/, ""))}</li>" }.join + "</ol>"
+          elsif m = block.match(/\A(\#{1,6})\s+(.*)\z/m)
+            "<h#{m[1].size}>#{inline(m[2].strip)}</h#{m[1].size}>"
+          elsif block.strip == "---"
+            "<hr>"
+          else
+            text = lines.map_with_index do |l, i|
+              # two spaces at the end (or a lone backslash) break the line
+              brk = i < lines.size - 1 && (l.ends_with?("  ") || l.ends_with?("\\"))
+              inline(l.rstrip.rchop("\\").rstrip) + (brk ? "<br>" : (i < lines.size - 1 ? " " : ""))
+            end.join
+            text.empty? ? nil : "<p>#{text}</p>"
+          end
+        end.join
+      end
+
+      private def self.inline(text : String) : String
+        # escaped characters stay as they are
+        keep = [] of String
+        t = text.gsub(/\\([\\`*_\[\]#>+.-])/) { keep << $1; "\uE000#{keep.size - 1}\uE001" }
+        t = HTML.escape(t)
+        t = t.gsub(/\[([^\]]+)\]\((https?:[^)\s]+)\)/) { %(<a href="#{$2}">#{$1}</a>) }
+        t = t.gsub(/\*\*(.+?)\*\*/) { "<b>#{$1}</b>" }
+        t = t.gsub(/(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])/) { "<i>#{$1}</i>" }
+        t.gsub(/\x{E000}(\d+)\x{E001}/) { HTML.escape(keep[$1.to_i]) }
+      end
+
       private def self.escape(text : String) : String
         text.gsub(/([\\`*_\[\]])/) { "\\#{$1}" }.sub(/\A(\s*)([#>+-]|\d+\.)(\s)/) { "#{$1}\\#{$2}#{$3}" }
       end

@@ -7,6 +7,7 @@ require "./source"
 require "./rows"
 require "./sidebar"
 require "./theme"
+require "./writes"
 
 module CalibreHub
   module Tui
@@ -44,7 +45,8 @@ module CalibreHub
     end
 
     # The library browser: sidebar | book table, a detail view, `/` search,
-    # Vim movement. Read-only; all data comes from a `Source`.
+    # Vim movement; the edit form, `:` commands, fast tags and undo are in
+    # writes.cr. All data comes from a `Source`.
     class App
       include Tea::Model
 
@@ -96,6 +98,8 @@ module CalibreHub
       # --- update ---------------------------------------------------------
 
       def update(msg : Tea::Msg) : Tea::Cmd?
+        handled, cmd = write_msg(msg)
+        return cmd if handled
         case msg
         when Tea::KeyMsg
           key(msg)
@@ -103,6 +107,8 @@ module CalibreHub
           @width = Math.max(20, msg.width)
           @height = Math.max(6, msg.height)
           @input.try(&.configure(width: @width - 4))
+          @command_line.try(&.width=(Math.max(10, @width - 4)))
+          @form.try(&.resize(@width, body_height))
           scroll_to_cursor
           @detail_for = nil
           load_visible
@@ -120,8 +126,14 @@ module CalibreHub
           end
           nil
         else
-          # cursor blink of the search field
-          @searching ? @input.try(&.update(msg)) : nil
+          # cursor blink of the search field, the command line, the form
+          if f = @form
+            f.update_focused(msg)
+          elsif @commanding
+            command_line.update(msg)
+          else
+            @searching ? @input.try(&.update(msg)) : nil
+          end
         end
       end
 
@@ -161,9 +173,12 @@ module CalibreHub
       end
 
       private def key(msg : Tea::KeyMsg) : Tea::Cmd?
-        return Tea.quit if msg.key == "ctrl+c"
+        # in the form Ctrl+C cancels (asking when there are changes)
+        return Tea.quit if msg.key == "ctrl+c" && !@form
         @message = nil
         @error = false
+        handled, cmd = write_key(msg)
+        return cmd if handled
         return search_key(msg) if @searching
         if @help
           @help = false
@@ -171,12 +186,25 @@ module CalibreHub
           return nil
         end
         cmds = [] of Tea::Cmd?
-        Tui.tokens(msg).each do |tok|
+        toks = Tui.tokens(msg)
+        toks.each_with_index do |tok, i|
           r = @keys.feed(tok)
           next unless r.is_a?(KeyEngine::Fired)
           cmd = act(r.action, r.count, tok)
           return cmd if cmd.is_a?(Tea::ControlCmd) && cmd.type == "quit"
           cmds << cmd
+          # a fast typist's (or a paste's) ":sort" comes as one message: what
+          # follows the key that opened a text input goes into it
+          if (@commanding || @searching) && i < toks.size - 1
+            rest = toks[i + 1..].map { |t| t == "<Space>" ? " " : t }.select { |t| t.size == 1 }.join
+            if @commanding
+              command_line.value = command_line.value + rest
+            elsif input = @input
+              input.value = input.value + rest
+              input.cursor_end
+            end
+            break
+          end
         end
         Tea.batch(cmds)
       end
@@ -209,6 +237,10 @@ module CalibreHub
         when .quit?   then return Tea.quit
         when .help?   then @help = true; return nil
         when .search? then return start_search
+        end
+        unless @focus.sidebar? && !action.commands? && !action.undo?
+          handled, cmd = write_act(action)
+          return cmd if handled
         end
         return detail_act(action, count, token) if @detail
         return sidebar_act(action, count, token) if @focus.sidebar?
@@ -335,6 +367,11 @@ module CalibreHub
 
       # q/Esc: close what is open, else the previous view; q at the start quits
       private def back(token : String) : Tea::Cmd?
+        unless @selection.empty?
+          @message = "Auswahl aufgehoben (#{@selection.size})"
+          clear_selection
+          return nil
+        end
         if place = @history.pop?
           set_query(place.query)
           @cursor = place.cursor
@@ -504,6 +541,8 @@ module CalibreHub
       def view : String
         body = if @help
                  help_view
+               elsif f = @form
+                 f.view(@width, body_height, choices)
                elsif d = @detail
                  detail_view(d)
                elsif sidebar_visible? && sidebar_width >= @width
@@ -514,6 +553,11 @@ module CalibreHub
                else
                  table_view(@width)
                end
+        if @commanding && (wild = command_line.candidates_view(@width))
+          lines = body.split('\n')
+          lines[-1] = wild
+          body = lines.join('\n')
+        end
         [header_view, body, status_view].join('\n')
       end
 
@@ -537,6 +581,9 @@ module CalibreHub
       end
 
       private def status_view : String
+        if s = write_status
+          return s
+        end
         if @searching
           return @input.not_nil!.view
         end
@@ -552,7 +599,8 @@ module CalibreHub
                end
         pos = @rows.size > 0 ? "#{(@detail || @cursor) + 1}/#{@rows.size}" : ""
         pending = @keys.pending
-        right = [pending, pos].reject(&.empty?).join("  ")
+        selected = @selection.empty? ? "" : "#{@selection.size} ausgewählt"
+        right = [pending, selected, pos].reject(&.empty?).join("  ")
         left = Text.truncate(hint, Math.max(0, @width - Text.width(right) - 2))
         Theme.muted.render(left) + " " * Math.max(1, @width - Text.width(left) - Text.width(right)) + Theme.accent.render(right)
       end
@@ -608,13 +656,15 @@ module CalibreHub
                   ["…", "", "", "", ""]
                 end
         cells.delete_at(3) unless @category_column
+        marked = book && selected?(book.id)
+        cells[0] = "● #{cells[0]}" if marked
         if i == @cursor
           line = widths.map_with_index { |w, j| Text.fit(cells[j], w) }.join(" ")
           return Theme.cursor(@focus.list?).bold(@focus.list?).render(line)
         end
         widths.map_with_index do |w, j|
           text = Text.fit(cells[j], w)
-          j == 0 ? Theme.text.render(text) : Theme.muted.render(text)
+          j == 0 ? (marked ? Theme.accent.bold.render(text) : Theme.text.render(text)) : Theme.muted.render(text)
         end.join(" ")
       end
 
@@ -735,6 +785,9 @@ module CalibreHub
           end
           lines << ""
         end
+        lines << Theme.header.render("Befehle (:, Tab ergänzt)")
+        Text.wrap(Commands::NAMES.map(&.[0]).join(" · "), Math.max(20, @width - 6)).each { |l| lines << "  #{Theme.text.render(l)}" }
+        lines << ""
         lines << Theme.muted.render("Taste drücken zum Schließen")
         h = body_height
         acc = lines.first(h)

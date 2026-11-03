@@ -1,4 +1,5 @@
 require "spec"
+require "file_utils"
 require "../src/calibre_hub/tui"
 
 # headless: no terminal, fixed colours (no escape sequences in views)
@@ -12,7 +13,7 @@ alias Tui = CalibreHub::Tui
 private class FakeSource < Tui::Source
   getter requests = [] of HTTP::Params
   property fail = false
-  property lists_json = %([{"id":1,"name":"Leseliste","parent":null,"leaf":"Leseliste","count":2},
+  property lists_json = %([{"id":1,"name":"Leseliste","parent":null,"leaf":"Leseliste","count":2,"isDefault":true},
     {"id":2,"name":"Reise/Meer","parent":"Reise","leaf":"Meer","count":1}])
 
   def initialize(@count = 150)
@@ -50,7 +51,7 @@ private class FakeSource < Tui::Source
 
   def book(id : Int64) : JSON::Any
     @book_requests << id
-    book(id.to_i)
+    current(id)
   end
 
   def categories : JSON::Any
@@ -67,6 +68,100 @@ private class FakeSource < Tui::Source
 
   def lists : JSON::Any
     JSON.parse(@lists_json)
+  end
+
+  # --- writes: recorded, applied to the fake's books ----------------------
+
+  getter writes = [] of {String, JSON::Any}
+  # changed fields per book on top of book(i)
+  getter changed = {} of Int64 => Hash(String, JSON::Any)
+  # the next PATCH answers 409 with the book changed meanwhile
+  property conflict_next = false
+  property fail_writes = false
+  getter jobs = {} of String => JSON::Any
+  property job_polls_running = 0
+
+  private def record(what : String, body) : Nil
+    @writes << {what, JSON.parse(body.to_json)}
+    raise CalibreHub::Cli::HttpError.new(500, JSON.parse(%({"error":"hub down"}))) if @fail_writes
+  end
+
+  def current(id : Int64) : JSON::Any
+    h = book(id.to_i).as_h
+    h["lastModified"] = JSON::Any.new("v#{@changed[id]?.try(&.["_writes"]?).try(&.as_i64) || 0}")
+    @changed[id]?.try { |c| h.merge!(c) }
+    JSON::Any.new(h)
+  end
+
+  def patch_book(id : Int64, body : Hash(String, JSON::Any)) : JSON::Any
+    record("PATCH #{id}", body)
+    if @conflict_next
+      @conflict_next = false
+      c = (@changed[id] ||= {} of String => JSON::Any)
+      c["title"] = JSON::Any.new("Changed meanwhile")
+      c["_writes"] = JSON::Any.new((c["_writes"]?.try(&.as_i64) || 0_i64) + 1)
+      raise CalibreHub::Cli::HttpError.new(409, JSON.parse({error: "changed in the meantime", book: current(id)}.to_json))
+    end
+    c = (@changed[id] ||= {} of String => JSON::Any)
+    tags = (c["tags"]? || current(id)["tags"]).as_a.map(&.as_s)
+    body.each do |k, v|
+      case k
+      when "addTags"    then tags += v.as_a.map(&.as_s) - tags; c["tags"] = JSON.parse(tags.to_json)
+      when "removeTags" then tags -= v.as_a.map(&.as_s); c["tags"] = JSON.parse(tags.to_json)
+      when "kategorie"  then c["custom"] = JSON.parse({kategorie: v}.to_json)
+      when "lastModified"
+      else c[k] = v
+      end
+    end
+    c["_writes"] = JSON::Any.new((c["_writes"]?.try(&.as_i64) || 0_i64) + 1)
+    current(id)
+  end
+
+  def delete_book(id : Int64) : JSON::Any
+    record("DELETE #{id}", nil)
+    JSON.parse({book: current(id)}.to_json)
+  end
+
+  def restore_book(id : Int64) : JSON::Any
+    record("RESTORE #{id}", nil)
+    JSON.parse({book: current(id)}.to_json)
+  end
+
+  def bulk(target : JSON::Any, changes : Hash(String, JSON::Any)) : JSON::Any
+    record("BULK", {target: target, changes: changes})
+    id = "job#{@jobs.size + 1}"
+    total = target["ids"].as_a.size
+    @jobs[id] = JSON.parse({id: id, status: "done", done: total, total: total, errors: [] of String}.to_json)
+    JSON.parse({jobId: id, total: total}.to_json)
+  end
+
+  def job(id : String) : JSON::Any
+    if @job_polls_running > 0
+      @job_polls_running -= 1
+      return JSON.parse({id: id, status: "running", done: 0, total: 2, errors: [] of String}.to_json)
+    end
+    @jobs[id]
+  end
+
+  def undo_job(id : String) : JSON::Any
+    record("UNDO #{id}", nil)
+    @jobs["undo-#{id}"] = JSON.parse({id: "undo-#{id}", status: "done", done: 1, total: 1, errors: [] of String}.to_json)
+    JSON.parse({jobId: "undo-#{id}", total: 1}.to_json)
+  end
+
+  def list_books(list : Int64, ids : Array(Int64), remove : Bool) : JSON::Any
+    record("LIST #{remove ? "rm" : "add"} #{list}", ids)
+    JSON.parse({"list" => JSON.parse({id: list, name: "x", count: 1}.to_json), (remove ? "removed" : "added") => JSON.parse(ids.to_json)}.to_json)
+  end
+
+  def create_list(name : String) : JSON::Any
+    record("NEWLIST", name)
+    JSON.parse({id: 9, name: name, count: 0}.to_json)
+  end
+
+  def download(id : Int64, format : String, path : String) : Int64
+    record("DOWNLOAD #{id} #{format}", path)
+    42_i64
   end
 end
 
@@ -88,7 +183,13 @@ private def run(app : Tui::App, cmd : Tea::Cmd?) : Bool
 end
 
 private def press(app : Tui::App, *keys : String) : Bool
-  keys.any? { |k| run(app, app.update(Tea::KeyMsg.new(k))) }
+  keys.any? { |k| run(app, app.update(key_msg(k))) }
+end
+
+# a space as the terminal sends it (with its rune; bubbletea.cr 0.2.0's
+# KeyMsg.new(" ") has none, so text inputs would drop it)
+private def key_msg(k : String) : Tea::KeyMsg
+  k == " " ? Tea::KeyMsg.new(" ", " ", -15, " ") : Tea::KeyMsg.new(k)
 end
 
 private def type(app : Tui::App, text : String)
@@ -98,6 +199,7 @@ end
 private def started(source = FakeSource.new, width = 120, height = 30) : {Tui::App, FakeSource}
   app = Tui::App.new(source)
   app.glamour_style = "ascii"
+  app.poll_interval = 0.seconds
   run(app, app.update(Tea::WindowSizeMsg.new(width, height)))
   run(app, app.init)
   {app, source}
@@ -446,5 +548,286 @@ describe Tui::App do
     app, _ = started(source)
     screen(app).should_not contain("LISTEN")
     screen(app).should contain("KATEGORIEN")
+  end
+end
+
+private def command(app : Tui::App, line : String) : Bool
+  press(app, ":")
+  type(app, line)
+  press(app, "enter")
+end
+
+private def last_write(source : FakeSource) : {String, JSON::Any}
+  source.writes.last? || raise "no write"
+end
+
+describe Tui::Commands do
+  it "parses CLI words, German words and the web app's action ids" do
+    Tui::Commands.parse("tag add sheet music").should eq({"addTags", "sheet music"})
+    Tui::Commands.parse(":tag rm sf").should eq({"removeTags", "sf"})
+    Tui::Commands.parse("kategorie Roman/Fantasy").should eq({"kategorie", "Roman/Fantasy"})
+    Tui::Commands.parse("addToList Leseliste").should eq({"addToList", "Leseliste"})
+    Tui::Commands.parse("list new Urlaub / 2026").should eq({"newList", "Urlaub / 2026"})
+    Tui::Commands.parse("sort added desc").should eq({"sort", "added desc"})
+    Tui::Commands.parse("trash").should eq({"delete", ""})
+    Tui::Commands.parse("12").should eq({"line", "12"})
+    Tui::Commands.parse("tag").should be_nil
+    Tui::Commands.parse("frobnicate").should be_nil
+  end
+
+  it "completes commands, subcommands and values" do
+    c = Tui::Choices.new
+    c.tags = ["leseliste", "sf", "Sheet Music"]
+    c.kategorien = ["Fach", "Fach/Software", "Roman/Fantasy"]
+    Tui::Completion.command_line("ta", c).should eq({0, ["tag"], true})
+    Tui::Completion.command_line("tag a", c).should eq({4, ["add"], true})
+    Tui::Completion.command_line("tag add s", c).should eq({8, ["sf", "Sheet Music", "leseliste"], false})
+    # a list value: the item after the last comma
+    Tui::Completion.command_line("tag add sf, le", c).should eq({12, ["leseliste"], false})
+    # starting with it first, then containing it
+    Tui::Completion.command_line("kategorie soft", c).should eq({10, ["Fach/Software"], false})
+    Tui::Completion.command_line("sort ad", c).should eq({5, ["added"], true})
+    Tui::Completion.command_line("sort added d", c).should eq({11, ["desc"], false})
+    Tui::Completion.common_prefix(["Fach", "Fach/Software"]).should eq("Fach")
+  end
+end
+
+describe Tui::Changes do
+  book = Tui::Book.new(JSON.parse(%({"id":1,"title":"T","tags":["a","B"],"custom":{"kategorie":"X.Y"},
+    "pubdate":"1990-05-06T12:00:00+00:00","rating":6,"series":"S","seriesIndex":2})))
+
+  it "makes the web app's changes from a typed value" do
+    act = ->(id : String, v : String) { Tui::Changes.for(Tui.book_action(id).not_nil!, v).to_json }
+    act.call("addTags", "x, y ,x").should eq(%({"addTags":["x","y"]}))
+    act.call("kategorie", "Roman/Fantasy").should eq(%({"kategorie":"Roman.Fantasy"}))
+    act.call("kategorie", "-").should eq(%({"kategorie":null}))
+    act.call("seriesNumbered", "Dune").should eq(%({"series":"Dune","numberSeries":true}))
+    act.call("authors", "A & B").should eq(%({"authors":["A","B"]}))
+    act.call("rating", "4").should eq(%({"rating":8}))
+    act.call("rating", "0").should eq(%({"rating":null}))
+    act.call("year", "2001").should eq(%({"pubYear":2001}))
+    expect_raises(Tui::Invalid) { act.call("rating", "7") }
+    expect_raises(Tui::Invalid) { act.call("kategorie", "Roman/Sci.Fi") }
+    expect_raises(Tui::Invalid) { act.call("addTags", " ") }
+  end
+
+  it "patches one book, shows it at once and knows the way back" do
+    body = Tui::Changes.patch({"pubYear" => JSON::Any.new(2001_i64), "removeTags" => JSON.parse(%(["b"]))}, book)
+    body.to_json.should eq(%({"removeTags":["b"],"pubdate":"2001-05-06"}))
+    after = Tui::Changes.apply(book, body.merge({"kategorie" => JSON::Any.new("Z")}), "kategorie")
+    after.tags.should eq(["a"])
+    after.category("kategorie").should eq("Z")
+    back = Tui::Changes.undo(body.merge({"kategorie" => JSON::Any.new("Z"), "rating" => JSON::Any.new(nil)}), book, "kategorie")
+    back.to_json.should eq(%({"tags":["a","B"],"pubdate":"1990-05-06","kategorie":"X.Y","rating":6}))
+  end
+end
+
+describe Tui::EditForm do
+  book = Tui::Book.new(JSON.parse(%({"id":1,"title":"Dune","authors":["Frank Herbert"],"tags":["sf"],
+    "languages":["eng"],"custom":{"kategorie":"Roman.SF"},"identifiers":{"isbn":"123"},
+    "comments":"<p>A <b>desert</b> planet.</p>","rating":8,"lastModified":"v7"})))
+
+  it "sends only changed fields with the lastModified read" do
+    orig = Tui::EditForm.values(book, "kategorie")
+    orig["kategorie"].should eq("Roman/SF")
+    orig["rating"].should eq("4")
+    orig["comments"].should eq("A **desert** planet.")
+    Tui::EditForm.patch(orig, orig, "v7", "kategorie").should be_nil
+    form = orig.merge({"tags" => "sf, Klassiker", "kategorie" => "Roman/Science Fiction", "pubdate" => "1965-08-01",
+                       "identifiers" => "isbn:123, asin:B00", "comments" => "A **desert** planet.\n\nWorms."})
+    Tui::EditForm.patch(orig, form, "v7", "kategorie").to_json.should eq(
+      %({"kategorie":"Roman.Science Fiction","tags":["sf","Klassiker"],"pubdate":"1965-08-01",) +
+      %("identifiers":{"isbn":"123","asin":"B00"},"comments":"<p>A <b>desert</b> planet.</p><p>Worms.</p>","lastModified":"v7"}))
+    expect_raises(Tui::Invalid) { Tui::EditForm.patch(orig, orig.merge({"title" => " "}), "v7", nil) }
+    expect_raises(Tui::Invalid) { Tui::EditForm.patch(orig, orig.merge({"pubdate" => "1965"}), "v7", nil) }
+    expect_raises(Tui::Invalid) { Tui::EditForm.patch(orig, orig.merge({"identifiers" => "isbn"}), "v7", nil) }
+  end
+end
+
+describe "Tui writes" do
+  it "runs `:` commands on the cursor book and undoes them" do
+    app, source = started
+    id = app.rows[0].not_nil!.id
+    command(app, "tag add Klassiker")
+    last_write(source).should eq({"PATCH #{id}", JSON.parse(%({"addTags":["Klassiker"]}))})
+    app.rows[0].not_nil!.tags.should eq(["sf", "Klassiker"])
+    screen(app).should contain("Tags hinzufügen: Dune 150")
+    press(app, "u")
+    last_write(source).should eq({"PATCH #{id}", JSON.parse(%({"tags":["sf"],"lastModified":"v1"}))})
+    app.rows[0].not_nil!.tags.should eq(["sf"])
+    press(app, "u")
+    screen(app).should contain("Nichts zurückzunehmen")
+  end
+
+  it "toggles fast tags optimistically and takes them back on errors" do
+    app, source = started
+    press(app, "T")
+    screen(app).should contain("1 leseliste")
+    source.fail_writes = true
+    # the change shows before the hub answers
+    cmd = app.update(Tea::KeyMsg.new("1"))
+    app.rows[0].not_nil!.tags.should eq(["sf", "leseliste"])
+    run(app, cmd)
+    app.rows[0].not_nil!.tags.should eq(["sf"])
+    screen(app).should contain("hub down")
+    source.fail_writes = false
+    press(app, "T", "1")
+    app.rows[0].not_nil!.tags.should eq(["sf", "leseliste"])
+    press(app, "T", "1")
+    last_write(source)[1].should eq(JSON.parse(%({"removeTags":["leseliste"]})))
+  end
+
+  it "changes a selection as a bulk job and undoes it on the hub" do
+    app, source = started
+    source.job_polls_running = 1
+    press(app, " ", "j", " ")
+    app.selection.size.should eq(2)
+    screen(app).should contain("2 ausgewählt")
+    ids = app.selection.dup
+    command(app, "kategorie Fach/Neu")
+    last_write(source).should eq({"BULK", JSON.parse({target: {ids: ids}, changes: {kategorie: "Fach.Neu"}}.to_json)})
+    screen(app).should contain("Kategorie setzen (2): 2 von 2 erledigt")
+    press(app, "u")
+    last_write(source).should eq({"UNDO job1", JSON::Any.new(nil)})
+    press(app, "esc")
+    app.selection.should be_empty
+  end
+
+  it "numbers a series only for several books" do
+    app, source = started
+    command(app, "nummerieren Saga")
+    screen(app).should contain("nur für mehrere")
+    source.writes.should be_empty
+  end
+
+  it "asks before deleting and restores from the trash" do
+    app, source = started
+    id = app.rows[0].not_nil!.id
+    press(app, "d", "d")
+    screen(app).should contain("„Dune 150“ in den Papierkorb verschieben? [j/N]")
+    press(app, "n")
+    source.writes.should be_empty
+    press(app, "d", "d", "j")
+    last_write(source)[0].should eq("DELETE #{id}")
+    press(app, "u")
+    last_write(source)[0].should eq("RESTORE #{id}")
+  end
+
+  it "puts books on lists, creating one when asked" do
+    app, source = started
+    id = app.rows[0].not_nil!.id
+    # t: the default list; the fake's books are on it already
+    press(app, "t")
+    last_write(source).should eq({"LIST rm 1", JSON.parse("[#{id}]")})
+    command(app, "list add Urlaub")
+    screen(app).should contain("Liste „Urlaub“ gibt es nicht")
+    press(app, "j")
+    source.writes.last(2).map(&.[0]).should eq(["NEWLIST", "LIST add 9"])
+    command(app, "list add reise/meer")
+    last_write(source).should eq({"LIST add 2", JSON.parse("[#{id}]")})
+    press(app, "u")
+    last_write(source).should eq({"LIST rm 2", JSON.parse("[#{id}]")})
+  end
+
+  it "sorts, searches and jumps from the command line" do
+    app, source = started
+    command(app, "sort title")
+    source.requests.last["sort"].should eq("title")
+    source.requests.last["order"].should eq("asc")
+    command(app, "sort rating up")
+    screen(app).should contain("asc oder desc")
+    command(app, "12")
+    app.cursor.should eq(11)
+    command(app, "search dune")
+    app.query.q.should eq("dune")
+    command(app, "nope")
+    screen(app).should contain("Unbekannter Befehl: nope")
+  end
+
+  it "keeps what is typed in the same message as the `:`" do
+    app, _ = started
+    run(app, app.update(Tea::KeyMsg.new(":so", "runes", -1, ":so")))
+    app.command_line.value.should eq("so")
+  end
+
+  it "completes with Tab and keeps a history" do
+    dir = File.tempname("tui-history")
+    file = File.join(dir, "history")
+    begin
+      app, _ = started
+      app.history_file = file
+      press(app, ":")
+      type(app, "so")
+      press(app, "tab")
+      app.command_line.value.should eq("sort ")
+      type(app, "a")
+      press(app, "tab")
+      # "author" and "added" (in the order of the sorts): nothing in common
+      # past "a", so it cycles
+      app.command_line.value.should eq("sort author")
+      screen(app).should contain("added")
+      press(app, "tab")
+      app.command_line.value.should eq("sort added")
+      press(app, "enter")
+      app.query.sort.should eq("added")
+      press(app, ":", "up")
+      app.command_line.value.should eq("sort added")
+      press(app, "esc")
+      File.read(file).should eq("sort added\n")
+      Tui::CommandLine.new(file).history.should eq(["sort added"])
+    ensure
+      FileUtils.rm_rf(dir)
+    end
+  end
+
+  it "edits a book in the form, with completion and conflicts" do
+    app, source = started
+    id = app.rows[0].not_nil!.id
+    press(app, "e")
+    form = app.form.not_nil!
+    screen(app).should contain("Bearbeiten: Dune 150")
+    type(app, " II")
+    # down to the tags: authors, series, volume, category, tags
+    5.times { press(app, "down") }
+    form.fields[form.focus].key.should eq("tags")
+    type(app, ", lese")
+    press(app, "tab")
+    form.value("tags").should eq("sf, leseliste")
+    source.conflict_next = true
+    press(app, "ctrl+s")
+    last_write(source).should eq({"PATCH #{id}", JSON.parse(%({"title":"Dune 150 II","tags":["sf","leseliste"],"lastModified":"v0"}))})
+    screen(app).should contain("inzwischen geändert")
+    screen(app).should contain("Changed meanwhile")
+    press(app, "m")
+    press(app, "ctrl+s")
+    last_write(source).should eq({"PATCH #{id}", JSON.parse(%({"title":"Dune 150 II","tags":["sf","leseliste"],"lastModified":"v1"}))})
+    app.form.should be_nil
+    app.rows[0].not_nil!.title.should eq("Dune 150 II")
+    screen(app).should contain("Gespeichert")
+  end
+
+  it "asks before dropping changes in the form" do
+    app, source = started
+    press(app, "e")
+    press(app, "esc")
+    app.form.should be_nil
+    press(app, "e")
+    type(app, "x")
+    press(app, "esc")
+    screen(app).should contain("Änderungen verwerfen? [j/N]")
+    press(app, "n")
+    app.form.should_not be_nil
+    press(app, "esc", "j")
+    app.form.should be_nil
+    source.writes.should be_empty
+  end
+end
+
+describe "Tui markdown back to HTML" do
+  it "writes what from_html reads" do
+    html = "<p>One <b>bold</b> and <i>it</i> &amp; more.<br>Next</p><ul><li>a</li><li>b</li></ul><h2>Head</h2>"
+    md = Tui::Markdown.from_html(html)
+    Tui::Markdown.to_html(md).should eq(html)
+    Tui::Markdown.to_html("a \\* b").should eq("<p>a * b</p>")
   end
 end

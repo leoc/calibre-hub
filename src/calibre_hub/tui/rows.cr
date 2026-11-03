@@ -68,6 +68,24 @@ module CalibreHub
         @loading.delete(page) if generation == @generation
       end
 
+      # A changed book in place of the loaded one (same id); false if it
+      # isn't loaded
+      def replace(book : Book) : Bool
+        @pages.each_value do |books|
+          books.each_with_index do |b, i|
+            next unless b.id == book.id
+            books[i] = book
+            return true
+          end
+        end
+        false
+      end
+
+      # all loaded books
+      def loaded_books : Array(Book)
+        @pages.values.flatten
+      end
+
       # index of a book among the loaded rows
       def index_of(id : Int64) : Int32?
         @pages.each do |p, books|
