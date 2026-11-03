@@ -296,8 +296,8 @@ module CalibreHub
     def lookup(book : Book, guesses : Array(Meta::Guess), info : Meta::FileMeta::Info?, q : String? = nil) : {Array(Meta::Candidate), Bool}
       trusted = [book.identifiers["isbn"]?.try { |i| Meta::Isbn.normalize(i) }, info.try(&.record.isbn)].compact.uniq
       isbns = (trusted + (info.try(&.isbns.first(3)) || [] of String)).uniq.first(4)
-      languages = Meta::Lang.known(book.languages).presence ||
-                  Meta::Lang.known(info.try(&.record.languages) || [] of String)
+      languages = Meta::Lang.known(book.languages)
+      languages = Meta::Lang.known(info.try(&.record.languages) || [] of String) if languages.empty?
       title = guesses.first?.try(&.title).presence || book.title
       check = ->(list : Array(Meta::Candidate)) do
         list.reject do |c|
@@ -362,7 +362,7 @@ module CalibreHub
       out = [] of Meta::Candidate
       g = gs.first
       if g.title != book.title || (g.authors != book.authors && !g.authors.empty?) || g.series
-        r = Meta::Record.new(title: g.title, authors: g.authors.presence, series: g.series, series_index: g.series_index)
+        r = Meta::Record.new(title: g.title, authors: g.authors.empty? ? nil : g.authors, series: g.series, series_index: g.series_index)
         out << Meta::Candidate.new(g.source, r).tap { |c| c.score = 1.0 }
       end
       if info

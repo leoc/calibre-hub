@@ -360,7 +360,7 @@ module CalibreHub
     # for a German-looking title, else English), like the metadata source
     def self.search_match(data : JSON::Any, q : Meta::Query, ids : Array(Int64)) : Match?
       books = data["books"]?.try(&.as_a?) || return nil
-      wanted = q.languages.presence || (Meta::Lang.german_title?(q.title) ? ["deu"] : ["eng"])
+      wanted = q.languages.empty? ? (Meta::Lang.german_title?(q.title) ? ["deu"] : ["eng"]) : q.languages
       books = books.sort_by { |b| ids.index(int(b, "id") || 0_i64) || ids.size }
       books.each do |b|
         id = int(b, "id") || next

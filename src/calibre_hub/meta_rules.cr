@@ -3,13 +3,6 @@ require "json"
 require "uri"
 require "./book"
 
-class Array(T)
-  # nil when empty, like String#presence
-  def presence : self?
-    empty? ? nil : self
-  end
-end
-
 module CalibreHub
   # Rules of the metadata cleanup (metadata.cr): cleaning names that came
   # from file names, ISBNs, matching candidates from online sources and
@@ -746,7 +739,7 @@ module CalibreHub
         return nil if (bi = c.by_isbn) && own_isbns.includes?(bi)
         langs = Lang.effective(languages, title)
         return "translation" if c.translation && !langs.includes?("deu")
-        if !langs.empty? && (l = c.fields.languages.try(&.presence)) && (l & langs).empty?
+        if !langs.empty? && (l = c.fields.languages) && !l.empty? && (l & langs).empty?
           return "language"
         end
         if (v = c.volume) && (mine = Text.volume(title)) && v != mine
@@ -857,12 +850,13 @@ module CalibreHub
         # with the same title), never a source for this book
         # A match by the book's own ISBN is this edition and may correct the
         # language.
-        known_langs = Lang.known(book.languages).presence || file.try(&.languages).try { |l| Lang.known(l).presence }
+        known_langs = Lang.known(book.languages)
+        known_langs = file.try(&.languages).try { |l| Lang.known(l) } || [] of String if known_langs.empty?
         own_isbns = [book.identifiers["isbn"]?, file.try(&.isbn)].compact.compact_map { |i| Isbn.normalize(i) }
-        if known_langs
+        unless known_langs.empty?
           candidates = candidates.reject do |c|
             next false if (bi = c.by_isbn) && own_isbns.includes?(bi)
-            (l = c.fields.languages.try(&.presence)) && (l & known_langs).empty?
+            (l = c.fields.languages) && !l.empty? && (l & known_langs).empty?
           end
         end
         accepted = candidates.select { |c| c.sure || c.score >= ACCEPT }
@@ -960,7 +954,7 @@ module CalibreHub
         # "(1974, Tonos)" the rules took from the title
         fill(book, file, accepted, "publisher", set, guess.try(&.publisher)) { |r, c| c.nil? || c.edition ? r.publisher : nil }
         fill(book, file, accepted, "pubdate", set, guess.try(&.pubdate)) { |r, c| c.nil? || c.edition ? r.pubdate : nil }
-        fill(book, file, accepted, "languages", set) { |r, _| r.languages.try { |l| Lang.known(l).presence } }
+        fill(book, file, accepted, "languages", set) { |r, _| r.languages.try { |l| Lang.known(l) }.try { |l| l unless l.empty? } }
         fill(book, file, accepted, "comments", set, replace: false) { |r, _| r.comments.presence }
         if book.series.nil? && changes.none? { |c| c.field == "series" }
           src = file.try { |f| f.series ? {f, "file"} : nil } || ordered(accepted, "series").find(&.fields.series).try { |c| {c.fields, c.source} }

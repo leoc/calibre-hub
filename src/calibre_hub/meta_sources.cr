@@ -88,7 +88,7 @@ module CalibreHub
           isbn: isbn,
           publisher: dc.call("publisher").first?,
           pubdate: dc.call("date").first?.try { |d| Dates.normalize(d) },
-          languages: Lang.list(dc.call("language")).presence,
+          languages: Lang.list(dc.call("language")).try { |l| l unless l.empty? },
           comments: dc.call("description").first?,
           series: series,
           series_index: series ? index : nil,
@@ -254,7 +254,7 @@ module CalibreHub
         key = c.ref || return
         if key.starts_with?("/books/")
           edition = @http.get("#{@base}#{key}.json").try { |b| JSON.parse(b) } || return
-          c.fields.languages ||= Lang.list(edition["languages"]?.try(&.as_a.compact_map { |l| l["key"]?.try(&.as_s?).try(&.split('/').last) }) || [] of String).presence
+          c.fields.languages ||= Lang.list(edition["languages"]?.try(&.as_a.compact_map { |l| l["key"]?.try(&.as_s?).try(&.split('/').last) }) || [] of String).try { |l| l unless l.empty? }
           c.fields.series ||= edition["series"]?.try(&.as_a.first?).try(&.as_s?).try { |s| s.sub(/\s*[;,]?\s*(?:no\.|nr\.|#|band|bd\.)?\s*\d+\s*\z/i, "").strip.presence }
           key = edition["works"]?.try(&.as_a.first?).try(&.["key"]?).try(&.as_s?) || return
         end
@@ -270,7 +270,7 @@ module CalibreHub
           cover = b["cover"]?.try(&.["large"]?).try(&.as_s?).try { |u| cover_url(u, covers) }
           r = Record.new(
             title: b["title"]?.try(&.as_s?).try { |t| Text.main_title(t) },
-            authors: b["authors"]?.try(&.as_a.compact_map { |a| a["name"]?.try(&.as_s?) }).presence,
+            authors: b["authors"]?.try(&.as_a.compact_map { |a| a["name"]?.try(&.as_s?) }).try { |l| l unless l.empty? },
             isbn: found,
             publisher: b["publishers"]?.try(&.as_a.first?).try(&.["name"]?).try(&.as_s?),
             pubdate: b["publish_date"]?.try(&.as_s?).try { |d| Dates.normalize(d) },
@@ -289,7 +289,7 @@ module CalibreHub
           languages = Lang.list(strings.call("language"))
           r = Record.new(
             title: d["title"]?.try(&.as_s?).try { |t| Text.main_title(t) },
-            authors: strings.call("author_name").presence,
+            authors: strings.call("author_name").try { |l| l unless l.empty? },
             # a work has many editions: their ISBN and publisher only when there is one
             isbn: isbns.size == 1 ? isbns.first : nil,
             publisher: publishers.size == 1 ? publishers.first : nil,
@@ -394,11 +394,11 @@ module CalibreHub
           id = rec.xpath_string("string(*[local-name()='controlfield'][@tag='001'])").presence
           r = Record.new(
             title: title,
-            authors: authors.map { |a| Clean.invert(a) }.uniq.presence,
+            authors: authors.map { |a| Clean.invert(a) }.uniq.try { |l| l unless l.empty? },
             isbn: sub.call("020", "a").compact_map { |i| Isbn.normalize(i) }.first?,
             publisher: publisher,
             pubdate: year,
-            languages: languages.presence,
+            languages: languages.empty? ? nil : languages,
             comments: sub.call("520", "a").first?.try { |s| "<p>#{HTML.escape(s)}</p>" },
             series: series,
             series_index: series ? index : nil,
@@ -571,7 +571,7 @@ module CalibreHub
       # it is: the only one, or the only one of the book's publisher.
       def self.parse_books(data : JSON::Any, q : Query, ids : Array(Int64)) : Array(Candidate)
         books = data["books"]?.try(&.as_a?) || return [] of Candidate
-        wanted = q.languages.presence || (Lang.german_title?(q.title) ? ["deu"] : ["eng"])
+        wanted = q.languages.empty? ? (Lang.german_title?(q.title) ? ["deu"] : ["eng"]) : q.languages
         books = books.sort_by { |b| ids.index(b["id"]?.try(&.as_i64?) || 0_i64) || ids.size }
         books.compact_map do |b|
           editions = b["editions"]?.try(&.as_a?) || [] of JSON::Any
@@ -594,12 +594,12 @@ module CalibreHub
         Record.new(
           title: title.try { |t| Text.main_title(t) },
           subtitle: str(book, "subtitle"),
-          authors: authors(book).presence,
+          authors: authors(book).try { |l| l unless l.empty? },
           isbn: isbn(edition),
           publisher: publisher(edition),
           # "2021-01-01" stands for an edition of 2021
           pubdate: str(edition, "release_date").try { |d| Dates.normalize(d) }.try { |d| d.ends_with?("-01-01") ? d[0, 4] : d },
-          languages: edition_languages(edition).presence,
+          languages: edition_languages(edition).try { |l| l unless l.empty? },
           comments: str(book, "description").try { |d| description(d) },
           series: series.try { |s| s["series"]?.try { |x| str(x, "name") } },
           series_index: series.try { |s| s["position"]?.try { |p| p.as_f? || p.as_i64?.try(&.to_f) } },
