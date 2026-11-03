@@ -12,6 +12,7 @@ require "./calibre_hub/inbox"
 require "./calibre_hub/handlers/leseliste"
 require "./calibre_hub/frontend"
 require "./calibre_hub/security_headers"
+require "./calibre_hub/body_limit"
 require "./calibre_hub/cli"
 require "./calibre_hub/hardcover_sync"
 require "./calibre_hub/backlog_jobs"
@@ -430,6 +431,8 @@ module CalibreHub
     auth_handler = AuthHandler.new(auth, config.trusted_proxies)
     use SecurityHeadersHandler.new
     use UnavailableHandler.new
+    # before the frontend and the login (AuthHandler reads list bodies)
+    use BodyLimitHandler.new
     config.frontend.try { |dir| use FrontendHandler.new(dir) }
     use auth_handler
     writer = Writer.new(calibre, detector, wake, config.category_column)
