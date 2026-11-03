@@ -548,21 +548,24 @@ describe "hub import" do
   end
 
   it "plans and applies the repair of plain-file imports" do
-    change = {bookId: 1827, file: "/srv/backlog/Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu",
-              field: "title", old: "Carr", new: "Formulas and Theorems in Pure Mathematics"}
+    entry = {bookId: 1827, file: "/srv/backlog/Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu",
+             decided: "name", status: "pending",
+             changes: [{field: "title", old: "Carr", new: "Formulas and Theorems in Pure Mathematics"}]}
     with_stub do |s|
-      s.on("POST", "/api/import/repair", {dryRun: true, books: 1, total: 1, changes: [change]})
-      s.on("POST", "/api/import/repair", {dryRun: false, books: 1, total: 1, changes: [change], job: {id: "r1"}})
+      s.on("POST", "/api/import/repair", {dryRun: true, books: 1, job: {id: "p1"}})
+      s.on("POST", "/api/import/repair", {dryRun: false, books: 1, job: {id: "r1"}})
+      s.on("GET", "/api/jobs/p1", {id: "p1", status: "done", done: 1, total: 1, errors: [] of String})
       s.on("GET", "/api/jobs/r1", {id: "r1", status: "done", done: 1, total: 1, errors: [] of String})
+      s.on("GET", "/api/import/repair", {entries: [entry], books: [] of String, counts: {pending: 1}})
       code, stdo, _ = cli(s, "import", "repair", "--min-id", "1153")
       code.should eq(0)
-      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"minId":1153,"dryRun":true})))
+      JSON.parse(s.requests.select(&.method.==("POST")).last.body).should eq(JSON.parse(%({"minId":1153,"dryRun":true})))
       stdo.should contain("Formulas and Theorems in Pure Mathematics")
-      stdo.should contain("1 books, 1 changes, dry run")
+      stdo.should contain("1 books, 1 changes to review")
       code, stdo, _ = cli(s, "import", "repair", "--apply")
       code.should eq(0)
       JSON.parse(s.requests.select(&.method.==("POST")).last.body).should eq(JSON.parse(%({"dryRun":false})))
-      stdo.should contain("repair: done, 1 books")
+      stdo.should contain("repair: done, 1 books checked")
     end
   end
 end

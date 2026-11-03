@@ -6,6 +6,7 @@ import { buttonVariants } from "@/components/ui/button"
 import { ErrorMessage } from "@/components/error-view"
 import { LibraryLink } from "@/components/library-link"
 import { ImportOverview } from "@/components/backlog-import"
+import { ImportRepair } from "@/components/import-repair"
 
 // The backlog import live: phase, the whole backlog, the running run with
 // rates and ETA, the hooks' followup and the runs (polled while active)
@@ -27,7 +28,10 @@ export function ImportPage() {
       ) : !data.enabled && data.cleanups.length === 0 ? (
         <p className="py-12 text-center text-lg">{t("import.off")}</p>
       ) : (
-        <ImportOverview status={data} />
+        <>
+          <ImportOverview status={data} />
+          {data.enabled && <ImportRepair />}
+        </>
       )}
     </div>
   )

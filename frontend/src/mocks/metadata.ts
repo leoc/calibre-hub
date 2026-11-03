@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Book, Job, MetadataCandidate, MetadataChange, MetadataField, MetadataSource, MetadataStatus, MetadataTarget } from "@/lib/api"
+import type { Book, ImportRepairEntry, Job, MetadataCandidate, MetadataChange, MetadataField, MetadataSource, MetadataStatus, MetadataTarget } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 
 // Metadata cleanup of the mock hub: a few changed books from the start (a
@@ -141,11 +141,69 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
   }
 
   let importPolls = 0
+  const [r1, r2, r3] = books
+  let repair: ImportRepairEntry[] = [
+    { bookId: r1.id, file: "/srv/media/ebooks/backlog/Defaults/Algebra/Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu",
+      decided: "name", status: "pending", at: "2026-11-03T12:00:00Z",
+      changes: [
+        { field: "title", old: r1.title, new: "Formulas and Theorems in Pure Mathematics" },
+        { field: "authors", old: r1.authors, new: ["Carr"] },
+        { field: "publisher", old: null, new: "Chelsea" },
+        { field: "pubdate", old: null, new: "1970" },
+      ] },
+    { bookId: r2.id, file: "/srv/media/ebooks/backlog/fiction.science/Herbert - Dune.mobi", decided: "hardcover", status: "pending",
+      at: "2026-11-03T12:00:00Z", changes: [{ field: "title", old: r2.title, new: "Dune" }, { field: "authors", old: r2.authors, new: ["Herbert"] }] },
+    { bookId: r3.id, file: "/srv/media/ebooks/backlog/Defaults/Wine Tasting - A Professional Handbook.pdf", decided: "unsure", status: "pending",
+      at: "2026-11-03T12:00:00Z", changes: [{ field: "tags", old: [], new: ["auto-unsicher"] }] },
+  ]
+  const repairCounts = { applied: 0, rejected: 0, failed: 0 }
+  let repairJob: Job | null = null
 
   return [
     // the backlog import: a running import of 500 books (5 more each time
     // it is polled), a dry run walking another folder, a finished import,
     // a dry run and a cleanup
+    // the repair of plain-file imports: three proposals (a name, a source
+    // and an unsure one); accept applies title and authors, reject drops
+    http.get("/api/import/repair", () => {
+      const ids = repair.map((e) => e.bookId)
+      return HttpResponse.json({
+        entries: repair,
+        books: books.filter((b) => ids.includes(b.id)),
+        counts: { ...repairCounts, pending: repair.length },
+        job: repairJob,
+        unsureTag: "auto-unsicher",
+      })
+    }),
+    http.post("/api/import/repair", () => {
+      repairJob = { status: "done", done: 3, total: 3, errors: [] }
+      return HttpResponse.json({ dryRun: true, books: 3, job: { id: "repair-plan", ...repairJob } }, { status: 202 })
+    }),
+    http.post("/api/import/repair/accept", async ({ request }) => {
+      const body = (await request.json()) as { bookIds?: number[]; all?: boolean }
+      const take = repair.filter((e) => body.all || body.bookIds?.includes(e.bookId))
+      for (const e of take) {
+        const b = books.find((x) => x.id === e.bookId)
+        if (!b) continue
+        for (const c of e.changes) {
+          if (c.field === "title") b.title = String(c.new)
+          if (c.field === "authors") b.authors = c.new as string[]
+          if (c.field === "tags") b.tags = c.new as string[]
+        }
+        touch(b)
+      }
+      repair = repair.filter((e) => !take.includes(e))
+      repairCounts.applied += take.length
+      repairJob = { status: "done", done: take.length, total: take.length, errors: [] }
+      return HttpResponse.json({ books: take.length, job: { id: "repair-apply", ...repairJob } }, { status: 202 })
+    }),
+    http.post("/api/import/repair/reject", async ({ request }) => {
+      const body = (await request.json()) as { bookIds?: number[]; all?: boolean }
+      const before = repair.length
+      repair = repair.filter((e) => !(body.all || body.bookIds?.includes(e.bookId)))
+      repairCounts.rejected += before - repair.length
+      return HttpResponse.json({ rejected: before - repair.length })
+    }),
     http.get("/api/import", () => {
       importPolls += 1
       const done = Math.min(260 + importPolls * 5, 500)

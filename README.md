@@ -92,7 +92,9 @@ log in.
 | `GET /api/import/runs/:id`, `GET /api/import/runs/:id/report` | a run (status: scanning, planned, running, done, failed, gone; `phase`: scan, check, import, else the status; `current`: the folder or book it is at; `startedAt`, `scannedAt`, `finishedAt`, `elapsedSeconds`; `filesPerSecond` while scanning, `booksPerMinute`; `etaSeconds` while checking and importing; `done`/`total`, `summary` once scanned, `results` per status: pending, imported, formatAdded, duplicate, failed, deferred; `failures`: the first 20 failed books `{path, detail}`); the report adds every book (`units`: files, plan, status, `bookId`, `match`, `detail`) and every skipped file (`skipped: [{path, reason}]`) |
 | `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see Backlog import); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
 | `GET /api/import/cleanups/:id`, `POST /api/import/cleanups/:id/undo` `{dryRun?}` | a cleanup with its backup; undo puts category and tags back (dry run by default, else 202 with `undoJob`) |
-| `POST /api/import/repair` `{since?, minId?, maxId?, dryRun?}` | title, authors, publisher, year, series of books imported from plain files, from their file names where the book is untouched since the import (see Backlog import); dry run (default): `{dryRun, books, total, changes: [{bookId, file, field, old, new}]}`, else 202 with the same and `job` |
+| `POST /api/import/repair` `{since?, minId?, maxId?, dryRun?}` | plans the repair of books imported from plain files (title, authors, publisher, year, series from their file names where the book is untouched since the import, see Backlog import): 202 `{dryRun, books, job}`; `dryRun: false` accepts every proposal right away |
+| `GET /api/import/repair` | the open proposals `{entries: [{bookId, file, decided, status, at, changes: [{field, old, new}]}], books, counts: {pending, applied, rejected, failed}, job, unsureTag}` |
+| `POST /api/import/repair/accept` `{bookIds \| all: true}`, `POST /api/import/repair/reject` `{bookIds \| all: true}` | accept (202 `{books, job}`, a job that applies them) or reject (`{rejected}`) proposals |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with any hub user |
 | `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
@@ -424,7 +426,16 @@ or tags, and nothing is moved or deleted.
   info dict, an EPUB's OPF) stay, unless the title says nothing ("chap01
   7..24", "100767", "logik-stud.dvi"); publisher, year and series only fill
   empty fields. Standards (`[DIN EN ISO …]`) keep calibre's split for the
-  rules (`Meta::Norms`).
+  rules (`Meta::Norms`). A name that can't be read for sure (a tie of the
+  name score without the folder, or no person on either side) is decided,
+  in this order, by the file's own metadata (an author or the title of one
+  reading), a title and author search at the metadata sources (a sure or
+  very good match, Hardcover, DNB, Open Library as configured), and the
+  model (`metadata.useModel`: it must name the authors of one reading).
+  Still unclear, title and authors stay as calibre read them and the book
+  gets the tag `backlogImport.unsureTag` (default `auto-unsicher`) for a
+  manual review. The report names per book who decided (`decided`: name,
+  folder, file, hardcover, dnb, openlibrary, model, unsure).
 - Book formats: EPUB, KEPUB, AZW3, AZW, MOBI, PRC, AZW4, FB2, FBZ, DOCX, ODT,
   RTF, PDF, DJVU, CHM, CBZ, CBR, CB7, LIT, PDB, TXT. Files below 2 KiB
   (TXT: 20 KiB) or without their format's signature (`%PDF`, `PK`,
@@ -525,11 +536,18 @@ never by a person or an online source. Publisher, year and series only fill
 empty fields. Every change goes to the metadata change log with source
 `rules` (revertible on the Metadaten page or with the revert API, the book
 gets `auto-metadaten`), and the repaired books get a metadata run (target
-ids). The dry run (default) lists the planned changes `{bookId, file, field,
-old, new}`; running it again after an apply finds nothing left.
+ids). Unclear names are decided as on import (the file, the sources, the
+model, else the unsure tag), so the plan is a job. Its proposals (per
+book: the fields old and new, who decided) are reviewed on the import page
+("Reparatur": accept single books, the selected ones or all, reject) or by
+the API, and kept in the state DB (`import_repairs`). Accepting applies a
+proposal only if the book still has the values the plan saw, else that book
+fails ("changed since the plan") and the next plan proposes it anew; books
+accepted or rejected are left out of later plans. `--apply` (`dryRun:
+false`) accepts every proposal right away.
 
 ```sh
-hub import repair --min-id 1153                    # dry run: the planned changes
+hub import repair --min-id 1153                    # plan, then list the proposals
 hub import repair --min-id 1153 --max-id 2000 --apply
 ```
 
@@ -786,7 +804,7 @@ hub upload dune.pdf --add-format-to 12
 hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
 hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
 hub import alt                           # backlog import: dry run, --apply imports, --limit N a portion
-hub import repair --min-id 1153          # names of plain-file imports read again: dry run, --apply changes
+hub import repair --min-id 1153          # names of plain-file imports read again: proposals, --apply accepts them
 ```
 
 Every command has `--help` and `--json` (the API's JSON; on errors

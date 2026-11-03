@@ -741,8 +741,10 @@ describe CalibreHub::ImportRepair do
       sowell = File.join(dir, "Sowell - Applied Economics.pdf")
       jung = File.join(dir, "Jungnickel - Graphs, Networks and Algorithms 3e (Springer, 2008).pdf")
       edited = File.join(dir, "Brass - Advanced Data Structures (Cambridge, 2008).pdf")
+      wine = File.join(dir, "Wine Tasting - A Professional Handbook.pdf")
+      dune = File.join(dir, "Herbert - Dune.pdf")
       opf_book = File.join(root, "Old", "Book (3)", "book.pdf")
-      [carr, duffy, sowell, jung, edited, opf_book].each { |p| write(p, pdf(p)) }
+      [carr, duffy, sowell, jung, edited, wine, dune, opf_book].each { |p| write(p, pdf(p)) }
       write(File.join(File.dirname(opf_book), "metadata.opf"), OPF_XML)
       fake = FakeCalibre.new
       # as calibre's add-book left them
@@ -756,10 +758,14 @@ describe CalibreHub::ImportRepair do
       # someone set the authors by hand
       fake.add(205, "Brass", ["Peter Brass"], ["PDF"])
       fake.add(206, "Brass", ["Peter Brass"], ["PDF"])
+      # no person on either side: unclear, nobody decides
+      fake.add(207, "Wine Tasting", ["A Professional Handbook"], ["PDF"])
+      # a tie of two names: the decider (the sources) says Herbert
+      fake.add(208, "Herbert", ["Dune"], ["PDF"])
       db = state_db
       db.exec "create table if not exists meta (key text primary key, value text)"
       CalibreHub::ImportJobs.migrate(db)
-      {carr => 201, duffy => 202, sowell => 203, jung => 204, edited => 205, opf_book => 206}.each do |path, id|
+      {carr => 201, duffy => 202, sowell => 203, jung => 204, edited => 205, opf_book => 206, wine => 207, dune => 208}.each do |path, id|
         db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', ?, 'r', 100)", path, id.to_i64
       end
       db.exec "insert into events (type, book_id, payload, created_at) values ('added', 203, ?, 100)",
@@ -771,50 +777,85 @@ describe CalibreHub::ImportRepair do
         JSON.parse(%(["Networks Graphs", "Algorithms 3e (Springer, 2008)"])), "rules", "meta1")
       metadata = CalibreHub::Metadata.new(calibre, writer, log, [] of String, nil, nil, CalibreHub::Meta::Http.new(Time::Span.zero))
       repair = CalibreHub::ImportRepair.new(db, calibre, writer, log)
+      asked = [] of String
+      repair.decider = ->(_b : CalibreHub::Book, name : String, readings : Array(CalibreHub::Meta::Guess)) do
+        asked << name
+        readings.find { |r| r.authors == ["Herbert"] }.try { |r| {r, "hardcover"} }
+      end
 
-      dry = repair.submit_repair({"minId" => JSON::Any.new(200_i64)}, true)
-      changes = dry["changes"].as_a.map { |c| {c["bookId"].as_i64, c["field"].as_s, c["new"]} }
-      changes.select { |c| c[0] == 201 }.map { |c| {c[1], c[2]} }.should eq [
+      planned = repair.submit_repair({"minId" => JSON::Any.new(200_i64)}, true)
+      # the calibre folder's book is not planned
+      planned["books"].should eq 7
+      wait_job(repair, planned["job"]["id"].as_s).status.should eq "done"
+      review = repair.review
+      entries = review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
+      fields = ->(id : Int32) { entries[id.to_i64]["changes"].as_a.map(&.["field"].as_s) }
+      entries[201_i64]["changes"].as_a.map { |c| {c["field"].as_s, c["new"]} }.should eq [
         {"title", JSON::Any.new("Formulas and Theorems in Pure Mathematics")}, {"authors", JSON.parse(%(["Carr"]))},
         {"authorSort", JSON::Any.new("Carr")}, {"publisher", JSON::Any.new("Chelsea")}, {"pubdate", JSON::Any.new("1970")},
       ]
-      changes.select { |c| c[0] == 202 }.map(&.[1]).should eq ["authors", "authorSort", "pubdate"]
-      changes.select { |c| c[0] == 203 }.map(&.[1]).should eq ["title", "authors", "authorSort"]
-      changes.find! { |c| c[0] == 204 && c[1] == "authors" }[2].should eq JSON.parse(%(["Jungnickel"]))
+      entries[201_i64]["decided"].should eq "name"
+      fields.call(202).should eq ["authors", "authorSort", "pubdate"]
+      fields.call(203).should eq ["title", "authors", "authorSort"]
+      entries[204_i64]["changes"].as_a.find! { |c| c["field"] == "authors" }["new"].should eq JSON.parse(%(["Jungnickel"]))
       # authors by hand: they stay, calibre's title goes; a calibre folder's book is left alone
-      changes.select { |c| c[0] == 205 }.map(&.[1]).should eq ["title", "publisher", "pubdate"]
-      changes.none? { |c| c[0] == 206 }.should be_true
-      dry["dryRun"].should eq true
+      fields.call(205).should eq ["title", "publisher", "pubdate"]
+      entries.has_key?(206_i64).should be_false
+      # unclear and undecided: names stay, the tag for a review
+      fields.call(207).should eq ["tags"]
+      entries[207_i64]["decided"].should eq "unsure"
+      entries[207_i64]["changes"][0]["new"].should eq JSON.parse(%(["auto-unsicher"]))
+      entries[208_i64]["decided"].should eq "hardcover"
+      fields.call(208).should eq ["title", "authors", "authorSort"]
+      asked.map { |n| File.basename(n) }.sort.should eq ["Herbert - Dune.pdf", "Wine Tasting - A Professional Handbook.pdf"]
+      review["counts"]["pending"].should eq 7
+      review["books"].as_a.map(&.["id"].as_i64).sort.should eq [201_i64, 202_i64, 203_i64, 204_i64, 205_i64, 207_i64, 208_i64]
       fake.books[201_i64]["title"].should eq "Carr"
 
-      applied = repair.submit_repair({"minId" => JSON::Any.new(200_i64)}, false)
-      wait_job(repair, applied["job"]["id"].as_s).status.should eq "done"
+      # one book first, one rejected, one changed by hand since the plan
+      accepted = repair.accept([201_i64])
+      wait_job(repair, accepted["job"]["id"].as_s).status.should eq "done"
       fake.books[201_i64]["title"].should eq "Formulas and Theorems in Pure Mathematics"
       fake.books[201_i64]["authors"].should eq ["Carr"]
       fake.books[201_i64]["publisher"].should eq "Chelsea"
-      fake.books[202_i64]["title"].should eq "Advanced Engineering Mathematics"
+      fake.books[202_i64]["authors"].should eq ["Advanced Engineering Mathematics (1998)"]
+      repair.reject([205_i64]).should eq 1
+      fake.books[203_i64]["authors"] = JSON.parse(%(["Thomas Sowell"]))
+      all = repair.accept(nil)
+      job = wait_job(repair, all["job"]["id"].as_s)
+      job.errors.map(&.[:bookId]).should eq [203_i64]
       fake.books[202_i64]["authors"].should eq ["Duffy"]
-      fake.books[203_i64]["title"].should eq "Applied Economics"
-      fake.books[203_i64]["authors"].should eq ["Sowell"]
+      fake.books[203_i64]["title"].should eq "100767"
       fake.books[204_i64]["authors"].should eq ["Jungnickel"]
-      fake.books[205_i64]["authors"].should eq ["Peter Brass"]
-      fake.books[205_i64]["title"].should eq "Advanced Data Structures"
+      fake.books[205_i64]["title"].should eq "Brass"
+      fake.books[207_i64]["tags"].should eq ["auto-unsicher", "auto-metadaten"]
+      fake.books[207_i64]["title"].should eq "Wine Tasting"
+      fake.books[208_i64]["authors"].should eq ["Herbert"]
+      fake.books[208_i64]["title"].should eq "Dune"
       fake.books[201_i64]["tags"].should eq ["auto-metadaten"]
-      entries = log.list(201_i64)
-      entries.map(&.source).uniq.should eq ["rules"]
-      entries.map(&.job_id).uniq.should eq [applied["job"]["id"].as_s]
-      log.books(applied["job"]["id"].as_s).should eq [201_i64, 202_i64, 203_i64, 204_i64, 205_i64]
-      # again: nothing left to do
-      repair.submit_repair({"minId" => JSON::Any.new(200_i64)}, true)["total"].should eq 0
+      repair.review["counts"].as_h.transform_values(&.as_i).should eq({"applied" => 5, "rejected" => 1, "failed" => 1})
+      changes = log.list(201_i64)
+      changes.map(&.source).uniq.should eq ["rules"]
+      changes.map(&.job_id).uniq.should eq [accepted["job"]["id"].as_s]
+      # again: accepted and rejected books are left out, nothing new
+      again = repair.submit_repair({"minId" => JSON::Any.new(200_i64)}, true)
+      again["books"].should eq 1
+      wait_job(repair, again["job"]["id"].as_s)
+      # the failed one again, without the authors set by hand since
+      left = repair.review["entries"].as_a
+      left.map { |e| {e["bookId"].as_i64, e["changes"].as_a.map(&.["field"].as_s)} }.should eq [{203_i64, ["title"]}]
 
       # revertible like any metadata change
-      title = entries.find! { |e| e.field == "title" }
+      title = changes.find! { |e| e.field == "title" }
       metadata.revert(title.id)
       fake.books[201_i64]["title"].should eq "Carr"
+      tag = log.list(207_i64).find! { |e| e.field == "tags" }
+      metadata.revert(tag.id)
+      fake.books[207_i64]["tags"].should eq [] of String
     end
   end
 
-  it "queues a metadata run for the repaired books" do
+  it "plans and applies at once, then queues a metadata run for the repaired books" do
     tmpdir do |root|
       path = File.join(root, "Duffy - Advanced Engineering Mathematics (1998).pdf")
       write(path, pdf)
@@ -833,6 +874,7 @@ describe CalibreHub::ImportRepair do
       repair.metadata = metadata_jobs
       applied = repair.submit_repair({"since" => JSON::Any.new(Time.unix(50).to_rfc3339)}, false)
       wait_job(repair, applied["job"]["id"].as_s).status.should eq "done"
+      fake.books[301_i64]["authors"].should eq ["Duffy"]
       run, _ = metadata_jobs.last.not_nil!
       run.ids.should eq [301_i64]
       metadata_jobs.target(run).should eq "ids"

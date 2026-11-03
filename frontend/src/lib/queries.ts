@@ -85,6 +85,14 @@ export const importStatusQuery = queryOptions({
   },
 })
 
+// the repair's open proposals; polls while its plan or accept job runs
+export const importRepairQuery = queryOptions({
+  queryKey: ["import-repair"],
+  queryFn: api.importRepair,
+  staleTime: 10_000,
+  refetchInterval: (q) => (q.state.data?.job?.status === "running" ? 2000 : false),
+})
+
 export const metadataChangesQuery =(query: MetadataChangesQuery = {}) =>
   queryOptions({
     queryKey: ["metadata-changes", query],

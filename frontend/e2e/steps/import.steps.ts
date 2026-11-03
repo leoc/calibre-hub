@@ -92,3 +92,31 @@ Then("the page doesn't scroll sideways", async ({ page }) => {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(0)
 })
+
+// the repair of plain-file imports (src/components/import-repair.tsx)
+const repair = (page: Page) => region(page, "Reparatur")
+const proposals = (page: Page) => repair(page).getByRole("list", { name: "Reparatur" }).getByRole("listitem")
+
+Then("the repair proposes {string} decided by {string}", async ({ page }, title: string, by: string) => {
+  const item = proposals(page).filter({ hasText: `→ ${title}` })
+  await expect(item).toHaveCount(1)
+  await expect(item.getByText(`entschieden von: ${by}`)).toBeVisible()
+})
+
+Then("the repair lists a book decided by {string}", async ({ page }, by: string) => {
+  await expect(proposals(page).filter({ hasText: `entschieden von: ${by}` })).toHaveCount(1)
+})
+
+When("I accept the repair of the first proposal", async ({ page }) => {
+  await proposals(page).first().getByRole("button", { name: "Übernehmen", exact: true }).click()
+})
+
+When("I select the first proposal and reject the selected ones", async ({ page }) => {
+  await proposals(page).first().getByRole("checkbox").check()
+  await repair(page).getByRole("button", { name: /^Ausgewählte ablehnen/ }).click()
+})
+
+Then("the repair has {int} open proposals and {string}", async ({ page }, count: number, text: string) => {
+  await expect(proposals(page)).toHaveCount(count)
+  await expect(repair(page).getByRole("status")).toContainText(text)
+})

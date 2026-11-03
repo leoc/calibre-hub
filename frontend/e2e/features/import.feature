@@ -34,6 +34,16 @@ Feature: Import progress
     Then the runs list a finished import that took "Dauer 1 Std. 02 Min. · 20,2 Bücher/min"
     And the runs link 3 reports
 
+  Scenario: The repair of plain-file imports is reviewed book by book
+    When I open the import page
+    Then the repair proposes "Formulas and Theorems in Pure Mathematics" decided by "Dateiname"
+    And the repair proposes "Dune" decided by "Hardcover"
+    And the repair lists a book decided by "unsicher, Tag auto-unsicher zur Prüfung"
+    When I accept the repair of the first proposal
+    Then the repair has 2 open proposals and "1 übernommen"
+    When I select the first proposal and reject the selected ones
+    Then the repair has 1 open proposals and "1 abgelehnt"
+
   @narrow
   Scenario: On a phone the page fits the screen
     When I open the import page from the menu

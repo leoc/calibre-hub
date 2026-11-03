@@ -246,6 +246,28 @@ export interface ImportCleanup {
   undoJob: Job | null
 }
 
+// The repair of books imported from plain files (POST /api/import/repair
+// plans, GET lists the open proposals): per book the fields the file name
+// gives, and who decided an unclear name
+export interface ImportRepairEntry {
+  bookId: number
+  file: string
+  // name, folder, file, hardcover, dnb, openlibrary, model, unsure
+  decided: string | null
+  status: "pending" | "applied" | "rejected" | "failed"
+  at: string
+  changes: { field: string; old: unknown; new: unknown }[]
+}
+
+export interface ImportRepairReview {
+  entries: ImportRepairEntry[]
+  books: Book[]
+  counts: Partial<Record<ImportRepairEntry["status"], number>>
+  // the latest plan or accept job
+  job: Job | null
+  unsureTag: string
+}
+
 export interface ImportStatus {
   enabled: boolean
   roots?: string[]
@@ -417,6 +439,7 @@ export const api = {
   classifyStatus: () => request<ClassifyStatus>("/api/classify/status"),
   metadataStatus: () => request<MetadataStatus>("/api/metadata/status"),
   importStatus: () => request<ImportStatus>("/api/import"),
+  importRepair: () => request<ImportRepairReview>("/api/import/repair"),
   metadataChanges: (query: MetadataChangesQuery = {}) =>
     request<{ changes: MetadataChange[]; books: Book[] }>(`/api/metadata/changes?${new URLSearchParams(Object.entries(query).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])))}`),
   // q: own search text instead of the book's title and author
@@ -557,6 +580,13 @@ export interface PrivateTagsChange {
 }
 
 export const write = {
+  // the repair of plain-file imports: plan (a job), then accept or reject
+  // proposals (bookIds, or all)
+  planImportRepair: () => request<{ dryRun: boolean; books: number; job: Job }>("/api/import/repair", { method: "POST", ...json({ dryRun: true }) }),
+  acceptImportRepair: (bookIds?: number[]) =>
+    request<{ books: number; job: Job }>("/api/import/repair/accept", { method: "POST", ...json(bookIds ? { bookIds } : { all: true }) }),
+  rejectImportRepair: (bookIds?: number[]) =>
+    request<{ rejected: number }>("/api/import/repair/reject", { method: "POST", ...json(bookIds ? { bookIds } : { all: true }) }),
   // the user's private tags: add and/or remove on books
   privateTags: (target: BulkTarget, change: { add?: string[]; remove?: string[] }) =>
     request<PrivateTagsChange>("/api/private-tags", { method: "POST", ...json({ target, ...change }) }),

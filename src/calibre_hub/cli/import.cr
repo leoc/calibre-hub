@@ -219,21 +219,26 @@ module CalibreHub
         args["max-id"]?.try { |v| body["maxId"] = JSON::Any.new(Runner.id(v)) }
         apply = args.flag?("apply")
         body["dryRun"] = JSON::Any.new(!apply)
+        # the plan is a job (unclear names ask the sources and the model)
         result = client.post("/api/import/repair", body)
-        changes = result["changes"].as_a
-        if apply && (job_id = result["job"]?.try(&.["id"]?).try(&.as_s?))
-          job = wait_job(job_id, result["books"].as_i64)
+        job = wait_job(result["job"]["id"].as_s, result["books"].as_i64)
+        raise Failure.new(SERVER, "repair #{job["status"]}: #{job["error"]? || ""}") unless job["status"]? == "done"
+        if apply
           return @out.puts job.to_json if @json
-          @out.puts "repair: #{job["status"]}, #{job["done"]} books, #{changes.size} changes planned (revert: Metadaten page or POST /api/metadata/changes/revert)"
-          raise Failure.new(SERVER, "") unless job["status"]? == "done"
-        else
-          return @out.puts result.to_json if @json
-          rows = changes.map do |c|
-            [c["bookId"].to_s, c["field"].as_s, Output.value(c["old"]?), Output.value(c["new"]?), File.basename(c["file"].as_s)]
-          end
-          Output.table(@out, ["ID", "Field", "Now", "From the file name", "File"], rows) unless rows.empty?
-          @out.puts "#{result["books"]} books, #{result["total"]} changes#{apply ? "" : ", dry run (--apply changes them)"}"
+          errors = job["errors"]?.try(&.as_a.size) || 0
+          @out.puts "repair: done, #{job["done"]} books checked#{errors > 0 ? ", #{errors} failed" : ""} (revert: Metadaten page or POST /api/metadata/changes/revert)"
+          return
         end
+        review = client.get("/api/import/repair")
+        return @out.puts review.to_json if @json
+        rows = review["entries"].as_a.flat_map do |e|
+          e["changes"].as_a.map do |c|
+            [e["bookId"].to_s, c["field"].as_s, Output.value(c["old"]?), Output.value(c["new"]?),
+             e["decided"]?.try(&.as_s?) || "-", File.basename(e["file"].as_s)]
+          end
+        end
+        Output.table(@out, ["ID", "Field", "Now", "From the file name", "Decided by", "File"], rows) unless rows.empty?
+        @out.puts "#{review["entries"].as_a.size} books, #{rows.size} changes to review (import page; --apply accepts all)"
       end
 
       private def cleanup_entries(entries : Array(JSON::Any))
