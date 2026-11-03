@@ -142,15 +142,20 @@ module CalibreHub
       @db.exec "create table if not exists alerts (key text primary key, at integer not null)"
     end
 
-    # false when the key was sent within the last day
+    # false when the key was sent within the last day, or sending failed
+    # (then the next call tries again instead of keeping quiet for a day)
     def call(key : String, subject : String, text : String, now = Time.utc) : Bool
       last = @db.query_one?("select at from alerts where key = ?", key, as: Int64)
       return false if last && now.to_unix - last < 1.day.total_seconds
-      @db.exec "insert or replace into alerts (key, at) values (?, ?)", key, now.to_unix
       STDERR.puts "alert: #{subject}: #{text}"
       if (cmd = @command) && !cmd.empty?
-        Process.run(cmd[0], cmd[1..] + [subject, text], output: :inherit, error: :inherit)
+        status = Process.run(cmd[0], cmd[1..] + [subject, text], output: :inherit, error: :inherit)
+        unless status.success?
+          STDERR.puts "alert failed: #{cmd[0]} exited with #{status.exit_code}"
+          return false
+        end
       end
+      @db.exec "insert or replace into alerts (key, at) values (?, ?)", key, now.to_unix
       true
     rescue ex : File::Error | IO::Error | DB::Error
       STDERR.puts "alert failed: #{ex.message}"

@@ -1139,6 +1139,30 @@ describe CalibreHub::Meta::Hardcover do
     ok.by_isbn("9780593135648").first.fields.title.should eq("Effortless")
   end
 
+  it "doesn't count an alert whose command failed" do
+    db = DB.open("sqlite3://#{File.tempname("hub-alert", ".sqlite")}?max_pool_size=1")
+    dir = File.tempname("hub-alert")
+    Dir.mkdir(dir)
+    log = File.join(dir, "alerts.log")
+    script = File.join(dir, "alert")
+    # fails until the mail relay is back (a marker file)
+    File.write(script, "#!/bin/sh\ntest -e #{dir}/up || exit 1\necho \"$1\" >> #{log}\n")
+    File.chmod(script, 0o755)
+    alert = CalibreHub::DailyAlert.new(db, [script])
+    alert.call("k", "eins", "t").should be_false
+    File.write(File.join(dir, "up"), "")
+    alert.call("k", "zwei", "t").should be_true
+    alert.call("k", "drei", "t").should be_false
+    File.read_lines(log).should eq(["zwei"])
+    # a command that doesn't exist: not sent either
+    missing = CalibreHub::DailyAlert.new(db, [File.join(dir, "nope")])
+    missing.call("m", "s", "t").should be_false
+    db.query_one?("select at from alerts where key = 'm'", as: Int64).should be_nil
+  ensure
+    db.try &.close
+    dir.try { |d| FileUtils.rm_rf(d) }
+  end
+
   it "warns 14 days before a JWT token expires" do
     sent = [] of {String, String, String}
     alert = ->(k : String, s : String, t : String) { sent << {k, s, t}; nil }
