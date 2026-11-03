@@ -249,7 +249,10 @@ module CalibreHub
     # Only title and authors go to the model. Its answer is used only when
     # every word in it was in the input.
     def ask_model(ollama : Ollama, book : Book) : Meta::Guess?
-      input = "Title: #{book.title}\nAuthors: #{book.authors.join(", ")}"
+      ask_model_input(ollama, "Title: #{book.title}\nAuthors: #{book.authors.join(", ")}")
+    end
+
+    def ask_model_input(ollama : Ollama, input : String) : Meta::Guess?
       schema = JSON.parse({
         type:       "object",
         properties: {
@@ -262,6 +265,43 @@ module CalibreHub
       }.to_json)
       content = ollama.chat([{"role" => "system", "content" => MODEL_SYSTEM}, {"role" => "user", "content" => input}], schema)
       Metadata.model_guess(content, input)
+    end
+
+    # For a file name the backlog import can't read for sure (which side of
+    # " - " is the author, Meta::FileName.readings): a title and author
+    # search at the sources, a sure or very good match (Meta::HIGH) with the
+    # author of one reading decides; then the model, whose answer counts only
+    # when it names the authors of one reading. {reading, source or "model"}
+    def decide(book : Book, name : String, readings : Array(Meta::Guess)) : {Meta::Guess, String}?
+      named = readings.reject(&.authors.empty?)
+      unless named.empty? || providers.empty?
+        candidates, _ = lookup(book, named, nil)
+        candidates.each do |c|
+          next unless c.sure || c.score >= Meta::HIGH
+          theirs = c.fields.authors || next
+          hits = named.select do |r|
+            Meta::Score.authors(r.authors, theirs) >= 0.8 && Meta::Text.similarity(r.title, c.fields.title || "") >= 0.6
+          end
+          return {hits.first, c.source} if hits.size == 1
+        end
+      end
+      if m = @ollama
+        input = "Title: #{File.basename(name, File.extname(name))}\nAuthors: "
+        begin
+          if g = ask_model_input(m, input)
+            key = g.authors.map { |a| Meta::Text.key(a) }.sort
+            hits = readings.select { |r| r.authors.map { |a| Meta::Text.key(a) }.sort == key }
+            return {hits.first, "model"} if hits.size == 1
+          end
+        rescue ex : Ollama::Unavailable | Classifier::BadAnswer
+          STDERR.puts "metadata: model not asked about #{name}: #{ex.message}"
+        end
+      end
+      nil
+    end
+
+    def decider : Meta::FileName::Decider
+      ->(book : Book, name : String, readings : Array(Meta::Guess)) { decide(book, name, readings) }
     end
 
     def self.model_guess(content : String, input : String) : Meta::Guess?

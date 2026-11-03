@@ -314,6 +314,16 @@ in
       };
     };
 
+    backlogImport.unsureTag = mkOption {
+      type = types.str;
+      default = "auto-unsicher";
+      description = ''
+        Tag for books whose file name could not be read for sure (which side
+        of " - " is the author), after the file, the metadata sources and the
+        model were asked: title and authors stay for a manual review.
+      '';
+    };
+
     backlogImport.roots = mkOption {
       type = types.listOf types.path;
       default = [ ];
@@ -770,6 +780,7 @@ in
         CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
         CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
         CALIBRE_HUB_IMPORT_ROOTS = lib.concatMapStringsSep ":" toString cfg.backlogImport.roots;
+        CALIBRE_HUB_IMPORT_UNSURE_TAG = cfg.backlogImport.unsureTag;
         CALIBRE_HUB_FAST_TAGS = lib.concatStringsSep "," cfg.fastTags;
         CALIBRE_HUB_LIST_MIGRATE_TAG = cfg.leseliste.tag;
         CALIBRE_HUB_CLASSIFY = lib.boolToString cfg.classify.enable;

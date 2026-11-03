@@ -100,6 +100,41 @@ describe CalibreHub::Meta::FileName do
     end
   end
 
+  it "says how a name was decided, and gives every reading of an unclear one" do
+    FileName.readings("Carr - Formulas (Chelsea, 1970).djvu").not_nil![1].should eq "name"
+    FileName.readings("Dune - Herbert.mobi", :last).not_nil![1].should eq "folder"
+    gs, how = FileName.readings("Herbert - Dune.mobi").not_nil!
+    how.should eq "unclear"
+    gs.map { |g| {g.title, g.authors} }.should eq [{"Dune", ["Herbert"]}, {"Herbert", ["Dune"]}, {"Herbert - Dune", [] of String}]
+    gs, how = FileName.readings("Wine Tasting - A Professional Handbook.pdf").not_nil!
+    how.should eq "unclear"
+    gs.first.authors.should be_empty
+  end
+
+  it "decides an unclear name by the file, the decider, else tags it for a review" do
+    name = "Herbert - Dune.pdf"
+    calibre_read = book("Herbert", ["Dune"])
+    imported = now(calibre_read)
+    # the decider (sources, model) picks a reading
+    decider = ->(_b : CalibreHub::Book, _n : String, gs : Array(CalibreHub::Meta::Guess)) do
+      gs.find { |g| g.authors == ["Dune"] }.try { |g| {g, "model"} }
+    end
+    changes, how = FileName.decide(calibre_read, name, nil, imported, decider).not_nil!
+    how.should eq "model"
+    changes.should be_empty
+    # nobody decides: names stay, the tag
+    changes, how = FileName.decide(calibre_read, name, nil, imported).not_nil!
+    how.should eq "unsure"
+    changes.map { |c| {c.field, c.new} }.should eq [{"tags", JSON.parse(%(["auto-unsicher"]))}]
+    # the file's own author decides (an EPUB's OPF); title from the name
+    own = book("Herbert", ["Frank Herbert"])
+    changes, how = FileName.decide(own, name, nil, now(own)).not_nil!
+    how.should eq "file"
+    changes.map { |c| {c.field, c.new} }.should eq [{"title", JSON::Any.new("Dune")}]
+    # a clear name needs nobody
+    FileName.decide(book("Carr", ["Formulas"]), "Carr - Formulas (Chelsea, 1970).pdf", nil, now(book("Carr", ["Formulas"])), decider).not_nil![1].should eq "name"
+  end
+
   it "leaves standards to Norms (calibre's split of the bracket form)" do
     FileName.parse("[DIN EN ISO 14971 2009-10] -- Medizinprodukte - Anwendung des Risikomanagements.pdf").should be_nil
   end

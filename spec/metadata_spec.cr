@@ -1063,6 +1063,18 @@ describe CalibreHub::Metadata do
     m.candidates(21).map(&.source).should eq(["rules"])
   end
 
+  it "decides an unclear file name by a good match of the sources (#8408)" do
+    library, _, m, _, _ = setup(sources: %w(openlibrary))
+    library.add(25, "Ursula K. Le Guin", ["The Left Hand of Darkness"])
+    readings = [CalibreHub::Meta::Guess.new("Ursula K. Le Guin", ["The Left Hand of Darkness"]),
+                CalibreHub::Meta::Guess.new("The Left Hand of Darkness", ["Ursula K. Le Guin"])]
+    book = m.@calibre.book(25).not_nil!
+    g, by = m.decide(book, "x.epub", readings).not_nil!
+    {g.title, g.authors, by}.should eq({"The Left Hand of Darkness", ["Ursula K. Le Guin"], "openlibrary"})
+    # nothing found, no model: undecided
+    m.decide(book, "x.epub", [CalibreHub::Meta::Guess.new("Wolken", ["Atlas"]), CalibreHub::Meta::Guess.new("Atlas", ["Wolken"])]).should be_nil
+  end
+
   it "asks the model only when the rules can't decide, and only trusts words from the input" do
     input = "Title: Wolken - Atlas\nAuthors: Unknown"
     g = CalibreHub::Metadata.model_guess(%({"title": "Wolkenatlas", "authors": ["Unknown"]}), input)

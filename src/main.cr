@@ -50,6 +50,8 @@ module CalibreHub
     getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
     # folders a backlog import may read (POST /api/import), ':' separated
     getter import_roots : Array(String) = env("CALIBRE_HUB_IMPORT_ROOTS", "").split(':', remove_empty: true).map(&.strip).reject(&.empty?)
+    # tag of books whose file name could not be read for sure
+    getter import_unsure_tag : String = env("CALIBRE_HUB_IMPORT_UNSURE_TAG", "auto-unsicher").strip.presence || "auto-unsicher"
     # tags the web app offers as one-click toggles
     getter fast_tags : Array(String) = env("CALIBRE_HUB_FAST_TAGS", "leseliste").split(',', remove_empty: true).map(&.strip)
     # built web app (dist/); served without login
@@ -488,6 +490,12 @@ module CalibreHub
     # metadata of books imported from plain files before the import read file names
     repair = imports ? ImportRepair.new(db, calibre, writer, metadata_jobs.try(&.metadata.log) || MetaLog.new(db)) : nil
     repair.try &.metadata = metadata_jobs
+    # unclear file names: the sources and the model decide, else the tag
+    Meta.unsure_tag = config.import_unsure_tag
+    if decider = metadata_jobs.try(&.metadata.decider)
+      imports.try &.decider = decider
+      repair.try &.decider = decider
+    end
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members

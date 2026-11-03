@@ -541,7 +541,11 @@ module CalibreHub
           # authors, publisher, year and series from the file name where
           # calibre has only its own reading of it ("Title - Author")
           fields = {"tags" => JSON.parse("[]")}
-          @calibre.book(id).try { |b| fields.merge!(ImportJobs.name_fields(b, primary.path, hint(unit.dir))) }
+          if b = @calibre.book(id)
+            named, how = ImportJobs.name_fields(b, primary.path, hint(unit.dir), @decider)
+            fields.merge!(named)
+            unit.decided = how
+          end
           @calibre.set_fields(id, fields)
           book = @calibre.book(id)
           if book && (hit = ix.match_book(book))
@@ -584,13 +588,25 @@ module CalibreHub
     # from that file (Meta::FileName): its title and authors where calibre
     # read them from the name (or the file's title says nothing), the
     # publisher, year and series where the file has none
-    def self.name_fields(book : Book, path : String, hint : Symbol?) : Hash(String, JSON::Any)
+    # An unclear name (which side is the author) that the file can't
+    # decide goes to the metadata sources and the model (main.cr); still
+    # unclear, title and authors stay and the book gets Meta.unsure_tag.
+    # {set-fields changes, who decided}
+    def self.name_fields(book : Book, path : String, hint : Symbol?, decider : Meta::FileName::Decider? = nil) : {Hash(String, JSON::Any), String?}
       name = File.basename(path)
-      guess = Meta::FileName.parse(name, hint) || return {} of String => JSON::Any
-      changes = Meta::FileName.changes(book, name, guess, ->(field : String) { Meta::Merge.value(book, field).as(JSON::Any?) })
-      return {} of String => JSON::Any if changes.empty?
-      Edit.changes(Meta::Merge.patch(book, changes.to_h { |c| {c.field, c.new} }), book, nil)
+      decided = Meta::FileName.decide(book, name, hint, ->(field : String) { Meta::Merge.value(book, field).as(JSON::Any?) }, decider)
+      return {({} of String => JSON::Any), nil} unless decided
+      changes, how = decided
+      fields = {} of String => JSON::Any
+      # the tags are set anew on import (the file's are dropped)
+      fields["tags"] = JSON.parse([Meta.unsure_tag].to_json) if changes.any? { |c| c.field == "tags" }
+      changes = changes.reject { |c| c.field == "tags" }
+      fields.merge!(Edit.changes(Meta::Merge.patch(book, changes.to_h { |c| {c.field, c.new} }), book, nil)) unless changes.empty?
+      {fields, how}
     end
+
+    # decides unclear file names (Metadata#decider), when the cleanup is on
+    property decider : Meta::FileName::Decider?
 
     # How the folder's book files are named (Meta::FileName.orientation),
     # for names that could be read either way

@@ -10,6 +10,9 @@ module CalibreHub
   # calibre-server, a model or the internet.
   module Meta
     TAG = "auto-metadaten"
+    # books whose file name could not be read for sure (FileName, the
+    # backlog import), for a manual review; logged as the field "tags"
+    class_property unsure_tag = "auto-unsicher"
     # fields the cleanup changes, as the change log names them; "tags" are
     # only the tags the rules manage (Norms::TAGS), "identifier:<scheme>"
     # one calibre identifier (din, iso, ...)
@@ -772,7 +775,7 @@ module CalibreHub
         when "comments"    then JSON::Any.new(book.comments)
         when "series"      then JSON::Any.new(book.series)
         when "seriesIndex" then JSON::Any.new(book.series_index)
-        when "tags"        then JSON.parse(Norms::TAGS.select { |t| book.tags.any? { |x| x.downcase == t.downcase } }.to_json)
+        when "tags"        then JSON.parse((Norms::TAGS + [Meta.unsure_tag]).select { |t| book.tags.any? { |x| x.downcase == t.downcase } }.to_json)
         when .starts_with?("identifier:")
           JSON::Any.new(book.identifiers[field.lchop("identifier:")]?)
         else JSON::Any.new(nil)
@@ -1351,7 +1354,7 @@ module CalibreHub
         want << DRAFT if norm.draft
         want << CORRIGENDUM if norm.corrigendum
         want << REPLACED if replaced
-        set.call("tags", JSON.parse(TAGS.select { |t| have.includes?(t) || want.includes?(t) }.to_json))
+        set.call("tags", JSON.parse((TAGS.select { |t| have.includes?(t) || want.includes?(t) } + (have - TAGS)).to_json))
         changes
       end
 
@@ -1359,7 +1362,7 @@ module CalibreHub
       def self.replace(book : Book) : Change?
         have = Merge.value(book, "tags").as_a.map(&.as_s)
         return nil if have.includes?(REPLACED)
-        Change.new("tags", JSON.parse(have.to_json), JSON.parse(TAGS.select { |t| have.includes?(t) || t == REPLACED }.to_json), "rules")
+        Change.new("tags", JSON.parse(have.to_json), JSON.parse((TAGS.select { |t| have.includes?(t) || t == REPLACED } + (have - TAGS)).to_json), "rules")
       end
     end
 

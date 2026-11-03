@@ -254,6 +254,20 @@ module CalibreHub
       # has none), series and number, publisher, year (Guess#year and
       # #pubdate). hint: the folder's orientation (orientation).
       def self.parse(name : String, hint : Symbol? = nil) : Guess?
+        readings(name, hint).try(&.[0].first?)
+      end
+
+      # How the name was decided: by the name score, by the folder (a tie),
+      # or unclear (a tie without a folder, or no person on either side)
+      NAME    = "name"
+      FOLDER  = "folder"
+      UNCLEAR = "unclear"
+
+      # The readings of the file name, the one to take first, and how it
+      # was decided. Unclear: the author first, last and none (the most
+      # likely first, as parse takes it), for others to decide
+      # (Metadata#decide: the file, the online sources, the model).
+      def self.readings(name : String, hint : Symbol? = nil) : {Array(Guess), String}?
         prepared = prepare(name) || return nil
         s, publisher, year, paren_author, libgen = prepared
         # libgen names put the authors first
@@ -276,27 +290,44 @@ module CalibreHub
           publisher ||= parts.first
           parts.shift
         end
+        publisher = publisher.try { |p| PUBLISHER_NAMES[p]? || p }
+        make = ->(side : Symbol?) { build(parts, side, series, index, paren_author, year, publisher) }
+        return make.call(nil).try { |g| {[g], NAME} } if parts.size < 2
+        sf, sl = side_score(parts.first), side_score(parts.last)
+        side, how = if sf == sl && sf >= 0 && hint
+                      # a tie: as the folder's other files
+                      {hint, FOLDER}
+                    elsif sf == sl && sf >= 0
+                      # a tie (both names, or neither): calibre's "Title -
+                      # Author" first when neither side is a name
+                      {sf == 0 ? :last : :first, UNCLEAR}
+                    elsif sf >= 1 && sf >= sl
+                      {:first, NAME}
+                    elsif libgen && sf >= 0 && sf > sl
+                      # "Morgan Housel - The Psychology of Money-Harriman House (2020)"
+                      {:first, NAME}
+                    elsif sl >= 1 && sl > sf
+                      {:last, NAME}
+                    elsif sl == 0 && sf <= -2 && parts.first.split(' ').size >= 2 && !parts.last.matches?(/\s(?:and|und)\s/i)
+                      # "An Introduction to Genetic Algorithms - Melanie Mitchell"
+                      {:last, NAME}
+                    else
+                      # no person on either side ("Wine Tasting - A
+                      # Professional Handbook"): one title first
+                      {nil, UNCLEAR}
+                    end
+        first = make.call(side) || return nil
+        return {[first], how} unless how == UNCLEAR
+        others = [:first, :last, nil].reject { |x| x == side }.compact_map { |x| make.call(x) }
+        {[first] + others, how}
+      end
+
+      # one reading: the author on that side (nil: none), the rest the title
+      private def self.build(parts : Array(String), side : Symbol?, series : String?, index : Float64?,
+                             paren_author : String?, year : Int32?, publisher : String?) : Guess?
         authors = [] of String
         rest = parts
         if parts.size >= 2
-          sf, sl = side_score(parts.first), side_score(parts.last)
-          side = if hint && sf == sl && sf >= 0
-                   # a tie: as the folder's other files
-                   hint
-                 elsif sf >= 1 && sf >= sl
-                   :first
-                 elsif libgen && sf >= 0 && sf > sl
-                   # "Morgan Housel - The Psychology of Money-Harriman House (2020)"
-                   :first
-                 elsif sl >= 1 && sl > sf
-                   :last
-                 elsif sf == 0 && sl == 0
-                   # can't tell: calibre's "Title - Author" stays
-                   :last
-                 elsif sl == 0 && sf <= -2 && parts.first.split(' ').size >= 2 && !parts.last.matches?(/\s(?:and|und)\s/i)
-                   # "An Introduction to Genetic Algorithms - Melanie Mitchell"
-                   :last
-                 end
           if side == :first
             authors = split_authors(parts.first)
             rest = parts[1..]
@@ -334,7 +365,6 @@ module CalibreHub
         end
         return nil if title.empty?
         authors = authors.map { |a| Clean.fix_name_case(a) }.reject { |a| a.empty? || Clean.unknown_author?(a) }.uniq { |a| Text.key(a) }
-        publisher = publisher.try { |p| PUBLISHER_NAMES[p]? || p }
         Guess.new(title, authors, series.try(&.strip), series ? index : nil, year, "rules", publisher, year.try(&.to_s))
       end
 
@@ -637,6 +667,57 @@ module CalibreHub
           guess.series_index.try { |i| changes << Change.new("seriesIndex", JSON::Any.new(book.series_index), JSON::Any.new(i), source) }
         end
         changes
+      end
+
+      NAME_FIELDS = {"title", "authors", "authorSort"}
+      # who decided an unclear name: the file (decide_by_file), a metadata
+      # source, the model
+      UNSURE = "unsure"
+
+      # Decides between the readings of an unclear name (Metadata#decide):
+      # {reading, who decided}, nil when it can't
+      alias Decider = Proc(Book, String, Array(Guess), {Guess, String}?)
+
+      # The changes from the file name (changes) and who decided: the name,
+      # the folder, or for an unclear name that would change title or
+      # authors, the file's own metadata, then the decider (the metadata
+      # sources, the model). Still unclear: title and authors stay, the book
+      # gets Meta.unsure_tag for a manual review. nil: not a name to read.
+      def self.decide(book : Book, name : String, hint : Symbol?, imported : Proc(String, JSON::Any?),
+                      decider : Decider? = nil, source = "rules") : {Array(Change), String}?
+        read = readings(name, hint) || return nil
+        gs, how = read
+        changes = changes(book, name, gs.first, imported, source)
+        return {changes, how} unless how == UNCLEAR && changes.any? { |c| NAME_FIELDS.includes?(c.field) }
+        if g = decide_by_file(book, name, gs)
+          return {changes(book, name, g, imported, source), "file"}
+        end
+        if d = decider.try(&.call(book, name, gs))
+          return {changes(book, name, d[0], imported, source), d[1]}
+        end
+        kept = changes.reject { |c| NAME_FIELDS.includes?(c.field) }
+        have = Merge.value(book, "tags").as_a.map(&.as_s)
+        unless have.includes?(Meta.unsure_tag)
+          kept << Change.new("tags", JSON.parse(have.to_json), JSON.parse((have + [Meta.unsure_tag]).to_json), source)
+        end
+        {kept, UNSURE}
+      end
+
+      # The reading the file's own metadata names (a PDF's info dict, an
+      # EPUB's OPF, as calibre read them): one with an author of the file,
+      # else the only one with the file's title
+      def self.decide_by_file(book : Book, name : String, readings : Array(Guess)) : Guess?
+        cg_title, cg_authors = calibre(name)
+        unless same_authors?(book.authors, cg_authors) || Clean.unknown_authors?(book.authors)
+          own = book.authors.flat_map { |a| Text.tokens(a) }.select { |w| w.size > 2 }.to_set
+          hits = readings.select { |r| r.authors.flat_map { |a| Text.tokens(a) }.any? { |w| own.includes?(w) } }
+          return hits.first if hits.size == 1
+        end
+        unless same_text?(book.title, cg_title) || bad_title?(book.title)
+          hits = readings.select { |r| Text.similarity(r.title, book.title) >= 0.8 }
+          return hits.first if hits.size == 1
+        end
+        nil
       end
     end
   end

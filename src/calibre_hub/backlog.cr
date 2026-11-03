@@ -159,6 +159,9 @@ module CalibreHub
       # after the import: imported, formatAdded, duplicate, failed
       property status : String = "pending"
       property detail : String?
+      # plain files: who decided title and authors from the file name (name,
+      # folder, file, a metadata source, model, unsure; Meta::FileName.decide)
+      property decided : String?
 
       def initialize(@kind, @dir, @files, @cover = nil, @meta = nil)
       end
