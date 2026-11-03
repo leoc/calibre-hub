@@ -2,6 +2,21 @@ require "spec"
 require "../src/calibre_hub/api"
 
 describe CalibreHub::Api do
+  it "reads a JSON object body, an empty one as {} unless required" do
+    body = ->(text : String?, required : Bool) do
+      req = HTTP::Request.new("POST", "/api/x", body: text)
+      ctx = HTTP::Server::Context.new(req, HTTP::Server::Response.new(IO::Memory.new))
+      CalibreHub.json_body(ctx, required)
+    end
+    body.call(%({"a":1}), true)["a"].should eq(1)
+    body.call("", false).should be_empty
+    body.call(nil, false).should be_empty
+    expect_raises(CalibreHub::Edit::Invalid, "JSON object expected") { body.call("", true) }
+    # an array or a string is a 400, not a 500 from Hash access on JSON::Any
+    expect_raises(CalibreHub::Edit::Invalid, "JSON object expected") { body.call("[]", false) }
+    expect_raises(CalibreHub::Edit::Invalid, "JSON object expected") { body.call(%("x"), true) }
+  end
+
   it "builds a calibre query from filters" do
     params = HTTP::Params.parse("q=title:x&kategorie=Fachbuch.Software&tag=a&tag=b%22c&author=Douglas%20Adams")
     CalibreHub::Api.query(params, "kategorie").should eq(

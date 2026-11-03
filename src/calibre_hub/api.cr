@@ -254,7 +254,7 @@ module CalibreHub
     get "/healthz" { "ok" }
 
     post "/api/session" do |env|
-      body = JSON.parse(env.request.body.try(&.gets_to_end) || "{}") rescue JSON.parse("{}")
+      body = (json_body(env) rescue {} of String => JSON::Any)
       user = body["user"]?.try(&.as_s?) || ""
       password = body["password"]?.try(&.as_s?) || ""
       if cookie = auth.login(auth_handler.client_ip(env), user, password)
@@ -346,7 +346,7 @@ module CalibreHub
     # before /api/books/:id so "bulk" isn't taken for an id
     post "/api/books/bulk" do |env|
       write_errors(env) do
-        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        body = json_body(env, required: true)
         job = jobs.submit(body)
         env.response.status_code = 202
         {jobId: job.id, total: job.total}.to_json
@@ -366,7 +366,7 @@ module CalibreHub
     post "/api/books/:id/cover/from-file" do |env|
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
-        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}")
+        body = json_body(env)
         writer.cover_from_file(id, body["format"]?.try(&.as_s?)).to_json
       end
     end
@@ -374,7 +374,7 @@ module CalibreHub
     post "/api/books/:id/cover/from-url" do |env|
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
-        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}")
+        body = json_body(env)
         url = body["url"]?.try(&.as_s?) || raise Edit::Invalid.new("url", "URL expected")
         writer.cover_from_url(id, url).to_json
       end
@@ -407,7 +407,7 @@ module CalibreHub
     patch "/api/books/:id" do |env|
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
-        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        body = json_body(env, required: true)
         writer.update(id, body).to_json
       end
     end
@@ -564,8 +564,11 @@ module CalibreHub
     env.params.url["id"].to_i64? || raise Lists::NotFound.new
   end
 
-  def self.json_body(env) : Hash(String, JSON::Any)
-    JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+  # The request's JSON object; an empty body is {} unless one is required
+  def self.json_body(env, required = false) : Hash(String, JSON::Any)
+    text = env.request.body.try(&.gets_to_end) || ""
+    raise Edit::Invalid.new("", "JSON object expected") if required && text.blank?
+    JSON.parse(text.presence || "{}").as_h? || raise Edit::Invalid.new("", "JSON object expected")
   end
 
   # book ids from {bookIds: [...]} or {target: {ids} | {query}}
@@ -633,7 +636,7 @@ module CalibreHub
     # before /api/suggestions/:id/accept so "accept" isn't taken for an id
     post "/api/suggestions/accept" do |env|
       write_errors(env) do
-        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        body = json_body(env, required: true)
         ids = body["bookIds"]?.try(&.as_a?) || raise Edit::Invalid.new("bookIds", "list of book ids expected")
         ids = ids.map { |v| v.as_i64? || raise Edit::Invalid.new("bookIds", "list of book ids expected") }
         accepted = [] of Suggestions::Suggestion
@@ -654,7 +657,7 @@ module CalibreHub
     post "/api/suggestions/:id/accept" do |env|
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
-        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}")
+        body = json_body(env)
         override = body["category"]?.try { |v| v.as_s? || raise Edit::Invalid.new("category", "string expected") }
         c.accept(id, override).to_json
       end
@@ -669,7 +672,7 @@ module CalibreHub
 
     post "/api/classify" do |env|
       write_errors(env) do
-        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        body = json_body(env)
         job = jobs.submit_target(body["target"]? || JSON::Any.new("unsorted"))
         env.response.status_code = 202
         {jobId: job.id, total: job.total}.to_json
@@ -698,7 +701,7 @@ module CalibreHub
 
     post "/api/metadata/run" do |env|
       write_errors(env) do
-        body = JSON.parse(env.request.body.try(&.gets_to_end).presence || "{}").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        body = json_body(env)
         job = jobs.submit_target(body["target"]?)
         env.response.status_code = 202
         {jobId: job.id, total: job.total}.to_json
@@ -727,7 +730,7 @@ module CalibreHub
     # before /api/metadata/changes/:id/revert so "revert" isn't taken for an id
     post "/api/metadata/changes/revert" do |env|
       write_errors(env) do
-        body = JSON.parse(env.request.body.try(&.gets_to_end) || "").as_h? || raise Edit::Invalid.new("", "JSON object expected")
+        body = json_body(env, required: true)
         unless body.has_key?("bookIds") || body.has_key?("changeIds")
           raise Edit::Invalid.new("bookIds", "bookIds or changeIds expected")
         end
