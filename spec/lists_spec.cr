@@ -92,7 +92,7 @@ describe CalibreHub::Lists do
       before = events(db).size
       lists.update(parent.id, "arthur", body(%({"name": "Reisen/Sommer"}))).name.should eq("Reisen/Sommer")
       lists.all("arthur").map(&.name).sort.should eq(["Reisen/Sommer", "Reisen/Sommer/2025", "Reisen/Sommer/2026",
-                                                       "Reisen/Sommer/2026/Juli", "Urlaubsziele"])
+                                                      "Reisen/Sommer/2026/Juli", "Urlaubsziele"])
       e = events(db)[before..]
       e.map { |x| {x["previous"]["name"].as_s, x["list"]["name"].as_s} }.sort.should eq([
         {"Urlaub", "Reisen/Sommer"}, {"Urlaub/2025", "Reisen/Sommer/2025"},
@@ -121,6 +121,27 @@ describe CalibreHub::Lists do
       lists.add(shared.id, "tilli", [1_i64])[1].should eq([1_i64])
       expect_raises(CalibreHub::Lists::Forbidden) { lists.delete(shared.id, "tilli") }
       lists.memberships([1_i64], "tilli").should eq({1_i64 => [shared.id]})
+    end
+  end
+
+  it "lets only the owner or an admin change the settings of an editable list" do
+    with_lists do |lists|
+      shared = lists.create("arthur", body(%({"name": "Urlaub", "visibility": "editable", "sync": true, "isDefault": true})))
+      lists.create("arthur", body(%({"name": "Urlaub/Privat"})))
+      [%({"sync": false}), %({"visibility": "private"}), %({"isDefault": true}), %({"favorite": true}),
+       %({"name": "Weg"}), %({"name": "Neu/Urlaub"}), %({"description": "x"})].each do |patch|
+        expect_raises(CalibreHub::Lists::Forbidden) { lists.update(shared.id, "tilli", body(patch)) }
+      end
+      after = lists[shared.id, "arthur"]
+      {after.name, after.sync, after.visibility, after.is_default, after.favorite}.should eq({"Urlaub", true, "editable", true, false})
+      lists.all("arthur").map(&.name).sort.should eq(["Urlaub", "Urlaub/Privat"])
+      # books still go in and out
+      lists.add(shared.id, "tilli", [1_i64])[1].should eq([1_i64])
+      lists.remove(shared.id, "tilli", [1_i64])[1].should eq([1_i64])
+      # the owner, and an admin for someone else's list
+      lists.update(shared.id, "arthur", body(%({"favorite": true}))).favorite.should be_true
+      tillis = lists.create("tilli", body(%({"name": "Tillis", "visibility": "editable"})))
+      lists.update(tillis.id, "arthur", body(%({"description": "von arthur"})), admin: true).description.should eq("von arthur")
     end
   end
 

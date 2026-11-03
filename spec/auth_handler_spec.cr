@@ -106,7 +106,10 @@ describe "AuthHandler with several users" do
   it "keeps a reader's lists off the reader folder, with the body intact for the route" do
     as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"sync":true}))[0].should eq(403)
     as_user(READER_TOKEN, "POST", "/api/lists", %({"name":"x","sync":true}))[0].should eq(403)
-    as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"sync":false,"name":"y"})).should eq({200, "lea", %({"sync":false,"name":"y"})})
+    # off too: that would empty the folder on the admin's e-reader
+    as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"sync":false,"name":"y"}))[0].should eq(403)
+    as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"name":"y"})).should eq({200, "lea", %({"name":"y"})})
+    as_user(READER_TOKEN, "PATCH", "/api/lists/3", %([1]))[0].should eq(200)
     as_user(TOKEN, "PATCH", "/api/lists/3", %({"sync":true}))[0].should eq(200)
   end
 end

@@ -6,6 +6,7 @@ import { ApiError, coverUrl, VISIBILITIES, type Book, type ListPatch, type Readi
 import { fromForm, ruleComplete, toForm } from "@/lib/shelves"
 import { RuleEditor, RuleLine } from "./shelf"
 import { bookQuery, sessionQuery } from "@/lib/queries"
+import { isAdmin, mayConfigureList } from "@/lib/session"
 import {
   buildListTree,
   defaultList,
@@ -396,6 +397,8 @@ export function ListHeader({ list, node, tree, user, search }: { list: ReadingLi
   const [editing, setEditing] = useState(false)
   const hasSub = !!node?.children.length
   const total = list.totalCount ?? list.count
+  const { data: session } = useQuery(sessionQuery)
+  const configure = mayConfigureList(session, list)
   return (
     <header className="flex gap-4 sm:gap-5">
       <Mosaic list={list} />
@@ -413,10 +416,10 @@ export function ListHeader({ list, node, tree, user, search }: { list: ReadingLi
           {list.visibility !== "private" && <Badge variant="outline">{t(`list.visibility.${list.visibility}`)}</Badge>}
           {!list.editable && <Badge variant="outline">{t("list.readOnly")}</Badge>}
         </p>
-        {(list.editable || hasSub) && (
+        {(configure || hasSub) && (
           <div className="flex flex-wrap gap-2">
             {hasSub && <DirectToggle search={search} />}
-            {list.editable && (
+            {configure && (
               <>
                 <Button
                   variant="outline"
@@ -475,7 +478,7 @@ export function ListEditDialog({
     e.preventDefault()
     const patch: ListPatch = rule
       ? { name: name.trim(), description, favorite, visibility, rule: fromForm(rule) }
-      : { name: name.trim(), description, sync, favorite, isDefault, visibility }
+      : { name: name.trim(), description, ...(sync !== list.sync ? { sync } : {}), favorite, isDefault, visibility }
     update.mutate({ id: list.id, patch }, { onSuccess: onClose })
   }
   const error = update.error ?? del.error
@@ -545,10 +548,13 @@ export function ListEditDialog({
                     <input type="checkbox" checked={isDefault} onChange={(e) => setDefault(e.target.checked)} className="size-4 eink:size-6" />
                     {t("list.default")}
                   </label>
-                  <label className={check}>
-                    <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} className="size-4 eink:size-6" />
-                    {t("list.sync")}
-                  </label>
+                  {/* the reader folder is the admin's e-reader */}
+                  {isAdmin(session) && (
+                    <label className={check}>
+                      <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} className="size-4 eink:size-6" />
+                      {t("list.sync")}
+                    </label>
+                  )}
                 </>
               )}
             </div>

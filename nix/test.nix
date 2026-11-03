@@ -1283,7 +1283,17 @@ pkgs.testers.runNixOSTest {
         assert status in (200, 201) and l["owner"] == "lea", (status, l)
         assert as_lea("PUT", f"/api/lists/{l['id']}/books/{bid}")[0] in (200, 201)
         assert as_lea("PATCH", f"/api/lists/{l['id']}", {"sync": True})[0] == 403
-        leas = [x["name"] for x in as_lea("GET", "/api/lists")[1]]
+        # arthur's editable list: books yes, its settings no (sync off would empty his e-reader folder)
+        status, shared = api("POST", "/api/lists", {"name": "Gemeinsam", "visibility": "editable", "sync": True})
+        assert status == 201, (status, shared)
+        assert as_lea("PUT", f"/api/lists/{shared['id']}/books/{bid}")[0] in (200, 201)
+        assert as_lea("PATCH", f"/api/lists/{shared['id']}", {"sync": False})[0] == 403
+        assert as_lea("PATCH", f"/api/lists/{shared['id']}", {"visibility": "private"})[0] == 403
+        assert as_lea("PATCH", f"/api/lists/{shared['id']}", {"name": "Weg"})[0] == 403
+        s = api("GET", f"/api/lists/{shared['id']}")[1]
+        assert s["sync"] and s["visibility"] == "editable" and s["name"] == "Gemeinsam", s
+        assert api("DELETE", f"/api/lists/{shared['id']}")[0] == 200
+        leas =[x["name"] for x in as_lea("GET", "/api/lists")[1]]
         arthurs = [x["name"] for x in api("GET", "/api/lists")[1]]
         assert "Leas Liste" in leas and "Leseliste" not in leas, leas
         assert "Leas Liste" not in arthurs and "Leseliste" in arthurs, arthurs

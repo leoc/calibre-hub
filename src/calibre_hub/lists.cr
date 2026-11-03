@@ -271,9 +271,15 @@ module CalibreHub
     end
 
     # A new name renames the sublists along ("Urlaub/2026" -> "Sommer/2026"),
-    # also those the user doesn't see: they belong to the owner's tree
-    def update(id : Int64, user : String, body : Hash(String, JSON::Any)) : List
+    # also those the user doesn't see: they belong to the owner's tree.
+    # Only the owner (or an admin) changes a list itself: name, place in the
+    # tree, description, rule, visibility, sync, favorite, default. Others
+    # may only add and remove books of an editable list.
+    def update(id : Int64, user : String, body : Hash(String, JSON::Any), admin = false) : List
       before = editable(id, user)
+      unless before.owner == user || admin || body.empty?
+        raise Forbidden.new("only the owner changes a list's settings, others add and remove books")
+      end
       rule = body["rule"]?.try do |r|
         raise Edit::Invalid.new("rule", "only a magic shelf has a rule") unless before.rule
         raise Edit::Invalid.new("rule", "a magic shelf needs a rule") if r.raw.nil?

@@ -206,7 +206,8 @@ module CalibreHub
 
     # A reader reads everything and changes only their own things: lists,
     # reading progress, reader settings; and logs out. Syncing a list to
-    # the reader folder (the admin's e-reader) is the admin's call. Every
+    # the reader folder (the admin's e-reader), on or off, is the admin's
+    # call. Every
     # other write, also of routes added later, is for admins.
     def self.reader_may?(req : HTTP::Request) : Bool
       return true if SAFE.includes?(req.method)
@@ -221,7 +222,7 @@ module CalibreHub
     private def self.sets_sync?(req : HTTP::Request) : Bool
       body = req.body.try(&.gets_to_end) || ""
       req.body = body
-      JSON.parse(body)["sync"]?.try(&.as_bool?) == true
+      JSON.parse(body).as_h?.try(&.has_key?("sync")) || false
     rescue JSON::ParseException | TypeCastError
       false
     end
@@ -477,7 +478,7 @@ module CalibreHub
     end
 
     patch "/api/lists/:id" do |env|
-      write_errors(env) { lists.update(list_id(env), auth.user, json_body(env)).to_json }
+      write_errors(env) { lists.update(list_id(env), auth.user, json_body(env), auth.admin?).to_json }
     end
 
     delete "/api/lists/:id" do |env|

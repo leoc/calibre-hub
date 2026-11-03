@@ -7,6 +7,7 @@ import { RuleLine } from "@/components/shelf"
 import { ApiError } from "@/lib/api"
 import { flattenListTree, listLabel, nodeSearch, useListTree, useUpdateList, type ListNode } from "@/lib/lists"
 import { sessionQuery } from "@/lib/queries"
+import { isAdmin, mayConfigureList } from "@/lib/session"
 import { withFilter } from "@/lib/search"
 import { formatNumber, t } from "@/i18n"
 import { cn } from "@/lib/utils"
@@ -160,7 +161,7 @@ function ListRow({ node, user, nested, folded, onFold }: { node: ListNode; user?
           <LibraryLink search={open} className={buttonVariants({ variant: "outline", size: "sm" })}>
             {t("list.open")}
           </LibraryLink>
-          {list.editable && (
+          {mayConfigureList(session, list) && (
             <>
               <Button variant="outline" size="sm" onClick={() => setDialog("edit")}>
                 <Pencil /> {t("list.editShort")}
@@ -171,9 +172,12 @@ function ListRow({ node, user, nested, folded, onFold }: { node: ListNode; user?
               {/* a shelf finds its books itself: no reader sync, never the default list */}
               {!list.rule && (
                 <>
-                  <Button variant="outline" size="sm" aria-pressed={list.sync} disabled={update.isPending} onClick={() => toggle({ sync: !list.sync })}>
-                    <RefreshCw /> {t("list.syncAction")}
-                  </Button>
+                  {/* the reader folder is the admin's e-reader */}
+                  {isAdmin(session) && (
+                    <Button variant="outline" size="sm" aria-pressed={list.sync} disabled={update.isPending} onClick={() => toggle({ sync: !list.sync })}>
+                      <RefreshCw /> {t("list.syncAction")}
+                    </Button>
+                  )}
                   <Button variant="outline" size="sm" aria-pressed={list.isDefault} disabled={update.isPending} onClick={() => toggle({ isDefault: !list.isDefault })}>
                     <Bookmark className={cn(list.isDefault && "fill-current")} /> {t("list.defaultShort")}
                   </Button>

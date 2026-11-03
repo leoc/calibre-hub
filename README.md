@@ -302,7 +302,10 @@ Lists like playlists, kept in the hub's state DB (calibre Desktop doesn't
 see them): name, description, owner, visibility (private, readable,
 editable; matters once there is more than one user), sync to the reader,
 favorite (shown in the sidebar), default list (the bookmark on the cover)
-and the books with the time they were added. A deleted book leaves its
+and the books with the time they were added. Only the owner (or an admin)
+changes a list's name, place, description, visibility, sync, favorite and
+default flag; others add and remove the books of an editable list (403
+otherwise), and a reader never touches sync, neither on nor off. A deleted book leaves its
 lists and goes back into them when it is restored from the trash.
 
 Nested lists: the name is the path, `Urlaub/2026` is the sublist `2026`
