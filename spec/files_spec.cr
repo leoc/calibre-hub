@@ -231,3 +231,14 @@ describe CalibreHub::ConvertJobs do
     end
   end
 end
+
+describe "CalibreHub::Calibre.base64" do
+  it "encodes a stream in pieces like the whole at once" do
+    [0, 1, 2, 3, 4, 3 * 64 * 1024, 3 * 64 * 1024 + 1, 500_001].each do |size|
+      data = Random.new(size).random_bytes(size)
+      encoded = IO::Memory.new
+      CalibreHub::Calibre.base64(IO::Memory.new(data), encoded)
+      encoded.to_s.should eq(Base64.strict_encode(data))
+    end
+  end
+end

@@ -126,9 +126,43 @@ module CalibreHub
       })
     end
 
+    # The set-fields body is streamed with the file base64-encoded on the
+    # way, so a 200 MB upload isn't held in memory several times over
     def add_format(book_id : Int64, file : String, ext : String) : Nil
-      data = Base64.strict_encode(File.open(file, &.getb_to_end))
-      set_fields(book_id, {"added_formats" => JSON.parse([{ext: ext, data_url: data}].to_json)})
+      prefix = %({"changes":{"added_formats":[{"ext":#{ext.to_json},"data_url":")
+      suffix = %("}]},"loaded_book_ids":[#{book_id}]})
+      length = prefix.bytesize + (File.size(file) + 2) // 3 * 4 + suffix.bytesize
+      File.open(file) do |f|
+        reader, writer = IO.pipe
+        spawn do
+          writer << prefix
+          Calibre.base64(f, writer)
+          writer << suffix
+        rescue IO::Error
+          # the request ended early, its error is raised there
+        ensure
+          writer.close
+        end
+        begin
+          request("POST", "/cdb/set-fields/#{book_id}#{library_path}", reader, length)
+        ensure
+          reader.close
+        end
+      end
+    end
+
+    # strict base64 of everything in src, in chunks of a multiple of 3 bytes
+    # (so the pieces join to the encoding of the whole)
+    def self.base64(src : IO, dst : IO) : Nil
+      buf = Bytes.new(3 * 64 * 1024)
+      loop do
+        n = 0
+        while n < buf.size && (m = src.read(buf[n..])) > 0
+          n += m
+        end
+        Base64.strict_encode(buf[0, n], dst) if n > 0
+        break if n < buf.size
+      end
     end
 
     # calibredb remove: ids, permanent. Without permanent calibre moves the
@@ -202,11 +236,12 @@ module CalibreHub
       request("GET", path, nil)
     end
 
-    private def request(method, path, body : String?) : String
+    private def request(method, path, body : String | IO | Nil, length : Int64? = nil) : String
       c = client
       c.basic_auth(@user, @password)
       headers = HTTP::Headers{"Accept" => "application/json"}
       headers["Content-Type"] = "application/json" if body
+      headers["Content-Length"] = length.to_s if length
       response = c.exec(method, path, headers: headers, body: body)
       if response.status_code >= 500
         raise Unavailable.new("calibre-server #{path}: HTTP #{response.status_code}")
