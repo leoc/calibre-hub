@@ -16,20 +16,28 @@ to the cookie. Field names are camelCase, missing values `null`.
 
 Users: the login user (`login.user`, an admin, with the tokens of
 `apiTokenFiles`) and the further `users` of the module, each `admin` or
-`reader`, with their own password file and tokens. Lists, reading progress
-and reader settings are per user, the library is shared. A reader reads and
-downloads everything but writes only their own lists (not synced to the
-reader folder), progress and reader settings; every other unsafe request,
-also of routes added later, is a 403 for readers. The users are kept in the
-state DB (`users`); one removed from the configuration keeps their data but
-can't log in.
+`reader`, with their own password file and tokens. Lists, private tags,
+reading progress and reader settings are per user, the library is shared. A
+reader reads and downloads the library but writes only their own lists,
+private tags, progress and reader settings; every other unsafe request,
+also of routes added later, is a 403 for readers, and so are the library's
+upkeep pages (trash, duplicates, imports, metadata changes, suggestions,
+EPUB fixer, conversion, embedding, jobs, cover and metadata searches). A
+reader syncs lists only with a reader folder of their own
+(`users.<name>.leseliste.target`), else sync is the admin's (on or off, it
+would change the admin's e-reader folder). The users are kept in the state
+DB (`users`); one removed from the configuration keeps their data but can't
+log in.
 
 | Route | |
 |---|---|
 | `POST /api/session` `{user, password}` | login, sets `hub_session` (30 days, renewed on use; a new password ends the user's sessions); 429 after 5 failures in 15 min |
-| `GET /api/session`, `DELETE /api/session` | current user `{user, role}` (role `admin` or `reader`), logout |
-| `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in). With `list=<id>` only the books of that list and its sublists (`direct=1`: only its own), `sort` then listAdded (default, newest first), title, author or series; `listPath=Urlaub` (`listOwner`, default the user) does the same for a level that may have no list of its own (404 when nothing is below it) |
-| `GET /api/books/:id` | one book incl. `comments` and `lists` |
+| `GET /api/session`, `DELETE /api/session` | current user `{user, role, sync}` (role `admin` or `reader`; `sync`: may sync lists to a reader folder), logout |
+| `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `ptag` (repeatable: the user's private tags, all of them), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in) and `privateTags` (the user's private tags). With `list=<id>` only the books of that list and its sublists (`direct=1`: only its own), `sort` then listAdded (default, newest first), title, author or series; `listPath=Urlaub` (`listOwner`, default the user) does the same for a level that may have no list of its own (404 when nothing is below it) |
+| `GET /api/books/:id` | one book incl. `comments`, `lists` and `privateTags` |
+| `GET /api/private-tags` | the user's private tags with their counts, by name: `[{name, count}]` |
+| `POST /api/private-tags` `{bookIds \| target, add?, remove?}` | adds and/or removes private tags of the user (`target` as in bulk edits; books not in the library are left out); at once, no job: `{total, changed}` (the ids of the books that changed); 400 for a tag both added and removed, a comma in a tag, more than 50 tags or 10,000 books |
+| `PUT /api/books/:id/private-tags` `{tags}` | the book's private tags of the user become these: `{bookId, privateTags}`; 404 for an unknown book |
 | `GET /api/lists` | the reading lists the user sees (own ones first, favorites first, by name): `[{id, name, description, owner, visibility, sync, favorite, isDefault, count, totalCount, parent, leaf, coverBookIds, createdAt, updatedAt, lastUsedAt, editable, rule, query, queryError}]`; `coverBookIds`: the 4 most recently added books; nested lists: `parent` the path above (`"Urlaub"` for `"Urlaub/2026"`, null at the top), `leaf` the last level, `totalCount` the distinct books incl. the sublists the user sees; `rule`/`query`: a magic shelf's rule and its calibre search (null for a list with books of its own), `queryError` when that search failed (count 0) |
 | `POST /api/lists` `{name, description?, visibility?, sync?, favorite?, isDefault?, rule?}` | creates a list (201), with `rule` a magic shelf (see below); `visibility`: private (default), readable, editable; names are unique per owner, ignoring case (409); a name is a path, `"Urlaub/2026"` (levels trimmed, no empty level: 400 for `a//b`, `/a`, `a/`; existing levels keep their spelling) |
 | `GET /api/lists/:id`, `PATCH /api/lists/:id`, `DELETE /api/lists/:id` | one list; change any of the fields above (one default list per owner: `isDefault: true` takes it from the other); a new name renames the sublists along (one `updated` event each; 409 when one of the new names is taken, 400 below itself); delete returns `{list}` (owner only, 403) and leaves the sublists |
@@ -52,9 +60,9 @@ can't log in.
 | `GET /api/duplicates/merges` | the last merges, newest first: `[{id, keepId, otherIds, status: running\|done\|failed\|undone, at, undoneAt, error, fields, formats, coverFrom, listItems, progress, trashed, restored, errors}]` |
 | `POST /api/duplicates/merges/:id/undo` | undoes a merge: `{merge, books}` (the keeper and the books back from the trash, with new ids); 409 when undone already |
 | `POST /api/duplicates/ignore` `{bookIds}`, `POST /api/duplicates/ignore/remove` `{bookIds}` | marks every pair of the books as no duplicates (or not any more): `{ignored}` / `{removed}` |
-| `GET /api/categories` | `kategorie` tree with counts, `tags`, `authors`, `series`, `languages` |
+| `GET /api/categories` | `kategorie` tree with counts, `tags`, `authors`, `series`, `languages`, `privateTags` (the user's own) |
 | `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart; a new book the duplicate detection pairs with others gets `possibleDuplicates: [book]`) |
-| `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}, expect?, all?}` (filters as in `GET /api/books`: `q`, `kategorie`, `tag`, `author`, `series`, `list`, `listPath`, `listOwner`, `direct`; any other key is a 400, and so is a query without any filter unless `all: true`; with `expect` the number of books the query matches must be that one, else 409 `{expected, found}`; deleting by query requires `expect`; the same holds for every `{query}` target below); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids), `authors`, `publisher`, `languages`, `rating`, `pubdate`, `pubYear` (the year, month and day stay); returns 202 `{jobId, total}` |
+| `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}, expect?, all?}` (filters as in `GET /api/books`: `q`, `kategorie`, `tag`, `ptag`, `author`, `series`, `list`, `listPath`, `listOwner`, `direct`; any other key is a 400, and so is a query without any filter unless `all: true`; with `expect` the number of books the query matches must be that one, else 409 `{expected, found}`; deleting by query requires `expect`; the same holds for every `{query}` target below); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids), `authors`, `publisher`, `languages`, `rating`, `pubdate`, `pubYear` (the year, month and day stay); returns 202 `{jobId, total}` |
 | `POST /api/jobs/:id/undo` | puts back what a finished bulk field change overwrote (each book's own values, remembered per book while the job ran) as a new job, only where a field still has the value the job set (a field changed since stays and shows in the undo job's `errors` as "changed since, left as it is: <fields>"; tags go back as a difference, so tags added since stay); once per job, 409 for a running job, a delete or one undone already; returns 202 `{jobId, total}` |
 | `GET /api/jobs/:id` | `{id, status: running\|done\|failed, done, total, errors: [{bookId, error}], error?}`; jobs are kept in the state DB, a running job resumes after a restart, the last 50 finished ones stay; `error` when a job stopped early. Also finds classify runs |
 | `GET /api/config` | `{fastTags, categoryColumn, classify, metadata}` for the web app (`fastTags` only for older web apps; lists replace them) |
@@ -228,6 +236,12 @@ it copied itself, recorded in `<target>/.calibre-hub-files`: what the
 e-reader keeps next to a book (KOReader's `<book>.sdr/` with progress,
 highlights and notes), files put there by hand and anything from before the
 record existed stay where they are, also when their book leaves the list.
+A user with a reader folder of their own (`users.<name>.leseliste.target`)
+gets a handler of their own (`50-leseliste-<name>`, `LESELISTE_OWNERS`):
+their synced lists go there and no longer into `leseliste.target`, whose
+handler leaves them out (`LESELISTE_EXCLUDE_OWNERS`). The folder follows the
+list's owner, also when an admin syncs someone else's list; with such a
+folder a reader may sync their own lists.
 
 ## Book files
 
@@ -300,6 +314,22 @@ same formats on both sides tells the reading list to copy the file again.
 on the Metadaten page) checks the library or a selection, as a dry run
 unless `dryRun: false`. Runs are jobs in a queue of their own; what each
 run found per book is in `GET /api/epub-fix/jobs/:id`.
+
+## Private tags
+
+Tags a user puts on books for themselves ("Urlaub", "für Lea"), kept in the
+hub's state DB per user and book (`private_tags`), never in calibre's tags,
+which every user shares. Nobody else sees them, also not an admin; readers
+keep them too. A tag keeps the spelling the user has for it already
+(`krimi` next to `Krimi` is `Krimi`). They filter the library (`ptag`,
+several: all of them), bulk targets (`{query: {ptag: [...]}}`) and lists
+(`?list=&ptag=`); a magic shelf can't hold them (its rule is a calibre
+search). A deleted book's tags are kept aside and come back when it is
+restored from the trash; a duplicate merge gives the keeper the tags of the
+others (an undo of the merge leaves them on the keeper). In the web app:
+"Meine Tags" in the sidebar, the detail (edited in place), the filter chips,
+the palette's `t ` scope, the commands "Meinen Tag hinzufügen/entfernen"
+and the bulk bar, which readers get for their lists and private tags.
 
 ## Reading lists
 
@@ -821,7 +851,8 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     sessionKeyFile = "/run/secrets/session-key";
     apiTokenFiles = [ "/run/secrets/hub-token-laptop" ];  # for the CLI
     # further users; role "admin" or "reader" (default)
-    users.lea = { role = "reader"; passwordFile = "/run/secrets/hub-lea"; };
+    # leseliste.target: her own reader folder, her synced lists go there
+    users.lea = { role = "reader"; passwordFile = "/run/secrets/hub-lea"; leseliste.target = "/srv/books/reader-lea"; };
     calibre.servicePasswordFile = "/run/secrets/calibre-service";
     inbox.path = "/srv/books/inbox";
     leseliste = { enable = true; target = "/srv/books/reader"; };
@@ -900,6 +931,7 @@ Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
 | `CALIBRE_HUB_LIST_MIGRATE_TAG` | `leseliste` | books with this tag become the list "Leseliste" on the first start |
 | `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each, of the login user |
 | `CALIBRE_HUB_USERS` | none | further users, comma separated `name:role:passwordFile[:tokenFile\|tokenFile…]`, role `admin` or `reader` |
+| `CALIBRE_HUB_SYNC_USERS` | none | users with a reader folder of their own, comma separated: readers among them may sync their lists |
 | `CALIBRE_HUB_CLASSIFY` | `false` | `true` turns on category suggestions (needs `CALIBRE_HUB_CATEGORY_COLUMN`) |
 | `CALIBRE_HUB_CLASSIFY_ENDPOINT`, `_MODEL` | `http://127.0.0.1:11434`, `qwen2.5:3b` | Ollama API and model |
 | `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT` | `0.85`, `03:45`, `300` | auto-apply from, nightly run (empty: none), seconds per answer |
