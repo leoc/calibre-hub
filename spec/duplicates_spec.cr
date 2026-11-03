@@ -157,6 +157,7 @@ private class FakeServer
   getter requests = [] of {String, JSON::Any}
   property next_id = 100_i64
   getter url : String
+  getter library : String
 
   def initialize(@library : String)
     @server = HTTP::Server.new do |ctx|
@@ -368,6 +369,33 @@ describe CalibreHub::Duplicates do
       progress.of("arthur", 1).should be_empty
       progress.of("arthur", new_id).map(&.position).should eq(["12"])
       expect_raises(CalibreHub::Duplicates::Undone) { dups.undo(m.id) }
+    end
+  end
+
+  it "keeps the moved formats and cover on the keeper when the other can't come back" do
+    merge_setup do |fake, dups, _, _, _|
+      fake.add(1, "Testbuch", formats: ["EPUB"], identifiers: {"isbn" => "9783161484100"})
+      fake.add(2, "Testbuch", formats: ["PDF", "EPUB"], publisher: "Verlag")
+      fake.covers[2] = PNG
+      m, _ = dups.merge(1, [2_i64])
+      m.formats.map(&.format).should eq(["PDF"])
+      m.cover_from.should eq(2)
+      # calibre's trash emptied before the undo
+      Dir.glob(File.join(fake.library, ".caltrash", "b", "*")).each { |d| FileUtils.rm_rf(d) }
+      undone, books = dups.undo(m.id)
+      undone.restored.should be_empty
+      keep = books[0]
+      # the only copy of the PDF and the cover stay; the field the merge filled goes back
+      keep.formats.sort.should eq(["EPUB", "PDF"])
+      fake.files[{1_i64, "PDF"}].should start_with("PDF of 2")
+      fake.covers[1]?.should eq(PNG)
+      keep.publisher.should be_nil
+      fake.requests.none? { |r| r[0] == "/cdb/cmd/remove_format/0" }.should be_true
+      undone.errors.should eq([
+        "#2 is not in the trash any more",
+        "PDF of #1 stays: #2 did not come back with it",
+        "the cover of #1 stays: #2 did not come back",
+      ])
     end
   end
 

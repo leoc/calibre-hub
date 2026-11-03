@@ -155,7 +155,7 @@ module CalibreHub
     # from metadata.db: files per book, covers; nil without a library
     record LibraryInfo, files : Hash(Int64, Array(Dedup::FileInfo))?, covers : Hash(Int64, Bool)?
 
-    MAX_OTHERS = 20
+    MAX_OTHERS =  20
     KEEP_LOG   = 200
 
     getter threshold : Float64
@@ -430,15 +430,31 @@ module CalibreHub
         undo_progress(m)
         @lists.try { |l| l.unmerge_book(m.keep_id, m.list_items.map { |i| {i.list_id, i.added_at} }) }
         if keep = @calibre.book(m.keep_id)
+          # A moved format or the cover leaves the keeper only when the book
+          # it came from is there again with it: restored from the trash,
+          # or never trashed (a failed merge). Otherwise the keeper holds
+          # the only copy.
+          sources = source_books(m)
+          removed = false
           m.formats.each do |f|
             next unless keep.formats.includes?(f.format)
+            unless sources[f.from]?.try(&.formats.includes?(f.format))
+              errors << "#{f.format} of ##{m.keep_id} stays: ##{f.from} did not come back with it"
+              next
+            end
             @calibre.cmd("remove_format", [m.keep_id, f.format])
+            removed = true
             errors << "#{f.format} of ##{m.keep_id}: the replaced small file stays in calibre's trash" if f.replace
           end
-          if m.cover_from
-            @calibre.set_fields(m.keep_id, {"cover" => JSON::Any.new(nil), "last_modified" => JSON::Any.new(Time.utc.to_rfc3339(fraction_digits: 6))})
+          if from = m.cover_from
+            if sources.has_key?(from)
+              @calibre.set_fields(m.keep_id, {"cover" => JSON::Any.new(nil), "last_modified" => JSON::Any.new(Time.utc.to_rfc3339(fraction_digits: 6))})
+              removed = true
+            else
+              errors << "the cover of ##{m.keep_id} stays: ##{from} did not come back"
+            end
           end
-          @writer.written([m.keep_id]) unless m.formats.empty? && m.cover_from.nil?
+          @writer.written([m.keep_id]) if removed
           keep = @calibre.book(m.keep_id) || keep
           body = revert_body(keep, m, errors)
           unless body.empty?
@@ -455,6 +471,23 @@ module CalibreHub
         books = @calibre.books([m.keep_id] + m.restored.values, Calibre::DETAIL_FIELDS)
         {m, books}
       end
+    end
+
+    # The books the merge took formats or the cover from, as they are now,
+    # by their id in the merge: restored ones under their new id, those
+    # never trashed as they are; missing when gone
+    private def source_books(m : Merge) : Hash(Int64, Book)
+      from = (m.formats.map(&.from) + [m.cover_from].compact).uniq
+      now = from.compact_map do |old|
+        if m.trashed.includes?(old)
+          m.restored[old.to_s]?.try { |n| {old, n} }
+        else
+          {old, old}
+        end
+      end
+      return {} of Int64 => Book if now.empty?
+      found = @calibre.books(now.map(&.[1]), ["formats"]).index_by(&.id)
+      now.compact_map { |old, id| found[id]?.try { |b| {old, b} } }.to_h
     end
 
     # PATCH body setting the filled fields back where they still have the
