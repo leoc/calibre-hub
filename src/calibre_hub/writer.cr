@@ -184,8 +184,12 @@ module CalibreHub
   # was at. Re-applying that book is harmless, every bulk change is
   # idempotent per book.
   #
-  # Field changes remember each book's values before the change ("before"),
-  # so POST /api/jobs/:id/undo can put them back with a job of its own.
+  # Field changes remember each book's values before the change ("before")
+  # and what they set ("after"), so POST /api/jobs/:id/undo can put them
+  # back with a job of its own, but only where a field still has the value
+  # the job set: a later change stays (and is named in the undo's errors).
+  # Tags go back as a difference: the tags the job added are removed, the
+  # ones it removed added, others stay.
   class Jobs
     CHANGES = %w(addTags removeTags kategorie series numberSeries authors publisher languages rating pubdate pubYear delete)
     # finished jobs kept for GET /api/jobs/:id
@@ -213,10 +217,14 @@ module CalibreHub
       # book id => its fields before the change, as PATCH fields (undo)
       @[JSON::Field(ignore: true)]
       getter before : Hash(String, Hash(String, JSON::Any))
+      # book id => the same fields right after the change (undo checks them)
+      @[JSON::Field(ignore: true)]
+      getter after : Hash(String, Hash(String, JSON::Any))
 
       def initialize(@ids, @changes, @id = Random::Secure.hex(8), @status = "running", @done = 0,
                      @errors = [] of NamedTuple(bookId: Int64, error: String), @error = nil,
-                     @before = {} of String => Hash(String, JSON::Any))
+                     @before = {} of String => Hash(String, JSON::Any),
+                     @after = {} of String => Hash(String, JSON::Any))
         @total = @ids.size
       end
 
@@ -235,7 +243,9 @@ module CalibreHub
       end
     end
 
-    COLUMNS = "id, status, done, ids, changes, errors, error, before"
+    COLUMNS = "id, status, done, ids, changes, errors, error, before, after"
+    # an undo left a field that changed after the job (not a failure)
+    SKIPPED = "changed since, left as it is: "
 
     # book ids of a reading list for {query: {list: id}} or {query:
     # {listPath: "A/B"}} (with direct, listOwner: Api.list_members); raises
@@ -268,6 +278,7 @@ module CalibreHub
       # the book they were at
       @interrupted = Set(String).new
       @db.query_each("select id from #{@table} where status = 'running'") { |rs| @interrupted << rs.read(String) }
+      @db.exec "alter table #{@table} add column after text not null default '{}'" unless columns.includes?("after")
       @wake = Channel(Nil).new(1)
       spawn { work }
     end
@@ -466,9 +477,11 @@ module CalibreHub
         end
         job.errors.delete(marker)
         job.done = i + 1
-        @db.exec "update #{@table} set done = ?, errors = ?, before = ? where id = ?", job.done, job.errors.to_json, job.before.to_json, job.id
+        @db.exec "update #{@table} set done = ?, errors = ?, before = ?, after = ? where id = ?",
+          job.done, job.errors.to_json, job.before.to_json, job.after.to_json, job.id
       end
-      job.status = (job.error || (job.errors.size == job.total && job.total > 0)) ? "failed" : "done"
+      failed = job.errors.reject(&.[:error].starts_with?(SKIPPED)).map(&.[:bookId]).uniq.size
+      job.status = (job.error || (failed == job.total && job.total > 0)) ? "failed" : "done"
       @db.exec "update #{@table} set status = ?, error = ? where id = ?", job.status, job.error, job.id
       @db.exec <<-SQL, KEEP
         delete from #{@table} where status != 'running' and rowid not in (
@@ -491,14 +504,64 @@ module CalibreHub
           # deleted just before the hub stopped, progress not saved yet
           raise ex unless resumed
         end
+      elsif job.changes.has_key?("restore")
+        before = job.changes_for(index)
+        return if before.empty?
+        current = @writer.book(id) || raise Writer::NotFound.new
+        set = job.changes["expect"]?.try(&.as_h?).try(&.[id.to_s]?).try(&.as_h?)
+        body, skipped = Jobs.revert(before, set, current, @category_column)
+        job.errors << {bookId: id, error: SKIPPED + skipped.join(", ")} unless skipped.empty? || (resumed && job.errors.any? { |e| e[:bookId] == id })
+        @writer.update(id, body) unless body.empty?
       else
         changes = job.changes_for(index)
         return if changes.empty?
         current = @writer.book(id) || raise Writer::NotFound.new
         # resumed: the values read then may be ours already
         job.before[id.to_s] = Jobs.before(current, changes, @category_column) unless resumed && job.before.has_key?(id.to_s)
-        @writer.update(id, Jobs.with_year(changes, current))
+        updated = @writer.update(id, Jobs.with_year(changes, current))
+        job.after[id.to_s] = Jobs.before(updated, changes, @category_column)
       end
+    end
+
+    # The PATCH that puts back the fields of before where they still have
+    # the value the job set (set; nil for a job from before that was
+    # recorded: everything goes back) and the fields left because they
+    # changed since. Tags go back as a difference.
+    def self.revert(before : Hash(String, JSON::Any), set : Hash(String, JSON::Any)?, current : Book,
+                    category_column : String?) : {Hash(String, JSON::Any), Array(String)}
+      return {before, [] of String} unless set
+      now = Jobs.before(current, before, category_column)
+      body = {} of String => JSON::Any
+      skipped = [] of String
+      done = Set(String).new
+      before.each_key do |key|
+        next if done.includes?(key)
+        case key
+        when "tags"
+          done << key
+          old = before["tags"].as_a.map(&.as_s)
+          new = set["tags"]?.try(&.as_a.map(&.as_s)) || old
+          (new - old).tap { |added| body["removeTags"] = JSON.parse(added.to_json) unless added.empty? }
+          (old - new).tap { |removed| body["addTags"] = JSON.parse(removed.to_json) unless removed.empty? }
+        when "series", "seriesIndex"
+          # one field: a series with its number
+          group = {"series", "seriesIndex"}
+          group.each { |k| done << k }
+          if group.all? { |k| now[k]? == set[k]? }
+            group.each { |k| before[k]?.try { |v| body[k] = v } }
+          else
+            skipped << "series"
+          end
+        else
+          done << key
+          if now[key]? == set[key]?
+            body[key] = before[key]
+          else
+            skipped << key
+          end
+        end
+      end
+      {body, skipped}
     end
 
     # pubYear: the year of the publication date, keeping month and day
@@ -543,15 +606,19 @@ module CalibreHub
       raise NotUndoable.new("nothing to undo") if job.before.empty? || job.changes.has_key?("delete")
       ids = job.ids.select { |i| job.before.has_key?(i.to_s) }
       restore = JSON::Any.new(job.before.transform_values { |h| JSON::Any.new(h) })
+      changes = {"restore" => restore}
+      # what the job set, to leave what changed since (missing in jobs from
+      # before it was recorded)
+      changes["expect"] = JSON::Any.new(job.after.transform_values { |h| JSON::Any.new(h) }) unless job.after.empty?
       @db.exec "update #{@table} set before = '{}' where id = ?", job.id
-      enqueue(ids, {"restore" => restore})
+      enqueue(ids, changes)
     end
 
     protected def self.read(rs) : Job
-      id, status, done, ids, changes, errors, error, before = rs.read(String, String, Int32, String, String, String, String?, String)
+      id, status, done, ids, changes, errors, error, before, after = rs.read(String, String, Int32, String, String, String, String?, String, String)
       Job.new(Array(Int64).from_json(ids), Hash(String, JSON::Any).from_json(changes), id, status, done,
         Array(NamedTuple(bookId: Int64, error: String)).from_json(errors), error,
-        Hash(String, Hash(String, JSON::Any)).from_json(before))
+        Hash(String, Hash(String, JSON::Any)).from_json(before), Hash(String, Hash(String, JSON::Any)).from_json(after))
     end
 
     def self.blank : Book

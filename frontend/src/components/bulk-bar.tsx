@@ -345,7 +345,8 @@ function JobProgress({ job, onClose }: { job: TrackedJob; onClose: () => void })
           </ul>
         </details>
       )}
-      {failed.length > 0 && (
+      {/* an undo has no change to retry: what it left changed since */}
+      {failed.length > 0 && job.changes && (
         <Button variant="outline" size="sm" onClick={() => retry.mutate()} disabled={retry.isPending}>
           {t("bulk.retry", { count: failed.length })}
         </Button>

@@ -659,6 +659,7 @@ export const de = {
   "actions.doneErrors": "Erledigt: {label} · {errors} Fehler",
   "actions.failed": "Fehlgeschlagen: {label} · {error}",
   "actions.undone": "Rückgängig gemacht: {label}",
+  "actions.undoneSkipped": "Rückgängig gemacht: {label} · {count} seither geändert, dort belassen",
   "actions.deleted": "{count} in den Papierkorb verschoben",
   "actions.listAdded": "{count} zu {name} hinzugefügt",
   "actions.listCreated": "Liste {name} angelegt",

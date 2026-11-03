@@ -542,6 +542,18 @@ pkgs.testers.runNixOSTest {
         assert status == 400 and e["field"] == "target", (status, e)
         status, e = api("POST", "/api/books/bulk", {"target": {"query": {"kategorie": "Bulk"}, "expect": 99}, "changes": {"delete": True}})
         assert status == 409 and e["found"] == 2, (status, e)
+        # an undo leaves what changed after the job
+        publisher = api("GET", "/api/books/1")[1]["publisher"]
+        status, r = api("POST", "/api/books/bulk", {"target": {"ids": [1]}, "changes": {"addTags": ["Rückgängig"], "publisher": "Bulkverlag"}})
+        assert wait_job(r["jobId"])["status"] == "done"
+        assert api("PATCH", "/api/books/1", {"addTags": ["Hand"], "publisher": "Handverlag"})[0] == 200
+        status, r = api("POST", f"/api/jobs/{r['jobId']}/undo")
+        assert status == 202, (status, r)
+        j = wait_job(r["jobId"])
+        assert j["status"] == "done" and j["errors"] == [{"bookId": 1, "error": "changed since, left as it is: publisher"}], j
+        b = api("GET", "/api/books/1")[1]
+        assert "Hand" in b["tags"] and "Rückgängig" not in b["tags"] and b["publisher"] == "Handverlag", b
+        assert api("PATCH", "/api/books/1", {"removeTags": ["Hand"], "publisher": publisher})[0] == 200
         assert api("GET", "/api/jobs/unknown")[0] == 404
         # series numbered in the order of the ids
         status, r = api("POST", "/api/books/bulk", {"target": {"ids": [uid, 1]}, "changes": {"series": "Nummern", "numberSeries": True}})

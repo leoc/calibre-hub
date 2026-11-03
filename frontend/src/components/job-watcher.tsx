@@ -77,7 +77,10 @@ async function finishedToast(job: TrackedJob, data: Job | undefined, go: (to: "/
   let text =
     job.kind === "delete"
       ? t("actions.deleted", { count: formatNumber(ok) })
-      : (job.doneText ?? (data.errors.length ? t("actions.doneErrors", { label: job.label, errors: formatNumber(data.errors.length) }) : t("actions.done", { label: job.label })))
+      : job.doneText && data.errors.length
+        ? // an undo left the books changed since (the bar lists them)
+          t("actions.undoneSkipped", { label: job.label, count: formatNumber(data.errors.length) })
+        : (job.doneText ?? (data.errors.length ? t("actions.doneErrors", { label: job.label, errors: formatNumber(data.errors.length) }) : t("actions.done", { label: job.label })))
   if (job.kind === "epubFix") {
     const run = await write.epubFixRun(job.id).catch(() => null)
     if (run) text = `${text} · ${run.booksFixed ? t("actions.epubFixDone", { count: formatNumber(run.booksFixed) }) : t("epubFix.nothing")}`

@@ -17,10 +17,24 @@ private class FakeWriter < CalibreHub::Writer
     @books[id]? || CalibreHub::Jobs.blank
   end
 
+  # applies the fields a bulk job writes, as calibre would
   def update(id : Int64, body : Hash(String, JSON::Any)) : CalibreHub::Book
     raise NotFound.new if id == 999
     @calls << {id, body}
-    CalibreHub::Jobs.blank
+    b = book(id).not_nil!
+    tags = b.tags.dup
+    body["tags"]?.try { |t| tags = t.as_a.map(&.as_s) }
+    body["addTags"]?.try { |t| tags = (tags + t.as_a.map(&.as_s)).uniq }
+    body["removeTags"]?.try { |t| tags -= t.as_a.map(&.as_s) }
+    series = body.has_key?("series") ? body["series"].as_s? : b.series
+    index = body["seriesIndex"]?.try(&.as_f?) || (series ? b.series_index : nil)
+    custom = b.custom.dup
+    custom["kategorie"] = body["kategorie"] if body.has_key?("kategorie")
+    publisher = body.has_key?("publisher") ? body["publisher"].as_s? : b.publisher
+    @books[id] = CalibreHub::Book.new(id: id, title: b.title, authors: b.authors, author_sort: nil, tags: tags,
+      series: series, series_index: index, formats: b.formats, last_modified: b.last_modified, timestamp: nil,
+      pubdate: b.pubdate, rating: b.rating, publisher: publisher, identifiers: b.identifiers,
+      languages: b.languages, comments: nil, custom: custom)
   end
 end
 
@@ -251,13 +265,42 @@ describe CalibreHub::Jobs do
       writer.calls.clear
       undo = wait(j, j.undo(first.id).id)
       undo.total.should eq(2)
+      # tags as a difference: the ones added go again
       writer.calls.should eq([
-        {1_i64, body(%({"tags": ["a"], "series": "Alt", "seriesIndex": 3.0, "kategorie": "Sachbuch.Geschichte"}))},
-        {2_i64, body(%({"tags": [], "series": null, "kategorie": null}))},
+        {1_i64, body(%({"removeTags": ["x"], "series": "Alt", "seriesIndex": 3.0, "kategorie": "Sachbuch.Geschichte"}))},
+        {2_i64, body(%({"removeTags": ["x"], "series": null, "kategorie": null}))},
       ])
+      undo.errors.should be_empty
       expect_raises(CalibreHub::Jobs::NotUndoable) { j.undo(first.id) }
       deleted = wait(j, j.submit(body(%({"target": {"ids": [1]}, "changes": {"delete": true}}))).id)
       expect_raises(CalibreHub::Jobs::NotUndoable) { j.undo(deleted.id) }
+    end
+  end
+
+  it "leaves what changed after the job when undoing it" do
+    with_state do |db, _|
+      writer = FakeWriter.new
+      writer.books[1_i64] = book(1, tags: ["a"], series: "Alt", series_index: 3.0, kategorie: "Sachbuch")
+      writer.books[2_i64] = book(2, tags: ["a"], series: "Alt", series_index: 1.0)
+      j = jobs(db, writer)
+      first = wait(j, j.submit(body(%({"target": {"ids": [1, 2]}, "changes": {"addTags": ["x"], "series": "Neu", "kategorie": "Roman"}}))).id)
+      # by hand afterwards: another tag and series on #1, the category of #2
+      writer.update(1, body(%({"addTags": ["y"], "series": "Hand"})))
+      writer.update(2, body(%({"kategorie": "Krimi"})))
+      writer.calls.clear
+      undo = wait(j, j.undo(first.id).id)
+      writer.calls.should eq([
+        {1_i64, body(%({"removeTags": ["x"], "kategorie": "Sachbuch"}))},
+        {2_i64, body(%({"removeTags": ["x"], "series": "Alt", "seriesIndex": 1.0}))},
+      ])
+      writer.books[1_i64].tags.should eq(["a", "y"])
+      writer.books[1_i64].series.should eq("Hand")
+      writer.books[2_i64].custom["kategorie"].should eq("Krimi")
+      undo.errors.should eq([
+        {bookId: 1_i64, error: "changed since, left as it is: series"},
+        {bookId: 2_i64, error: "changed since, left as it is: kategorie"},
+      ])
+      undo.status.should eq("done")
     end
   end
 
