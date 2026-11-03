@@ -17,6 +17,7 @@ require "./calibre_hub/body_limit"
 require "./calibre_hub/cli"
 require "./calibre_hub/hardcover_sync"
 require "./calibre_hub/backlog_jobs"
+require "./calibre_hub/import_repair"
 
 module CalibreHub
   VERSION = "0.1.0"
@@ -484,6 +485,9 @@ module CalibreHub
       ].compact
     end
     cleanup = config.category_column ? ImportCleanup.new(db, calibre, writer, config.category_column, File.dirname(File.expand_path(config.state_db))) : nil
+    # metadata of books imported from plain files before the import read file names
+    repair = imports ? ImportRepair.new(db, calibre, writer, metadata_jobs.try(&.metadata.log) || MetaLog.new(db)) : nil
+    repair.try &.metadata = metadata_jobs
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members
@@ -493,11 +497,12 @@ module CalibreHub
     # the metadata cleanup edits no category, but its {query} targets filter by it
     metadata_jobs.try &.category_column = config.category_column
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), cleanup].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), cleanup, repair].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
     epub_fix_routes(epub_fix)
     import_routes(imports, cleanup)
+    import_repair_routes(repair)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

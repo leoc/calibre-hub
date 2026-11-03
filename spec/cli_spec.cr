@@ -546,4 +546,23 @@ describe "hub import" do
       stdo.should contain("undo of c1: done, 1 books")
     end
   end
+
+  it "plans and applies the repair of plain-file imports" do
+    change = {bookId: 1827, file: "/srv/backlog/Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu",
+              field: "title", old: "Carr", new: "Formulas and Theorems in Pure Mathematics"}
+    with_stub do |s|
+      s.on("POST", "/api/import/repair", {dryRun: true, books: 1, total: 1, changes: [change]})
+      s.on("POST", "/api/import/repair", {dryRun: false, books: 1, total: 1, changes: [change], job: {id: "r1"}})
+      s.on("GET", "/api/jobs/r1", {id: "r1", status: "done", done: 1, total: 1, errors: [] of String})
+      code, stdo, _ = cli(s, "import", "repair", "--min-id", "1153")
+      code.should eq(0)
+      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"minId":1153,"dryRun":true})))
+      stdo.should contain("Formulas and Theorems in Pure Mathematics")
+      stdo.should contain("1 books, 1 changes, dry run")
+      code, stdo, _ = cli(s, "import", "repair", "--apply")
+      code.should eq(0)
+      JSON.parse(s.requests.select(&.method.==("POST")).last.body).should eq(JSON.parse(%({"dryRun":false})))
+      stdo.should contain("repair: done, 1 books")
+    end
+  end
 end

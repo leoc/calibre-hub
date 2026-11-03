@@ -92,6 +92,7 @@ log in.
 | `GET /api/import/runs/:id`, `GET /api/import/runs/:id/report` | a run (status: scanning, planned, running, done, failed, gone; `phase`: scan, check, import, else the status; `current`: the folder or book it is at; `startedAt`, `scannedAt`, `finishedAt`, `elapsedSeconds`; `filesPerSecond` while scanning, `booksPerMinute`; `etaSeconds` while checking and importing; `done`/`total`, `summary` once scanned, `results` per status: pending, imported, formatAdded, duplicate, failed, deferred; `failures`: the first 20 failed books `{path, detail}`); the report adds every book (`units`: files, plan, status, `bookId`, `match`, `detail`) and every skipped file (`skipped: [{path, reason}]`) |
 | `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see Backlog import); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
 | `GET /api/import/cleanups/:id`, `POST /api/import/cleanups/:id/undo` `{dryRun?}` | a cleanup with its backup; undo puts category and tags back (dry run by default, else 202 with `undoJob`) |
+| `POST /api/import/repair` `{since?, minId?, maxId?, dryRun?}` | title, authors, publisher, year, series of books imported from plain files, from their file names where the book is untouched since the import (see Backlog import); dry run (default): `{dryRun, books, total, changes: [{bookId, file, field, old, new}]}`, else 202 with the same and `job` |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with any hub user |
 | `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
@@ -402,7 +403,28 @@ or tags, and nothing is moved or deleted.
   format of that book.
 - Any other book file is a book with what calibre reads from it; files with
   the same name and another extension in one folder are formats of one
-  book. Tags embedded in the file are dropped, like in the inbox.
+  book. Tags embedded in the file are dropped, like in the inbox. Where
+  calibre has only its own reading of the file name ("Title - Author", the
+  last " - " splits, "and" splits authors), the hub reads the name itself
+  (`Meta::FileName`, `meta_filename.cr`): "Carr - Formulas and Theorems in
+  Pure Mathematics 2e (Chelsea, 1970).djvu" becomes "Formulas and Theorems
+  in Pure Mathematics" by Carr, Chelsea, 1970, not the title "Carr" by
+  "Formulas" and "Theorems in Pure Mathematics 2e (Chelsea, 1970)". Which
+  side of " - " is the person: a name score (first names, initials, "Last,
+  First", "A, B" or "A & B" lists, "(ed)", "et al." for a person; digits,
+  articles, title words, lower-case words, publishers for a title); a tie
+  goes the way the folder's other files are named, else calibre's "Title -
+  Author" stays. Read as well: "(Publisher, Year)", "(Year, Publisher)",
+  "(Year)", libgen's "Title-Publisher (Year)" and "_ " for ":", "Author -
+  Series 03 - Title" and "Series 03 - Title - Author", "(Series) Author -
+  Title", "[by Author]", "Title, The", "Publisher - Title", scene names
+  ("Wiley.Title.Sep.2010.eBook-ELOHiM"); abbreviated edition markers ("2e",
+  "2nd ed.", "(4th Edition)") and release junk ("WW", "HQ", "[PDF]", "(German
+  Edition)", ISBNs) go. A title or authors the file brought along (a PDF's
+  info dict, an EPUB's OPF) stay, unless the title says nothing ("chap01
+  7..24", "100767", "logik-stud.dvi"); publisher, year and series only fill
+  empty fields. Standards (`[DIN EN ISO …]`) keep calibre's split for the
+  rules (`Meta::Norms`).
 - Book formats: EPUB, KEPUB, AZW3, AZW, MOBI, PRC, AZW4, FB2, FBZ, DOCX, ODT,
   RTF, PDF, DJVU, CHM, CBZ, CBR, CB7, LIT, PDB, TXT. Files below 2 KiB
   (TXT: 20 KiB) or without their format's signature (`%PDF`, `PK`,
@@ -488,6 +510,27 @@ Running it again finds nothing left to do.
 hub import cleanup --since 2026-11-02T18:00        # dry run, local time
 hub import cleanup --min-id 114 --apply
 hub import undo <cleanup id> --apply
+```
+
+Repair of books imported from plain files before the import read file
+names (`POST /api/import/repair`, `hub import repair`): for every book an
+import added from a plain file (`import_files`, the unit's primary format;
+calibre folders are left out), optionally from `since` (when the file was
+imported) or with a book id from `minId` to `maxId`, the file name is read
+again as above. A field changes only where the book still has the value the
+import gave it: calibre's reading of the name (or, from the book's `added`
+event, a file title that says nothing), possibly changed since by the
+metadata cleanup's rules (`rules`, `model`, `authors` in the change log),
+never by a person or an online source. Publisher, year and series only fill
+empty fields. Every change goes to the metadata change log with source
+`rules` (revertible on the Metadaten page or with the revert API, the book
+gets `auto-metadaten`), and the repaired books get a metadata run (target
+ids). The dry run (default) lists the planned changes `{bookId, file, field,
+old, new}`; running it again after an apply finds nothing left.
+
+```sh
+hub import repair --min-id 1153                    # dry run: the planned changes
+hub import repair --min-id 1153 --max-id 2000 --apply
 ```
 
 ## Category suggestions (local model)
@@ -643,7 +686,13 @@ Runs are jobs in a queue of their own, resumed after a restart:
 `POST /api/metadata/run`, nightly at `metadata.nightly` (off by default;
 incomplete books plus the author pass) and for every added book. A new
 book is classified only after its metadata run is done or failed (at most
-30 minutes later). "incomplete": books missing ISBN, publisher, date,
+30 minutes later). A book whose run times out or gets a server error from
+calibre-server or a source while calibre-server answers otherwise is tried
+3 times more (after 10, 20, 40 s), then marked failed, and the job goes on;
+calibre-server down (its health check fails) pauses the job until it answers
+again. Books still queued for a run that no running job has (left by a job
+that stopped early) get a job of their own on the next pass of the event
+watcher, so no added book misses its run. "incomplete": books missing ISBN, publisher, date,
 language or description, or with messy names; books checked in the last 30
 days without a failed source are skipped. Requests to a source are spaced
 by `metadata.requestInterval` ms (Hardcover allows about 60 a minute, the
@@ -737,6 +786,7 @@ hub upload dune.pdf --add-format-to 12
 hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
 hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
 hub import alt                           # backlog import: dry run, --apply imports, --limit N a portion
+hub import repair --min-id 1153          # names of plain-file imports read again: dry run, --apply changes
 ```
 
 Every command has `--help` and `--json` (the API's JSON; on errors

@@ -3,6 +3,7 @@ require "json"
 require "kemal"
 require "./backlog"
 require "./covers"
+require "./meta_filename"
 require "./writer"
 require "./api"
 
@@ -42,6 +43,8 @@ module CalibreHub
       # run up with how many were done then (the rate leaves out restarts)
       @current = {} of String => String
       @base = {} of String => {Time::Instant, Int32}
+      # folder -> how its files are named (Meta::FileName.orientation)
+      @hints = {} of String => Symbol?
       @scans = ImportScans.new(db, calibre, writer, self)
     end
 
@@ -534,8 +537,12 @@ module CalibreHub
           @calibre.set_fields(id, opf.changes)
           unit.cover.try { |c| cover(id, c) }
         else
-          # tags embedded in the file are dropped, like in the inbox
-          @calibre.set_fields(id, {"tags" => JSON.parse("[]")})
+          # tags embedded in the file are dropped, like in the inbox; title,
+          # authors, publisher, year and series from the file name where
+          # calibre has only its own reading of it ("Title - Author")
+          fields = {"tags" => JSON.parse("[]")}
+          @calibre.book(id).try { |b| fields.merge!(ImportJobs.name_fields(b, primary.path, hint(unit.dir))) }
+          @calibre.set_fields(id, fields)
           book = @calibre.book(id)
           if book && (hit = ix.match_book(book))
             @calibre.remove([id], permanent: true)
@@ -571,6 +578,31 @@ module CalibreHub
       unit.status = "imported"
       unit.detail = notes.join("; ").presence
       @writer.written([id])
+    end
+
+    # set-fields changes from the file name of a book calibre just added
+    # from that file (Meta::FileName): its title and authors where calibre
+    # read them from the name (or the file's title says nothing), the
+    # publisher, year and series where the file has none
+    def self.name_fields(book : Book, path : String, hint : Symbol?) : Hash(String, JSON::Any)
+      name = File.basename(path)
+      guess = Meta::FileName.parse(name, hint) || return {} of String => JSON::Any
+      changes = Meta::FileName.changes(book, name, guess, ->(field : String) { Meta::Merge.value(book, field).as(JSON::Any?) })
+      return {} of String => JSON::Any if changes.empty?
+      Edit.changes(Meta::Merge.patch(book, changes.to_h { |c| {c.field, c.new} }), book, nil)
+    end
+
+    # How the folder's book files are named (Meta::FileName.orientation),
+    # for names that could be read either way
+    private def hint(dir : String) : Symbol?
+      @hints.clear if @hints.size > 500
+      return @hints[dir] if @hints.has_key?(dir)
+      names = begin
+        Dir.children(dir).select { |n| Backlog::Scanner.format(n) }
+      rescue File::Error
+        [] of String
+      end
+      @hints[dir] = Meta::FileName.orientation(names)
     end
 
     # the unit is the book `id` already has: only its missing formats

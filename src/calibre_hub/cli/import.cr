@@ -10,6 +10,7 @@ module CalibreHub
         when "status"  then import_status
         when "cleanup" then import_cleanup(args)
         when "undo"    then import_undo(args)
+        when "repair"  then import_repair(args)
         else                import_paths(args.positional, args)
         end
       end
@@ -207,6 +208,31 @@ module CalibreHub
           return @out.puts result.to_json if @json
           cleanup_entries(result["entries"].as_a)
           @out.puts "#{result["total"]} books get their category and tags back, dry run (--apply does it)"
+        end
+      end
+
+      # hub import repair [--since TIME] [--min-id N] [--max-id N] [--apply]
+      private def import_repair(args : Args)
+        body = {} of String => JSON::Any
+        args["since"]?.try { |s| body["since"] = JSON::Any.new(s) }
+        args["min-id"]?.try { |v| body["minId"] = JSON::Any.new(Runner.id(v)) }
+        args["max-id"]?.try { |v| body["maxId"] = JSON::Any.new(Runner.id(v)) }
+        apply = args.flag?("apply")
+        body["dryRun"] = JSON::Any.new(!apply)
+        result = client.post("/api/import/repair", body)
+        changes = result["changes"].as_a
+        if apply && (job_id = result["job"]?.try(&.["id"]?).try(&.as_s?))
+          job = wait_job(job_id, result["books"].as_i64)
+          return @out.puts job.to_json if @json
+          @out.puts "repair: #{job["status"]}, #{job["done"]} books, #{changes.size} changes planned (revert: Metadaten page or POST /api/metadata/changes/revert)"
+          raise Failure.new(SERVER, "") unless job["status"]? == "done"
+        else
+          return @out.puts result.to_json if @json
+          rows = changes.map do |c|
+            [c["bookId"].to_s, c["field"].as_s, Output.value(c["old"]?), Output.value(c["new"]?), File.basename(c["file"].as_s)]
+          end
+          Output.table(@out, ["ID", "Field", "Now", "From the file name", "File"], rows) unless rows.empty?
+          @out.puts "#{result["books"]} books, #{result["total"]} changes#{apply ? "" : ", dry run (--apply changes them)"}"
         end
       end
 
