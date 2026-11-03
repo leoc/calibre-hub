@@ -65,7 +65,18 @@ module CalibreHub
         if category && (col = @category_column)
           changes["##{col}"] = JSON::Any.new(category)
         end
-        @calibre.set_fields(id, changes)
+        begin
+          @calibre.set_fields(id, changes)
+        rescue ex
+          # no half imported book (embedded tags, no category): the next
+          # pass would take the file for a duplicate of it
+          begin
+            @calibre.remove([id], permanent: true)
+          rescue cleanup
+            STDERR.puts "inbox: removing half imported ##{id} failed: #{cleanup.message}"
+          end
+          raise ex
+        end
         @detector.touch([id]).each { |e| puts e.to_json }
         move(path, rel, "_imported", now)
         puts "inbox: imported #{rel} as ##{id}"
