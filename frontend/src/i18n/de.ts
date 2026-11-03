@@ -157,6 +157,7 @@ export const de = {
   "trash.restore": "Wiederherstellen",
   "trash.restored": "„{title}“ ist wieder in der Bibliothek.",
   "trash.open": "Öffnen",
+  "trash.listsFailed": "In seine Listen kam es dabei nicht zurück",
   "trash.error": "Wiederherstellen fehlgeschlagen",
   "dup.title": "Duplikate",
   "dup.hint": "Bücher, die nach gleicher ISBN, gleicher Datei oder gleichem Titel und Autor wie dasselbe Buch aussehen. Beim Zusammenführen bleibt ein Buch; es übernimmt fehlende Formate, Angaben, Tags, Listen und den Lesestand, die anderen kommen in den Papierkorb. Rückgängig machen geht jederzeit unter „Zuletzt zusammengeführt“.",

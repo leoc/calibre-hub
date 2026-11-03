@@ -444,7 +444,9 @@ module CalibreHub
         sums = [] of {Int64, String, Int64}
         begin
           db.query_each("select book_id, partial_md5, size from file_checksums") { |rs| sums << {rs.read(Int64), rs.read(String), rs.read(Int64)} }
-        rescue DB::Error | SQLite3::Exception
+        rescue ex : DB::Error | SQLite3::Exception
+          # files the hub rewrote then match by title and author only
+          STDERR.puts "import: no checksums of rewritten files: #{ex.message}"
         end
         Index.new(books, files, sums)
       end
@@ -550,7 +552,9 @@ module CalibreHub
           n = File.open(path) { |io| io.read(head) }
           {BookFiles.partial_md5(path), Digest::MD5.hexdigest(head[0, n])}
         end
-      rescue File::Error | IO::Error
+      rescue ex : File::Error | IO::Error
+        # no file match for it, only title and author
+        STDERR.puts "import: reading #{path} failed: #{ex.message}"
         nil
       end
     end

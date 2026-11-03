@@ -102,6 +102,12 @@ module CalibreHub
 
     # Adds the book again; returns the new book
     def restore(id : Int64) : Book
+      restore_with_warning(id)[0]
+    end
+
+    # The new book, and what went wrong after it was back (it is, but e.g.
+    # not in its lists again)
+    def restore_with_warning(id : Int64) : {Book, String?}
       @mutex.synchronize do
         entry = self[id]? || raise Writer::NotFound.new
         book_id = @calibre.add_empty(@read_metadata.call(entry.dir))
@@ -124,12 +130,14 @@ module CalibreHub
         @db.exec "insert or replace into trash_restored (trash_id, deleted_at, book_id, restored_at) values (?, ?, ?, ?)",
           id, entry.deleted_at.to_unix, book_id, Time.utc.to_unix
         @writer.written([book_id])
+        warning = nil
         begin
           @on_restore.try(&.call(id, book_id))
         rescue ex
           STDERR.puts "after restoring #{id} as #{book_id}: #{ex.message}"
+          warning = "restored, but not back in its lists: #{ex.message}"
         end
-        @calibre.book(book_id) || raise Writer::NotFound.new
+        {@calibre.book(book_id) || raise(Writer::NotFound.new), warning}
       end
     end
 

@@ -427,7 +427,13 @@ module CalibreHub
           env.response.status_code = created ? 201 : 200
           # a new book that looks like others (the hub's own detection,
           # beyond calibre's exact title and author check)
-          similar = created ? (writer.similar.try(&.call(book.id)) rescue nil) : nil
+          similar = begin
+            created ? writer.similar.try(&.call(book.id)) : nil
+          rescue ex
+            # the upload stands, only the hint is missing
+            STDERR.puts "upload: duplicate check for ##{book.id} failed: #{ex.message}"
+            nil
+          end
           similar ? {book: book, possibleDuplicates: similar}.to_json : {book: book}.to_json
         ensure
           File.delete?(upload.file)
@@ -592,7 +598,8 @@ module CalibreHub
     post "/api/trash/:id/restore" do |env|
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
-        {book: trash.restore(id)}.to_json
+        book, warning = trash.restore_with_warning(id)
+        warning ? {book: book, warning: warning}.to_json : {book: book}.to_json
       end
     end
   end

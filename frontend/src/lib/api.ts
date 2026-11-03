@@ -556,7 +556,7 @@ export const write = {
   patchBook: (id: number, patch: BookPatch) => request<Book>(`/api/books/${id}`, { method: "PATCH", ...json(patch) }),
   // into calibre's trash; returns the book as it was
   deleteBook: (id: number) => request<{ book: Book }>(`/api/books/${id}`, { method: "DELETE" }),
-  restore: (trashId: number) => request<{ book: Book }>(`/api/trash/${trashId}/restore`, { method: "POST" }),
+  restore: (trashId: number) => request<{ book: Book; warning?: string }>(`/api/trash/${trashId}/restore`, { method: "POST" }),
   bulk: (target: BulkTarget, changes: BulkChanges) =>
     request<{ jobId: string; total: number }>("/api/books/bulk", { method: "POST", ...json({ target, changes }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),

@@ -145,6 +145,16 @@ describe CalibreHub::Trash do
     end
   end
 
+  it "reports a restored book whose lists failed" do
+    library do |dir|
+      _, _, trash = setup(dir)
+      trash.on_restore = ->(_old : Int64, _new : Int64) { raise "database is locked" }
+      book, warning = trash.restore_with_warning(7)
+      book.id.should eq(42)
+      warning.should eq("restored, but not back in its lists: database is locked")
+    end
+  end
+
   it "removes a half restored book and keeps the entry" do
     library do |dir|
       fake, _, trash = setup(dir)

@@ -424,7 +424,9 @@ module CalibreHub
           next if m.restored.has_key?(old.to_s)
           trash = @trash
           if trash && trash[old]?
-            m.restored[old.to_s] = trash.restore(old).id
+            book, warning = trash.restore_with_warning(old)
+            m.restored[old.to_s] = book.id
+            warning.try { |w| errors << "##{old}: #{w}" }
             save(m)
           else
             errors << "##{old} is not in the trash any more"
