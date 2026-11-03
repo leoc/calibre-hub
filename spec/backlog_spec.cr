@@ -75,6 +75,8 @@ private class FakeCalibre
   property duplicate_titles = {} of String => Int64
   # what calibre "reads" from a file without OPF: file name -> {title, author, isbn}
   property file_meta = {} of String => {String, String, String?}
+  # books calibre lists but set-fields fails for (NoSuchBook, HTTP 500)
+  getter no_such_book = Set(Int64).new
   @next = 100_i64
 
   def initialize
@@ -104,7 +106,12 @@ private class FakeCalibre
       case path
       when %r{^/cdb/set-fields/(\d+)}
         id = $1.to_i64
-        b = @books[id]
+        b = @books[id]?
+        if b.nil? || @no_such_book.includes?(id)
+          ctx.response.status_code = 500
+          ctx.response.print "calibre.db.errors.NoSuchBook: 'No book with id: #{id} in database'"
+          next
+        end
         body["changes"].as_h.each do |k, v|
           if k == "added_formats"
             b["formats"] = JSON.parse((b["formats"].as_a.map(&.as_s) + v.as_a.map(&.["ext"].as_s.upcase)).uniq.to_json)
@@ -485,6 +492,69 @@ describe CalibreHub::ImportJobs do
       jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 1})
       fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "a1", "a2", "b1", "b2"]
       wait_run(jobs, jobs.start(["A", "B"], true)["id"].as_s)["summary"]["books"].should eq 0
+    end
+  end
+
+  it "matches only books still in the library and plans files of removed books again" do
+    tmpdir do |root|
+      # different past the first KiB, where the partial MD5 starts
+      %w(x y z w).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n * 2000)) }
+      fake = FakeCalibre.new
+      fake.add(1, "Bekannt", ["Alte Autorin"], ["PDF"])
+      calibre = fake.calibre
+      db = state_db
+      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
+      CalibreHub::BookFiles.create_checksums(db)
+      sum = ->(name : String) { {CalibreHub::BookFiles.partial_md5(File.join(root, name)), File.size(File.join(root, name))} }
+      # x.pdf was a file of #370, removed (calibre's trash) since; z.pdf one of #1
+      {"x.pdf" => 370_i64, "z.pdf" => 1_i64}.each do |name, id|
+        md5, size = sum.call(name)
+        db.exec "insert into file_checksums (book_id, format, partial_md5, size, recorded_at) values (?, 'PDF', ?, ?, 0)", id, md5, size
+      end
+      # an earlier run took y.pdf for a duplicate of #371, removed since, and w.pdf for one of #1
+      {"y.pdf" => 371_i64, "w.pdf" => 1_i64}.each do |name, id|
+        path = File.join(root, name)
+        info = File.info(path)
+        db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, ?, ?, 'duplicate', ?, 'old', 0)",
+          path, info.size, info.modification_time.to_unix, id
+      end
+
+      dry = wait_run(jobs, jobs.start(".", true)["id"].as_s)
+      dry["summary"]["alreadyImported"].should eq 1
+      dry["summary"]["books"].should eq 3
+      dry["summary"]["toAdd"].should eq 2
+      dry["summary"]["duplicates"]["file"].should eq 1
+
+      run = jobs.start(".", false)
+      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
+      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 2, "duplicate" => 1})
+      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "x", "y"]
+    end
+  end
+
+  it "fails only the unit of a book calibre-server errs on and goes on" do
+    tmpdir do |root|
+      cal = File.join(root, "A", "Bekannt (1)")
+      write(File.join(cal, "metadata.opf"), opf("Bekannt", "Alte Autorin"))
+      write(File.join(cal, "b.pdf"), pdf("b"))
+      write(File.join(root, "B", "neu.pdf"), pdf("n"))
+      fake = FakeCalibre.new
+      fake.add(1, "Bekannt", ["Alte Autorin"], ["EPUB"])
+      # calibre lists #1, but adding a format fails: NoSuchBook, HTTP 500
+      fake.no_such_book << 1_i64
+      calibre = fake.calibre
+      db = state_db
+      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
+      run = jobs.start(".", false)
+      job = wait_job(jobs, run["jobId"].as_s)
+      job.status.should eq "done"
+      job.error.should be_nil
+      job.errors.size.should eq 1
+      job.errors.first[:error].should contain("HTTP 500")
+      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"failed" => 1, "imported" => 1})
+      failed = jobs.report(run["id"].as_s).not_nil!["units"].as_a.find(&.["status"].==("failed")).not_nil!
+      failed["detail"].as_s.should contain("set-fields/1")
+      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "neu"]
     end
   end
 

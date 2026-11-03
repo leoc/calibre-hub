@@ -20,7 +20,9 @@ module CalibreHub
   # calibre reads from it (files with the same name and another extension in
   # the same folder are formats of one book). Everything else stays where it
   # is and is listed in the report. Nothing is moved or deleted: the state
-  # DB remembers every file it imported, so another run skips them.
+  # DB remembers every file it imported, so another run skips them, unless
+  # the book it went to is no longer in the library (removed, or in
+  # calibre's trash): then the file is planned again.
   #
   # Before adding, every book is checked against the library: the same file
   # (size and KOReader partial MD5, also of files the hub rewrote since), the
@@ -377,7 +379,9 @@ module CalibreHub
     # never different volumes, editions of a standard or numbers of a
     # series); a title needs an author in common and the same words
     # (TITLE_SIMILARITY), stricter than the duplicates page, where a person
-    # decides on the looser matches.
+    # decides on the looser matches. Only books in the library count:
+    # files and checksums of books removed since (calibre's trash
+    # included) are left out, they are no duplicates.
     class Index
       record Entry, book : Int64, path : String?
 
@@ -393,6 +397,8 @@ module CalibreHub
       @sums = {} of {Int64, String} => Int64
       @sum_sizes = Set(Int64).new
       @md5 = {} of String => {String, String}
+      # the library's books and the ones a run added
+      @ids = Set(Int64).new
       # pseudo ids of books a dry run would add -> their folder or file
       getter planned = {} of Int64 => String
 
@@ -404,10 +410,13 @@ module CalibreHub
           Fiber.yield if i % 256 == 255
         end
         library_files.each do |book, format, path, size|
+          next unless @ids.includes?(book)
           (@formats[book] ||= Set(String).new) << format.upcase
           (@by_size[size] ||= [] of Entry) << Entry.new(book, path)
         end
         checksums.each do |book, md5, size|
+          # file_checksums keeps the rows of books removed since
+          next unless @ids.includes?(book)
           @sums[{size, md5}] = book
           @sum_sizes << size
         end
@@ -437,13 +446,20 @@ module CalibreHub
         Index.new(books, files, sums)
       end
 
+      # the book is in the library (or a run added it)
+      def exists?(id : Int64) : Bool
+        @ids.includes?(id)
+      end
+
       def add_book(b : Book)
+        @ids << b.id
         (@formats[b.id] ||= Set(String).new).concat(b.formats.map(&.upcase))
         add_item(Dedup::Item.new(b))
       end
 
       # a book from a calibre folder's metadata.opf (added, or a dry run's pseudo id)
       def add_meta(id : Int64, meta : OpfMeta)
+        @ids << id if id > 0
         add_item(Dedup::Item.new(Backlog.book(id, meta)))
       end
 

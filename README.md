@@ -391,10 +391,14 @@ or tags, and nothing is moved or deleted.
   Files without an OPF are checked by file before adding and right after by
   what calibre read from them: calibre's own title/author check, then ISBN
   and title/author (the new book is removed again). A duplicate is skipped,
-  or adds the formats the library's book lacks (`formatAdded`).
+  or adds the formats the library's book lacks (`formatAdded`). Only books
+  in the library count: files and checksums of books removed since (also
+  those in calibre's trash) match nothing.
 - The state DB keeps every file a run handled (`import_files`: path, size,
   mtime, book), so another run of the same folder skips them ("imported
-  before") and only takes new or changed files.
+  before") and only takes new or changed files. A file whose book is no
+  longer in the library (it was imported, a duplicate of or a format added
+  to a book removed or trashed since) is planned again by the next run.
 
 A run is a job: the request returns at once, the job scans the folders and
 plans (a large backlog takes minutes; the API stays responsive, the run
@@ -407,7 +411,9 @@ book is listed and tried again by the next run. There is no stability wait
 per file, and while an import runs the metadata, classify, convert and
 embed hooks pause (`hooksPaused`), so calibre-server only adds books;
 afterwards they work off the new books' events as for any added book.
-calibre-server down: the job waits (20 x 15 s), then stops as failed.
+calibre-server down: the job waits (20 x 15 s), then stops as failed. A
+server error for one book (e.g. calibre's `NoSuchBook`) while calibre-server
+answers a plain search fails only that book, and the run goes on.
 
 Several folders can go into one run (`paths`), and `limit` imports a
 portion: the first N books in scan order (folders as given, then sorted)

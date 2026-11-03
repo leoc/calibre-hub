@@ -99,10 +99,14 @@ module CalibreHub
       real
     end
 
-    def known : Backlog::Known
+    # The files earlier runs handled; with an index, without those whose
+    # book (imported, a duplicate of or a format added to) is no longer in
+    # the library: they are planned again
+    def known(index : Backlog::Index? = nil) : Backlog::Known
       k = Backlog::Known.new
       @db.query_each("select path, size, mtime, status, book_id from import_files") do |rs|
         path, size, mtime, status, book = rs.read(String, Int64, Int64, String, Int64?)
+        next if index && book && !index.exists?(book)
         k[path] = {size, mtime, status, book}
       end
       k
@@ -155,12 +159,12 @@ module CalibreHub
         nil
       end
       progress.call(0, 0, 0, true)
-      scanner = Backlog::Scanner.new(dirs, known)
+      index = with_retry { Backlog::Index.load(@calibre, @library, @db) }
+      scanner = Backlog::Scanner.new(dirs, known(index))
       scanner.on_progress = ->(files : Int32, units : Int32) { progress.call(files, units, 0, false) }
       scanner.run
       units = scanner.units
       progress.call(scanner.files, units.size, 0, true)
-      index = with_retry { Backlog::Index.load(@calibre, @library, @db) }
       Backlog.plan_all(units, index) { |n| progress.call(scanner.files, units.size, n, false) }
       progress.call(scanner.files, units.size, units.size, true)
       taken = Backlog.take(units, limit)
@@ -288,17 +292,33 @@ module CalibreHub
       end
     end
 
-    # calibre-server down: wait, then stop the job (resumed by another run)
-    private def with_retry(&)
+    # calibre-server failed on one book (e.g. calibre's NoSuchBook, an
+    # HTTP 500) while it answers otherwise: that unit fails, the run goes on
+    class BookFailed < Exception
+    end
+
+    # calibre-server down: wait, then stop the job (resumed by another run).
+    # book: the call is about one book; when calibre-server answers a
+    # plain search, the error is that book's (BookFailed), no outage.
+    private def with_retry(book = false, &)
       attempts = 0
       loop do
         return yield
       rescue ex : Calibre::Unavailable
+        raise BookFailed.new(ex.message) if book && healthy?
         attempts += 1
         raise Jobs::Abort.new("calibre-server unavailable: #{ex.message}") if attempts > @retries
         STDERR.puts "import: #{ex.message}, retrying in #{@retry_wait.total_seconds.to_i} s"
         sleep @retry_wait
       end
+    end
+
+    # calibre-server answers a cheap search
+    private def healthy? : Bool
+      @calibre.search("", "id", true, 0, 1)
+      true
+    rescue Calibre::Error
+      false
     end
 
     def import(unit : Backlog::Unit, ix : Backlog::Index)
@@ -322,7 +342,7 @@ module CalibreHub
           notes << "#{File.basename(f.path)} too large for another format"
           next
         end
-        with_retry { @calibre.add_format(id, f.path, f.format.downcase) }
+        with_retry(book: true) { @calibre.add_format(id, f.path, f.format.downcase) }
         added << f
       end
       ix.add_files(id, added)
@@ -338,7 +358,7 @@ module CalibreHub
       opf = unit.meta
       # a calibre folder was checked against the library already; a plain
       # file gets calibre's title/author check too
-      result = with_retry { @calibre.add_book(primary.path, File.basename(primary.path), duplicates: !opf.nil?) }
+      result = with_retry(book: true) { @calibre.add_book(primary.path, File.basename(primary.path), duplicates: !opf.nil?) }
       id = result.book_id
       unless id
         existing = @writer.duplicate_books(result.duplicates).first?

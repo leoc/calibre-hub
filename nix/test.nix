@@ -1209,6 +1209,22 @@ pkgs.testers.runNixOSTest {
         assert [u["files"][0]["path"] for u in last] == [f"{ALT}/Teil2/Drittes Stueck.pdf"], last
         assert api("GET", f"/api/books/{last[0]['bookId']}")[1]["formats"] == ["PDF"], last
 
+        # a book moved to calibre's trash is no longer in the library: its
+        # file is no duplicate and not "imported before", the next run imports it again
+        gone = last[0]["bookId"]
+        status, r = api("DELETE", f"/api/books/{gone}")
+        assert status == 200, (status, r)
+        assert any(e["id"] == gone for e in api("GET", "/api/trash")[1])
+        status, run = api("POST", "/api/import", {"paths": ["Teil1", "Teil2"], "limit": 2, "dryRun": False})
+        assert status == 202, (status, run)
+        j = wait_job(run["jobId"], 180)
+        assert j["status"] == "done" and j["errors"] == [], j
+        run = api("GET", f"/api/import/runs/{run['id']}")[1]
+        assert run["results"] == {"imported": 1} and run["summary"]["alreadyImported"] == 2, run
+        again = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"]
+        assert [u["files"][0]["path"] for u in again] == [f"{ALT}/Teil2/Drittes Stueck.pdf"], again
+        assert again[0]["bookId"] != gone and api("GET", f"/api/books/{again[0]['bookId']}")[0] == 200, again
+
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
         assert ib["custom"]["kategorie"] == "Roman.Krimi" and {"Krimi", "Roman"} <= set(ib["tags"]), ib
