@@ -21,6 +21,7 @@ import { LibraryLink } from "@/components/library-link"
 import { ReadButton } from "./reading"
 import { OfflineButton } from "./offline"
 import { readerFormat, sortFormats } from "@/lib/reader"
+import { sanitize } from "@/lib/sanitize"
 import { useIsAdmin } from "@/lib/session"
 
 export { sortFormats } from "@/lib/reader"
@@ -200,22 +201,6 @@ function Breadcrumb({ path, onNavigate }: { path: string; onNavigate?: () => voi
       ))}
     </span>
   )
-}
-
-// calibre comments are HTML from the user's own library; strip scripts,
-// handlers and styles anyway before rendering.
-export function sanitize(html: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html")
-  doc.querySelectorAll("script,style,iframe,object,embed,link,meta,form").forEach((n) => n.remove())
-  doc.querySelectorAll("*").forEach((el) => {
-    for (const a of [...el.attributes]) {
-      if (a.name.startsWith("on") || a.name === "style" || ((a.name === "href" || a.name === "src") && /^\s*javascript:/i.test(a.value))) {
-        el.removeAttribute(a.name)
-      }
-    }
-    if (el.tagName === "A") el.setAttribute("rel", "noopener noreferrer")
-  })
-  return doc.body.innerHTML
 }
 
 function Comments({ html }: { html: string }) {

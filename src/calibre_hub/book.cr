@@ -28,7 +28,8 @@ module CalibreHub
     getter identifiers : Hash(String, String)
     getter languages : Array(String)
     @[JSON::Field(emit_null: false)]
-    getter comments : String?
+    # property: Calibre#list cleans it (Sanitizer)
+    property comments : String?
     getter custom : Hash(String, JSON::Any)
     # ids of the reading lists the book is in (set by the API, never in
     # the snapshot)

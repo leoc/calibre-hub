@@ -2,6 +2,7 @@ require "http/client"
 require "json"
 require "uri"
 require "./book"
+require "./sanitizer"
 
 module CalibreHub
   # Talks to calibre-server the way calibredb does: POST /cdb/cmd/<name>/<version>
@@ -33,7 +34,15 @@ module CalibreHub
     # calibredb list: fields, sort_by, ascending, search_text, limit
     def list(search = "", fields = FIELDS) : Array(Book)
       requested = fields + @custom_columns.map { |c| "*#{c}" }
-      Book.from_list(cmd("list", [requested, "id", true, search, -1]), @custom_columns)
+      books = Book.from_list(cmd("list", [requested, "id", true, search, -1]), @custom_columns)
+      return books unless fields.includes?("comments")
+      # comments come from book files too (upload, inbox, calibre's own
+      # import): the hub only ever hands out cleaned HTML (review #8411 H1)
+      books.map { |b| b.comments = Calibre.clean_comments(b.comments); b }
+    end
+
+    def self.clean_comments(html : String?) : String?
+      html.try { |h| Sanitizer.clean(h).presence }
     end
 
     # Up to this many ids go into one "id:1 or id:2 ..." search; calibre's
@@ -101,6 +110,10 @@ module CalibreHub
     # POST /cdb/set-fields: {"changes": {"tags": [...], "#kategorie": "A.B",
     # "added_formats": [{"ext": "epub", "data_url": "<base64>"}]}}
     def set_fields(book_id : Int64, changes : Hash(String, JSON::Any)) : Nil
+      # whatever writes comments (edits, metadata sources, merges, undo)
+      if (c = changes["comments"]?) && (s = c.as_s?)
+        changes = changes.merge({"comments" => JSON::Any.new(Calibre.clean_comments(s))})
+      end
       request("POST", "/cdb/set-fields/#{book_id}#{library_path}", {changes: changes, loaded_book_ids: [book_id]}.to_json)
     end
 
