@@ -106,6 +106,15 @@ test("E-Ink: metadata changes and candidates in the edit form", async ({ page })
   expect(await smallTargets(page, "[role=dialog]")).toEqual([])
 })
 
+test("E-Ink: the import page", async ({ page }) => {
+  await page.goto("/")
+  await expect(results(page)).toBeVisible()
+  await page.getByRole("link", { name: "Import", exact: true }).click()
+  await expect(page.getByRole("heading", { level: 1, name: "Import" })).toBeVisible()
+  await expect(page.getByRole("progressbar").first()).toBeVisible()
+  expect(await smallTargets(page)).toEqual([])
+})
+
 test("E-Ink: trash and login", async ({ page }) => {
   await page.goto("/")
   await expect(results(page)).toBeVisible()

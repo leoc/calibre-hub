@@ -140,25 +140,62 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
     return filterBooks(bookSearchParams(target.query))
   }
 
+  let importPolls = 0
+
   return [
-    // the backlog import: one dry run, one finished import, one cleanup
+    // the backlog import: a running import of 500 books (5 more each time
+    // it is polled), a dry run walking another folder, a finished import,
+    // a dry run and a cleanup
     http.get("/api/import", () => {
+      importPolls += 1
+      const done = Math.min(260 + importPolls * 5, 500)
       const summary = {
         books: 1240, files: 1530, formats: { PDF: 900, MOBI: 400, EPUB: 230 }, calibreFolders: 360, withCover: 340,
         toAdd: 1100, toAddFormats: 40, duplicates: { total: 100, isbn: 60, title: 30, file: 10 }, alreadyImported: 0,
         skipped: { total: 9800, byReason: { "not a book format": 9700, "too small": 100 }, byType: { mp3: 4505, flv: 3740 } },
       }
+      const backlogSummary = {
+        books: 17_900, files: 21_400, formats: { EPUB: 9000, PDF: 8000, MOBI: 900 }, calibreFolders: 6000, withCover: 5900,
+        toAdd: 17_500, toAddFormats: 100, duplicates: { total: 300, title: 200, isbn: 100 }, alreadyImported: 12,
+        limit: 500, selected: { books: 500, toAdd: 490, toAddFormats: 2, duplicates: 8 }, deferred: 17_400,
+        skipped: { total: 2100, byReason: { "not a book format": 2000, "too small": 100 }, byType: { jpg: 2000, txt: 100 } },
+      }
+      // of the running import: 2 failed, 8 duplicates, the rest imported
+      const imported = Math.max(done - 10, 0)
       return HttpResponse.json({
         enabled: true,
         roots: ["/srv/media/ebooks/inbox"],
-        running: false,
+        running: true,
         scanning: true,
-        hooksPaused: false,
+        hooksPaused: true,
+        phase: "import",
+        backlog: {
+          imported: 1100 + imported, formatAdded: 40, duplicates: 106,
+          open: { books: 17_500 - 10 - imported, formats: 100, duplicates: 292, failed: 2 },
+          total: 18_590,
+          basis: { runId: "r4", paths: ["/srv/media/ebooks/backlog"], createdAt: "2026-11-03T09:00:00Z" },
+          etaSeconds: 49_800,
+        },
+        followup: { paused: true, total: 1360, queues: { embed: 60, metadata: 1300 } },
         runs: [
-          { id: "r3", path: "/srv/media/ebooks/backlog", paths: ["/srv/media/ebooks/backlog"], dryRun: true, limit: 200,
-            createdAt: "2026-11-03T08:00:00Z", jobId: "j3", status: "scanning", done: null, total: 0, error: null,
-            scan: { files: 12840, units: 6210, planned: 0 }, summary: null, results: {} },
-          { id: "r2", path: "/srv/media/ebooks/inbox", dryRun: false, createdAt: "2026-11-02T20:10:00Z", jobId: "j2", status: "done",
+          { id: "r4", path: "/srv/media/ebooks/backlog", paths: ["/srv/media/ebooks/backlog"], dryRun: false, limit: 500,
+            createdAt: "2026-11-03T09:00:00Z", jobId: "j4", status: "running", phase: "import",
+            current: "/srv/media/ebooks/backlog/Fontane, Theodor/Effi Briest (412)",
+            startedAt: "2026-11-03T09:00:05Z", scannedAt: "2026-11-03T09:04:00Z", finishedAt: null,
+            elapsedSeconds: 3725, filesPerSecond: null, booksPerMinute: 21.5, etaSeconds: 250, done, total: 500, error: null,
+            scan: { files: 23_500, units: 17_900, planned: 17_900, phase: "check", path: null }, summary: backlogSummary,
+            results: { imported, duplicate: 8, failed: 2, pending: 500 - done, deferred: 17_400 },
+            failures: [
+              { path: "/srv/media/ebooks/backlog/Unbekannt/kaputt.pdf", detail: "calibre-server: HTTP 500 (NoSuchBook)" },
+              { path: "/srv/media/ebooks/backlog/Alt/Scan (3)", detail: "ebook-meta timed out" },
+            ] },
+          { id: "r3", path: "/srv/media/ebooks/neu", paths: ["/srv/media/ebooks/neu"], dryRun: true, limit: 200,
+            createdAt: "2026-11-03T08:00:00Z", jobId: "j3", status: "scanning", phase: "scan", current: "/srv/media/ebooks/neu/Comics/Asterix",
+            startedAt: "2026-11-03T08:00:01Z", scannedAt: null, finishedAt: null, elapsedSeconds: 95, filesPerSecond: 135.2, booksPerMinute: null,
+            etaSeconds: null, done: null, total: 0, error: null,
+            scan: { files: 12840, units: 6210, planned: 0, phase: "scan", path: "/srv/media/ebooks/neu/Comics/Asterix" }, summary: null, results: {}, failures: [] },
+          { id: "r2", path: "/srv/media/ebooks/inbox", dryRun: false, createdAt: "2026-11-02T20:10:00Z", jobId: "j2", status: "done", phase: "done",
+            startedAt: "2026-11-02T20:10:00Z", scannedAt: "2026-11-02T20:11:00Z", finishedAt: "2026-11-02T21:12:30Z", elapsedSeconds: 3750, booksPerMinute: 20.2,
             done: 1240, total: 1240, error: null, summary, results: { imported: 1100, formatAdded: 40, duplicate: 98, failed: 2 } },
           { id: "r1", path: "/srv/media/ebooks/inbox", dryRun: true, createdAt: "2026-11-02T20:00:00Z", jobId: null, status: "planned",
             done: null, total: 1240, error: null, summary, results: { pending: 1240 } },

@@ -72,13 +72,17 @@ export const metadataStatusQuery = queryOptions({
   refetchInterval: (q) => (q.state.data?.running ? 1500 : false),
 })
 
-// backlog import runs and cleanups; polls while one runs
+// backlog import runs and cleanups; polls while one runs, slower while
+// the hooks work off the imported books
 export const importStatusQuery = queryOptions({
   queryKey: ["import-status"],
   queryFn: api.importStatus,
   staleTime: 30_000,
-  refetchInterval: (q) =>
-    q.state.data?.running || q.state.data?.scanning || q.state.data?.cleanups.some((c) => c.job?.status === "running" || c.undoJob?.status === "running") ? 2000 : false,
+  refetchInterval: (q) => {
+    const d = q.state.data
+    if (d?.running || d?.scanning || d?.cleanups.some((c) => c.job?.status === "running" || c.undoJob?.status === "running")) return 2000
+    return d?.followup?.total ? 10_000 : false
+  },
 })
 
 export const metadataChangesQuery =(query: MetadataChangesQuery = {}) =>

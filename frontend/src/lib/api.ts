@@ -176,11 +176,23 @@ export interface ImportRun {
   createdAt: string
   jobId: string | null
   status: "scanning" | "planned" | "running" | "done" | "failed" | "gone"
+  // scan (walking the folders), check (against the library), import, else the status
+  phase?: "scan" | "check" | "import" | "planned" | "done" | "failed" | "gone"
+  // the folder (scan) or book (check, import) it is at
+  current?: string | null
+  startedAt?: string | null
+  scannedAt?: string | null
+  finishedAt?: string | null
+  elapsedSeconds?: number | null
+  filesPerSecond?: number | null
+  booksPerMinute?: number | null
+  // while checking and importing
+  etaSeconds?: number | null
   done: number | null
   total: number
   error: string | null
   // files looked at, books found, books checked against the library
-  scan?: { files: number; units: number; planned: number } | null
+  scan?: { files: number; units: number; planned: number; phase?: "scan" | "check"; path?: string | null } | null
   // null while the scan runs (or when it failed)
   summary: {
     books: number
@@ -198,6 +210,27 @@ export interface ImportRun {
     skipped: { total: number; byReason: Record<string, number>; byType: Record<string, number> }
   } | null
   results: Record<string, number>
+  // the first failed books with the reason
+  failures?: { path: string; detail: string | null }[]
+}
+
+// The whole backlog: imported by every run so far, open by the latest scanned run
+export interface ImportBacklog {
+  imported: number
+  formatAdded: number
+  duplicates: number
+  open: { books: number; formats: number; duplicates: number; failed: number }
+  // new books: imported and still to add
+  total: number
+  basis: { runId: string; paths: string[]; createdAt: string } | null
+  etaSeconds: number | null
+}
+
+// books the hooks still have to work off after imports
+export interface ImportFollowup {
+  paused: boolean
+  total: number
+  queues: Record<string, number>
 }
 
 export interface ImportCleanup {
@@ -214,6 +247,10 @@ export interface ImportStatus {
   running?: boolean
   scanning?: boolean
   hooksPaused?: boolean
+  // where the backlog import is now, null when idle
+  phase?: "scan" | "check" | "import" | "followup" | null
+  backlog?: ImportBacklog
+  followup?: ImportFollowup
   runs?: ImportRun[]
   cleanups: ImportCleanup[]
 }
