@@ -16,7 +16,8 @@ module CalibreHub
   # "<base64 payload>.<base64 hmac>", payload {"u": user, "exp": unix}.
   # Sliding expiry: every authenticated request re-issues the cookie. The
   # role is looked up on every request, so a changed role or a removed user
-  # takes effect at once.
+  # takes effect at once. The signature's key depends on the user's
+  # password, so a new password ends all their sessions (review #8411 M1).
   class Auth
     COOKIE = "hub_session"
     # Unsafe methods need this header; a cross-site form cannot set it.
@@ -151,8 +152,9 @@ module CalibreHub
     end
 
     def cookie(now = Time.utc, user : String = self.user) : HTTP::Cookie
+      account = @accounts.find { |a| a.name == user } || raise ArgumentError.new("unknown user #{user}")
       payload = Base64.urlsafe_encode({u: user, exp: (now + @lifetime).to_unix}.to_json, padding: false)
-      HTTP::Cookie.new(COOKIE, "#{payload}.#{sign(payload)}",
+      HTTP::Cookie.new(COOKIE, "#{payload}.#{sign(payload, account)}",
         path: "/", expires: now + @lifetime, http_only: true, secure: @secure,
         samesite: HTTP::Cookie::SameSite::Strict)
     end
@@ -163,16 +165,19 @@ module CalibreHub
     end
 
     # The user of a valid session cookie, else nil (also when the user is
-    # no longer configured)
+    # no longer configured or has a new password)
     def session_user(value : String?, now = Time.utc) : String?
       return nil unless value
       payload, _, signature = value.partition('.')
       return nil if payload.empty? || signature.empty?
-      return nil unless Crypto::Subtle.constant_time_compare(signature, sign(payload))
+      # the user names the key to check the signature with; nothing else of
+      # the payload counts before that check
       data = JSON.parse(Base64.decode_string(payload))
-      return nil if data["exp"].as_i64 < now.to_unix
       name = data["u"].as_s
-      role(name) ? name : nil
+      account = @accounts.find { |a| a.name == name } || return nil
+      return nil unless Crypto::Subtle.constant_time_compare(signature, sign(payload, account))
+      return nil if data["exp"].as_i64 < now.to_unix
+      name
     rescue Base64::Error | JSON::ParseException | KeyError | TypeCastError
       nil
     end
@@ -192,8 +197,9 @@ module CalibreHub
       nil
     end
 
-    private def sign(payload : String) : String
-      Base64.urlsafe_encode(OpenSSL::HMAC.digest(:sha256, @key, payload), padding: false)
+    private def sign(payload : String, account : Account) : String
+      key = OpenSSL::HMAC.digest(:sha256, @key, account.password)
+      Base64.urlsafe_encode(OpenSSL::HMAC.digest(:sha256, key, payload), padding: false)
     end
   end
 

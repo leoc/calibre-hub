@@ -26,7 +26,7 @@ can't log in.
 
 | Route | |
 |---|---|
-| `POST /api/session` `{user, password}` | login, sets `hub_session` (30 days, renewed on use); 429 after 5 failures in 15 min |
+| `POST /api/session` `{user, password}` | login, sets `hub_session` (30 days, renewed on use; a new password ends the user's sessions); 429 after 5 failures in 15 min |
 | `GET /api/session`, `DELETE /api/session` | current user `{user, role}` (role `admin` or `reader`), logout |
 | `GET /api/books` | `q` (calibre search syntax), `kategorie` (incl. children), `tag` (repeatable), `author`, `series`, `sort` (title, author, added, modified, published, series, rating), `order` (asc, desc), `offset`, `limit` (≤ 500); returns `{total, offset, limit, books}`; every book has `lists` (ids of the reading lists it is in). With `list=<id>` only the books of that list and its sublists (`direct=1`: only its own), `sort` then listAdded (default, newest first), title, author or series; `listPath=Urlaub` (`listOwner`, default the user) does the same for a level that may have no list of its own (404 when nothing is below it) |
 | `GET /api/books/:id` | one book incl. `comments` and `lists` |

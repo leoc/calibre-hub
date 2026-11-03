@@ -20,6 +20,20 @@ describe CalibreHub::Auth do
     auth.session_user(other.cookie.value).should be_nil
   end
 
+  it "ends the sessions of a user with a new password" do
+    old = auth.cookie.value
+    CalibreHub::Auth.new("arthur", "neu", ("k" * 32).to_slice).session_user(old).should be_nil
+    auth.session_user(old).should eq("arthur")
+  end
+
+  it "rejects a cookie of one user renamed to another" do
+    a = users
+    value = a.cookie(user: "lea").value
+    payload, _, signature = value.partition('.')
+    forged = Base64.urlsafe_encode(String.new(Base64.decode(payload)).sub(%("lea"), %("arthur")), padding: false)
+    a.session_user("#{forged}.#{signature}").should be_nil
+  end
+
   it "expires sessions" do
     a = auth(lifetime: 1.day)
     value = a.cookie(Time.utc - 2.days).value
