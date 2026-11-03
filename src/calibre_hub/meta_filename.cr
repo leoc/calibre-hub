@@ -688,7 +688,10 @@ module CalibreHub
         read = readings(name, hint) || return nil
         gs, how = read
         changes = changes(book, name, gs.first, imported, source)
-        return {changes, how} unless how == UNCLEAR && changes.any? { |c| NAME_FIELDS.includes?(c.field) }
+        unless how == UNCLEAR && changes.any? { |c| NAME_FIELDS.includes?(c.field) }
+          # title and authors stay anyway: nothing to decide
+          return {changes, how == UNCLEAR ? NAME : how}
+        end
         if g = decide_by_file(book, name, gs)
           return {changes(book, name, g, imported, source), "file"}
         end
