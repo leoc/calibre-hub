@@ -219,10 +219,15 @@ mirrors every reading list with `sync` into a folder of its own below
 `leseliste.target` (`<target>/<list name>/Author - Series NN - Title.epub`;
 epub, else pdf, else converted). A book in two synced lists is in both
 folders; a book that leaves a list (or is deleted) loses its file, a
-renamed list renames its folder, a list no longer synced loses its folder.
+renamed list renames its folder, a list no longer synced loses its files
+(and its folder once nothing else is in it).
 Nested lists nest their folders (`<target>/Urlaub/2026/…`); a synced list
 takes its sublists along, unsynced ones too.
-It reads the lists from the state DB, read-only.
+It reads the lists from the state DB, read-only. It only ever removes files
+it copied itself, recorded in `<target>/.calibre-hub-files`: what the
+e-reader keeps next to a book (KOReader's `<book>.sdr/` with progress,
+highlights and notes), files put there by hand and anything from before the
+record existed stay where they are, also when their book leaves the list.
 
 ## Book files
 

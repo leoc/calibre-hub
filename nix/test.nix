@@ -381,10 +381,13 @@ pkgs.testers.runNixOSTest {
         assert status == 200 and u["name"] == "Sommer", (status, u)
         machine.wait_until_succeeds("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
         machine.succeed("test ! -e /srv/books/boox/Urlaub")
-        # removing a book removes its file
+        # removing a book removes its file, not what the e-reader keeps next to it
+        machine.succeed("mkdir '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr' && echo x > '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr/metadata.epub.lua'")
         status, r = api("DELETE", f"/api/lists/{u['id']}/books/1")
         assert status == 200 and r["removed"] == [1] and r["list"]["count"] == 0, (status, r)
         machine.wait_until_succeeds("! test -e '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        machine.succeed("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr/metadata.epub.lua'")
+        machine.succeed("rm -r '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr'")
         machine.succeed("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'")
         status, r = api("POST", f"/api/lists/{u['id']}/books", {"target": {"query": {"q": "title:Testbuch"}}})
         assert status == 200 and r["added"] == [1], (status, r)

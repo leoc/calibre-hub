@@ -15,14 +15,27 @@ module CalibreHub
   # books that left a list (or of lists no longer synced) are removed; a
   # renamed list renames its folder (with its sublists' folders inside).
   #
+  # Only files the handler copied itself are ever removed: it records them
+  # in <target>/.calibre-hub-files (one path per line, relative to the
+  # target). Everything else in the folder stays, above all what the
+  # e-reader writes next to the books, such as KOReader's "<book>.sdr"
+  # folders with progress, highlights and notes: when a book leaves the
+  # list its sidecar stays where it is (and finds the book again when it
+  # comes back), and so does the list's folder while anything else is in
+  # it. A file the record doesn't know (put there by hand, or from before
+  # the record existed) is never touched. The record lives in the target,
+  # not in the hub's state DB, which the handler only reads, and so it
+  # never claims files of another target.
+  #
   # Reads the hub's state DB (lists) and metadata.db (paths) read-only;
   # writes only via calibre-server. Environment: LESELISTE_TARGET,
   # LESELISTE_FORMATS, CALIBRE_HUB_STATE_DB, CALIBRE_HUB_LIBRARY and the
   # calibre-server settings of the hub (for adding converted formats).
   module Leseliste
     CONVERTIBLE = %w(AZW3 MOBI AZW KEPUB FB2 LIT DOCX RTF HTMLZ TXT)
-    KEEP        = {".stfolder", ".stignore", ".stversions"}
-    RELEVANT    = %w(title authors authorSort series seriesIndex formats)
+    # the files the handler copied, relative to the target
+    MANIFEST = ".calibre-hub-files"
+    RELEVANT = %w(title authors authorSort series seriesIndex formats)
 
     record Wanted, rel : String, src : String
     # own: synced itself, not only as a sublist of a synced list
@@ -136,6 +149,10 @@ module CalibreHub
       return if from == to || !Dir.exists?(from) || File.exists?(to)
       Dir.mkdir_p(File.dirname(to))
       File.rename(from, to)
+      # the copied files moved along, and stay the handler's
+      prefix = folder(before) + "/"
+      moved = manifest(target).map { |r| r.starts_with?(prefix) ? folder(after) + "/" + r.lchop(prefix) : r }
+      write_manifest(target, moved) if File.exists?(File.join(target, MANIFEST))
       puts "#{folder(before)} -> #{folder(after)}"
     rescue ex : File::Error
       puts "renaming the folder of #{before} failed: #{ex.message}"
@@ -223,8 +240,7 @@ module CalibreHub
         puts "+ #{w.rel}"
       end
 
-      keep = wanted.map { |w| File.join(target, w.rel) }.to_set
-      prune(target, target, keep)
+      prune(target, wanted.map(&.rel).to_set)
     end
 
     def self.series_number(idx : Float64) : String
@@ -237,17 +253,47 @@ module CalibreHub
       c.empty? ? "_" : c
     end
 
-    private def self.prune(dir : String, root : String, keep : Set(String))
-      Dir.each_child(dir) do |name|
-        next if KEEP.includes?(name)
-        path = File.join(dir, name)
-        if File.directory?(path)
-          prune(path, root, keep)
-          Dir.delete(path) if Dir.empty?(path)
-        elsif !keep.includes?(path)
-          File.delete(path)
-          puts "- #{path.lchop(root).lchop('/')}"
+    # Removes the files the handler copied that are no longer wanted, and
+    # the folders that leaves empty; then records what it copied now
+    private def self.prune(target : String, wanted : Set(String))
+      kept = [] of String
+      manifest(target).each do |rel|
+        next if wanted.includes?(rel)
+        path = File.join(target, rel)
+        begin
+          if File.file?(path) && !File.symlink?(path)
+            File.delete(path)
+            puts "- #{rel}"
+          end
+          remove_empty_parents(File.dirname(path), target)
+        rescue ex : File::Error
+          # stays recorded, the next run tries again
+          puts "removing #{rel} failed: #{ex.message}"
+          kept << rel
         end
+      end
+      write_manifest(target, (wanted.to_a + kept).sort)
+    end
+
+    def self.manifest(target : String) : Array(String)
+      path = File.join(target, MANIFEST)
+      return [] of String unless File.exists?(path)
+      # relative paths inside the target only
+      File.read_lines(path).map(&.strip).reject { |l| l.empty? || l.starts_with?('/') || l.split('/').includes?("..") }
+    end
+
+    private def self.write_manifest(target : String, rels : Array(String))
+      tmp = File.join(target, ".syncthing.#{MANIFEST}.tmp")
+      File.write(tmp, rels.join("\n") + (rels.empty? ? "" : "\n"))
+      File.rename(tmp, File.join(target, MANIFEST))
+    end
+
+    private def self.remove_empty_parents(dir : String, target : String)
+      root = File.expand_path(target)
+      d = File.expand_path(dir)
+      while d.starts_with?(root + "/") && Dir.exists?(d) && Dir.empty?(d)
+        Dir.delete(d)
+        d = File.dirname(d)
       end
     end
 
@@ -255,7 +301,7 @@ module CalibreHub
       dst = File.join(tmp, "#{id}.#{fmt.downcase}")
       log = IO::Memory.new
       status = Process.run("ebook-convert", [src, dst], output: log, error: log)
-      raise (log.to_s.lines.last? || "ebook-convert exit #{status.exit_code}") unless status.success?
+      raise(log.to_s.lines.last? || "ebook-convert exit #{status.exit_code}") unless status.success?
       calibre = Calibre.new(env["CALIBRE_HUB_CALIBRE_URL"], env["CALIBRE_HUB_CALIBRE_USER"],
         File.read(env["CALIBRE_HUB_CALIBRE_PASSWORD_FILE"]).sub(/\n+\z/, ""), env["CALIBRE_HUB_LIBRARY_ID"]?)
       calibre.add_format(id, dst, fmt.downcase)

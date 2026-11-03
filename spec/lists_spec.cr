@@ -530,8 +530,9 @@ ensure
   FileUtils.rm_rf(dir) if dir
 end
 
+# the files in a reader folder, without the handler's own record of them
 private def files(dir) : Array(String)
-  Dir.glob(File.join(dir, "**", "*")).select { |f| File.file?(f) }.map(&.lchop(dir + "/")).sort
+  Dir.glob(File.join(dir, "**", "*")).select { |f| File.file?(f) }.map(&.lchop(dir + "/")).reject(CalibreHub::Leseliste::MANIFEST).sort
 end
 
 describe CalibreHub::Leseliste do
@@ -575,7 +576,9 @@ describe CalibreHub::Leseliste do
           lists.create("arthur", body(%({"name": "Nicht synchron"})))
           lists.add(urlaub.id, "arthur", [1_i64, 2_i64, 3_i64])
           run.call("")
+          # a file the handler didn't write stays
           files(target).should eq([
+            "Fachbuch/alt.epub",
             "Leseliste/Lovelace, Ada - Erstes.epub",
             "Urlaub_ Strand/Lovelace, Ada - Dune 02 - Zweites.epub",
             "Urlaub_ Strand/Lovelace, Ada - Erstes.epub",
@@ -586,13 +589,53 @@ describe CalibreHub::Leseliste do
           rename = db.query_one("select payload from events order by id desc limit 1", as: String)
           run.call(rename)
           files(target).should eq([
+            "Fachbuch/alt.epub",
             "Leseliste/Lovelace, Ada - Erstes.epub",
             "Sommer/Lovelace, Ada - Dune 02 - Zweites.epub",
           ])
 
           lists.update(urlaub.id, "arthur", body(%({"sync": false})))
           run.call(db.query_one("select payload from events order by id desc limit 1", as: String))
-          files(target).should eq(["Leseliste/Lovelace, Ada - Erstes.epub"])
+          files(target).should eq(["Fachbuch/alt.epub", "Leseliste/Lovelace, Ada - Erstes.epub"])
+          Dir.exists?(File.join(target, "Sommer")).should be_false
+        ensure
+          FileUtils.rm_rf(target)
+        end
+      end
+    end
+  end
+
+  it "removes only its own files and keeps KOReader's sidecars" do
+    with_library do |library|
+      with_lists do |lists, db, state|
+        target = File.tempname("leseliste-target")
+        begin
+          env = {"LESELISTE_TARGET" => target, "CALIBRE_HUB_LIBRARY" => library, "CALIBRE_HUB_STATE_DB" => state}
+          last = -> { db.query_one("select payload from events order by id desc limit 1", as: String) }
+          run = ->(event : String) { CalibreHub::Leseliste.run(env, IO::Memory.new(event)).should eq(0) }
+          lists.migrate("arthur", "leseliste", [1_i64, 2_i64])
+          leseliste = lists.all("arthur").first
+          run.call("")
+          # progress and notes KOReader keeps next to the book, and a file put there by hand
+          sdr = File.join(target, "Leseliste", "Lovelace, Ada - Erstes.sdr")
+          Dir.mkdir_p(sdr)
+          File.write(File.join(sdr, "metadata.epub.lua"), "return {percent_finished = 0.4}")
+          File.write(File.join(target, "Leseliste", "eigenes.pdf"), "von Hand")
+          lists.remove(leseliste.id, "arthur", [1_i64])
+          run.call(last.call)
+          files(target).should eq([
+            "Leseliste/Lovelace, Ada - Dune 02 - Zweites.epub",
+            "Leseliste/Lovelace, Ada - Erstes.sdr/metadata.epub.lua",
+            "Leseliste/eigenes.pdf",
+          ])
+          # back in the list: the book finds its sidecar again
+          lists.add(leseliste.id, "arthur", [1_i64])
+          run.call(last.call)
+          files(target).should contain("Leseliste/Lovelace, Ada - Erstes.epub")
+          # the list no longer synced: its books go, the rest and the folder stay
+          lists.update(leseliste.id, "arthur", body(%({"sync": false})))
+          run.call(last.call)
+          files(target).should eq(["Leseliste/Lovelace, Ada - Erstes.sdr/metadata.epub.lua", "Leseliste/eigenes.pdf"])
         ensure
           FileUtils.rm_rf(target)
         end
@@ -633,7 +676,7 @@ describe CalibreHub::Leseliste do
           run.call(last.call)
 
           # renaming the parent moves the folder with the sublist's inside
-          File.write(File.join(target, "Urlaub", "2026", "notiz.txt"), "bleibt bis zum Abgleich")
+          File.write(File.join(target, "Urlaub", "2026", "notiz.txt"), "nicht vom Handler, bleibt")
           lists.update(parent.id, "arthur", body(%({"name": "Reisen/Sommer"})))
           payloads = [] of String
           db.query_each("select payload from events order by id desc limit 2") { |rs| payloads << rs.read(String) }
@@ -642,6 +685,7 @@ describe CalibreHub::Leseliste do
           payloads.reverse_each { |p| run.call(p) }
           files(target).should eq([
             "Reisen/Sommer/2026/Lovelace, Ada - Dune 02 - Zweites.epub",
+            "Reisen/Sommer/2026/notiz.txt",
             "Reisen/Sommer/Lovelace, Ada - Erstes.epub",
           ])
 
@@ -650,14 +694,14 @@ describe CalibreHub::Leseliste do
           event = JSON.parse(last.call)
           CalibreHub::Leseliste.relevant?(event, Set(Int64).new, CalibreHub::Leseliste.synced_lists(db).not_nil!).should be_true
           run.call(last.call)
-          files(target).should eq(["Reisen/Sommer/Lovelace, Ada - Erstes.epub"])
+          files(target).should eq(["Reisen/Sommer/2026/notiz.txt", "Reisen/Sommer/Lovelace, Ada - Erstes.epub"])
 
           # without the synced parent its sublist stays, not synced
           lists.update(sub.id, "arthur", body(%({"name": "Reisen/Sommer/2026"})))
           run.call(last.call)
           lists.delete(parent.id, "arthur")
           run.call(last.call)
-          files(target).should be_empty
+          files(target).should eq(["Reisen/Sommer/2026/notiz.txt"])
           lists.all("arthur").map(&.name).should contain("Reisen/Sommer/2026")
         ensure
           FileUtils.rm_rf(target)
