@@ -65,23 +65,23 @@ describe CalibreHub::Meta::FileName do
     {"Wheel of Time 06 - Lord of Chaos - Robert Jordan.mobi", nil, "Lord of Chaos", ["Robert Jordan"], nil, nil, {"Wheel of Time", 6.0}},
     {"Witch World - Estcarp Cycle 03 - Three A - Andre Norton.mobi", nil, "Three A", ["Andre Norton"], nil, nil, {"Witch World - Estcarp Cycle", 3.0}},
     {"Chrysalids, The - John Wyndham.mobi", nil, "The Chrysalids", ["John Wyndham"], nil, nil, nil},
-    {"Prolog Programming - A First Course - Paul Brna.pdf", nil, "Prolog Programming - A First Course", ["Paul Brna"], nil, nil, nil},
+    {"Prolog Programming - A First Course - Paul Brna.pdf", nil, "Prolog Programming: A First Course", ["Paul Brna"], nil, nil, nil},
     {"An Introduction to Genetic Algorithms - Melanie Mitchell.pdf", nil, "An Introduction to Genetic Algorithms", ["Melanie Mitchell"], nil, nil, nil},
     # a tie decided by the folder
     {"Get Shorty - Elmore Leonard.mobi", :last, "Get Shorty", ["Elmore Leonard"], nil, nil, nil},
     {"Dune - Herbert.mobi", :last, "Dune", ["Herbert"], nil, nil, nil},
     {"Dune - Herbert.mobi", :first, "Herbert", ["Dune"], nil, nil, nil},
     # no person on either side: one title, no author
-    {"Wine Tasting - A Professional Handbook.pdf", nil, "Wine Tasting - A Professional Handbook", [] of String, nil, nil, nil},
+    {"Wine Tasting - A Professional Handbook.pdf", nil, "Wine Tasting: A Professional Handbook", [] of String, nil, nil, nil},
     {"The Road to Reality - A Complete Guide to the Laws of the Universe.pdf", nil,
-     "The Road to Reality - A Complete Guide to the Laws of the Universe", [] of String, nil, nil, nil},
-    {"Distributed Systems - Principles and Paradigms (2002).pdf", nil, "Distributed Systems - Principles and Paradigms", [] of String, nil, 2002, nil},
-    {"07 - Compilers - Principles, Techniques and Tools (2nd Edition).pdf", nil, "Compilers - Principles, Techniques and Tools", [] of String, nil, nil, nil},
+     "The Road to Reality: A Complete Guide to the Laws of the Universe", [] of String, nil, nil, nil},
+    {"Distributed Systems - Principles and Paradigms (2002).pdf", nil, "Distributed Systems: Principles and Paradigms", [] of String, nil, 2002, nil},
+    {"07 - Compilers - Principles, Techniques and Tools (2nd Edition).pdf", nil, "Compilers: Principles, Techniques and Tools", [] of String, nil, nil, nil},
     {"12 - The Little Schemer (4th Edition).pdf", nil, "The Little Schemer", [] of String, nil, nil, nil},
     {"O'Reilly - Server Load Balancing.pdf", nil, "Server Load Balancing", [] of String, "O'Reilly", nil, nil},
     {"AI Techniques For Game Programming (Premier Press, 2002).pdf", nil, "AI Techniques For Game Programming", [] of String, "Premier Press", 2002, nil},
     # file junk
-    {"Pragmatic_Thinking_and_Learning_-_Refactor_Your_Wetware.pdf", nil, "Pragmatic Thinking and Learning - Refactor Your Wetware", [] of String, nil, nil, nil},
+    {"Pragmatic_Thinking_and_Learning_-_Refactor_Your_Wetware.pdf", nil, "Pragmatic Thinking and Learning: Refactor Your Wetware", [] of String, nil, nil, nil},
     {"Paradigms.of.Artificial.Intelligence.Programming.pdf", nil, "Paradigms of Artificial Intelligence Programming", [] of String, nil, nil, nil},
     {"Wiley.Knowledge.Based.Bioinformatics.Sep.2010.eBook-ELOHiM.pdf", nil, "Knowledge Based Bioinformatics", [] of String, "Wiley", 2010, nil},
     {"Programming.Principles.and.Practice.Using.C++.(2008).eBook.iNT-TD.pdf", nil, "Programming Principles and Practice Using C++", [] of String, nil, 2008, nil},
@@ -90,7 +90,7 @@ describe CalibreHub::Meta::FileName do
     {"John Caples, Fred E. Hahn - Tested Advertising Methods (Business Classics Series)-Prentice Hall (1997).pdf", nil,
      "Tested Advertising Methods", ["John Caples", "Fred E. Hahn"], "Prentice Hall", 1997, {"Business Classics Series", nil}},
     {"Medtner (1880 - 1951) - Piano Quintet in C major, Op. posth. (violin II).pdf", nil, "Piano Quintet in C major, Op. posth. (violin II)", ["Medtner"], nil, nil, nil},
-    {"MongoDB Cookbook, Second Edition.pdf", nil, "MongoDB Cookbook, Second Edition", [] of String, nil, nil, nil},
+    {"MongoDB Cookbook, Second Edition.pdf", nil, "MongoDB Cookbook", [] of String, nil, nil, nil},
   }.each do |name, hint, title, authors, publisher, year, series|
     it "reads #{name[0, 70].inspect}#{hint ? " (folder: #{hint})" : ""}" do
       g = FileName.parse(name, hint).not_nil!
@@ -105,7 +105,7 @@ describe CalibreHub::Meta::FileName do
     FileName.readings("Dune - Herbert.mobi", :last).not_nil![1].should eq "folder"
     gs, how = FileName.readings("Herbert - Dune.mobi").not_nil!
     how.should eq "unclear"
-    gs.map { |g| {g.title, g.authors} }.should eq [{"Dune", ["Herbert"]}, {"Herbert", ["Dune"]}, {"Herbert - Dune", [] of String}]
+    gs.map { |g| {g.title, g.authors} }.should eq [{"Dune", ["Herbert"]}, {"Herbert", ["Dune"]}, {"Herbert: Dune", [] of String}]
     gs, how = FileName.readings("Wine Tasting - A Professional Handbook.pdf").not_nil!
     how.should eq "unclear"
     gs.first.authors.should be_empty
@@ -166,8 +166,9 @@ describe CalibreHub::Meta::FileName do
 
   it "spots titles a file brought along that say nothing" do
     ["chap01 7..24", "100767", "Less 0375505784 4p Fm R1.Qxd", "logik-stud.dvi", "file:///F|/Mis documentos/index.html",
-     "test", "()", "\u0001", "Microsoft Word - Dokument1.doc"].each { |t| FileName.bad_title?(t).should be_true }
-    ["The Grand Design", "SQL", "Dune", "1984"].each { |t| FileName.bad_title?(t).should be_false }
+     "test", "()", "\u0001", "Microsoft Word - Dokument1.doc", "8508 Fm Frame", "f01 1..1", "19 3.eps", "01Title.fm",
+     "MMMonth", "CBEAll", "Untitled Document", "Pii: B978-0-12-417910-3.50000-0", "STEMCELLS Frontmatter-Reprint"].each { |t| FileName.bad_title?(t).should be_true }
+    ["The Grand Design", "SQL", "Dune", "1984", "IPsec", "Chapter 1: Reasoning in Geometry", "D3.js By Example"].each { |t| FileName.bad_title?(t).should be_false }
   end
 
   it "takes the file name only where the book has calibre's reading of it" do
@@ -190,7 +191,7 @@ describe CalibreHub::Meta::FileName do
     name = "Wine Tasting - A Professional Handbook.pdf"
     b = book("Wine Tasting", ["A Professional Handbook"])
     FileName.changes(b, name, FileName.parse(name).not_nil!, now(b)).to_h { |c| {c.field, c.new} }.should eq({
-      "title" => JSON::Any.new("Wine Tasting - A Professional Handbook"), "authors" => JSON.parse(%(["Unknown"])),
+      "title" => JSON::Any.new("Wine Tasting: A Professional Handbook"), "authors" => JSON.parse(%(["Unknown"])),
       "authorSort" => JSON::Any.new("Unknown"),
     })
     # a field changed since the import (imported: nil) stays

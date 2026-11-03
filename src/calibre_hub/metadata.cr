@@ -304,6 +304,26 @@ module CalibreHub
       ->(book : Book, name : String, readings : Array(Meta::Guess)) { decide(book, name, readings) }
     end
 
+    # What the catalogs say about a reading (Meta::CrossCheck), nil when
+    # none knows it. A source that fails counts as not knowing: the rest
+    # still decide, or the book stays unsure.
+    def check(book : Book, guess : Meta::Guess) : Meta::Verdict?
+      return nil if providers.empty?
+      candidates, _ = lookup(book, [guess], nil)
+      verdict = Meta::CrossCheck.verdict(guess, candidates)
+      # the catalogs may have it without the subtitle
+      main = Meta::Text.main_title(guess.title)
+      if verdict.nil? && main != guess.title
+        candidates, _ = lookup(book, [guess.copy_with(title: main)], nil)
+        verdict = Meta::CrossCheck.verdict(guess, candidates)
+      end
+      verdict
+    end
+
+    def checker : Meta::FileName::Checker
+      ->(book : Book, guess : Meta::Guess) { check(book, guess) }
+    end
+
     def self.model_guess(content : String, input : String) : Meta::Guess?
       json = JSON.parse(content) rescue raise Classifier::BadAnswer.new("no JSON: #{content[0, 100]}")
       title = json["title"]?.try(&.as_s?).try(&.strip).presence || raise Classifier::BadAnswer.new("title missing")
@@ -353,7 +373,8 @@ module CalibreHub
       ask = ->(block : Proc(Array(Meta::Candidate))) do
         begin
           all.concat block.call
-        rescue ex : Meta::SourceError | JSON::ParseException | XML::Error
+        rescue ex
+          # also an answer that isn't what it should be: a source never stops a run
           STDERR.puts "metadata: #{ex.message}"
           errors = true
         end

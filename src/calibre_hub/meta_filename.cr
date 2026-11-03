@@ -17,7 +17,10 @@ module CalibreHub
     # names, initials, "Last, First", surnames vs. title words, digits,
     # articles); a tie is decided by the other files of the folder (a
     # collection is named one way), else calibre's "Title - Author" stays.
-    # Pure, so every rule is tested with real names (spec/filename_spec.cr).
+    # What a name gives is decided as a pair (changes, decide): title and
+    # authors go together where the book has what an import left. Pure, so
+    # every rule is tested with real names (spec/filename_spec.cr,
+    # spec/quality_spec.cr).
     module FileName
       # calibre's sanitize_file_name replaces these with "_", and
       # metadata_from_filename every "_" with a space
@@ -44,7 +47,11 @@ module CalibreHub
       MONTHS  = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
       # abbreviated edition markers ("2e", "2nd ed.", "3. Aufl.", "(4th
       # Edition)"); a spelled out "Second Edition" is part of the title
-      EDITION = /(?:,\s*|\s+)(?:\d{1,2}(?:st|nd|rd|th|d)?\.?\s*(?:ed|aufl)\.?|\d{1,2}e|[\(\[]\d{1,2}(?:st|nd|rd|th|d)?\.?\s*(?:ed(?:ition)?|aufl(?:age)?)\.?[\)\]])(?=\s|\z|[,:\[\(\]])/i
+      EDITION = /(?:,\s*|\s+)(?:\d{1,2}(?:st|nd|rd|th|d)?\.?\s*(?:ed(?:n|ition)?|aufl(?:age)?)\.?|\d{1,2}e|\d{1,2}ed|edn\.?\s*[\d.]+|[\(\[]\d{1,2}(?:st|nd|rd|th|d)?\.?\s*(?:ed(?:ition)?|aufl(?:age)?)\.?[\)\]])(?=\s|\z|[,:\[\(\]])/i
+      # spelled out, at the end: ", Second Edition", "(Anniversary Edition)"
+      EDITION_WORD = /,\s*\d{1,2}(?:st|nd|rd|th)\z|(?:,?\s+|\s*[\(\[])(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|revised|anniversary|updated|international|expanded)\s+edition[\)\]]?\s*\z/i
+      # a note in lower case at the end: "[computer arithmetic]", "[bw]"
+      NOTE = /\s*\[(?!by\s)\p{Ll}[^\[\]]*\]\s*\z/
       # the publishers' short names in the "(Publisher, Year)" collections
       PUBLISHER_NAMES = {"AW" => "Addison-Wesley", "AP" => "Academic Press", "MIT" => "MIT Press",
                          "AMS" => "American Mathematical Society", "CRC" => "CRC Press", "WS" => "World Scientific",
@@ -75,7 +82,7 @@ module CalibreHub
                        "norton", "hachette", "random", "simon", "createspace", "chelsea", "aw", "mit", "ap",
                        "cambridge", "oxford", "princeton", "yale", "harvard", "chicago", "blackwell", "kluwer", "birkhauser",
                        "birkhäuser", "dummies", "newnes", "delmar", "prentice", "mcgraw", "addison", "borland", "imperial",
-                       "infinity", "premier", "pfeiffer", "capstone", "rodale", "puffin", "picador", "macgraw", "tor",
+                       "infinity", "premier", "pfeiffer", "glencoe", "capstone", "rodale", "puffin", "picador", "macgraw", "tor",
                        "baen", "ace", "daw", "orbit", "gollancz", "bantam", "ballantine", "del rey", "jossey", "bass"}
       # words of titles, never of names (lower case, folded)
       TITLE_NOUNS = Set{"introduction", "guide", "handbook", "manual", "programming", "mathematics", "mathematical",
@@ -110,7 +117,9 @@ module CalibreHub
                         "dead", "man", "men", "woman", "women", "children", "child",
                         "dragon", "dragons", "magic", "star", "stars", "planet", "universe", "space", "earth", "fire",
                         "water", "dark", "darkness", "light", "shadow", "shadows", "blood", "city",
-                        "road", "sea", "island"}
+                        "road", "sea", "island", "approach", "approaches", "paradigms", "foundation", "foundations",
+                        "concepts", "perspective", "perspectives", "overview", "evolution", "implementation",
+                        "economics", "drugs", "manual", "review", "tutorial", "handbooks"}
       # common first names (folded), the strongest sign of a person
       FIRST_NAMES = Set{
         "aaron", "adam", "adrian", "alan", "albert", "alex", "alexander", "alfred", "ali", "alice", "alison", "allan",
@@ -160,7 +169,13 @@ module CalibreHub
         "mabel", "nora", "pearl", "rosa", "stella", "vera", "viola", "orson", "isaac", "ray", "poul", "gordon",
         "arthur", "kurt", "kim", "iain", "connie", "lois", "octavia", "ursula", "frederik", "frederic", "hal",
         "alfred", "cordwainer", "theodore", "clifford", "fritz", "ward", "dean", "piers", "terry", "terence",
+        "sigmund", "maxwell", "chet", "timothy", "lawrence", "karren", "hermann", "thomas", "friedrich",
       }
+      # publishers that are surnames as well: alone, in a folder of "Author -
+      # Title" names, they are the author
+      SURNAMES = Set{"yale", "cambridge", "oxford", "princeton", "harvard", "chicago", "norton", "simon", "crown", "dover"}
+      # words that are one word, not two run together
+      COMPOUNDS = Set{"javascript", "typescript", "coffeescript", "actionscript", "postscript", "powershell", "playstation", "wordpress", "youtube"}
       PARTICLES = Set{"van", "von", "der", "den", "de", "du", "da", "di", "del", "della", "le", "la", "ten", "ter", "dos", "y", "zu", "bin", "al"}
 
       # What calibre's add-book makes of the file name when the file has
@@ -209,16 +224,89 @@ module CalibreHub
 
       # A title a file brought along that says nothing about the book:
       # "chap01 7..24", "100767", "Less 0375505784 4p Fm R1.Qxd",
-      # "logik-stud.dvi", "file:///F|/…", "test", "untitled", "()"
+      # "logik-stud.dvi", "file:///F|/…", "test", "untitled", "()", "8508 Fm
+      # Frame", "19 3.eps", "MMMonth". "Chapter 1: Reasoning in Geometry" says
+      # something.
+      BAD_TITLE = /\A(?:test|untitled(?: document)?|unbenannt|title|titel|unknown|document|dokument|vorlage|cover|book\d*|doc\d*|new document|new page \d+|djvu document|e-?book\s*pdf|microsoft word.*|chap(?:ter)?\s*\d+(?:\s+\d+\.\.\d+)?|chap\d+.*|ch\d+.*|app\d+|rev\d+|\p{L}?\d+\s+\d+\.\.\d+|pii:.*|\S+\.(?:dvi|docx?|indd|qxd|tex|ps|rtf|html?|pdf|p65|pm\d|fm|wpd|txt))\z/i
+      FRAME_FILE = /\.(?:qxd|indd|dvi|p65)\b|\.(?:eps|vp|fm|key|tiff?)\z|\bfm\s+(?:frame|r\d)\b|\bfrontmatter\b|\bsup\s+tm\b|\bopener\z/i
+
       def self.bad_title?(t : String) : Bool
         s = t.strip
         # "1984", "2001"
         return false if s.matches?(/\A\d{1,4}\z/)
         return true if s.count(&.letter?) < 3
-        return true if s.matches?(/\A(?:test|untitled|unbenannt|title|titel|unknown|document|dokument|cover|book\d*|doc\d*|new document|microsoft word.*|chap(?:ter)?\s*\d.*|ch\d+.*|\S+\.(?:dvi|docx?|indd|qxd|tex|ps|rtf|html?|pdf|p65|pm\d|fm|wpd|txt))\z/i)
-        return true if s.matches?(/\A(?:file|https?):\//i) || s.matches?(/\.(?:qxd|indd|dvi|p65)\b/i)
+        return true if s.matches?(BAD_TITLE)
+        return true if s.matches?(/\A(?:file|https?):\//i) || s.matches?(FRAME_FILE)
+        # "CBEAll", "MMMonth": no word, no acronym
+        return true if s.matches?(/\A\p{Lu}{3,}\p{Ll}+\z/)
         # mostly digits and codes: "0375505784 4p Fm R1"
         s.count(&.ascii_number?) > s.count(&.letter?)
+      end
+
+      # A title that is what an import left, not what the book is called:
+      # one that says nothing, a list number, a publisher or a person in
+      # front, a ripper, an edition or a release in it. The name decides.
+      def self.leftover_title?(t : String) : Bool
+        return true if bad_title?(t)
+        s = t.strip
+        return true if s.matches?(Clean::RIPPER) || s.matches?(/\bripped\s+by\b/i)
+        # "4. Thomas S. Kuhn - The Structure…", "07 - Compilers"
+        return true if s.matches?(/\A\d{1,3}(?:\.\s|\s+[-–]\s)/)
+        # "Cambridge Quantum Processes Mar 2009 eBook-ELOHiM"
+        return true if s.matches?(/\s#{MONTHS}\s#{YEAR}(?:\s|\z)/i)
+        # "Logic in Computer Science 2nd ed"
+        return true if s.matches?(/\s\d{1,2}(?:st|nd|rd|th|d)?\.?\s*(?:ed|edn|aufl)\.?(?=\s|\z)/i)
+        # "AI Techniques For Game Programming (Premier Press, 2002)"
+        return true if s.matches?(PUBLISHER_YEAR) || s.matches?(/-\s*\S+\s+(?:US|UK)\z/)
+        parts = split_parts(s)
+        return false if parts.size < 2
+        # "Addison Wesley - Hacker's Delight", "Alexander Shulgin - Drugs of Abuse"
+        publisher?(parts.first) && !title_side?(parts.first) || side_score(parts.first) >= 2
+      end
+
+      private def self.title_side?(s : String) : Bool
+        Text.tokens(s).any? { |w| TITLE_NOUNS.includes?(w) || Clean::TITLE_WORDS.includes?(w) }
+      end
+
+      # the title again with its edition: a book without an ISBN (a catalog's
+      # title may name the edition)
+      def self.leftover_title?(book : Book) : Bool
+        return true if leftover_title?(book.title)
+        book.identifiers["isbn"]?.nil? && book.title.matches?(/\s\d{1,2}(?:st|nd|rd|th)\s+edition\b/i)
+      end
+
+      # Not a person: a tool or owner of the file, a publisher, an edition,
+      # a title or a subtitle
+      def self.bad_author?(a : String) : Bool
+        return true if Clean.unknown_author?(a)
+        s = a.strip
+        return true if s.matches?(/[\d()\[\]]|\/\/|https?:|\.(?:com|org|net)\b|\bedition\b/i) || s.matches?(/\Aauthor:/i)
+        publisher_name?(s) || title_like?(s)
+      end
+
+      # What is left of a name with notes around it: "Beck (Hg.)", "Author:
+      # David Buckles", "Blake Masters // formatting by Max Olson", "Paul C.
+      # Anagnostopoulos 101 2000 Sep 01", "(Genetic Engineering) Barbara Hough"
+      def self.clean_author(a : String) : String
+        a.sub(/\s*\/\/.*\z/, "").sub(/\Aauthor:\s*/i, "").sub(/\s+\d.*\z/, "").gsub(/\s*\([^()]*\)\s*/, " ").strip
+      end
+
+      # a title or subtitle in the authors: a person has a first name or
+      # initials, or at most a word of a title among others
+      def self.title_like?(s : String) : Bool
+        words = s.split(/\s+/).reject(&.empty?)
+        folded = words.map { |w| Text.fold(w).strip(",.") }
+        return false if words.any? { |w| w.matches?(INITIAL) } || FIRST_NAMES.includes?(folded.first?)
+        return true if article?(s) || words.size > 6 || s.matches?(/[!?:]/)
+        titles = folded.count { |w| TITLE_NOUNS.includes?(w) || Clean::TITLE_WORDS.includes?(w) }
+        titles >= 1 && titles * 3 >= words.size
+      end
+
+      # a publisher, not a person: "Pearson", "Glencoe/McGraw-Hill", "Gale Group"
+      def self.publisher_name?(s : String) : Bool
+        return true if s.includes?('/') && s.split(/[\/\s-]+/).any? { |w| PUBLISHERS.includes?(Text.fold(w)) }
+        return true if known_publisher?(s) && !FIRST_NAMES.includes?(Text.fold(s.split(/\s+/).first))
+        s.split(/\s+/).last.downcase.rstrip(".,").in?("press", "publishing", "publications", "publishers", "verlag", "gmbh", "inc", "llc", "ltd", "group", "media")
       end
 
       # Which side of " - " the folder's files name the author: :first,
@@ -283,17 +371,40 @@ module CalibreHub
         # "6. Jared Diamond - Guns, Germs and Steel": a number in a list
         s = s.sub(/\A\d{1,3}\.\s+(?=.+\s[-–]\s)/, "")
         parts = split_parts(s)
-        # "07 - Compilers - Principles…": a number in a list of files
-        parts.shift if parts.size >= 2 && parts.first.matches?(/\A\d{1,3}\.?\z/)
-        # "O'Reilly - Server Load Balancing", "CRC Press - Dictionary … - D. Clark"
-        if parts.size >= 2 && known_publisher?(parts.first)
+        # "Title -- Author -- 1 Auflage, München -- Publisher": Anna's Archive
+        anna = parts.size >= 3 && s.includes?(" -- ") && side_score(parts[1]) >= 0
+        if anna
+          publisher ||= parts[3]?.try { |p| p if publisher?(p) }
+          parts = parts.first(2).reverse
+        end
+        # "07 - Compilers - Principles…": a number in a list of files, whose
+        # names need a clear person to have an author
+        numbered = parts.size >= 2 && parts.first.matches?(/\A\d{1,3}\.?\z/)
+        parts.shift if numbered
+        # "O'Reilly - Server Load Balancing", "CRC Press - Dictionary … - D. Clark";
+        # not "Yale - Geometry and Symmetry" in a folder of "Author - Title" names
+        if parts.size >= 2 && known_publisher?(parts.first) && !(hint == :first && SURNAMES.includes?(Text.fold(parts.first)))
           publisher ||= parts.first
           parts.shift
         end
+        # "Wireless Networks for Dummies--For Dummies": the name twice
+        parts.pop if parts.size >= 2 && Text.key(parts[-2]).ends_with?(Text.key(parts.last.gsub(EDITION, "")))
         publisher = publisher.try { |p| PUBLISHER_NAMES[p]? || p }
         make = ->(side : Symbol?) { build(parts, side, series, index, paren_author, year, publisher) }
         return make.call(nil).try { |g| {[g], NAME} } if parts.size < 2
+        return make.call(:first).try { |g| {[g], NAME} } if anna
         sf, sl = side_score(parts.first), side_score(parts.last)
+        # "13 - Peopleware - Productive Projects and Teams"
+        return make.call(nil).try { |g| {[g], NAME} } if numbered && sf < 2 && sl < 2
+        # "Encyclopedia of Mathematics - Gale Group (Vol.1 Ab-Cy)": a publisher
+        # is nobody
+        if publisher_name?(names_text(parts.last))
+          publisher ||= names_text(parts.last)
+          volume = parts.last[/\([^()]*\bvol[^()]*\)/i]?
+          parts = parts[0..-2]
+          parts[-1] = "#{parts.last} #{volume}" if volume
+          return make_title(parts, series, index, paren_author, year, publisher)
+        end
         side, how = if sf == sl && sf >= 0 && hint
                       # a tie: as the folder's other files
                       {hint, FOLDER}
@@ -311,15 +422,24 @@ module CalibreHub
                     elsif sl == 0 && sf <= -2 && parts.first.split(' ').size >= 2 && !parts.last.matches?(/\s(?:and|und)\s/i)
                       # "An Introduction to Genetic Algorithms - Melanie Mitchell"
                       {:last, NAME}
+                    elsif sf < 0 && sl < 0
+                      # no person on either side ("The Road to Reality - A
+                      # Complete Guide"): title and subtitle
+                      {nil, NAME}
                     else
-                      # no person on either side ("Wine Tasting - A
-                      # Professional Handbook"): one title first
+                      # "Wine Tasting - A Professional Handbook", "Sigmund
+                      # Freud - The Interpretation of Dreams": a title first
                       {nil, UNCLEAR}
                     end
         first = make.call(side) || return nil
         return {[first], how} unless how == UNCLEAR
         others = [:first, :last, nil].reject { |x| x == side }.compact_map { |x| make.call(x) }
         {[first] + others, how}
+      end
+
+      private def self.make_title(parts : Array(String), series : String?, index : Float64?, paren_author : String?,
+                                  year : Int32?, publisher : String?) : {Array(Guess), String}?
+        build(parts, nil, series, index, paren_author, year, publisher).try { |g| {[g], NAME} }
       end
 
       # one reading: the author on that side (nil: none), the rest the title
@@ -353,7 +473,7 @@ module CalibreHub
         end
         # "… - 3rd edition": a part that is only the edition
         rest = rest.reject { |p| p.matches?(/\A\(?\d{1,2}(?:st|nd|rd|th|d)?\.?\s*(?:ed(?:ition)?|aufl(?:age)?)\.?\)?\z/i) } if rest.size > 1
-        title = finish_title(rest.join(" - "))
+        title = finish_title(join_title(rest))
         if authors.empty? && rest.size == 1 && (m = title.match(/\A(.+?)\s+by\s+(.+)\z/i)) && side_score(m[2]) >= 2
           title = m[1]
           authors = split_authors(m[2])
@@ -366,6 +486,14 @@ module CalibreHub
         return nil if title.empty?
         authors = authors.map { |a| Clean.fix_name_case(a) }.reject { |a| a.empty? || Clean.unknown_author?(a) }.uniq { |a| Text.key(a) }
         Guess.new(title, authors, series.try(&.strip), series ? index : nil, year, "rules", publisher, year.try(&.to_s))
+      end
+
+      # "Title - Subtitle" -> "Title: Subtitle"; "How to Charge - and Get -
+      # What You're Worth" is one sentence
+      private def self.join_title(parts : Array(String)) : String
+        return parts.first if parts.size == 1
+        return parts.join(" - ") if parts.any? { |p| p.includes?(':') || p.includes?(MARK) } || parts[1..].any?(&.[0].lowercase?)
+        "#{parts.first}#{MARK} #{parts[1..].join(" - ")}"
       end
 
       # {stem without junk and suffixes, publisher, year, an author in
@@ -385,12 +513,16 @@ module CalibreHub
             scene = true
           end
           s = s.gsub('-', ' ') if !s.includes?(' ') && s.count('-') >= 2 && s.each_char.select(&.letter?).all?(&.lowercase?)
+          # "Baerwolff---Hoehere-Mathematik-fuer-Ingenieure"
+          s = s.gsub(/-{3,}/, " - ").gsub(/(?<=\p{L})-(?=\p{L})/, " ") if s.matches?(/-{3,}/)
         else
           # "Dirk W_" was "Dirk W." (no dot at the end of a file name)
           s = s.gsub(/(?<=\s\p{Lu})_(?=\s*(?:\z|[-,(]))/, ".")
           s = s.gsub("_ ", "#{MARK} ")
           s = s.gsub('_', ' ')
         end
+        # "100 Great Artists~A Visual Journey", "Leary, Timothy--The Tibetan Book"
+        s = s.gsub(/\s*~\s*(?=\p{L})/, "#{MARK} ").gsub(/(?<=\S)--(?=\S)/, " -- ")
         s = s.gsub(/\s+/, " ").strip
         # "Medtner (1880 - 1951) - Piano Quintet": life dates
         s = s.gsub(/\s*\((?:1[5-9]|20)\d\d\s*-\s*(?:(?:1[5-9]|20)\d\d)?\)/, "")
@@ -402,6 +534,11 @@ module CalibreHub
         year = nil.as(Int32?)
         author = nil.as(String?)
         libgen = false
+        # "(Delmar) Digital Signal Processing"
+        if (m = s.match(/\A\(([^()]+)\)\s+(.+)\z/)) && known_publisher?(m[1])
+          publisher = m[1]
+          s = m[2]
+        end
         if scene
           s = s.sub(TAIL_JUNK, "")
           if m = s.match(/\s(?:#{MONTHS}\s)?(#{YEAR})\z/i)
@@ -415,7 +552,7 @@ module CalibreHub
         end
         8.times do
           before = s
-          s = s.sub(TAIL_JUNK, "").strip
+          s = s.sub(TAIL_JUNK, "").sub(Clean::RIPPER, "").sub(NOTE, "").strip
           if (m = s.match(ISBN_TAIL)) && Isbn.normalize(m[1])
             s = s[0, m.begin(0)].strip
           end
@@ -442,12 +579,16 @@ module CalibreHub
           elsif publisher.nil? && (m = s.match(/\s*\[([^\[\]]+)\]\s*\z/)) && publisher?(m[1])
             publisher = m[1].strip
             s = s.sub(m[0], "")
-          elsif publisher.nil? && s.matches?(/\s[-–]\s/) && (p = hung_publisher(s, strict: true))
+          elsif publisher.nil? && (p = hung_publisher(s, strict: true))
+            # "Data Science & Classification-Springer"
             publisher, s = p
-            libgen = true
+            libgen = true if s.matches?(/\s[-–]\s/)
           elsif publisher.nil? && (m = s.match(/\s*\(([^()]+)\)\s*\z/)) && known_publisher?(m[1])
             # "Java 3D Programming (Manning)"
             publisher = m[1].strip
+            s = s.sub(m[0], "")
+          elsif (m = s.match(/\s*\([^()]*\([^()]*\)[^()]*\)\s*\z/))
+            # "(Ultimate Consultant (Pfeiffer))": a series with its publisher
             s = s.sub(m[0], "")
           elsif author.nil? && (m = s.match(/\s*[\(\[]by\s+([^()\[\]]+)[\)\]]\s*\z/i)) && side_score(m[1]) >= 1
             # "Basic Engineering Mathematics [by John Bird]"
@@ -507,9 +648,13 @@ module CalibreHub
 
       private def self.finish_title(t : String) : String
         t = t.gsub(MARK, ":")
-        t = t.gsub(/(?<=\p{L})- (?=\p{Lu})/, ": ")
-        t = t.gsub(EDITION, "")
+        t = t.gsub(/(?<=\p{L})- (?=\p{Lu})/, ": ").gsub(/(?<=\p{Ll})-(?=(?:The|A|An|Der|Die|Das)\s)/, ": ")
+        t = t.gsub(EDITION, "").sub(EDITION_WORD, "")
         t = Clean.strip_junk(t)
+        # "AkteurGehirn", "CompilerConstruction1"
+        if t.matches?(/\A(?:\p{Lu}\p{Ll}{2,}){2,}\d*\z/) && !COMPOUNDS.includes?(Text.key(t))
+          t = t.gsub(/(?<=\p{Ll})(?=\p{Lu})/, " ")
+        end
         # "Eyes of the Dragon, The"
         if m = t.match(/\A(.+),\s+(The|A|An|Der|Die|Das|Le|La|Les)\z/)
           t = "#{m[2]} #{m[1]}"
@@ -627,36 +772,85 @@ module CalibreHub
         end.reject(&.empty?)
       end
 
-      # Per field what the file name gives a book calibre added from that
-      # file: title and authors where the book has calibre's reading of the
-      # name (or a title the file brought along that says nothing,
-      # bad_title?), publisher, date and series only where it has none.
-      # imported: the field's value when the book was added, nil when it
-      # changed since (the repair; for a book just added, its value now).
-      def self.changes(book : Book, name : String, guess : Guess, imported : Proc(String, JSON::Any?), source = "rules") : Array(Change)
+      # A book's title and authors as a decision sees them. open: nobody
+      # edited it since the import. left: what an import left there (calibre's
+      # reading of the name, a title that says nothing, a tool, publisher or
+      # subtitle as author), not what the book is called. from_name: the
+      # authors are calibre's reading of the name.
+      record Names, title_open : Bool, title_left : Bool, authors_open : Bool, authors_left : Bool, from_name : Bool = false
+
+      def self.names(book : Book, name : String, imported : Proc(String, JSON::Any?)) : Names
         cg_title, cg_authors = calibre(name)
-        changes = [] of Change
         title = imported.call("title").try(&.as_s?)
         authors = imported.call("authors").try(&.as_a?).try(&.map(&.as_s))
-        from_name = title && same_text?(title, cg_title)
-        junk_title = title && !from_name && bad_title?(title)
-        if title && (from_name || junk_title) && !same_text?(book.title, guess.title) && !guess.title.empty?
-          changes << Change.new("title", JSON::Any.new(book.title), JSON::Any.new(guess.title), source)
-        end
-        if authors
-          names_from_file = same_authors?(authors, cg_authors) && cg_authors != [UNKNOWN]
-          if names_from_file || (Clean.unknown_authors?(authors) || junk_title) && !guess.authors.empty?
-            want = guess.authors.empty? ? [UNKNOWN] : guess.authors
-            unless same_authors?(book.authors, want)
-              changes << Change.new("authors", JSON.parse(book.authors.to_json), JSON.parse(want.to_json), source)
-              sort = AuthorSort.for(want)
-              unless book.author_sort == sort
-                changes << Change.new("authorSort", JSON::Any.new(book.author_sort), JSON::Any.new(sort), source)
-              end
+        from_name = !authors.nil? && same_authors?(authors, cg_authors) && cg_authors != [UNKNOWN]
+        # with an ISBN the title isn't the name's, whatever calibre read
+        calibre_title = same_text?(title, cg_title) && !checked?(book)
+        Names.new(!title.nil?, !title.nil? && (calibre_title || leftover_title?(book)),
+          !authors.nil?, !authors.nil? && (from_name || weak_authors?(book)), from_name)
+      end
+
+      # an ISBN: a catalog knows the book
+      def self.checked?(book : Book) : Bool
+        !book.identifiers["isbn"]?.nil?
+      end
+
+      # no author worth keeping, or one that isn't a person
+      def self.weak_authors?(book : Book) : Bool
+        return true if Clean.unknown_authors?(book.authors)
+        !checked?(book) && book.authors.any? { |a| bad_author?(a) || Text.key(a) == Text.key(book.title) }
+      end
+
+      # the book's authors without the notes around them and those that
+      # are no persons; a single word next to a title's words is one of them
+      private def self.kept_authors(book : Book) : Array(String)
+        clean = book.authors.map { |a| clean_author(a) }.reject { |a| a.empty? || bad_author?(a) }
+        return clean if clean.size == book.authors.size
+        clean.select { |a| a.includes?(' ') }
+      end
+
+      # the same book: one title in the other (a subtitle more or less)
+      def self.same_book?(a : String, b : String) : Bool
+        ka, kb = Text.key(a), Text.key(b)
+        ka.includes?(kb) || kb.includes?(ka) || Text.similarity(a, b) >= 0.6
+      end
+
+      # Per field what the file name gives a book calibre added from that
+      # file: title and authors together, where the book has what the import
+      # left (Names): a name with an author replaces both, as does a title of
+      # the file that isn't this name's book; publisher, date and series only
+      # where it has none. imported: the field's value when the book was
+      # added, nil when it changed since (the repair; for a book just added,
+      # its value now): such a field stays.
+      def self.changes(book : Book, name : String, guess : Guess, imported : Proc(String, JSON::Any?), source = "rules") : Array(Change)
+        plan(book, guess, names(book, name, imported), imported, source)
+      end
+
+      private def self.take_title?(book : Book, guess : Guess, n : Names) : Bool
+        n.title_left || n.title_open && n.authors_left && !guess.authors.empty? && !same_book?(book.title, guess.title)
+      end
+
+      private def self.plan(book : Book, guess : Guess, n : Names, imported : Proc(String, JSON::Any?), source : String) : Array(Change)
+        changes = [] of Change
+        named = !guess.authors.empty?
+        take_title = take_title?(book, guess, n) && !same_text?(book.title, guess.title) && !guess.title.empty?
+        changes << Change.new("title", JSON::Any.new(book.title), JSON::Any.new(guess.title), source) if take_title
+        # "Frank Herbert" of the file for the name's "Herbert" stays
+        same_people = named && guess.authors.all? { |a| Score.authors([a], book.authors) >= 0.8 }
+        if n.authors_left || n.authors_open && take_title && named && !same_people
+          kept = n.from_name ? [] of String : kept_authors(book).reject { |a| Text.key(a) == Text.key(guess.title) }
+          want = named ? guess.authors : (kept.empty? ? [UNKNOWN] : kept)
+          unless same_authors?(book.authors, want)
+            changes << Change.new("authors", JSON.parse(book.authors.to_json), JSON.parse(want.to_json), source)
+            sort = AuthorSort.for(want)
+            unless book.author_sort == sort
+              changes << Change.new("authorSort", JSON::Any.new(book.author_sort), JSON::Any.new(sort), source)
             end
           end
         end
-        if book.publisher.nil? && (p = guess.publisher) && imported.call("publisher").try(&.raw.nil?)
+        # a publisher in the authors moves where it belongs
+        moved = n.authors_left && !n.from_name ? book.authors.find { |a| publisher_name?(a) && !Clean.unknown_author?(a) } : nil
+        if book.publisher.nil? && (p = guess.publisher || moved) && imported.call("publisher").try(&.raw.nil?)
           changes << Change.new("publisher", JSON::Any.new(nil), JSON::Any.new(p), source)
         end
         if book.pubdate.nil? && (y = guess.year) && imported.call("pubdate").try(&.raw.nil?)
@@ -673,37 +867,128 @@ module CalibreHub
       # who decided an unclear name: the file (decide_by_file), a metadata
       # source, the model
       UNSURE = "unsure"
+      # the "change" with what the catalogs suggest for a book they couldn't
+      # confirm: for the review, never applied
+      CANDIDATE = "candidate"
 
       # Decides between the readings of an unclear name (Metadata#decide):
       # {reading, who decided}, nil when it can't
       alias Decider = Proc(Book, String, Array(Guess), {Guess, String}?)
+      # Asks the catalogs about a reading without an author (Metadata#check)
+      alias Checker = Proc(Book, Guess, Verdict?)
 
       # The changes from the file name (changes) and who decided: the name,
       # the folder, or for an unclear name that would change title or
       # authors, the file's own metadata, then the decider (the metadata
       # sources, the model). Still unclear: title and authors stay, the book
-      # gets Meta.unsure_tag for a manual review. nil: not a name to read.
+      # gets Meta.unsure_tag for a manual review. A reading without an author
+      # goes to the catalogs (finish). nil: not a name to read (a standard).
       def self.decide(book : Book, name : String, hint : Symbol?, imported : Proc(String, JSON::Any?),
-                      decider : Decider? = nil, source = "rules") : {Array(Change), String}?
+                      decider : Decider? = nil, checker : Checker? = nil, source = "rules") : {Array(Change), String}?
         read = readings(name, hint) || return nil
         gs, how = read
-        changes = changes(book, name, gs.first, imported, source)
-        unless how == UNCLEAR && changes.any? { |c| NAME_FIELDS.includes?(c.field) }
-          # title and authors stay anyway: nothing to decide
-          return {changes, how == UNCLEAR ? NAME : how}
+        # "chap01.pdf", "eBookPDF.pdf": the name says nothing
+        return decide_own(book, imported, checker, source) || {[] of Change, NAME} if bad_title?(gs.first.title)
+        n = names(book, name, imported)
+        guess = gs.first
+        # the file's title as its author: "Understanding Bluetooth" by the same
+        n = n.copy_with(authors_left: true) if n.authors_open && book.authors.any? { |a| Text.key(a) == Text.key(guess.title) }
+        if how == UNCLEAR
+          if plan(book, guess, n, imported, source).none? { |c| NAME_FIELDS.includes?(c.field) }
+            # title and authors stay anyway: nothing to decide
+            how = NAME
+          elsif g = decide_by_file(book, name, gs)
+            guess, how = g, "file"
+          elsif d = decider.try(&.call(book, name, gs))
+            guess, how = d
+          else
+            # a subtitle is no author, whoever the other side is; which name
+            # of two is the author nobody can tell, they stay
+            changes = plan(book, guess, n, imported, source)
+            changes = changes.reject { |c| NAME_FIELDS.includes?(c.field) } unless guess.authors.empty?
+            return {changes + unsure_tag(book, source), UNSURE}
+          end
         end
-        if g = decide_by_file(book, name, gs)
-          return {changes(book, name, g, imported, source), "file"}
+        finish(book, own_person(book, guess, n), how, n, imported, checker, source)
+      end
+
+      # A book without a file name to read (an upload, the inbox, a calibre
+      # folder): its title read like a name, where its names are what a file
+      # or an import left. nil: they aren't.
+      def self.decide_own(book : Book, imported : Proc(String, JSON::Any?), checker : Checker? = nil, source = "rules") : {Array(Change), String}?
+        title_open = !imported.call("title").nil?
+        authors_open = !imported.call("authors").nil?
+        title_left = title_open && leftover_title?(book)
+        authors_left = authors_open && weak_authors?(book)
+        return nil unless title_left || authors_left
+        guess = Guess.new(book.title, [] of String)
+        unless bad_title?(book.title)
+          gs, how = readings("#{book.title}.pdf") || {[guess], NAME}
+          guess = (how == UNCLEAR ? gs.find(&.authors.empty?) : nil) || gs.first
+          # the title has the author in it, or has the shape of a file's name
+          title_left ||= title_open && authors_left && !book.title.includes?(':')
         end
-        if d = decider.try(&.call(book, name, gs))
-          return {changes(book, name, d[0], imported, source), d[1]}
+        # "Chet Holmes" by "The Ultimate Sales Machine", the wrong way round
+        if authors_left && !Clean.unknown_authors?(book.authors) && side_score(book.title) >= 1 && title_like?(book.authors.first)
+          guess = Guess.new(finish_title(join_title(book.authors)), split_authors(book.title))
+          title_left = title_open
         end
-        kept = changes.reject { |c| NAME_FIELDS.includes?(c.field) }
+        n = Names.new(title_open, title_left && !bad_title?(guess.title), authors_open, authors_left)
+        changes, how = finish(book, own_person(book, guess, n), NAME, n, imported, checker, source)
+        changes.empty? ? nil : {changes, how}
+      end
+
+      # The changes of the reading; a reading without an author asks the
+      # catalogs where the book has none worth keeping or its title goes: a
+      # confirmed author is taken, anything less is the unsure tag and what
+      # they suggest (CANDIDATE) for the review. So is an own title and author
+      # that are another book than the name's, and a book nothing is known of.
+      private def self.finish(book : Book, guess : Guess, how : String, n : Names, imported : Proc(String, JSON::Any?),
+                              checker : Checker?, source : String) : {Array(Change), String}
+        changes = plan(book, guess, n, imported, source)
+        names_left = changes.any? { |c| c.field == "title" } || n.authors_left
+        unsure = false
+        if guess.authors.empty? && n.authors_open && names_left
+          if verdict = checker.try(&.call(book, guess))
+            if verdict.confirmed
+              return {plan(book, guess.copy_with(authors: verdict.authors), n.copy_with(authors_left: true), imported, source), verdict.source}
+            end
+            changes << Change.new(CANDIDATE, JSON::Any.new(nil), JSON.parse({title: verdict.title, authors: verdict.authors, source: verdict.source}.to_json), source)
+            unsure = true
+          end
+        end
+        title = changes.find { |c| c.field == "title" }.try(&.new.as_s?) || book.title
+        # another title, the file's author stays: nobody vouches for it
+        unsure ||= guess.authors.empty? && !n.authors_left && !checked?(book) && !same_book?(book.title, title)
+        unsure ||= bad_title?(title) && Clean.unknown_authors?(book.authors)
+        if !unsure && !guess.authors.empty? && !n.title_left && !n.authors_left && !checked?(book) &&
+           !same_book?(book.title, guess.title) && Score.authors(guess.authors, book.authors) < 0.5
+          # "Cole - Network Security Bible" with another book's metadata
+          changes = [] of Change
+          unsure = true
+        end
+        return {changes, how} unless unsure
+        {changes + unsure_tag(book, source), UNSURE}
+      end
+
+      private def self.unsure_tag(book : Book, source : String) : Array(Change)
         have = Merge.value(book, "tags").as_a.map(&.as_s)
-        unless have.includes?(Meta.unsure_tag)
-          kept << Change.new("tags", JSON.parse(have.to_json), JSON.parse((have + [Meta.unsure_tag]).to_json), source)
-        end
-        {kept, UNSURE}
+        return [] of Change if have.includes?(Meta.unsure_tag)
+        [Change.new("tags", JSON.parse(have.to_json), JSON.parse((have + [Meta.unsure_tag]).to_json), source)]
+      end
+
+      # "Alexander Shulgin - Drugs of Abuse in the Future": the file's own
+      # title has the author of the name, in full, and the book's real title
+      private def self.own_person(book : Book, guess : Guess, n : Names) : Guess
+        return guess unless n.title_open && n.authors_open
+        parts = split_parts(book.title)
+        return guess unless parts.size >= 2 && side_score(parts.first) >= 2
+        return guess unless guess.authors.empty? || Score.authors(guess.authors, [parts.first]) >= 0.8
+        title = finish_title(join_title(parts[1..]))
+        return guess if leftover_title?(title)
+        # "Alan Weiss - Value-Based Fees" cut short: the name has more of it
+        return guess.copy_with(authors: split_authors(parts.first)) if same_book?(title, guess.title)
+        guess.copy_with(title: title, authors: split_authors(parts.first))
       end
 
       # The reading the file's own metadata names (a PDF's info dict, an
@@ -720,6 +1005,8 @@ module CalibreHub
           hits = readings.select { |r| Text.similarity(r.title, book.title) >= 0.8 }
           return hits.first if hits.size == 1
         end
+        # the file has an author of its own, the name none of it: only a title
+        return readings.find(&.authors.empty?) unless same_authors?(book.authors, cg_authors) || weak_authors?(book)
         nil
       end
     end

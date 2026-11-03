@@ -600,7 +600,7 @@ module CalibreHub
       fields = {} of String => JSON::Any
       # the tags are set anew on import (the file's are dropped)
       fields["tags"] = JSON.parse([Meta.unsure_tag].to_json) if changes.any? { |c| c.field == "tags" }
-      changes = changes.reject { |c| c.field == "tags" }
+      changes = changes.reject { |c| c.field == "tags" || c.field == Meta::FileName::CANDIDATE }
       fields.merge!(Edit.changes(Meta::Merge.patch(book, changes.to_h { |c| {c.field, c.new} }), book, nil)) unless changes.empty?
       {fields, how}
     end

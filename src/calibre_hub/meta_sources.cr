@@ -155,8 +155,13 @@ module CalibreHub
     # GET with timeouts, a User-Agent and a minimum interval per host, so a
     # run over 10,000 books stays polite
     class Http
+      # after an HTTP 429 or 503 without a Retry-After
+      PAUSE     = 1.minute
+      MAX_PAUSE = 1.hour
+
       def initialize(@interval : Time::Span = 1.second, @timeout : Time::Span = 15.seconds)
         @last = {} of String => Time::Instant
+        @paused = {} of String => Time::Instant
         @mutex = Mutex.new
       end
 
@@ -168,6 +173,7 @@ module CalibreHub
         client.connect_timeout = 5.seconds
         client.read_timeout = @timeout
         r = client.get(uri.request_target, headers: HTTP::Headers{"Accept" => accept, "User-Agent" => "calibre-hub/0.1 (private library)"})
+        limited(uri.host.to_s, r)
         return nil if r.status_code == 404
         raise SourceError.new("#{uri.host}: HTTP #{r.status_code}") unless r.success?
         r.body
@@ -190,6 +196,7 @@ module CalibreHub
         headers["Accept"] = "application/json"
         headers["User-Agent"] = "calibre-hub/0.1 (private library)"
         r = client.post(uri.request_target, headers: headers, body: body)
+        limited(uri.host.to_s, r)
         {r.status_code, r.body}
       rescue ex : IO::Error | Socket::Error | OpenSSL::Error
         raise SourceError.new("#{uri.try(&.host)}: #{ex.message}")
@@ -217,7 +224,18 @@ module CalibreHub
         client.try &.close
       end
 
+      # A host that says "too many requests" isn't asked until its pause is
+      # over: the source fails at once, the run goes on with the others
+      private def limited(host : String, r : HTTP::Client::Response)
+        return unless r.status_code.in?(429, 503)
+        pause = r.headers["Retry-After"]?.try(&.to_i?).try(&.seconds) || PAUSE
+        @mutex.synchronize { @paused[host] = Time.instant + {pause, MAX_PAUSE}.min }
+      end
+
       private def wait(host : String)
+        if (over = @mutex.synchronize { @paused[host]? }) && Time.instant < over
+          raise SourceError.new("#{host}: rate limited, paused")
+        end
         return if @interval.zero?
         @mutex.synchronize do
           if last = @last[host]?
@@ -245,7 +263,7 @@ module CalibreHub
       end
 
       def search(q : Query) : Array(Candidate)
-        params = {"title" => q.title, "fields" => "key,title,author_name,publisher,first_publish_year,language,isbn,cover_i", "limit" => "5"}
+        params = {"title" => q.title, "fields" => "key,title,subtitle,author_name,publisher,first_publish_year,language,isbn,cover_i", "limit" => "5"}
         q.author.try { |a| params["author"] = a }
         body = @http.get("#{@base}/search.json?" + URI::Params.encode(params)) || return [] of Candidate
         OpenLibrary.parse_search(body, @base, @covers)
@@ -292,6 +310,7 @@ module CalibreHub
           languages = Lang.list(strings.call("language"))
           r = Record.new(
             title: d["title"]?.try(&.as_s?).try { |t| Text.main_title(t) },
+            subtitle: d["subtitle"]?.try(&.as_s?) || d["title"]?.try(&.as_s?).try { |t| Text.subtitle(t) },
             authors: strings.call("author_name").try { |l| l unless l.empty? },
             # a work has many editions: their ISBN and publisher only when there is one
             isbn: isbns.size == 1 ? isbns.first : nil,
@@ -336,10 +355,15 @@ module CalibreHub
         query("num=#{isbn}").tap(&.each { |c| c.by_isbn = isbn })
       end
 
-      # nil when the DNB isn't asked: not a German book, or no author
+      # nil when the DNB isn't asked: not a German book, or no author and
+      # a title too short to find it by
       def self.cql(q : Query) : String?
-        author = q.author.presence || return nil
         return nil unless Lang.german?(q.languages, q.title)
+        author = q.author.presence
+        unless author
+          return nil if Text.tokens(q.title).size < 3
+          return %(tit="#{q.title.gsub('"', "")}" and spr=#{Lang.marc("deu")})
+        end
         # per= with the surname finds "McKeown, Greg" and "Greg McKeown"
         per = author.split(/\s+/).last.gsub('"', "")
         %(tit="#{q.title.gsub('"', "")}" and per="#{per}" and spr=#{Lang.marc("deu")})
@@ -444,8 +468,6 @@ module CalibreHub
       BOOKS_QUERY  = "query($ids: [Int!]) { books(where: {id: {_in: $ids}}) { #{BOOK} editions(order_by: {users_count: desc}, limit: 50) { #{EDITION} } } }"
       # placeholder entries for announced books ("Untitled" by Rebecca Yarros)
       PLACEHOLDERS = Set{"untitled", "unknown", "tba", "tbd", "titletbd", "untitlednovel", "book"}
-      # books about a book: summaries, workbooks, study guides
-      COMPANIONS = /\b(?:summary|summaries|workbook|study guide|analysis|companion|key takeaways)\b/i
 
       getter paused_until : Time?
 
@@ -474,8 +496,8 @@ module CalibreHub
       end
 
       def search(q : Query) : Array(Candidate)
-        return [] of Candidate unless available? && q.author.presence
-        found = request(SEARCH_QUERY, {"q" => "#{q.title} #{q.author}"}) || return [] of Candidate
+        return [] of Candidate unless available?
+        found = request(SEARCH_QUERY, {"q" => [q.title, q.author].compact.join(' ')}) || return [] of Candidate
         ids = Hardcover.hits(found, q).first(3)
         return [] of Candidate if ids.empty?
         data = request(BOOKS_QUERY, {"ids" => ids}) || return [] of Candidate
@@ -541,10 +563,13 @@ module CalibreHub
         nil
       end
 
-      # Search hits worth a look: very similar title, the same author, no
-      # placeholder or book about the book; their ids, best first
+      # Search hits worth a look: very similar title, the same author (with
+      # no author to compare, a title of a few words at least, for
+      # CrossCheck), no placeholder or book about the book; their ids, best
+      # first
       def self.hits(data : JSON::Any, q : Query) : Array(Int64)
-        author = q.author || return [] of Int64
+        author = q.author
+        return [] of Int64 if author.nil? && Text.tokens(q.title).size < 3
         hits = data["search"]?.try(&.["results"]?).try(&.["hits"]?).try(&.as_a?) || return [] of Int64
         hits.compact_map do |h|
           doc = h["document"]? || next
@@ -553,7 +578,7 @@ module CalibreHub
           next if title.matches?(COMPANIONS) && !q.title.matches?(COMPANIONS)
           next if Text.similarity(q.title, title) < 0.9
           names = doc["author_names"]?.try(&.as_a?.try(&.compact_map(&.as_s?))) || [] of String
-          next if names.empty? || Score.authors([author], names) < 0.8
+          next if names.empty? || author && Score.authors([author], names) < 0.8
           id = doc["id"]?
           id.try { |i| i.as_s?.try(&.to_i64?) || i.as_i64? }
         end.uniq

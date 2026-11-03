@@ -1414,6 +1414,29 @@ describe "Mc and Mac" do
   end
 end
 
+describe "the catalogs for a reading without an author" do
+  it "asks them, and a source that fails counts as not knowing (#8528)" do
+    _, web, m, _, _ = setup(sources: %w(openlibrary dnb))
+    b = book("The Left Hand of Darkness", ["Unknown"])
+    g = CalibreHub::Meta::Guess.new("The Left Hand of Darkness", [] of String)
+    v = m.check(b, g).not_nil!
+    # one catalog: a suggestion, not a decision
+    v.confirmed.should be_false
+    v.authors.should eq ["Ursula K. Le Guin"]
+    web.down = true
+    m.check(b, g).should be_nil
+  end
+
+  it "searches Hardcover and the DNB by the title alone" do
+    q = hc_query("Der Schwarm im Eis", nil, ["deu"])
+    CalibreHub::Meta::Dnb.cql(q).should eq(%(tit="Der Schwarm im Eis" and spr=ger))
+    data = JSON.parse(%({"search":{"results":{"hits":[{"document":{"id":"7","title":"The Pragmatic Programmer","author_names":["Andrew Hunt"]}},
+      {"document":{"id":"8","title":"The Pragmatic Programmer: Summary","author_names":["Quick Reads"]}}]}}}))
+    CalibreHub::Meta::Hardcover.hits(data, hc_query("The Pragmatic Programmer", nil)).should eq [7_i64]
+    CalibreHub::Meta::Hardcover.hits(data, hc_query("Programmer", nil)).should be_empty
+  end
+end
+
 describe "metadata run with Hardcover" do
   it "takes the English Effortless from Hardcover and doesn't ask the DNB" do
     library, web, m, _, _ = setup(sources: %w(file hardcover dnb openlibrary), hardcover_token: "hc-token")
