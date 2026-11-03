@@ -294,6 +294,8 @@ function download(book: Book) {
 
 interface ListProps {
   books: Book[] | undefined
+  // the number of matches (all matches selected: what the hub checks)
+  total: number
   search: LibrarySearch
   page: number
   pages: number
@@ -334,7 +336,7 @@ export function useListKeys(props: ListProps): ReactNode {
         .catch(() => undefined)
     }
     return registerList((action, count) => {
-      const { books, search, page, pages, lists, membership, bulkList, config } = latest.current
+      const { books, total, search, page, pages, lists, membership, bulkList, config } = latest.current
       const detailOpen = search.book != null
       // the edit form owns the keys
       if (search.edit) return false
@@ -395,7 +397,7 @@ export function useListKeys(props: ListProps): ReactNode {
             else if (sel.all) {
               // all matches: added, no toggle (that would need them all loaded)
               bulkList
-                .mutateAsync({ listId: last.id, target: bulkTarget(search, config.categoryColumn) })
+                .mutateAsync({ listId: last.id, target: bulkTarget(search, config.categoryColumn, total) })
                 .then((r) => keyboard.flash(savedText(r.added?.length ?? 0, listLabel(last))))
                 .catch(() => undefined)
             } else toggleLast(last, [...sel.ids])

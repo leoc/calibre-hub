@@ -52,7 +52,7 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   useEffect(() => onBulkRequest(setAction), [])
 
   // ids keep the order they were selected in (numbering a series)
-  const target: BulkTarget = sel.all ? bulkTarget(search, config.categoryColumn) : { ids: [...sel.ids] }
+  const target: BulkTarget = sel.all ? bulkTarget(search, config.categoryColumn, total) : { ids: [...sel.ids] }
 
   // Two groups: what is selected, and what to do with it. Side by side on wide
   // screens; on smaller ones each is a row that scrolls sideways instead of

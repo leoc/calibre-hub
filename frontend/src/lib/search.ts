@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { ALL_SORTS, LIST_SORTS, SORTS, type BookQuery, type BulkTarget, type Sort } from "./api"
+import { ALL_SORTS, LIST_SORTS, SORTS, type BookQuery, type QueryTarget, type Sort } from "./api"
 
 export const PAGE_SIZE = 60
 
@@ -73,11 +73,13 @@ const quote = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 export const unsortedQuery = (categoryColumn: string) => `#${categoryColumn}:false`
 
 // "All matches" for the bulk API: the filters only, no paging, sorting or
-// open book
-export function bulkTarget(search: LibrarySearch, categoryColumn: string | null = null): BulkTarget {
+// open book; count: the number of matches shown, which the hub checks. A
+// search without filters is the whole library, said so with all: true.
+export function bulkTarget(search: LibrarySearch, categoryColumn: string | null, count: number): QueryTarget {
   const { page: _p, book: _b, edit: _e, ...filters } = search
   const { offset: _o, limit: _l, sort: _s, order: _r, ...query } = toBookQuery(filters, categoryColumn)
-  return { query }
+  const empty = Object.values(query).every((v) => v == null || v === "" || (Array.isArray(v) && v.length === 0))
+  return { query, expect: count, ...(empty ? { all: true as const } : {}) }
 }
 
 export function toBookQuery(s: LibrarySearch, categoryColumn: string | null = null): BookQuery {

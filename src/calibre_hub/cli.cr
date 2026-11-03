@@ -369,7 +369,11 @@ module CalibreHub
         else
           q = query.not_nil!
           total = client.get("/api/books", HTTP::Params{"q" => q, "limit" => "1"})["total"].as_i64
-          { {"query" => JSON::Any.new({"q" => JSON::Any.new(q)})}, total }
+          # the count confirmed is the count changed; an empty query means
+          # every book only when said so
+          target = {"query" => JSON::Any.new({"q" => JSON::Any.new(q)}), "expect" => JSON::Any.new(total)}
+          target["all"] = JSON::Any.new(true) if q.strip.empty?
+          {target, total}
         end
       end
 

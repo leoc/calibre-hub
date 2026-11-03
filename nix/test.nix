@@ -531,6 +531,14 @@ pkgs.testers.runNixOSTest {
         b = api("GET", "/api/books/1")[1]
         assert "Stapel" not in b["tags"] and b["custom"]["kategorie"] == "Bulk" and b["series"] == "Serie", b
         assert api("POST", "/api/books/bulk", {"target": {"ids": [1]}, "changes": {"title": "x"}})[0] == 400
+        # an empty or mistyped filter is no "every book", least of all to delete
+        for target in [{"query": {}}, {"query": {"tags": "Stapel"}}, {"query": {"q": " "}}]:
+            status, e = api("POST", "/api/books/bulk", {"target": target, "changes": {"delete": True}})
+            assert status == 400 and e["field"] == "target", (target, status, e)
+        status, e = api("POST", "/api/books/bulk", {"target": {"query": {"tag": "Bulk"}}, "changes": {"delete": True}})
+        assert status == 400 and e["field"] == "target", (status, e)
+        status, e = api("POST", "/api/books/bulk", {"target": {"query": {"kategorie": "Bulk"}, "expect": 99}, "changes": {"delete": True}})
+        assert status == 409 and e["found"] == 2, (status, e)
         assert api("GET", "/api/jobs/unknown")[0] == 404
         # series numbered in the order of the ids
         status, r = api("POST", "/api/books/bulk", {"target": {"ids": [uid, 1]}, "changes": {"series": "Nummern", "numberSeries": True}})

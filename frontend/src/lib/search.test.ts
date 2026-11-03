@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { librarySearchSchema, toBookQuery, toggleTag, withFilter, PAGE_SIZE } from "./search"
+import { bulkTarget, librarySearchSchema, toBookQuery, toggleTag, withFilter, PAGE_SIZE } from "./search"
 
 describe("library search", () => {
   it("defaults to newest first, page 1", () => {
@@ -44,5 +44,15 @@ describe("library search", () => {
     expect(withFilter({ page: 4, book: 7 }, { author: "A" })).toEqual({ author: "A", page: undefined, book: undefined })
     expect(toggleTag({ tag: ["a"] }, "a").tag).toBeUndefined()
     expect(toggleTag({ tag: ["a"] }, "b").tag).toEqual(["a", "b"])
+  })
+
+  it("names all matches with the count shown, and the whole library only explicitly", () => {
+    const t = bulkTarget({ tag: ["a"], page: 3, book: 7, sort: "title" }, null, 12)
+    expect(JSON.parse(JSON.stringify(t))).toEqual({ query: { tag: ["a"] }, expect: 12 })
+    expect(JSON.parse(JSON.stringify(bulkTarget({ page: 2 }, null, 400)))).toEqual({ query: {}, expect: 400, all: true })
+    // a filter the hub can't apply without a category column is no filter
+    expect(bulkTarget({ unsorted: true }, null, 400).all).toBe(true)
+    expect(bulkTarget({ unsorted: true }, "kategorie", 9).all).toBeUndefined()
+    expect(bulkTarget({ list: 3 }, null, 5).all).toBeUndefined()
   })
 })

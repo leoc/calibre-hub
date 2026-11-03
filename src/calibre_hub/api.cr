@@ -28,12 +28,12 @@ module CalibreHub
     # calibre search expression.
     def self.query(params : HTTP::Params, kategorie_column : String?) : String
       parts = [] of String
-      parts << "(#{params["q"]})" if params["q"]?.presence
+      params["q"]?.try(&.strip).presence.try { |q| parts << "(#{q})" }
       # "=." matches the value and everything below it in a hierarchy
       if (k = params["kategorie"]?.presence) && kategorie_column
         parts << %(##{kategorie_column}:"=.#{escape(k)}")
       end
-      params.fetch_all("tag").each { |t| parts << %(tags:"=#{escape(t)}") }
+      params.fetch_all("tag").each { |t| parts << %(tags:"=#{escape(t)}") unless t.empty? }
       params["author"]?.presence.try { |a| parts << %(authors:"=#{escape(a)}") }
       params["series"]?.presence.try { |s| parts << %(series:"=#{escape(s)}") }
       parts.join(" and ")
@@ -787,6 +787,8 @@ module CalibreHub
     fail(env, 409, {error: ex.message, field: "name"})
   rescue ex : Writer::Conflict
     fail(env, 409, {error: "changed in the meantime", book: ex.book})
+  rescue ex : Jobs::CountMismatch
+    fail(env, 409, {error: ex.message, field: "target", expected: ex.expected, found: ex.found})
   rescue ex : Writer::Duplicates
     fail(env, 409, {error: "duplicate", duplicates: ex.books, titles: ex.titles})
   rescue ex : Writer::Unsupported

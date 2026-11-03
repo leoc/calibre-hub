@@ -25,7 +25,7 @@ private class FakeWriter < CalibreHub::Writer
 end
 
 private def book(id, tags = [] of String, series : String? = nil, series_index : Float64? = nil,
-                  kategorie : String? = nil, pubdate : Time? = nil) : CalibreHub::Book
+                 kategorie : String? = nil, pubdate : Time? = nil) : CalibreHub::Book
   CalibreHub::Book.new(id: id.to_i64, title: "B#{id}", authors: ["X"], author_sort: nil, tags: tags,
     series: series, series_index: series_index, formats: [] of String, last_modified: Time::UNIX_EPOCH,
     timestamp: nil, pubdate: pubdate, rating: nil, publisher: nil, identifiers: {} of String => String,
@@ -34,6 +34,26 @@ end
 
 private def jobs(db, writer = FakeWriter.new)
   CalibreHub::Jobs.new(db, writer.calibre, writer, "kategorie")
+end
+
+# Answers searches without a calibre-server: "" matches the whole library
+private class SearchingCalibre < CalibreHub::Calibre
+  getter queries = [] of String
+
+  def initialize(@all_ids : Array(Int64), @matches : Hash(String, Array(Int64)))
+    super("http://127.0.0.1:1", "x", "x")
+  end
+
+  def search(query : String, sort : String, ascending : Bool, offset : Int32, limit : Int32) : SearchResult
+    @queries << query
+    ids = query.empty? ? @all_ids : (@matches[query]? || [] of Int64)
+    SearchResult.new(ids.size, ids)
+  end
+end
+
+private def searching_jobs(db, writer = FakeWriter.new, column : String? = "kategorie")
+  calibre = SearchingCalibre.new([1_i64, 2_i64, 3_i64, 4_i64], {"tags:\"=a\"" => [2_i64, 3_i64]})
+  {CalibreHub::Jobs.new(db, calibre, writer, column), calibre}
 end
 
 private def body(json : String) : Hash(String, JSON::Any)
@@ -82,6 +102,51 @@ describe CalibreHub::Jobs do
       j.ids(JSON.parse(%({"query": {"list": "3"}}))).should eq([6_i64, 5_i64])
       j.ids(JSON.parse(%({"query": {"listPath": "Urlaub", "direct": true}}))).should eq([7_i64])
       expect_raises(CalibreHub::Lists::NotFound) { j.ids(JSON.parse(%({"query": {"list": 4}}))) }
+    end
+  end
+
+  it "never lets an empty or unknown query filter stand for the whole library" do
+    with_state do |db, _|
+      j, calibre = searching_jobs(db)
+      j.ids(JSON.parse(%({"query": {"tag": "a"}}))).should eq([2_i64, 3_i64])
+      # unknown filters, typos included, are refused instead of ignored
+      invalid_field { j.ids(JSON.parse(%({"query": {"tags": "a"}}))) }.should eq("target")
+      invalid_field { j.ids(JSON.parse(%({"query": {"lang": "deu"}}))) }.should eq("target")
+      # nothing to filter by: only with all: true
+      invalid_field { j.ids(JSON.parse(%({"query": {}}))) }.should eq("target")
+      invalid_field { j.ids(JSON.parse(%({"query": {"q": "  "}}))) }.should eq("target")
+      invalid_field { j.ids(JSON.parse(%({"query": {"tag": [], "author": ""}}))) }.should eq("target")
+      invalid_field { j.ids(JSON.parse(%({"query": {"q": null}}))) }.should eq("target")
+      calibre.queries.should eq(["tags:\"=a\""])
+      j.ids(JSON.parse(%({"query": {}, "all": true}))).should eq([1_i64, 2_i64, 3_i64, 4_i64])
+      invalid_field { j.ids(JSON.parse(%({"query": {}, "all": "yes"}))) }.should eq("target")
+      # a list stays the list, also without further filters
+      j.list_members = ->(p : HTTP::Params) { [7_i64] }
+      j.ids(JSON.parse(%({"query": {"list": 3}}))).should eq([7_i64])
+    end
+  end
+
+  it "refuses a kategorie filter where no category column is configured" do
+    with_state do |db, _|
+      j, _ = searching_jobs(db, column: nil)
+      invalid_field { j.ids(JSON.parse(%({"query": {"kategorie": "Roman"}}))) }.should eq("target")
+    end
+  end
+
+  it "checks the count the client expects and requires it to delete by query" do
+    with_state do |db, _|
+      writer = FakeWriter.new
+      j, _ = searching_jobs(db, writer)
+      j.ids(JSON.parse(%({"query": {"tag": "a"}, "expect": 2}))).should eq([2_i64, 3_i64])
+      expect_raises(CalibreHub::Jobs::CountMismatch) { j.ids(JSON.parse(%({"query": {"tag": "a"}, "expect": 1}))) }
+      expect_raises(CalibreHub::Jobs::CountMismatch) { j.ids(JSON.parse(%({"query": {}, "all": true, "expect": 3}))) }
+      invalid_field { j.submit(body(%({"target": {"query": {"tag": "a"}}, "changes": {"delete": true}}))) }.should eq("target")
+      expect_raises(CalibreHub::Jobs::CountMismatch) do
+        j.submit(body(%({"target": {"query": {"tag": "a"}, "expect": 3}, "changes": {"delete": true}})))
+      end
+      j.submit(body(%({"target": {"query": {"tag": "a"}, "expect": 2}, "changes": {"delete": true}}))).total.should eq(2)
+      # ids name the books themselves
+      j.submit(body(%({"target": {"ids": [1]}, "changes": {"delete": true}}))).total.should eq(1)
     end
   end
 

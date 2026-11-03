@@ -325,7 +325,7 @@ describe "hub CLI" do
       s.on("GET", "/api/jobs/j2", {id: "j2", status: "done", done: 2, total: 2, errors: [] of String})
       code, stdo, _ = cli(s, "bulk", "--query", "tags:x", "--kategorie", "", "--yes", "--json")
       code.should eq(0)
-      JSON.parse(s.requests[1].body).should eq(JSON.parse(%({"target":{"query":{"q":"tags:x"}},"changes":{"kategorie":null}})))
+      JSON.parse(s.requests[1].body).should eq(JSON.parse(%({"target":{"query":{"q":"tags:x"},"expect":2},"changes":{"kategorie":null}})))
       JSON.parse(stdo)["status"].should eq("done")
     end
   end

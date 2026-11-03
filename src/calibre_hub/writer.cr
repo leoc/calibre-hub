@@ -317,7 +317,9 @@ module CalibreHub
         # type errors now rather than once per book
         Edit.changes(changes.dup.tap(&.delete("numberSeries")).tap(&.delete("pubYear")), Jobs.blank, @category_column)
       end
-      enqueue(ids(body["target"]?), changes)
+      # moving a query's books to the trash: only as many as the client
+      # confirmed
+      enqueue(ids(body["target"]?, need_expect: changes.has_key?("delete")), changes)
     end
 
     protected def enqueue(ids : Array(Int64), changes : Hash(String, JSON::Any)) : Job
@@ -331,31 +333,66 @@ module CalibreHub
       job
     end
 
-    def ids(target : JSON::Any?) : Array(Int64)
+    # the filters a {query} target may have (those of GET /api/books
+    # without paging and sorting)
+    QUERY_KEYS = %w(q kategorie tag author series list listPath listOwner direct)
+
+    # The count a {query} target resolved to differs from the one the client
+    # showed (expect): the library changed, or the query isn't what it meant
+    class CountMismatch < Exception
+      getter expected : Int64
+      getter found : Int32
+
+      def initialize(@expected, @found)
+        super("the query matches #{@found} books, not #{@expected}")
+      end
+    end
+
+    # target: {ids: [...]} or {query: {...}, all?: true, expect?: n}.
+    # A query never falls back to the whole library by accident: unknown
+    # filters are refused, a query without filters needs all: true, and
+    # with expect the number of books it matches must be that one
+    # (need_expect: required, e.g. to delete).
+    def ids(target : JSON::Any?, need_expect = false) : Array(Int64)
       t = target.try(&.as_h?) || raise Edit::Invalid.new("target", "object expected")
       if list = t["ids"]?
         (list.as_a? || raise Edit::Invalid.new("target", "ids must be a list")).map do |v|
           v.as_i64? || raise Edit::Invalid.new("target", "ids must be numbers")
         end.uniq
       elsif query = t["query"]?.try(&.as_h?)
+        expect = t["expect"]?.try { |e| e.as_i64? || raise Edit::Invalid.new("target", "expect must be a number") }
+        raise Edit::Invalid.new("target", "expect (the number of books meant) required") if need_expect && expect.nil?
+        all = t["all"]?.try { |a| a.as_bool?.tap { |b| raise Edit::Invalid.new("target", "all must be true or false") if b.nil? } } || false
         params = HTTP::Params.new
         query.each do |k, v|
           raise Edit::Invalid.new("target", "offset/limit not allowed") if {"offset", "limit", "sort", "order"}.includes?(k)
+          raise Edit::Invalid.new("target", "unknown filter #{k}") unless QUERY_KEYS.includes?(k)
+          next if v.raw.nil?
           (v.as_a? || [v]).each { |x| params.add(k, x.as_s? || x.to_s) }
         end
-        # the books of a reading list, filtered further by the rest
-        if Api.list_query?(params)
-          raise Edit::Invalid.new("target", "unknown list") if (l = params["list"]?.presence) && l.to_i64?.nil?
-          members = list_members.try(&.call(params)) || raise Edit::Invalid.new("target", "unknown list")
-          q = Api.query(params, @category_column)
-          return members if q.empty?
-          found = @calibre.search(q, "id", true, 0, 1_000_000).ids.to_set
-          return members.select { |id| found.includes?(id) }
+        if params["kategorie"]?.presence && @category_column.nil?
+          raise Edit::Invalid.new("target", "kategorie: no category column configured")
         end
-        @calibre.search(Api.query(params, @category_column), "id", true, 0, 1_000_000).ids
+        ids = query_ids(params, all)
+        raise CountMismatch.new(expect, ids.size) if expect && ids.size != expect
+        ids
       else
         raise Edit::Invalid.new("target", "ids or query expected")
       end
+    end
+
+    private def query_ids(params : HTTP::Params, all : Bool) : Array(Int64)
+      q = Api.query(params, @category_column)
+      # the books of a reading list, filtered further by the rest
+      if Api.list_query?(params)
+        raise Edit::Invalid.new("target", "unknown list") if (l = params["list"]?.presence) && l.to_i64?.nil?
+        members = list_members.try(&.call(params)) || raise Edit::Invalid.new("target", "unknown list")
+        return members if q.empty?
+        found = @calibre.search(q, "id", true, 0, 1_000_000).ids.to_set
+        return members.select { |id| found.includes?(id) }
+      end
+      raise Edit::Invalid.new("target", "the query has no filter and would match every book; send all: true to mean that") if q.empty? && !all
+      @calibre.search(q, "id", true, 0, 1_000_000).ids
     end
 
     # Runs queued jobs, oldest first, then waits for the next submit

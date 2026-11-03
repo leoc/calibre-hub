@@ -163,7 +163,7 @@ export interface MetadataChange {
   revertedAt: string | null
 }
 
-export type MetadataTarget = "incomplete" | "all" | "authors" | { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }
+export type MetadataTarget = "incomplete" | "all" | "authors" | BulkTarget
 
 // A backlog import run (POST /api/import): the scan's progress, then its
 // summary and, applied, the job's progress and the results per status
@@ -442,7 +442,12 @@ export interface TrashEntry {
   deletedAt: string
 }
 
-export type BulkTarget = { ids: number[] } | { query: Omit<BookQuery, "offset" | "limit"> }
+// A query names "all matches" of a search: expect is the count the user was
+// shown (the hub refuses with 409 when it matches another number, and a
+// delete needs it), all: true says that a query without filters really means
+// the whole library (the hub refuses it otherwise).
+export type QueryTarget = { query: Omit<BookQuery, "offset" | "limit" | "sort" | "order">; expect?: number; all?: true }
+export type BulkTarget = { ids: number[] } | QueryTarget
 
 export interface Job {
   status: "running" | "done" | "failed"

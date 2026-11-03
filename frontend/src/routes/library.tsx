@@ -53,7 +53,7 @@ export function LibraryPage() {
 
   // keyboard: moving, selecting, opening; after a search or a page change
   // the first new book becomes the active one
-  const keyDialog = useListKeys({ books: data?.books, search, page, pages })
+  const keyDialog = useListKeys({ books: data?.books, total: data?.total ?? 0, search, page, pages })
   const pendingActivation = usePendingActivation()
   useEffect(() => {
     if (!pendingActivation || !data || isPlaceholderData || !pendingActivation.when(search)) return

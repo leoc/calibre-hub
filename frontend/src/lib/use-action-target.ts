@@ -37,7 +37,7 @@ export function useActionTarget(enabled = true): ActionTarget | null {
 
   if (onLibrary && sel.active && (sel.all || sel.ids.size)) {
     // the count decides whether to ask first: none until it is known
-    if (sel.all) return matches ? { bulk: bulkTarget(search, config.categoryColumn), count: matches.total, ordered: false } : null
+    if (sel.all) return matches ? { bulk: bulkTarget(search, config.categoryColumn, matches.total), count: matches.total, ordered: false } : null
     const ids = [...sel.ids]
     const book = ids.length === 1 ? cachedBook(qc, ids[0]) : undefined
     return { bulk: { ids }, count: ids.length, ordered: true, ...(book ? { book } : {}) }

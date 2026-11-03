@@ -9,6 +9,8 @@ import { readerSettingsHandlers } from "./reader-settings"
 import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from "./lists"
 
 
+// the filters a bulk {query} may have (Jobs::QUERY_KEYS)
+const QUERY_KEYS = ["q", "kategorie", "tag", "author", "series", "list", "listPath", "listOwner", "direct"]
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
 seedLists(books, matches)
@@ -300,6 +302,13 @@ export const writeHandlers = [
     if ("query" in target) {
       const bad = Object.keys(target.query).find((k) => ["offset", "limit", "sort", "order"].includes(k))
       if (bad) return HttpResponse.json({ error: "not allowed in bulk query", field: bad }, { status: 400 })
+      // like the hub: no filter is no "every book" unless said so, and the count shown is the count changed
+      const p = bookSearchParams(target.query)
+      if ([...p.keys()].some((k) => !QUERY_KEYS.includes(k))) return HttpResponse.json({ error: "unknown filter", field: "target" }, { status: 400 })
+      if (!p.size && !target.all) return HttpResponse.json({ error: "the query has no filter", field: "target" }, { status: 400 })
+      if (changes.delete && target.expect == null) return HttpResponse.json({ error: "expect required", field: "target" }, { status: 400 })
+      const found = filterBooks(p).length
+      if (target.expect != null && found !== target.expect) return HttpResponse.json({ error: `the query matches ${found} books`, field: "target", expected: target.expect, found }, { status: 409 })
     }
     if (changes.numberSeries && !("ids" in target && changes.series)) return HttpResponse.json({ error: "numberSeries needs series and ids", field: "numberSeries" }, { status: 400 })
     // ids in the given order: numberSeries counts along it
