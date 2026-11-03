@@ -34,6 +34,18 @@ describe CalibreHub::Auth do
     a.login("5.6.7.8", "arthur", "geheim").should_not be_nil
   end
 
+  it "forgets addresses whose failures are older than the window" do
+    l = CalibreHub::RateLimiter.new(max_failures: 2, window: 15.minutes)
+    t = Time.utc
+    l.fail("1.1.1.1", t)
+    l.fail("2.2.2.2", t)
+    l.size.should eq(2)
+    l.fail("3.3.3.3", t + 20.minutes)
+    l.size.should eq(1)
+    l.blocked?("3.3.3.3", t + 40.minutes).should be_false
+    l.size.should eq(0)
+  end
+
   it "checks Basic credentials" do
     a = auth
     a.basic_user("ip", "Basic #{Base64.strict_encode("arthur:geheim")}").should eq("arthur")

@@ -208,11 +208,25 @@ module CalibreHub
     end
 
     def blocked?(ip : String, now = Time.utc) : Bool
-      @mutex.synchronize { recent(ip, now).size >= @max_failures }
+      @mutex.synchronize do
+        list = recent(ip, now)
+        @failures.delete(ip) if list.empty?
+        list.size >= @max_failures
+      end
     end
 
+    # also forgets every address whose failures are all older than the
+    # window, so the table doesn't grow with each address that ever failed
     def fail(ip : String, now = Time.utc)
-      @mutex.synchronize { @failures[ip] = recent(ip, now) << now }
+      @mutex.synchronize do
+        @failures.reject! { |_, times| times.all? { |t| now - t >= @window } }
+        @failures[ip] = recent(ip, now) << now
+      end
+    end
+
+    # addresses with failures on record
+    def size : Int32
+      @mutex.synchronize { @failures.size }
     end
 
     def reset(ip : String)
