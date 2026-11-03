@@ -7,16 +7,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1793637934,
-        "narHash": "sha256-ws/Ae84QX9gutKujmGvfn+T9LpzFCfShKpS2D6ccnkU=",
+        "lastModified": 1793689170,
+        "narHash": "sha256-Bz6A+FvOPYRCNkcNKIi0dmm6VQ9kRqFWNYqogsleOYg=",
         "owner": "leoc",
         "repo": "bubbletea.cr",
-        "rev": "01eae0623419705dfffc82dfe7c74b30012e2f78",
+        "rev": "173ddcfb9a63200e5bbcbdb5dd7ce73cfdb44af2",
         "type": "github"
       },
       "original": {
         "owner": "leoc",
-        "ref": "v0.2.0",
+        "ref": "v0.2.1",
         "repo": "bubbletea.cr",
         "type": "github"
       }

@@ -6,7 +6,7 @@ shards:
 
   bubbletea:
     git: https://github.com/leoc/bubbletea.cr.git
-    version: 0.2.0
+    version: 0.2.1
 
   db:
     git: https://github.com/crystal-lang/crystal-db.git

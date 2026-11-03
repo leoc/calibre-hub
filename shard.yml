@@ -24,4 +24,4 @@ dependencies:
   # the Nix build takes it from the flake input bubbletea-cr (same version)
   bubbletea:
     github: leoc/bubbletea.cr
-    version: ~> 0.2.0
+    version: ~> 0.2.1

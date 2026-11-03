@@ -8,7 +8,7 @@
   # its Go library, only for the hub binary. Keep the tag in step with
   # shard.yml/shard.lock.
   inputs.bubbletea-cr = {
-    url = "github:leoc/bubbletea.cr/v0.2.0";
+    url = "github:leoc/bubbletea.cr/v0.2.1";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
