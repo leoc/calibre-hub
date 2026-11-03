@@ -1353,7 +1353,8 @@ pkgs.testers.runNixOSTest {
         assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin", "sync": True})
         users = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} 'select name, role, active from users order by name'").split()
         assert users == ["arthur|admin|1", "lea|reader|1"], users
-        bid = api("GET", "/api/books?limit=1")[1]["books"][0]["id"]
+        # a book with an EPUB (the newest ones may be PDFs of the backlog import)
+        bid = next(b["id"] for b in api("GET", "/api/books?limit=100")[1]["books"] if "EPUB" in b["formats"])
         # reads and downloads
         assert as_lea("GET", f"/api/books/{bid}")[0] == 200
         assert code(f"-b /tmp/lea {H}/api/books/{bid}/download/epub") == "200"
