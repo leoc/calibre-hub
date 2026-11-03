@@ -4,6 +4,7 @@ require "json"
 require "uri"
 require "xml"
 require "./files"
+require "./zip_limits"
 require "./meta_rules"
 
 module CalibreHub
@@ -110,15 +111,21 @@ module CalibreHub
       report
     end
 
-    def self.read(path : String) : Array(Item)
+    # Every entry in memory, within ZipLimits (a ZIP bomb fails the book)
+    def self.read(path : String, max_entries = ZipLimits::MAX_ENTRIES, max_total = ZipLimits::MAX_TOTAL) : Array(Item)
       items = [] of Item
       Compress::Zip::File.open(path) do |zip|
+        ZipLimits.check(zip, max_entries, max_total)
+        left = max_total
         zip.entries.each do |e|
-          data = e.dir? ? Bytes.empty : e.open(&.getb_to_end)
+          data = e.dir? ? Bytes.empty : ZipLimits.read(e, left)
+          left -= data.size
           items << Item.new(e.filename, data, e.time, e.dir?, e.compression_method.stored?)
         end
       end
       items
+    rescue ex : ZipLimits::TooLarge
+      raise Error.new("too large: #{ex.message}")
     rescue ex : Compress::Zip::Error | IO::Error
       raise Error.new("not a readable ZIP: #{ex.message}")
     end

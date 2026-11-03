@@ -264,6 +264,10 @@ module CalibreHub
       @db.query_each("select name from pragma_table_info('#{@table}')") { |rs| columns << rs.read(String) }
       @db.exec "alter table #{@table} add column error text" unless columns.includes?("error")
       @db.exec "alter table #{@table} add column before text not null default '{}'" unless columns.includes?("before")
+      # running when the hub (re)started: interrupted, maybe by a crash on
+      # the book they were at
+      @interrupted = Set(String).new
+      @db.query_each("select id from #{@table} where status = 'running'") { |rs| @interrupted << rs.read(String) }
       @wake = Channel(Nil).new(1)
       spawn { work }
     end
@@ -378,7 +382,13 @@ module CalibreHub
       end
     end
 
-    # Progress is saved after every book
+    # what a book of an interrupted job is marked with while it is tried
+    # again; still there at the next start, the hub died on it twice
+    INTERRUPTED = "the hub stopped while on this book"
+
+    # Progress is saved after every book. The book an interrupted job was at
+    # gets one more try; if the hub dies on it again (a file that crashes
+    # it), the next start skips it as failed instead of looping.
     private def run(job : Job)
       begin
         job = prepare(job)
@@ -390,11 +400,25 @@ module CalibreHub
         return
       end
       resumed_at = job.done > 0 ? job.done : nil
+      interrupted = @interrupted.delete(job.id)
+      resumed_at = job.done > 0 || interrupted ? job.done : nil
       (job.done...job.total).each do |i|
         id = job.ids[i]
+        marker = {bookId: id, error: INTERRUPTED}
+        if i == resumed_at && interrupted
+          if job.errors.includes?(marker)
+            STDERR.puts "#{@table}: job #{job.id} skips book #{id}, the hub stopped on it twice"
+            job.done = i + 1
+            @db.exec "update #{@table} set done = ?, errors = ? where id = ?", job.done, job.errors.to_json, job.id
+            next
+          end
+          job.errors << marker
+          @db.exec "update #{@table} set errors = ? where id = ?", job.errors.to_json, job.id
+        end
         begin
           apply(job, i, id, i == resumed_at)
         rescue ex : Abort
+          job.errors.delete(marker)
           job.error = ex.message
           STDERR.puts "#{@table}: job #{job.id} stopped at #{job.done}/#{job.total}: #{ex.message}"
           break
@@ -403,6 +427,7 @@ module CalibreHub
         rescue ex
           job.errors << {bookId: id, error: ex.message || ex.class.name}
         end
+        job.errors.delete(marker)
         job.done = i + 1
         @db.exec "update #{@table} set done = ?, errors = ?, before = ? where id = ?", job.done, job.errors.to_json, job.before.to_json, job.id
       end

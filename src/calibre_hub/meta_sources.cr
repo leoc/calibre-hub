@@ -8,6 +8,7 @@ require "uri"
 require "xml"
 require "./meta_rules"
 require "./covers"
+require "./zip_limits"
 
 module CalibreHub
   module Meta
@@ -19,6 +20,9 @@ module CalibreHub
       record Info, record : Record, isbns : Array(String), cover : String? = nil
 
       MAX_TEXT = 300_000
+      # bytes read of the container, the OPF and a page at most (ZIP bombs);
+      # a cut OPF fails as XML, a cut page still has its start
+      MAX_ENTRY = 4_i64 * 1024 * 1024
 
       # nil when the file can't be read; the online sources still run.
       # Crystal's zip reader rejects entries with an invalid DOS timestamp
@@ -35,8 +39,9 @@ module CalibreHub
 
       def self.epub(path : String) : Info?
         Compress::Zip::File.open(path) do |zip|
+          ZipLimits.check(zip, max_total: Int64::MAX)
           # any encoding in, valid UTF-8 out: regexes raise on invalid UTF-8
-          text_of = ->(e : Compress::Zip::File::Entry, html : Bool) { Charset.decode(e.open(&.getb_to_end), html) }
+          text_of = ->(e : Compress::Zip::File::Entry, html : Bool) { Charset.decode(ZipLimits.head(e, MAX_ENTRY), html) }
           container = zip["META-INF/container.xml"]?.try { |e| text_of.call(e, false) } || return nil
           opf_path = XML.parse(container).xpath_string("string(//*[local-name()='rootfile']/@full-path)").presence || return nil
           opf_xml = zip[opf_path]?.try { |e| text_of.call(e, false) } || return nil
@@ -53,7 +58,7 @@ module CalibreHub
           end
           Info.new(record, Isbn.scan(text))
         end
-      rescue ex : Compress::Zip::Error | XML::Error | IO::Error
+      rescue ex : Compress::Zip::Error | XML::Error | IO::Error | ZipLimits::TooLarge
         STDERR.puts "metadata: #{File.basename(path)}: #{ex.message}"
         nil
       end
