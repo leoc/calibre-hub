@@ -150,6 +150,12 @@ describe Cli::Output do
     Cli::Output.plain("<p>One &amp; two</p><p>Three<br>four</p><ul><li>x</li></ul>").should eq("One & two\nThree\nfour\n- x")
   end
 
+  it "keeps escape sequences from the library out of the terminal" do
+    Cli::Output.value(JSON::Any.new("Titel\e]52;c;aGk=\a")).should eq("Titel]52;c;aGk=")
+    Cli::Output.plain("<p>a\e[2Jb\u009b</p>").should eq("a[2Jb")
+    Cli::Output.clean("Bücher\tund\nmehr").should eq("Bücher\tund\nmehr")
+  end
+
   it "shows a book" do
     io = IO::Memory.new
     Cli::Output.book(io, book)

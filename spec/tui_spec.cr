@@ -302,6 +302,7 @@ describe Tui::Text do
     Tui::Text.width("Bücher").should eq(6)
     Tui::Text.width("日本").should eq(4)
     Tui::Text.truncate("abcdef", 4).should eq("abc…")
+    Tui::Text.truncate("a\e]0;x\ab\u009b", 10).should eq("a]0;xb")
     Tui::Text.fit("日本語", 5).should eq("日本…")
     Tui::Text.fit("a\nb", 4).should eq("a b ")
     Tui::Text.wrap("eins zwei drei", 9).should eq(["eins zwei", "drei"])

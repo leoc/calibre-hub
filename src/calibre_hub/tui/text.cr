@@ -23,9 +23,17 @@ module CalibreHub
         s.each_char.sum { |c| char_width(c) }
       end
 
-      # Cut to at most `max` cells, with "…" when something was cut
+      # Control characters (not shown, width 0) out, so an escape sequence
+      # in a book's metadata never reaches the terminal (review #8411 N5)
+      def self.clean(s : String) : String
+        s.gsub(/[\x00-\x08\x0b-\x1f\x7f\x{80}-\x{9f}]/, "")
+      end
+
+      # Cut to at most `max` cells, with "…" when something was cut; without
+      # control characters
       def self.truncate(s : String, max : Int32) : String
         return "" if max <= 0
+        s = clean(s)
         return s if width(s) <= max
         acc = String::Builder.new
         used = 0

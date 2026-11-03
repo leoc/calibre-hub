@@ -48,7 +48,7 @@ module CalibreHub
         @err.puts "usage: #{prog} #{cmd ? Cli.command(cmd).try(&.usage) : "<command>"} (see --help)"
         failed(ex)
       rescue ex : Failure
-        @err.puts "error: #{ex.message}" unless ex.message.to_s.empty?
+        @err.puts "error: #{Output.clean(ex.message.to_s)}" unless ex.message.to_s.empty?
         failed(ex)
       end
 
@@ -405,8 +405,8 @@ module CalibreHub
             n = l["count"].as_i64
             total = l["totalCount"]?.try(&.as_i64?) || n
             with_sub = total == n ? "" : ", #{total} with sublists#{args.flag?("direct") ? "" : " (shown)"}"
-            @out.puts "#{l["name"].as_s} (##{l["id"]}, #{n} #{n == 1 ? "book" : "books"}#{with_sub}#{(f = Runner.list_flags(l)) == "-" ? "" : ", #{f}"})"
-            l["description"].as_s.presence.try { |d| @out.puts d }
+            @out.puts "#{Output.clean(l["name"].as_s)} (##{l["id"]}, #{n} #{n == 1 ? "book" : "books"}#{with_sub}#{(f = Runner.list_flags(l)) == "-" ? "" : ", #{f}"})"
+            l["description"].as_s.presence.try { |d| @out.puts Output.clean(d) }
           else
             @out.puts "#{path}/ (no list of its own, the books of its sublists)"
           end
@@ -425,7 +425,7 @@ module CalibreHub
             body[key] = JSON::Any.new(true) if args.flag?(flag)
           end
           l = client.post("/api/lists", body)
-          @json ? @out.puts(l.to_json) : @out.puts("created list ##{l["id"]} #{l["name"].as_s}")
+          @json ? @out.puts(l.to_json) : @out.puts("created list ##{l["id"]} #{Output.clean(l["name"].as_s)}")
         when "add", "rm"
           raise Usage.new("a list and book ids expected", "list") if rest.size < 2
           l = find_list(rest[0])
@@ -435,7 +435,7 @@ module CalibreHub
           return @out.puts r.to_json if @json
           changed = (r[action == "add" ? "added" : "removed"]?.try(&.as_a) || [] of JSON::Any).map(&.as_i64)
           verb = action == "add" ? "added to" : "removed from"
-          @out.puts "#{changed.size} #{changed.size == 1 ? "book" : "books"} #{verb} #{r["list"]["name"].as_s} (now #{r["list"]["count"]})"
+          @out.puts "#{changed.size} #{changed.size == 1 ? "book" : "books"} #{verb} #{Output.clean(r["list"]["name"].as_s)} (now #{r["list"]["count"]})"
           skipped = ids - changed
           @err.puts "#{action == "add" ? "already in the list or unknown" : "not in the list"}: #{skipped.join(", ")}" unless skipped.empty?
         when "delete"

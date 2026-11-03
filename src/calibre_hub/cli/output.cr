@@ -5,9 +5,17 @@ module CalibreHub
   module Cli
     # Human-readable output; --json prints the API's JSON instead
     module Output
+      # Control characters out of text from the library (titles,
+      # descriptions, list names): an escape sequence in a book's metadata
+      # must not reach the terminal (set its title, write the clipboard via
+      # OSC 52). Newlines and tabs stay.
+      def self.clean(text : String) : String
+        text.gsub(/[\x00-\x08\x0b-\x1f\x7f\x{80}-\x{9f}]/, "")
+      end
+
       # Columns padded to their widest cell, cells cut at max[i] characters
       def self.table(io : IO, headers : Array(String), rows : Array(Array(String)), max = [] of Int32?)
-        cells = rows.map { |r| r.map_with_index { |c, i| cut(c.gsub(/\s+/, " "), max[i]?) } }
+        cells = rows.map { |r| r.map_with_index { |c, i| cut(clean(c.gsub(/\s+/, " ")), max[i]?) } }
         widths = headers.map_with_index { |h, i| ([h] + cells.map(&.[i])).max_of(&.size) }
         ([headers] + cells).each do |row|
           line = row.map_with_index { |c, i| i == row.size - 1 ? c : c.ljust(widths[i]) }.join("  ")
@@ -28,7 +36,7 @@ module CalibreHub
         when Array  then raw.empty? ? "-" : v.as_a.map { |x| value(x) }.join(", ")
         when Hash   then raw.empty? ? "-" : v.as_h.map { |k, x| "#{k}:#{value(x)}" }.join(", ")
         when Float  then number(raw)
-        when String then raw.empty? ? "-" : raw
+        when String then raw.empty? ? "-" : clean(raw)
         else             raw.to_s
         end
       end
@@ -45,6 +53,7 @@ module CalibreHub
       def self.series(book : JSON::Any) : String
         name = book["series"]?.try(&.as_s?) || return "-"
         index = book["seriesIndex"]?.try { |i| i.as_f? || i.as_i64?.try(&.to_f) }
+        name = clean(name)
         index ? "#{name} [#{number(index)}]" : name
       end
 
@@ -58,7 +67,7 @@ module CalibreHub
       def self.plain(html : String) : String
         text = html.gsub(/<br\s*\/?>/i, "\n").gsub(/<\/(p|div|h\d|li|ul|ol|blockquote)>/i, "\n")
           .gsub(/<li[^>]*>/i, "- ").gsub(/<[^>]*>/, "")
-        HTML.unescape(text).gsub(/[ \t]+/, " ").gsub(/ *\n */, "\n").gsub(/\n{3,}/, "\n\n").strip
+        clean(HTML.unescape(text)).gsub(/[ \t]+/, " ").gsub(/ *\n */, "\n").gsub(/\n{3,}/, "\n\n").strip
       end
 
       def self.book_rows(books : Array(JSON::Any), category : String?) : Array(Array(String))
@@ -122,7 +131,7 @@ module CalibreHub
       # categories: kategorie tree, others flat
       def self.tree(io : IO, nodes : Array(JSON::Any), depth = 0)
         nodes.each do |n|
-          io.puts "#{"  " * depth}#{n["name"]}  (#{n["count"]})"
+          io.puts "#{"  " * depth}#{clean(n["name"].to_s)}  (#{n["count"]})"
           tree(io, n["children"]?.try(&.as_a) || [] of JSON::Any, depth + 1)
         end
       end
