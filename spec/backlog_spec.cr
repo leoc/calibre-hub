@@ -436,7 +436,8 @@ describe CalibreHub::ImportJobs do
       ps["cover"].as_s.should start_with "data:image/jpeg;base64,"
       ps.has_key?("#kategorie").should be_false
       plain = fake.books.values.find { |b| b["title"] == "book" }.not_nil!
-      plain["tags"].as_a.should be_empty
+      # "book.pdf" says nothing: nobody decided it, no folder is a tag
+      plain["tags"].as_a.map(&.as_s).should eq ["auto-unsicher"]
       # calibre's title/author check: no new book, only the missing format
       fake.books[1_i64]["formats"].as_a.map(&.as_s).sort.should eq ["EPUB", "PDF"]
       # the ISBN calibre read from the file is #2's: removed again, the PDF goes to #2
@@ -758,7 +759,7 @@ describe CalibreHub::ImportRepair do
       # someone set the authors by hand
       fake.add(205, "Brass", ["Peter Brass"], ["PDF"])
       fake.add(206, "Brass", ["Peter Brass"], ["PDF"])
-      # no person on either side: unclear, nobody decides
+      # no person on one side: unclear, nobody decides, the subtitle goes
       fake.add(207, "Wine Tasting", ["A Professional Handbook"], ["PDF"])
       # a tie of two names: the decider (the sources) says Herbert
       fake.add(208, "Herbert", ["Dune"], ["PDF"])
@@ -801,10 +802,10 @@ describe CalibreHub::ImportRepair do
       # authors by hand: they stay, calibre's title goes; a calibre folder's book is left alone
       fields.call(205).should eq ["title", "publisher", "pubdate"]
       entries.has_key?(206_i64).should be_false
-      # unclear and undecided: names stay, the tag for a review
-      fields.call(207).should eq ["tags"]
+      # unclear and undecided: the tag for a review, a subtitle is no author
+      fields.call(207).should eq ["title", "authors", "authorSort", "tags"]
       entries[207_i64]["decided"].should eq "unsure"
-      entries[207_i64]["changes"][0]["new"].should eq JSON.parse(%(["auto-unsicher"]))
+      entries[207_i64]["changes"].as_a.last["new"].should eq JSON.parse(%(["auto-unsicher"]))
       entries[208_i64]["decided"].should eq "hardcover"
       fields.call(208).should eq ["title", "authors", "authorSort"]
       asked.map { |n| File.basename(n) }.sort.should eq ["Herbert - Dune.pdf", "Wine Tasting - A Professional Handbook.pdf"]
@@ -829,7 +830,7 @@ describe CalibreHub::ImportRepair do
       fake.books[204_i64]["authors"].should eq ["Jungnickel"]
       fake.books[205_i64]["title"].should eq "Brass"
       fake.books[207_i64]["tags"].should eq ["auto-unsicher", "auto-metadaten"]
-      fake.books[207_i64]["title"].should eq "Wine Tasting"
+      fake.books[207_i64]["title"].should eq "Wine Tasting: A Professional Handbook"
       fake.books[208_i64]["authors"].should eq ["Herbert"]
       fake.books[208_i64]["title"].should eq "Dune"
       fake.books[201_i64]["tags"].should eq ["auto-metadaten"]
@@ -851,7 +852,66 @@ describe CalibreHub::ImportRepair do
       fake.books[201_i64]["title"].should eq "Carr"
       tag = log.list(207_i64).find! { |e| e.field == "tags" }
       metadata.revert(tag.id)
-      fake.books[207_i64]["tags"].should eq [] of String
+      fake.books[207_i64]["tags"].should eq ["auto-metadaten"]
+    end
+  end
+
+  it "plans suspicious books without an import file, keeps edits, never applies a suggestion (#8528)" do
+    tmpdir do |root|
+      path = File.join(root, "09 - The Pragmatic Programmer - From Journeyman to Master.pdf")
+      write(path, pdf)
+      fake = FakeCalibre.new
+      fake.add(401, "09 - The Pragmatic Programmer", ["From Journeyman to Master"], ["PDF"])
+      # uploaded, not imported
+      fake.add(402, "100M Money Models", ["How To Make Money"], ["EPUB"])
+      fake.add(403, "57390", ["Unknown"], ["PDF"])
+      # a person set the title since it was added
+      fake.add(404, "Mein Titel", ["How To Make Money"], ["EPUB"])
+      # fine as it is
+      fake.add(405, "The Art of UNIX Programming", ["Eric S. Raymond"], ["PDF"])
+      db = state_db
+      db.exec "create table if not exists meta (key text primary key, value text)"
+      CalibreHub::ImportJobs.migrate(db)
+      db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', 401, 'r1', 100)", path
+      db.exec "insert into events (type, book_id, payload, created_at) values ('added', 404, ?, 100)",
+        {type: "added", bookId: 404, book: {title: "8508 Fm Frame", authors: ["How To Make Money"]}}.to_json
+      calibre = fake.calibre
+      writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
+      log = CalibreHub::MetaLog.new(db)
+      repair = CalibreHub::ImportRepair.new(db, calibre, writer, log)
+      repair.checker = ->(b : CalibreHub::Book, g : CalibreHub::Meta::Guess) do
+        raise "a catalog fails" if b.id == 403
+        CalibreHub::Meta::Verdict.new(false, g.title, ["Alex Hormozi"], "openlibrary", ["openlibrary"]).as(CalibreHub::Meta::Verdict?)
+      end
+
+      planned = repair.submit_repair({} of String => JSON::Any, true)
+      planned["books"].should eq 4
+      job = wait_job(repair, planned["job"]["id"].as_s)
+      # a source that fails stops one book, not the run
+      job.status.should eq "done"
+      job.errors.map(&.[:bookId]).should eq [403_i64]
+      entries = repair.review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
+      entries.keys.sort.should eq [401_i64, 402_i64, 404_i64]
+      entries[402_i64]["file"].should eq ""
+      entries[402_i64]["decided"].should eq "unsure"
+      fields = entries[402_i64]["changes"].as_a.map(&.["field"].as_s)
+      fields.should eq ["authors", "authorSort", "candidate", "tags"]
+      # the person's title stays
+      entries[404_i64]["changes"].as_a.none? { |c| c["field"] == "title" }.should be_true
+
+      all = repair.accept(nil)
+      wait_job(repair, all["job"]["id"].as_s).errors.should be_empty
+      fake.books[402_i64]["authors"].should eq ["Unknown"]
+      fake.books[402_i64]["tags"].as_a.map(&.as_s).should contain "auto-unsicher"
+
+      report = repair.quality({} of String => JSON::Any)
+      report["total"].should eq 5
+      report["reasons"]["unsure"].as_i.should be > 0
+      report["runs"].as_a.map { |r| {r["run"], r["total"], r["suspect"]} }.should eq [{"r1", 1, 1}]
+      run = repair.quality({"run" => JSON::Any.new("r1")})
+      run["total"].should eq 1
+      run["books"][0]["id"].should eq 401
+      repair.quality({"minId" => JSON::Any.new(405_i64)})["suspect"].should eq 0
     end
   end
 

@@ -11,6 +11,7 @@ module CalibreHub
         when "cleanup" then import_cleanup(args)
         when "undo"    then import_undo(args)
         when "repair"  then import_repair(args)
+        when "quality" then import_quality(args)
         else                import_paths(args.positional, args)
         end
       end
@@ -211,6 +212,23 @@ module CalibreHub
         end
       end
 
+      # hub import quality [--run ID] [--since TIME] [--min-id N] [--max-id N]
+      private def import_quality(args : Args)
+        query = URI::Params.build do |q|
+          args["run"]?.try { |v| q.add("run", v) }
+          args["since"]?.try { |v| q.add("since", v) }
+          args["min-id"]?.try { |v| q.add("minId", Runner.id(v).to_s) }
+          args["max-id"]?.try { |v| q.add("maxId", Runner.id(v).to_s) }
+        end
+        report = client.get("/api/import/quality#{query.empty? ? "" : "?#{query}"}")
+        return @out.puts report.to_json if @json
+        @out.puts "#{report["suspect"]} of #{report["total"]} books suspicious"
+        report["reasons"].as_h.each { |reason, count| @out.puts "  #{reason}: #{count}" unless count == 0 }
+        report["runs"].as_a.each { |r| @out.puts "  run #{r["run"]}  #{r["at"]}  #{r["suspect"]} of #{r["total"]}" }
+        rows = report["books"].as_a.map { |b| [b["id"].to_s, b["title"].as_s, b["authors"].as_a.join(", "), b["reasons"].as_a.join(", ")] }
+        Output.table(@out, ["ID", "Title", "Authors", "Why"], rows) unless rows.empty?
+      end
+
       # hub import repair [--since TIME] [--min-id N] [--max-id N] [--apply]
       private def import_repair(args : Args)
         body = {} of String => JSON::Any
@@ -234,7 +252,7 @@ module CalibreHub
         rows = review["entries"].as_a.flat_map do |e|
           e["changes"].as_a.map do |c|
             [e["bookId"].to_s, c["field"].as_s, Output.value(c["old"]?), Output.value(c["new"]?),
-             e["decided"]?.try(&.as_s?) || "-", File.basename(e["file"].as_s)]
+             e["decided"]?.try(&.as_s?) || "-", File.basename(e["file"].as_s.presence || "-")]
           end
         end
         Output.table(@out, ["ID", "Field", "Now", "From the file name", "Decided by", "File"], rows) unless rows.empty?

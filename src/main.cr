@@ -496,6 +496,8 @@ module CalibreHub
       imports.try &.decider = decider
       repair.try &.decider = decider
     end
+    # readings without an author: the catalogs (the import's metadata run asks them on its own)
+    repair.try &.checker = metadata_jobs.try(&.metadata.checker)
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members

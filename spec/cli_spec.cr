@@ -568,4 +568,17 @@ describe "hub import" do
       stdo.should contain("repair: done, 1 books checked")
     end
   end
+
+  it "reports the quality of a portion" do
+    with_stub do |s|
+      s.on("GET", "/api/import/quality", {total: 200, suspect: 12, reasons: {unknownAuthor: 10, unsure: 0}, runs: [] of String,
+                                                  books: [{id: 7, title: "Compilers", authors: ["Unknown"], reasons: ["unknownAuthor"]}]})
+      code, stdo, _ = cli(s, "import", "quality", "--run", "abc")
+      code.should eq(0)
+      stdo.should contain("12 of 200 books suspicious")
+      stdo.should contain("unknownAuthor: 10")
+      stdo.should_not contain("unsure: 0")
+      stdo.should contain("Compilers")
+    end
+  end
 end

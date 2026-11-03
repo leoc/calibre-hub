@@ -3,6 +3,7 @@ require "json"
 require "./backlog"
 require "./backlog_jobs"
 require "./meta_filename"
+require "./meta_quality"
 require "./metadata"
 require "./writer"
 
@@ -18,7 +19,13 @@ module CalibreHub
   # since; a field someone edited stays. Publisher, year and series are
   # only filled. A name that can't be read for sure is decided by the file,
   # the metadata sources or the model (Meta::FileName.decide), else title
-  # and authors stay and the book gets the unsure tag.
+  # and authors stay and the book gets the unsure tag. A reading without an
+  # author asks the catalogs (Meta::CrossCheck): what they confirm is taken,
+  # anything less goes to the review with that tag.
+  #
+  # Books an import didn't add from a plain file (an upload, the inbox, a
+  # calibre folder) are planned too when Meta::Quality finds them suspicious:
+  # their title is read like a name (Meta::FileName.decide_own).
   #
   # A plan is a job that stores the proposals per book (import_repairs);
   # they are reviewed and accepted (a job that applies them, if the book
@@ -28,6 +35,9 @@ module CalibreHub
   class ImportRepair < Jobs
     # automatic changes the repair builds on (not a person's edits)
     AUTO = Set{"rules", "model", "authors"}
+    # the import runs and books the quality report shows
+    QUALITY_RUNS   = 5
+    QUALITY_SAMPLE = 20
 
     record Proposed, field : String, old : JSON::Any, new : JSON::Any do
       include JSON::Serializable
@@ -37,6 +47,8 @@ module CalibreHub
     property metadata : MetadataJobs?
     # decides unclear names (Metadata#decider)
     property decider : Meta::FileName::Decider?
+    # asks the catalogs about readings without an author (Metadata#checker)
+    property checker : Meta::FileName::Checker?
 
     def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @log : MetaLog)
       db.exec <<-SQL
@@ -86,9 +98,55 @@ module CalibreHub
       done = Set(Int64).new
       @db.query_each("select book_id from import_repairs where status in ('applied', 'rejected')") { |rs| done << rs.read(Int64) }
       files = files(params).reject { |id, _| done.includes?(id) }
-      job = enqueue(files.keys, {"mode" => JSON::Any.new("plan"), "apply" => JSON::Any.new(!dry_run),
-                                 "files" => JSON.parse(files.transform_keys(&.to_s).to_json)})
-      JSON.parse({dryRun: dry_run, books: files.size, job: job}.to_json)
+      others = portion(params).select { |b| !done.includes?(b.id) && !files.has_key?(b.id) && !Meta::Quality.reasons(b).empty? }.map(&.id)
+      ids = files.keys + others
+      job = enqueue(ids, {"mode" => JSON::Any.new("plan"), "apply" => JSON::Any.new(!dry_run),
+                          "files" => JSON.parse(files.transform_keys(&.to_s).to_json)})
+      JSON.parse({dryRun: dry_run, books: ids.size, job: job}.to_json)
+    end
+
+    # The library's books in a portion. params: since (when the book was
+    # added), minId, maxId, run (the books an import run added)
+    private def portion(params : Hash(String, JSON::Any)) : Array(Book)
+      since = params["since"]?.try(&.as_s?).try { |s| ImportCleanup.parse_time(s) }
+      min = params["minId"]?.try { |v| v.as_i64? || raise Edit::Invalid.new("minId", "number expected") }
+      max = params["maxId"]?.try { |v| v.as_i64? || raise Edit::Invalid.new("maxId", "number expected") }
+      run = params["run"]?.try(&.as_s?).try { |r| run_books(r) }
+      @calibre.list("", Calibre::DETAIL_FIELDS).select do |b|
+        next false if min && b.id < min
+        next false if max && b.id > max
+        next false if since && (b.timestamp.nil? || b.timestamp.not_nil! < since)
+        run.nil? || run.includes?(b.id)
+      end
+    end
+
+    private def run_books(run : String) : Set(Int64)
+      ids = Set(Int64).new
+      @db.query_each("select distinct book_id from import_files where run_id = ? and status = 'imported' and book_id is not null", run) { |rs| ids << rs.read(Int64) }
+      ids
+    end
+
+    # How many books of a portion look wrong and why (Meta::Quality); with
+    # the library as the portion, also per import run, the last ones first
+    def quality(params : Hash(String, JSON::Any)) : JSON::Any
+      books = portion(params)
+      suspects = books.compact_map { |b| Meta::Quality.reasons(b).try { |r| {b, r} unless r.empty? } }
+      counts = Meta::Quality::REASONS.to_h { |r| {r, suspects.count { |_, list| list.includes?(r) }} }
+      runs = [] of NamedTuple(run: String, at: String, total: Int32, suspect: Int32)
+      if params.empty?
+        by_id = suspects.map { |b, _| b.id }.to_set
+        known = books.map(&.id).to_set
+        latest = [] of {String, Int64}
+        @db.query_each("select run_id, max(at) from import_files where status = 'imported' and book_id is not null group by run_id order by max(at) desc limit ?", QUALITY_RUNS) do |rs|
+          latest << rs.read(String, Int64)
+        end
+        latest.each do |run, at|
+          ids = run_books(run) & known
+          runs << {run: run, at: Time.unix(at).to_rfc3339, total: ids.size, suspect: (ids & by_id).size}
+        end
+      end
+      sample = suspects.first(QUALITY_SAMPLE).map { |b, r| {id: b.id, title: b.title, authors: b.authors, reasons: r} }
+      JSON.parse({total: books.size, suspect: suspects.size, reasons: counts, runs: runs, books: sample}.to_json)
     end
 
     # Applies the proposals of these books (nil: all open ones)
@@ -140,12 +198,28 @@ module CalibreHub
     # What the file name gives the book where it still has the import's
     # values (Meta::FileName.decide), and who decided
     def plan_book(book : Book, path : String, baseline : JSON::Any?) : {Array(Meta::Change), String}
-      ImportRepair.plan_book(book, path, hint(File.dirname(path)), baseline, @log.active(book.id).reverse, @decider)
+      ImportRepair.plan_book(book, path, hint(File.dirname(path)), baseline, @log.active(book.id).reverse, @decider, @checker)
+    end
+
+    # The same for a book without a file an import read
+    def plan_own(book : Book, baseline : JSON::Any?) : {Array(Meta::Change), String}
+      ImportRepair.plan_own(book, baseline, @log.active(book.id).reverse, @checker)
+    end
+
+    # No baseline (books older than the events): a value that looks wrong
+    # counts as nobody's edit
+    def self.plan_own(book : Book, baseline : JSON::Any?, log : Array(MetaLog::Entry),
+                      checker : Meta::FileName::Checker? = nil) : {Array(Meta::Change), String}
+      imported = ->(field : String) do
+        current = Meta::Merge.value(book, field)
+        ImportRepair.origin(field, current, [baseline.try(&.[field]?) || current], log)
+      end
+      Meta::FileName.decide_own(book, imported, checker) || {[] of Meta::Change, Meta::FileName::NAME}
     end
 
     # log: the book's active changes, oldest first
     def self.plan_book(book : Book, path : String, hint : Symbol?, baseline : JSON::Any?, log : Array(MetaLog::Entry),
-                       decider : Meta::FileName::Decider? = nil) : {Array(Meta::Change), String}
+                       decider : Meta::FileName::Decider? = nil, checker : Meta::FileName::Checker? = nil) : {Array(Meta::Change), String}
       name = File.basename(path)
       cg_title, cg_authors = Meta::FileName.calibre(name)
       imported = ->(field : String) do
@@ -162,7 +236,7 @@ module CalibreHub
         end
         ImportRepair.origin(field, Meta::Merge.value(book, field), origins, log)
       end
-      Meta::FileName.decide(book, name, hint, imported, decider) || {[] of Meta::Change, Meta::FileName::NAME}
+      Meta::FileName.decide(book, name, hint, imported, decider, checker) || {[] of Meta::Change, Meta::FileName::NAME}
     end
 
     # The value the field had when the book was imported (one of origins),
@@ -218,10 +292,11 @@ module CalibreHub
     protected def apply(job : Job, index : Int32, id : Int64, resumed : Bool)
       case job.changes["mode"]?.try(&.as_s?)
       when "plan"
-        path = job.changes["files"]?.try(&.[id.to_s]?).try(&.as_s?) || return
+        path = job.changes["files"]?.try(&.[id.to_s]?).try(&.as_s?)
         book = @calibre.book(id) || raise Writer::NotFound.new
-        changes, decided = plan_book(book, path, baselines([id])[id]?)
-        store(id, path, decided, changes)
+        baseline = baselines([id])[id]?
+        changes, decided = path ? plan_book(book, path, baseline) : plan_own(book, baseline)
+        store(id, path || "", decided, changes)
         apply_book(id, job.id) if job.changes["apply"]?.try(&.as_bool?) && !changes.empty?
       when "apply"
         apply_book(id, job.id)
@@ -250,13 +325,13 @@ module CalibreHub
     private def apply_book(id : Int64, job_id : String)
       row = proposals("pending").find { |p| p[0] == id } || return
       book = @calibre.book(id) || raise Writer::NotFound.new
-      changes = row[3]
+      changes = row[3].reject { |c| c.field == Meta::FileName::CANDIDATE }
       if changed = changes.find { |c| !ImportRepair.same?(c.field, c.old, Meta::Merge.value(book, c.field)) }
         @db.exec "update import_repairs set status = 'failed', detail = ?, at = ? where book_id = ?",
           "#{changed.field} changed since the plan", Time.utc.to_unix, id
         raise Exception.new("#{changed.field} changed since the plan, plan again")
       end
-      write(book, changes.map { |c| Meta::Change.new(c.field, c.old, c.new, "rules") }, job_id)
+      write(book, changes.map { |c| Meta::Change.new(c.field, c.old, c.new, "rules") }, job_id) unless changes.empty?
       @db.exec "update import_repairs set status = 'applied', at = ? where book_id = ?", Time.utc.to_unix, id
     end
 
@@ -298,6 +373,22 @@ module CalibreHub
     get "/api/import/repair" do |env|
       next fail(env, 404, {error: "backlog import is off"}) unless repair
       repair.review.to_json
+    end
+
+    # the quality report: of the library (with the last runs), a run, an
+    # id range or the books added since
+    get "/api/import/quality" do |env|
+      write_errors(env) do
+        next fail(env, 404, {error: "backlog import is off"}) unless repair
+        params = {} of String => JSON::Any
+        env.params.query.each do |key, value|
+          case key
+          when "run", "since"   then params[key] = JSON::Any.new(value)
+          when "minId", "maxId" then params[key] = JSON::Any.new(value.to_i64? || raise Edit::Invalid.new(key, "number expected"))
+          end
+        end
+        repair.quality(params).to_json
+      end
     end
 
     post "/api/import/repair/accept" do |env|
