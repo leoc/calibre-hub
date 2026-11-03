@@ -310,9 +310,9 @@ pkgs.testers.runNixOSTest {
         assert code(f"-b /tmp/jar '{H}/api/books/1/cover?size=thumb'") == "200"
 
     with subtest("trigger changelog"):
-        n = machine.succeed("sqlite3 /srv/books/library/metadata.db \"select count(*) from sqlite_master where type = 'trigger' and name like 'hub_%'\"").strip()
+        n = machine.succeed("sqlite3 -cmd '.timeout 5000' /srv/books/library/metadata.db \"select count(*) from sqlite_master where type = 'trigger' and name like 'hub_%'\"").strip()
         assert int(n) > 10, n
-        machine.succeed("sqlite3 /srv/books/library/metadata.db 'select count(*) from hub_changelog' | grep -qv '^0$'")
+        machine.succeed("sqlite3 -cmd '.timeout 5000' /srv/books/library/metadata.db 'select count(*) from hub_changelog' | grep -qv '^0$'")
 
     with subtest("events reach handlers"):
         machine.wait_until_succeeds("grep -q '\"changed\",1,.*tags' /var/lib/calibre-hub/events.log", timeout=30)
@@ -348,7 +348,7 @@ pkgs.testers.runNixOSTest {
         assert status == 200 and [(l["name"], l["sync"], l["isDefault"], l["count"]) for l in ls] == [("Leseliste", True, True, 0)], ls
         # once more with the tagged book: as on a host that had the tag
         machine.systemctl("stop calibre-hub.service")
-        machine.succeed(f"sqlite3 {STATE} \"delete from list_items; delete from lists; delete from meta where key = 'lists_migrated'\"")
+        machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"delete from list_items; delete from lists; delete from meta where key = 'lists_migrated'\"")
         machine.systemctl("start calibre-hub.service")
         machine.wait_for_open_port(8084)
         machine.wait_until_succeeds("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'", timeout=60)
@@ -626,7 +626,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("delete, trash, restore"):
         # calibre's own expiry is off (init.sh)
-        pref = machine.succeed("sqlite3 /srv/books/library/metadata.db \"select val from preferences where key = 'expire_old_trash_after'\"").strip()
+        pref = machine.succeed("sqlite3 -cmd '.timeout 5000' /srv/books/library/metadata.db \"select val from preferences where key = 'expire_old_trash_after'\"").strip()
         assert int(pref) >= 100 * 365 * 86400, pref
         b = api("GET", f"/api/books/{uid}")[1]
         status, r = api("PUT", f"/api/lists/{lid}/books/{uid}")
@@ -919,12 +919,12 @@ pkgs.testers.runNixOSTest {
         assert n == "6", n
 
     def library_file(book_id, fmt):
-        rel = machine.succeed(f"sqlite3 /srv/books/library/metadata.db \"select b.path || '/' || d.name from books b join data d on d.book = b.id where b.id = {book_id} and d.format = '{fmt.upper()}'\"").strip()
+        rel = machine.succeed(f"sqlite3 -cmd '.timeout 5000' /srv/books/library/metadata.db \"select b.path || '/' || d.name from books b join data d on d.book = b.id where b.id = {book_id} and d.format = '{fmt.upper()}'\"").strip()
         assert rel, (book_id, fmt)
         return f"/srv/books/library/{rel}.{fmt.lower()}"
 
     def embed_idle():
-        machine.wait_until_succeeds(f"test $(sqlite3 {STATE} 'select count(*) from embed_queue') = 0", timeout=60)
+        machine.wait_until_succeeds(f"test $(sqlite3 -cmd '.timeout 5000' {STATE} 'select count(*) from embed_queue') = 0", timeout=60)
 
     META = "QT_QPA_PLATFORM=offscreen ebook-meta"
 
@@ -945,7 +945,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"{META} /srv/books/boox/Leseliste/*Eingebettet.epub | grep -q '^Title *: Eingebettet$'", timeout=60)
         machine.wait_until_succeeds(f"cmp '{library_file(1, 'epub')}' /srv/books/boox/Leseliste/*Eingebettet.epub", timeout=60)
         # the KOReader checksum of the file before the first rewrite is kept
-        n = machine.succeed(f"sqlite3 {STATE} \"select count(*) from file_checksums where book_id = 1 and format = 'EPUB' and length(partial_md5) = 32\"").strip()
+        n = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"select count(*) from file_checksums where book_id = 1 and format = 'EPUB' and length(partial_md5) = 32\"").strip()
         assert int(n) >= 1, n
         assert api("GET", "/api/embed/status")[1]["enabled"] is True
         embed_idle()
@@ -1061,7 +1061,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-convert '{library_file(wid, 'epub')}' /tmp/wiese.txt")
         machine.succeed("grep -q 'Größe der Wiese' /tmp/wiese.txt")
         # the KOReader checksum before the repair
-        n = machine.succeed(f"sqlite3 {STATE} \"select count(*) from file_checksums where book_id = {wid} and format = 'EPUB'\"").strip()
+        n = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"select count(*) from file_checksums where book_id = {wid} and format = 'EPUB'\"").strip()
         assert int(n) >= 1, n
         st = api("GET", "/api/epub-fix/status")[1]
         assert st["lastRun"]["from"] == "added" and st["lastRun"]["dryRun"] is False, st
@@ -1282,7 +1282,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl show -p ExecStart calibre-hub.service | grep -q calibre-hub-update")
         assert invocation("calibre-hub.service") != hub, "hub not restarted by the update"
         assert invocation("calibre-server.service") == server, "calibre-server restarted by a hub update"
-        n = machine.succeed("sqlite3 /srv/books/library/metadata.db \"select count(*) from sqlite_master where type = 'trigger' and name like 'hub_%'\"").strip()
+        n = machine.succeed("sqlite3 -cmd '.timeout 5000' /srv/books/library/metadata.db \"select count(*) from sqlite_master where type = 'trigger' and name like 'hub_%'\"").strip()
         assert int(n) > 10, n
         assert code(f"-b /tmp/jar {H}/api/books") == "200"
 
@@ -1299,7 +1299,7 @@ pkgs.testers.runNixOSTest {
         assert code(f"-c /tmp/lea -X POST {CSRF} -d '{{\"user\":\"lea\",\"password\":\"lea-secret\"}}' {H}/api/session") == "200"
         assert as_lea("GET", "/api/session") == (200, {"user": "lea", "role": "reader", "sync": True})
         assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin", "sync": True})
-        users = machine.succeed(f"sqlite3 {STATE} 'select name, role, active from users order by name'").split()
+        users = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} 'select name, role, active from users order by name'").split()
         assert users == ["arthur|admin|1", "lea|reader|1"], users
         bid = api("GET", "/api/books?limit=1")[1]["books"][0]["id"]
         # reads and downloads
@@ -1398,9 +1398,9 @@ pkgs.testers.runNixOSTest {
         assert as_lea("GET", "/api/session")[0] == 401
         assert code(f"{LEA_TOK} {H}/api/books") == "401"
         # her data stays, she can't log in
-        users = machine.succeed(f"sqlite3 {STATE} 'select name, role, active from users order by name'").split()
+        users = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} 'select name, role, active from users order by name'").split()
         assert users == ["arthur|admin|1", "lea|reader|0"], users
-        assert machine.succeed(f"sqlite3 {STATE} \"select count(*) from lists where owner = 'lea'\"").strip() == "1"
+        assert machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"select count(*) from lists where owner = 'lea'\"").strip() == "1"
 
     with subtest("calibre-server down -> 502"):
         machine.systemctl("stop calibre-server.service")
