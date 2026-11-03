@@ -61,8 +61,8 @@ private USERS        = CalibreHub::Auth.new([
 ], ("k" * 32).to_slice)
 
 # status, the user the route saw (nil: not reached) and the body it read
-private def as_user(token, method, path, body : String? = nil)
-  h = CalibreHub::AuthHandler.new(USERS, [] of String)
+private def as_user(token, method, path, body : String? = nil, sync = Set(String).new)
+  h = CalibreHub::AuthHandler.new(USERS, [] of String, sync)
   seen = nil
   read = nil
   h.next = ->(c : HTTP::Server::Context) do
@@ -85,7 +85,12 @@ describe "AuthHandler with several users" do
   end
 
   it "lets a reader read and change only their own things" do
-    as_user(READER_TOKEN, "GET", "/api/trash")[0].should eq(200)
+    as_user(READER_TOKEN, "GET", "/api/books/1")[0].should eq(200)
+    as_user(READER_TOKEN, "GET", "/api/categories")[0].should eq(200)
+    as_user(READER_TOKEN, "GET", "/api/lists")[0].should eq(200)
+    as_user(READER_TOKEN, "GET", "/api/private-tags")[0].should eq(200)
+    as_user(READER_TOKEN, "POST", "/api/private-tags", %({"bookIds":[1],"add":["x"]}))[0].should eq(200)
+    as_user(READER_TOKEN, "PUT", "/api/books/1/private-tags", %({"tags":["x"]}))[0].should eq(200)
     as_user(READER_TOKEN, "PUT", "/api/books/1/progress", "{}")[0].should eq(200)
     as_user(READER_TOKEN, "PUT", "/api/reader/settings", "{}")[0].should eq(200)
     as_user(READER_TOKEN, "POST", "/api/lists", %({"name":"Meine"}))[0].should eq(200)
@@ -103,6 +108,18 @@ describe "AuthHandler with several users" do
     as_user(TOKEN, "PATCH", "/api/books/1", "{}").should eq({200, "arthur", "{}"})
   end
 
+  it "keeps the library's upkeep pages from a reader" do
+    %w(/api/trash /api/duplicates /api/duplicates/merges /api/import /api/import/runs/1 /api/metadata/changes
+      /api/metadata/status /api/suggestions /api/suggestions/1 /api/classify/status /api/epub-fix/status
+      /api/epub-fix/jobs/x /api/convert/status /api/embed/status /api/jobs/abc
+      /api/books/1/cover/search /api/books/1/metadata/candidates).each do |path|
+      as_user(READER_TOKEN, "GET", path)[0].should eq(403)
+      as_user(TOKEN, "GET", path)[0].should eq(200)
+    end
+    # not a prefix of another word
+    as_user(READER_TOKEN, "GET", "/api/trashcan")[0].should eq(200)
+  end
+
   it "keeps a reader's lists off the reader folder, with the body intact for the route" do
     as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"sync":true}))[0].should eq(403)
     as_user(READER_TOKEN, "POST", "/api/lists", %({"name":"x","sync":true}))[0].should eq(403)
@@ -111,5 +128,17 @@ describe "AuthHandler with several users" do
     as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"name":"y"})).should eq({200, "lea", %({"name":"y"})})
     as_user(READER_TOKEN, "PATCH", "/api/lists/3", %([1]))[0].should eq(200)
     as_user(TOKEN, "PATCH", "/api/lists/3", %({"sync":true}))[0].should eq(200)
+  end
+
+  it "lets a reader with a reader folder of their own sync their lists" do
+    sync = Set{"lea"}
+    as_user(READER_TOKEN, "PATCH", "/api/lists/3", %({"sync":true}), sync).should eq({200, "lea", %({"sync":true})})
+    as_user(READER_TOKEN, "POST", "/api/lists", %({"name":"x","sync":true}), sync)[0].should eq(200)
+    # the rest stays the admin's
+    as_user(READER_TOKEN, "PATCH", "/api/books/1", "{}", sync)[0].should eq(403)
+    h = CalibreHub::AuthHandler.new(USERS, [] of String, sync)
+    h.sync?("lea").should be_true
+    h.sync?("arthur").should be_true
+    CalibreHub::AuthHandler.new(USERS, [] of String).sync?("lea").should be_false
   end
 end

@@ -140,6 +140,10 @@ module CalibreHub
       [Auth.account(login_user, login_password, Auth::Role::Admin, api_tokens)] + others
     end
 
+    # readers with a reader folder of their own (users.<name>.leseliste.target),
+    # who may sync their lists; comma separated
+    getter sync_users : Set(String) = env("CALIBRE_HUB_SYNC_USERS", "").split(',', remove_empty: true).map(&.strip).to_set
+
     getter session_days : Int32 = env("CALIBRE_HUB_SESSION_DAYS", "30").to_i
     # "false" only for local development over plain http
     getter secure_cookies : Bool = env("CALIBRE_HUB_SECURE_COOKIES", "true") != "false"
@@ -424,7 +428,7 @@ module CalibreHub
     auth = Auth.new(config.accounts, config.session_key, lifetime: config.session_days.days, secure: config.secure_cookies)
     Users.new(db).sync(auth.accounts)
     puts "users: #{auth.accounts.map { |a| "#{a.name} (#{a.role})" }.join(", ")}"
-    auth_handler = AuthHandler.new(auth, config.trusted_proxies)
+    auth_handler = AuthHandler.new(auth, config.trusted_proxies, config.sync_users)
     use SecurityHeadersHandler.new
     use UnavailableHandler.new
     # before the frontend and the login (AuthHandler reads list bodies)
@@ -435,16 +439,21 @@ module CalibreHub
     lists = lists(config, calibre, db, wake)
     # in the request that submits the job, so the lists of its user
     members = ->(p : HTTP::Params) { Api.list_members(lists, auth.user, p) }
+    private_tags = PrivateTags.new(db)
+    private_tags.watch_events
+    # {query: {ptag}} targets: the private tags of the request's user
+    tagged = ->(tags : Array(String)) { private_tags.books(auth.user, tags) }
     # one per host interval for the metadata sources and the sync
     http = Meta::Http.new(config.metadata_interval)
     hardcover = hardcover(config, http, db)
     metadata_jobs = metadata(config, calibre, writer, db, http, hardcover)
     classify_jobs = classify(config, calibre, writer, db, metadata_jobs)
     jobs = Jobs.new(db, calibre, writer, config.category_column)
-    [jobs, metadata_jobs, classify_jobs].compact.each { |j| j.list_members = members }
+    [jobs, metadata_jobs, classify_jobs].compact.each { |j| j.list_members = members; j.private_books = tagged }
     trash = Trash.new(calibre, writer, config.library, db)
-    trash.on_restore = ->(old_id : Int64, new_id : Int64) { lists.book_restored(old_id, new_id) }
+    trash.on_restore = ->(old_id : Int64, new_id : Int64) { lists.book_restored(old_id, new_id); private_tags.book_restored(old_id, new_id); nil }
     dups = Duplicates.new(calibre, writer, db, config.library, config.category_column, lists, trash, config.duplicates_threshold)
+    dups.private_tags = private_tags
     # uploads and the inbox look for duplicates the same way as the page
     writer.similar = ->(id : Int64) { dups.similar(id) }
     inbox.try do |i|
@@ -478,12 +487,13 @@ module CalibreHub
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members
+      j.private_books = tagged
       j.category_column = config.category_column
     end
     # the metadata cleanup edits no category, but its {query} targets filter by it
     metadata_jobs.try &.category_column = config.category_column
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), cleanup].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db))
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), cleanup].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
     epub_fix_routes(epub_fix)

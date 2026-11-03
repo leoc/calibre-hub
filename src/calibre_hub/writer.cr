@@ -252,6 +252,9 @@ module CalibreHub
     # {listPath: "A/B"}} (with direct, listOwner: Api.list_members); raises
     # when the list is unknown
     property list_members : Proc(HTTP::Params, Array(Int64))?
+    # book ids with all of these private tags of the requesting user, for
+    # {query: {ptag: [...]}} (PrivateTags#books)
+    property private_books : Proc(Array(String), Set(Int64)?)?
     # for {query: {kategorie: …}} targets of queues that don't edit fields
     setter category_column : String?
 
@@ -347,7 +350,7 @@ module CalibreHub
 
     # the filters a {query} target may have (those of GET /api/books
     # without paging and sorting)
-    QUERY_KEYS = %w(q kategorie tag author series list listPath listOwner direct)
+    QUERY_KEYS = %w(q kategorie tag ptag author series list listPath listOwner direct)
 
     # The count a {query} target resolved to differs from the one the client
     # showed (expect): the library changed, or the query isn't what it meant
@@ -395,16 +398,22 @@ module CalibreHub
 
     private def query_ids(params : HTTP::Params, all : Bool) : Array(Int64)
       q = Api.query(params, @category_column)
+      ptags = params.fetch_all("ptag").reject(&.strip.empty?)
+      tagged = unless ptags.empty?
+        (private_books || raise Edit::Invalid.new("target", "ptag: no private tags here")).call(ptags)
+      end
       # the books of a reading list, filtered further by the rest
       if Api.list_query?(params)
         raise Edit::Invalid.new("target", "unknown list") if (l = params["list"]?.presence) && l.to_i64?.nil?
         members = list_members.try(&.call(params)) || raise Edit::Invalid.new("target", "unknown list")
+        members = members.select { |id| tagged.includes?(id) } if tagged
         return members if q.empty?
         found = @calibre.search(q, "id", true, 0, 1_000_000).ids.to_set
         return members.select { |id| found.includes?(id) }
       end
-      raise Edit::Invalid.new("target", "the query has no filter and would match every book; send all: true to mean that") if q.empty? && !all
-      @calibre.search(q, "id", true, 0, 1_000_000).ids
+      raise Edit::Invalid.new("target", "the query has no filter and would match every book; send all: true to mean that") if q.empty? && !all && tagged.nil?
+      ids = @calibre.search(q, "id", true, 0, 1_000_000).ids
+      tagged ? ids.select { |id| tagged.includes?(id) } : ids
     end
 
     # Runs queued jobs, oldest first, then waits for the next submit

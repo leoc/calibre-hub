@@ -159,6 +159,8 @@ module CalibreHub
     KEEP_LOG   = 200
 
     getter threshold : Float64
+    # every user's private tags of the merged books go to the keeper too
+    property private_tags : PrivateTags?
 
     def initialize(@calibre : Calibre, @writer : Writer, @db : DB::Database, @library : String?,
                    @category_column : String? = nil, @lists : Lists? = nil, @trash : Trash? = nil,
@@ -396,6 +398,7 @@ module CalibreHub
             end
             save(m)
           end
+          @private_tags.try { |pt| p.others.each { |o| pt.merge_book(o.id, keep_id) } }
           m.progress = move_progress(p.others.map(&.id), keep_id)
           save(m)
           p.others.each do |o|

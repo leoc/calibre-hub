@@ -35,6 +35,9 @@ module CalibreHub
     # the snapshot)
     @[JSON::Field(emit_null: false)]
     property lists : Array(Int64)?
+    # the requesting user's private tags (PrivateTags, set by the API)
+    @[JSON::Field(key: "privateTags", emit_null: false)]
+    property private_tags : Array(String)?
 
     module Micros
       def self.to_json(value : Time, json : JSON::Builder)

@@ -6,6 +6,7 @@ require "./trash"
 require "./classify"
 require "./metadata"
 require "./lists"
+require "./private_tags"
 require "./opds"
 require "./progress"
 require "./reader_settings"
@@ -44,11 +45,13 @@ module CalibreHub
     # other filters of GET /api/books apply too. The list's sublists count
     # in, unless direct=1. Without a list id: listPath (and listOwner,
     # default the user) names a node, also one without a list of its own.
+    # tagged: only these books (the user's private tags, ptag)
     def self.list_page(lists : Lists, calibre : Calibre, user : String, p : HTTP::Params,
-                       kategorie : String?, offset : Int32, limit : Int32) : {Int32, Array(Int64)}
+                       kategorie : String?, offset : Int32, limit : Int32, tagged : Set(Int64)? = nil) : {Int32, Array(Int64)}
       sort = p["sort"]?.presence || "listAdded"
       raise Edit::Invalid.new("sort", "one of #{Lists::SORTS.join(", ")}") unless Lists::SORTS.includes?(sort)
       members = list_members(lists, user, p)
+      members = members.select { |id| tagged.includes?(id) } if tagged
       query = query(p, kategorie)
       ids = if sort == "listAdded"
               ordered = p["order"]? == "asc" ? members.reverse : members
@@ -94,6 +97,28 @@ module CalibreHub
         b.lists = m[b.id]? || [] of Int64
         b
       end
+    end
+
+    # Adds the user's private tags to each book
+    def self.with_private_tags(books : Array(Book), tags : PrivateTags?, user : String) : Array(Book)
+      return books unless tags
+      m = tags.of(user, books.map(&.id))
+      books.map do |b|
+        b.private_tags = m[b.id]? || [] of String
+        b
+      end
+    end
+
+    # The user's lists and private tags on each book
+    def self.with_user_data(books : Array(Book), lists : Lists?, tags : PrivateTags?, user : String) : Array(Book)
+      with_private_tags(with_lists(books, lists, user), tags, user)
+    end
+
+    # The books with all ptag private tags of the user; nil without ptag
+    def self.tagged(p : HTTP::Params, tags : PrivateTags?, user : String) : Set(Int64)?
+      wanted = p.fetch_all("ptag").reject(&.strip.empty?)
+      return nil if wanted.empty?
+      (tags || raise Edit::Invalid.new("ptag", "no private tags here")).books(user, wanted)
     end
 
     def self.escape(value : String) : String
@@ -152,7 +177,15 @@ module CalibreHub
     PUBLIC = {"/healthz"}
     SAFE   = {"GET", "HEAD", "OPTIONS"}
 
-    def initialize(@auth : Auth, @trusted_proxies : Array(String))
+    # sync_users: readers with a reader folder of their own
+    # (CALIBRE_HUB_SYNC_USERS), who may sync their lists to it
+    def initialize(@auth : Auth, @trusted_proxies : Array(String), @sync_users = Set(String).new)
+    end
+
+    # May the user sync lists to a reader folder: admins, and readers with
+    # a folder of their own
+    def sync?(user : String) : Bool
+      @auth.admin?(user) || @sync_users.includes?(user)
     end
 
     def call(context)
@@ -198,24 +231,34 @@ module CalibreHub
     end
 
     private def serve(context, user : String)
-      unless @auth.admin?(user) || AuthHandler.reader_may?(context.request)
-        return deny(context, 403, "only admins can change the library")
+      unless @auth.admin?(user) || AuthHandler.reader_may?(context.request, @sync_users.includes?(user))
+        return deny(context, 403, SAFE.includes?(context.request.method) ? "only for admins" : "only admins can change the library")
       end
       @auth.as_user(user) { call_next(context) }
     end
 
-    # A reader reads everything and changes only their own things: lists,
-    # reading progress, reader settings; and logs out. Syncing a list to
-    # the reader folder (the admin's e-reader), on or off, is the admin's
-    # call. Every
-    # other write, also of routes added later, is for admins.
-    def self.reader_may?(req : HTTP::Request) : Bool
-      return true if SAFE.includes?(req.method)
+    # The library's upkeep: what a reader doesn't read either (the trash,
+    # duplicates, imports, metadata changes, suggestions, maintenance runs
+    # and their jobs; cover and metadata searches, which ask other sites)
+    ADMIN_READS = {
+      %r{\A/api/(trash|duplicates|import|metadata|suggestions|classify|epub-fix|convert|embed|jobs)(/|\z)},
+      %r{\A/api/books/\d+/(cover/search|metadata/candidates)\z},
+    }
+
+    # A reader reads the library and changes only their own things: lists,
+    # private tags, reading progress, reader settings; and logs out.
+    # Syncing a list to a reader folder, on or off, needs a folder of the
+    # reader's own (sync: CALIBRE_HUB_SYNC_USERS); without one the folder
+    # is the admin's e-reader. Every other write, also of routes added
+    # later, is for admins, and so are the upkeep pages (ADMIN_READS).
+    def self.reader_may?(req : HTTP::Request, sync = false) : Bool
       path = req.path
+      return ADMIN_READS.none? { |r| path.matches?(r) } if SAFE.includes?(req.method)
       return true if path == "/api/session" && req.method == "DELETE"
       return true if path == "/api/reader/settings" || path.matches?(%r{\A/api/books/\d+/progress\z})
+      return true if path == "/api/private-tags" || path.matches?(%r{\A/api/books/\d+/private-tags\z})
       return false unless path == "/api/lists" || path.starts_with?("/api/lists/")
-      !sets_sync?(req)
+      sync || !sets_sync?(req)
     end
 
     # Reads the body and puts it back for the route
@@ -248,7 +291,7 @@ module CalibreHub
                   fast_tags = [] of String, writer : Writer? = nil, jobs : Jobs? = nil, trash : Trash? = nil,
                   classify : ClassifyJobs? = nil, metadata : MetadataJobs? = nil, lists : Lists? = nil,
                   extra_jobs = [] of Jobs, progress : Progress? = nil,
-                  reader_settings : ReaderSettings? = nil)
+                  reader_settings : ReaderSettings? = nil, private_tags : PrivateTags? = nil)
     before_all("/api/*") { |env| env.response.content_type = "application/json" }
 
     get "/healthz" { "ok" }
@@ -259,7 +302,7 @@ module CalibreHub
       password = body["password"]?.try(&.as_s?) || ""
       if cookie = auth.login(auth_handler.client_ip(env), user, password)
         env.response.cookies << cookie
-        {user: user, role: auth.role(user).to_s}.to_json
+        {user: user, role: auth.role(user).to_s, sync: auth_handler.sync?(user)}.to_json
       else
         halt env, 401, %({"error":"wrong user or password"})
       end
@@ -267,7 +310,8 @@ module CalibreHub
       halt env, 429, %({"error":"too many failed logins"})
     end
 
-    get "/api/session" { {user: auth.user, role: auth.role.to_s}.to_json }
+    # sync: the user may sync lists to a reader folder
+    get "/api/session" { {user: auth.user, role: auth.role.to_s, sync: auth_handler.sync?(auth.user)}.to_json }
 
     get "/api/config" { {fastTags: fast_tags, categoryColumn: kategorie, classify: !classify.nil?, metadata: !metadata.nil?}.to_json }
 
@@ -283,19 +327,29 @@ module CalibreHub
       limit = (p["limit"]?.try(&.to_i?) || Api::DEFAULT_LIMIT).clamp(1, Api::MAX_LIMIT)
       if (l = lists) && Api.list_query?(p)
         next write_errors(env) do
-          total, ids = Api.list_page(l, calibre, auth.user, p, kategorie, offset, limit)
-          {total: total, offset: offset, limit: limit, books: Api.with_lists(calibre.books(ids), lists, auth.user)}.to_json
+          total, ids = Api.list_page(l, calibre, auth.user, p, kategorie, offset, limit, Api.tagged(p, private_tags, auth.user))
+          {total: total, offset: offset, limit: limit, books: Api.with_user_data(calibre.books(ids), lists, private_tags, auth.user)}.to_json
         end
       end
       sort = Api::SORTS[p["sort"]? || "title"]? || halt(env, 400, %({"error":"unknown sort"}))
       ascending = p["order"]? != "desc"
-      result = calibre.search(Api.query(p, kategorie), sort, ascending, offset, limit)
-      {total: result.total, offset: offset, limit: limit, books: Api.with_lists(calibre.books(result.ids), lists, auth.user)}.to_json
+      next write_errors(env) do
+        if tagged = Api.tagged(p, private_tags, auth.user)
+          # the user's private tags: calibre sorts, the hub picks its books
+          ids = tagged.empty? ? [] of Int64 : calibre.search(Api.query(p, kategorie), sort, ascending, 0, 1_000_000).ids.select { |id| tagged.includes?(id) }
+          total = ids.size
+          ids = ids[offset, limit]? || [] of Int64
+        else
+          result = calibre.search(Api.query(p, kategorie), sort, ascending, offset, limit)
+          total, ids = result.total, result.ids
+        end
+        {total: total, offset: offset, limit: limit, books: Api.with_user_data(calibre.books(ids), lists, private_tags, auth.user)}.to_json
+      end
     end
 
     get "/api/books/:id" do |env|
       id = env.params.url["id"].to_i64? || halt(env, 404, %({"error":"not found"}))
-      calibre.book(id).try { |b| Api.with_lists([b], lists, auth.user).first.to_json } || halt(env, 404, %({"error":"not found"}))
+      calibre.book(id).try { |b| Api.with_user_data([b], lists, private_tags, auth.user).first.to_json } || halt(env, 404, %({"error":"not found"}))
     end
 
     get "/api/books/:id/cover" do |env|
@@ -320,6 +374,8 @@ module CalibreHub
         authors:   list.call("authors"),
         series:    list.call("series"),
         languages: list.call("languages"),
+        # the user's own tags, nobody else's
+        privateTags: private_tags.try(&.counts(auth.user)) || [] of PrivateTags::Count,
       }.to_json
     end
 
@@ -328,6 +384,7 @@ module CalibreHub
     end
     trash.try { |t| trash_routes(t) }
     lists.try { |l| list_routes(l, auth, jobs, calibre) }
+    private_tags.try { |pt| private_tag_routes(pt, auth, jobs, calibre) }
     progress.try { |pr| progress_routes(pr, auth) }
     reader_settings.try { |rs| reader_settings_routes(rs, auth) }
     classify_routes(classify, calibre)
@@ -527,6 +584,37 @@ module CalibreHub
       write_errors(env) do
         id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
         lists.lists_of(id, auth.user).to_json
+      end
+    end
+  end
+
+  # Private tags (private_tags.cr) of the logged-in user
+  def self.private_tag_routes(tags : PrivateTags, auth : Auth, jobs : Jobs?, calibre : Calibre)
+    get "/api/private-tags" do |env|
+      write_errors(env) { tags.counts(auth.user).to_json }
+    end
+
+    # {bookIds} or {target} (as in bulk edits), add and/or remove; books
+    # not in the library are left out
+    post "/api/private-tags" do |env|
+      write_errors(env) do
+        body = json_body(env)
+        if bad = body.keys.find { |k| !{"bookIds", "target", "add", "remove"}.includes?(k) }
+          raise Edit::Invalid.new(bad, "unknown field")
+        end
+        ids = list_book_ids(body, jobs)
+        known = ids.empty? ? Set(Int64).new : calibre.books(ids, ["title"]).map(&.id).to_set
+        ids = ids.select { |id| known.includes?(id) }
+        changed = tags.change(auth.user, ids, PrivateTags.list(body["add"]?, "add"), PrivateTags.list(body["remove"]?, "remove"))
+        {total: ids.size, changed: changed}.to_json
+      end
+    end
+
+    put "/api/books/:id/private-tags" do |env|
+      write_errors(env) do
+        id = env.params.url["id"].to_i64? || raise Writer::NotFound.new
+        raise Writer::NotFound.new if calibre.books([id], ["title"]).empty?
+        {bookId: id, privateTags: tags.set(auth.user, id, PrivateTags.list(json_body(env)["tags"]?, "tags"))}.to_json
       end
     end
   end
