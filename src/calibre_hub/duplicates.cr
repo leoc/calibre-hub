@@ -372,8 +372,11 @@ module CalibreHub
           end
           p.formats.each do |move|
             with_file(move.from, move.format, info) do |path|
-              @calibre.cmd("remove_format", [keep_id, move.format]) if move.replace
-              @calibre.add_format(keep_id, path, move.format.downcase)
+              if move.replace
+                replace_format(keep_id, path, move.format, info)
+              else
+                @calibre.add_format(keep_id, path, move.format.downcase)
+              end
             end
             m.formats << move
             save(m)
@@ -574,6 +577,28 @@ module CalibreHub
     end
 
     # The format file of a book: from the library, else through calibre-server
+    # The keeper's tiny file goes to calibre's format trash first (a plain
+    # add_format would overwrite it for good). When adding the new one fails
+    # after that, the keeper gets its old file back from a copy taken before,
+    # so it never ends up without the format.
+    private def replace_format(keep_id : Int64, path : String, format : String, info : LibraryInfo)
+      backup = File.tempname("merge-keep", ".#{format.downcase}")
+      with_file(keep_id, format, info) { |old| FileUtils.cp(old, backup) }
+      @calibre.cmd("remove_format", [keep_id, format])
+      begin
+        @calibre.add_format(keep_id, path, format.downcase)
+      rescue ex
+        begin
+          @calibre.add_format(keep_id, backup, format.downcase)
+        rescue
+          # still in calibre's format trash
+        end
+        raise ex
+      end
+    ensure
+      backup.try { |b| File.delete?(b) }
+    end
+
     private def with_file(id : Int64, format : String, info : LibraryInfo, &)
       if (path = info.files.try(&.[id]?).try(&.find { |f| f.format == format.upcase }).try(&.path)) && File.file?(path)
         yield path

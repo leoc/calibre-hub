@@ -156,6 +156,8 @@ private class FakeServer
   getter covers = {} of Int64 => Bytes
   getter requests = [] of {String, JSON::Any}
   property next_id = 100_i64
+  # set-fields fails for a format with this content
+  property fail_format : String? = nil
   getter url : String
   getter library : String
 
@@ -177,6 +179,10 @@ private class FakeServer
         ctx.response.print({result: {book_ids: ids, data: data}}.to_json)
       when .starts_with?("/cdb/set-fields/")
         id = path.split('/')[3].to_i64
+        if (bad = @fail_format) && body["changes"]["added_formats"]?.try(&.as_a.any? { |f| String.new(Base64.decode(f["data_url"].as_s)) == bad })
+          ctx.response.status_code = 500
+          next
+        end
         body["changes"].as_h.each do |k, v|
           case k
           when "cover"
@@ -409,6 +415,35 @@ describe CalibreHub::Duplicates do
       # no file sizes without metadata.db: same format, nothing moves
       plan = dups.plan(1, [2_i64])
       plan.formats.should be_empty
+    end
+  end
+
+  it "gives the keeper its tiny file back when the replacement fails" do
+    merge_setup do |fake, dups, _, _, _|
+      libdir = fake.library
+      {1 => "tiny", 2 => "x" * 5000}.each do |id, content|
+        Dir.mkdir_p(File.join(libdir, "B#{id}"))
+        File.write(File.join(libdir, "B#{id}", "b.pdf"), content)
+        fake.files[{id.to_i64, "PDF"}] = content
+      end
+      db = DB.open("sqlite3://#{File.join(libdir, "metadata.db")}")
+      db.exec "create table books (id integer primary key, path text, has_cover integer)"
+      db.exec "create table data (id integer primary key, book integer, format text, uncompressed_size integer, name text)"
+      db.exec "insert into books values (1, 'B1', 0), (2, 'B2', 0)"
+      db.exec "insert into data (book, format, uncompressed_size, name) values (1, 'PDF', 4, 'b'), (2, 'PDF', 5000, 'b')"
+      db.close
+      fake.add(1, "Testbuch", formats: ["PDF"])
+      fake.add(2, "Testbuch", formats: ["PDF"])
+      dups.plan(1, [2_i64]).formats.map(&.replace).should eq([true])
+
+      fake.fail_format = "x" * 5000
+      expect_raises(CalibreHub::Calibre::Unavailable) { dups.merge(1, [2_i64]) }
+      fake.books[1_i64]["formats"].as_a.map(&.as_s).should eq(["PDF"])
+      fake.files[{1_i64, "PDF"}].should eq("tiny")
+
+      fake.fail_format = nil
+      dups.merge(1, [2_i64])
+      fake.files[{1_i64, "PDF"}].should eq("x" * 5000)
     end
   end
 end
