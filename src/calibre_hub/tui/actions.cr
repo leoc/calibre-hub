@@ -8,6 +8,9 @@ module CalibreHub
     # the web app
     CONFIRM_ABOVE = 50
 
+    # what the command line does while the trash is shown
+    TRASH_COMMANDS = %w(line quit help undo goTrash restore errors select search)
+
     # What a command takes (the web app's ValueKind, plus what only the
     # command line has)
     enum ValueKind
@@ -85,7 +88,11 @@ module CalibreHub
         {"search", "search", "suchen (calibre-Suche)"},
         {"sort", "sort", "Sortierung: sort added desc"},
         {"undo", "undo", "letzte Änderung zurücknehmen"},
-        {"select", "select", "select none: Auswahl aufheben"},
+        {"repeat", "repeat", "letzte Änderung wiederholen (.)"},
+        {"select", "select", "select all: alle Treffer, select none: Auswahl aufheben"},
+        {"papierkorb", "goTrash", "Papierkorb zeigen (gt)"},
+        {"restore", "restore", "im Papierkorb: wiederherstellen (r)"},
+        {"fehler", "errors", "Fehler des letzten Jobs"},
         {"help", "help", "Tastenkürzel und Befehle"},
         {"quit", "quit", "beenden"},
       ]
@@ -96,9 +103,10 @@ module CalibreHub
         "delete" => "delete", "s" => "search", "e" => "edit", "u" => "undo",
         "addTags" => "addTags", "removeTags" => "removeTags", "seriesNumbered" => "seriesNumbered",
         "addToList" => "addToList", "removeFromList" => "removeFromList", "newList" => "newList",
+        "errors" => "errors", "goTrash" => "goTrash", "wiederherstellen" => "restore",
       }
 
-      APP = %w(edit open search sort undo select help quit)
+      APP = %w(edit open search sort undo repeat select goTrash restore errors help quit)
 
       # {action, the rest as typed}; a number alone is {"line", n}
       def self.parse(line : String) : {String, String}?
@@ -221,7 +229,7 @@ module CalibreHub
           return {line.size - after.lstrip.size, matches(subs, after.lstrip), true}
         end
         if first.downcase == "select"
-          return {line.size - after.lstrip.size, matches(%w(none), after.lstrip), false}
+          return {line.size - after.lstrip.size, matches(%w(all none), after.lstrip), false}
         end
         action, words = Commands.parse_words(line) || return {line.size, [] of String, false}
         start = line.match(/\A\s*(?:\S+\s+){#{words}}/).try(&.[0].size) || line.size

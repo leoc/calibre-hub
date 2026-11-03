@@ -1,4 +1,5 @@
 require "http/params"
+require "json"
 
 module CalibreHub
   module Tui
@@ -91,6 +92,26 @@ module CalibreHub
         p["offset"] = offset.to_s
         p["limit"] = limit.to_s
         p
+      end
+
+      # the same books, whatever the order
+      def same_books?(other : Query) : Bool
+        copy_with(sort: nil, order: nil) == other.copy_with(sort: nil, order: nil)
+      end
+
+      # "All matches" for the bulk API, like bulkTarget in the web app: the
+      # filters only, `expect` the number of matches shown (the hub checks
+      # it); no filter at all is the whole library, said with all: true
+      def bulk_target(category_column : String?, expect : Int32) : JSON::Any
+        filters = {} of String => Array(String)
+        params(0, 1, category_column).each do |k, v|
+          next if {"sort", "order", "offset", "limit"}.includes?(k)
+          (filters[k] ||= [] of String) << v
+        end
+        query = filters.to_h { |k, v| {k, k == "tag" ? JSON::Any.new(v.map { |x| JSON::Any.new(x) }) : JSON::Any.new(v.first)} }
+        t = {"query" => JSON::Any.new(query), "expect" => JSON::Any.new(expect.to_i64)}
+        t["all"] = JSON::Any.new(true) if query.empty?
+        JSON::Any.new(t)
       end
 
       def self.quote(v : String) : String

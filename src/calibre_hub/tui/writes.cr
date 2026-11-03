@@ -68,18 +68,47 @@ module CalibreHub
     end
 
     # The books a command acts on: the selection (ids in the order they were
-    # selected), else the open or the cursor book. `book` when it is one
-    # loaded book.
-    record Target, ids : Array(Int64), book : Book? do
+    # selected, or `all` matches of a query, `total` of them), else the open
+    # or the cursor book. `book` when it is one loaded book.
+    record Target, ids : Array(Int64), book : Book?, all : Query? = nil, total : Int32 = 0 do
       def one? : Bool
-        ids.size == 1
+        all.nil? && ids.size == 1
+      end
+
+      def size : Int32
+        all ? total : ids.size
       end
 
       # ": Titel" or " (3)"
       def suffix : String
-        (b = book) ? ": #{b.title}" : " (#{ids.size})"
+        (b = book) ? ": #{b.title}" : " (#{size})"
+      end
+
+      # the bulk API's target: {ids} or {query, expect, all?}
+      def bulk(category_column : String?) : JSON::Any
+        if q = all
+          return q.bulk_target(category_column, total)
+        end
+        JSON.parse({"ids" => ids}.to_json)
       end
     end
+
+    # A restore from the trash, one book at a time: what is left, what came
+    # back (new ids), what failed
+    class RestoreMsg < Tea::Msg
+      getter label : String
+      getter left : Array(Int64)
+      getter restored : Array(Int64)
+      getter errors : Array({Int64, String})
+      getter total : Int32
+      getter? undoable : Bool
+
+      def initialize(@label, @left, @restored, @errors, @total, @undoable)
+      end
+    end
+
+    # The books of a finished job that failed, for :fehler
+    record JobErrors, label : String, errors : Array({Int64, String})
 
     class App
       # what a Proc returning a command looks like (confirm, undo)
@@ -99,13 +128,23 @@ module CalibreHub
       # where downloads go
       property download_dir : String = "."
       @command_line : CommandLine? = nil
+      # the last change, for `.`: {action id or "fastTag"/"toggleList", value}
+      getter last_change : {String, String}? = nil
+      # the failed books of the last job with errors
+      getter job_errors : JobErrors? = nil
+      getter? showing_errors = false
 
       # --- target -----------------------------------------------------------
 
       def target : Target?
-        unless @selection.empty?
-          book = @selection.size == 1 ? loaded_book(@selection[0]) : nil
-          return Target.new(@selection.dup, book)
+        if q = @all
+          return nil unless @rows.loaded?
+          return Target.new([] of Int64, nil, q, @rows.size)
+        end
+        ids = @visual ? visual_ids[0] : @selection
+        unless ids.empty?
+          book = ids.size == 1 ? loaded_book(ids[0]) : nil
+          return Target.new(ids.dup, book)
         end
         book = @rows[@detail || @cursor] || return nil
         Target.new([book.id], @full[book.id]? || book)
@@ -115,21 +154,10 @@ module CalibreHub
         @full[id]? || @rows.index_of(id).try { |i| @rows[i] }
       end
 
-      def toggle_select : Nil
-        book = @rows[@detail || @cursor] || return
-        if @selection.includes?(book.id)
-          @selection.delete(book.id)
-        else
-          @selection << book.id
-        end
-      end
-
-      def clear_selection : Nil
-        @selection.clear
-      end
-
-      def selected?(id : Int64) : Bool
-        @selection.includes?(id)
+      # the target's books as far as they are loaded
+      private def target_books(t : Target) : Array(Book)
+        return @rows.loaded_books if t.all
+        t.ids.compact_map { |i| loaded_book(i) }
       end
 
       # --- completion data --------------------------------------------------
@@ -212,15 +240,23 @@ module CalibreHub
         text = line.strip.lchop(':').strip
         return nil if text.empty?
         action, rest = Commands.parse(text) || return fail("Unbekannter Befehl: #{text.split(' ').first} (:help zeigt alle)")
+        if @trash && !TRASH_COMMANDS.includes?(action)
+          return fail("Im Papierkorb: r stellt wieder her, q geht zurück")
+        end
         case action
-        when "line"   then move_to(rest.to_i - 1)
-        when "quit"   then Tea.quit
-        when "help"   then @help = true; nil
-        when "undo"   then undo
-        when "edit"   then edit_book
-        when "open"   then @rows.size > 0 ? open_detail(@cursor) : nil
-        when "select" then rest.downcase == "none" ? (clear_selection; nil) : fail("select none hebt die Auswahl auf")
+        when "line"    then @trash ? trash_to(rest.to_i - 1) : move_to(rest.to_i - 1)
+        when "quit"    then Tea.quit
+        when "help"    then @help = true; nil
+        when "undo"    then undo
+        when "edit"    then edit_book
+        when "open"    then @rows.size > 0 ? open_detail(@cursor) : nil
+        when "select"  then select_command(rest)
+        when "goTrash" then open_trash
+        when "restore" then restore_selected
+        when "errors"  then show_job_errors
+        when "repeat"  then repeat
         when "search"
+          close_trash
           rest.empty? ? start_search : navigate(@query.copy_with(q: rest))
         when "sort" then sort_command(rest)
         else
@@ -260,14 +296,20 @@ module CalibreHub
 
       # A command of the web app's actions on the target, with its value as typed
       def run_action(id : String, text : String) : Tea::Cmd?
+        waiting, cmd = settle_visual { run_action(id, text) }
+        return cmd if waiting
         action = Tui.book_action(id) || return fail("Unbekannter Befehl: #{id}")
-        t = target || return fail("Kein Buch")
+        t = target || return fail(@all ? "Die Treffer laden noch" : "Kein Buch")
+        if action.many && t.all
+          return fail("#{action.label}: nur für ausgewählte Bücher, nicht für alle Treffer")
+        end
         return fail("#{action.label}: nur für mehrere ausgewählte Bücher (Leertaste wählt aus)") if action.many && t.one?
+        @last_change = {id, text} unless {"download", "newList"}.includes?(id)
         case id
         when "addToList", "removeFromList", "newList" then return list_action(action, t, text)
         when "download"                               then return download(t, text)
         when "delete"
-          what = (b = t.book) ? "„#{b.title}“" : "#{t.ids.size} Bücher"
+          what = (b = t.book) ? "„#{b.title}“" : (t.all ? "Alle #{t.size} Treffer" : "#{t.size} Bücher")
           return ask("#{what} in den Papierkorb verschieben?") { delete(t) }
         end
         changes = begin
@@ -276,10 +318,20 @@ module CalibreHub
           return fail(bad.message || "")
         end
         label = "#{action.label}#{t.suffix}"
-        if t.ids.size > CONFIRM_ABOVE
-          return ask("#{label}: #{t.ids.size} Bücher ändern?") { change(t, changes, label) }
+        if t.size > CONFIRM_ABOVE
+          return ask("#{label}: #{t.size} Bücher ändern?") { change(t, changes, label) }
         end
         change(t, changes, label)
+      end
+
+      # `.`: the last change again, on what is the target now
+      def repeat : Tea::Cmd?
+        kind, value = @last_change || return fail("Nichts zu wiederholen")
+        case kind
+        when "fastTag"    then toggle_tag(value)
+        when "toggleList" then toggle_default_list
+        else                   run_action(kind, value)
+        end
       end
 
       # One loaded book: PATCH at once, optimistically; several: a bulk job
@@ -287,7 +339,7 @@ module CalibreHub
         if t.one? && (book = t.book)
           return patch(book, Changes.patch(changes, book), label)
         end
-        bulk(t.ids, changes, label)
+        bulk(t.bulk(@category_column), changes, label)
       end
 
       # Shows the change now, sends it, takes it back if the hub refuses
@@ -321,14 +373,24 @@ module CalibreHub
         fail("Buch ##{id} ist nicht mehr geladen")
       end
 
-      private def bulk(ids : Array(Int64), changes : Hash(String, JSON::Any), label : String,
+      # `restore`: the ids of a delete (its undo), nil for a field change
+      private def bulk(target : JSON::Any, changes : Hash(String, JSON::Any), label : String,
                        restore : Array(Int64)? = nil) : Tea::Cmd?
         source = @source
         @message = "#{label} …"
+        delete = changes.has_key?("delete")
         Tea.cmd do
           begin
-            started = source.bulk(JSON.parse({"ids" => ids}.to_json), changes)
-            JobMsg.new(started["jobId"].as_s, label, undoable: restore.nil?, restore: restore).as(Tea::Msg)
+            started = source.bulk(target, changes)
+            JobMsg.new(started["jobId"].as_s, label, undoable: !delete, restore: restore).as(Tea::Msg)
+          rescue ex : Cli::HttpError
+            # all matches: the library changed since they were counted
+            if ex.status == 409 && (found = ex.body["found"]?)
+              WriteMsg.new(label, error: "die Suche trifft jetzt #{found} statt #{ex.body["expected"]?} Bücher, nichts geändert – Ansicht neu geladen",
+                reload: true).as(Tea::Msg)
+            else
+              WriteMsg.new(label, error: App.error_text(ex)).as(Tea::Msg)
+            end
           rescue ex
             WriteMsg.new(label, error: App.error_text(ex)).as(Tea::Msg)
           end
@@ -356,14 +418,16 @@ module CalibreHub
         job = msg.job || return poll(msg, wait: false)
         status = job["status"]?.try(&.as_s?) || "running"
         if {"running", "queued", "pending"}.includes?(status)
-          @message = "#{msg.label}: #{job["done"]? || 0}/#{job["total"]? || "?"}"
+          @message = "#{msg.label}: #{Tui.progress(job["done"]?.try(&.as_i64?) || 0_i64, job["total"]?.try(&.as_i64?))}"
           return poll(msg, wait: true)
         end
         errors = job["errors"]?.try(&.as_a?) || [] of JSON::Any
         total = job["total"]?.try(&.as_i64?) || 0_i64
         text = "#{msg.label}: #{total - errors.size} von #{total} erledigt"
         unless errors.empty?
-          text += ", #{errors.size} Fehler (#{errors.first(3).map { |e| "##{e["bookId"]}: #{e["error"]}" }.join("; ")})"
+          failed = errors.map { |e| {e["bookId"]?.try(&.as_i64?) || 0_i64, e["error"]?.try(&.as_s?) || e.to_json} }
+          @job_errors = JobErrors.new(msg.label, failed)
+          text += ", #{errors.size} Fehler (:fehler zeigt sie): #{failed.first(2).map { |(id, e)| "##{id} #{e}" }.join("; ")}"
         end
         if status == "failed"
           show_error("#{text}#{job["error"]?.try { |e| " – #{e}" }}")
@@ -403,7 +467,12 @@ module CalibreHub
 
       private def delete(t : Target) : Tea::Cmd?
         label = "In den Papierkorb#{t.suffix}"
-        return bulk(t.ids, {"delete" => JSON::Any.new(true)}, label, restore: t.ids) unless t.one?
+        if t.all
+          # the ids aren't known here: no undo, the trash (gt) has them
+          @all = nil
+          return bulk(t.bulk(@category_column), {"delete" => JSON::Any.new(true)}, "#{label} (zurück über gt)")
+        end
+        return bulk(t.bulk(@category_column), {"delete" => JSON::Any.new(true)}, label, restore: t.ids) unless t.one?
         id = t.ids[0]
         source = @source
         app = self
@@ -417,18 +486,48 @@ module CalibreHub
         end
       end
 
-      def restore(ids : Array(Int64), label : String) : Tea::Cmd?
+      # Books back from the trash, one request after the other with the
+      # progress in the status line. `undoable`: u deletes them again (not
+      # when this is the undo of a delete)
+      def restore(ids : Array(Int64), label : String, undoable = false) : Tea::Cmd?
+        return nil if ids.empty?
+        restore_step(RestoreMsg.new(label, ids, [] of Int64, [] of {Int64, String}, ids.size, undoable))
+      end
+
+      private def restore_step(msg : RestoreMsg) : Tea::Cmd
         source = @source
         Tea.cmd do
-          errors = [] of String
-          ids.each do |id|
-            source.restore_book(id)
+          id = msg.left.first
+          restored = msg.restored.dup
+          errors = msg.errors.dup
+          begin
+            r = source.restore_book(id)
+            r["book"]?.try(&.["id"]?).try(&.as_i64?).try { |n| restored << n }
           rescue ex
-            errors << "##{id}: #{App.error_text(ex)}"
+            errors << {id, App.error_text(ex)}
           end
-          text = "Wiederhergestellt: #{ids.size - errors.size} von #{ids.size}"
-          WriteMsg.new(text, error: errors.empty? ? nil : errors.first(3).join("; "), reload: true).as(Tea::Msg)
+          RestoreMsg.new(msg.label, msg.left[1..], restored, errors, msg.total, msg.undoable?).as(Tea::Msg)
         end
+      end
+
+      private def restored(msg : RestoreMsg) : Tea::Cmd?
+        unless msg.left.empty?
+          @message = "Wiederherstellen: #{Tui.progress((msg.total - msg.left.size).to_i64, msg.total.to_i64)}"
+          return restore_step(msg)
+        end
+        n = msg.total - msg.errors.size
+        text = msg.total == 1 && n == 1 ? "Wiederhergestellt: #{msg.label}" : "Wiederhergestellt: #{n} von #{msg.total}"
+        if msg.errors.empty?
+          @message = text
+        else
+          @job_errors = JobErrors.new("Wiederherstellen", msg.errors)
+          show_error("#{text}, #{msg.errors.size} Fehler (:fehler zeigt sie): #{msg.errors.first(2).map { |(id, e)| "##{id} #{e}" }.join("; ")}")
+        end
+        if msg.undoable? && !msg.restored.empty?
+          ids = msg.restored
+          push_undo(Undo.new(text) { bulk(JSON.parse({"ids" => ids}.to_json), {"delete" => JSON::Any.new(true)}, "Zurückgenommen: #{text}") })
+        end
+        Tea.batch(refresh, @trash ? load_trash : nil)
       end
 
       # --- lists ------------------------------------------------------------
@@ -441,23 +540,24 @@ module CalibreHub
         end
         remove = action.id == "removeFromList"
         if l = find_list(name)
-          return list_books(l["id"].as_i64, list_label(l), t.ids, remove)
+          return list_books(l["id"].as_i64, list_label(l), t, remove)
         end
         return fail("Liste #{name} nicht gefunden") if remove
         path = Cli::Runner.list_path(name)
-        ask("Liste „#{path}“ gibt es nicht. Anlegen und #{t.one? ? "das Buch" : "#{t.ids.size} Bücher"} hinzufügen?") do
+        ask("Liste „#{path}“ gibt es nicht. Anlegen und #{t.one? ? "das Buch" : "#{t.size} Bücher"} hinzufügen?") do
           create_list_with(path, t)
         end
       end
 
       private def create_list_with(name : String, t : Target) : Tea::Cmd?
         source = @source
-        app = self
+        column = @category_column
         Tea.cmd do
           begin
             l = source.create_list(name)
-            r = source.list_books(l["id"].as_i64, t.ids, false)
-            WriteMsg.new("Neue Liste #{name} mit #{r["added"]?.try(&.as_a?.try(&.size)) || t.ids.size} #{t.one? ? "Buch" : "Büchern"}",
+            id = l["id"].as_i64
+            r = t.all ? source.list_target(id, t.bulk(column), false) : source.list_books(id, t.ids, false)
+            WriteMsg.new("Neue Liste #{name} mit #{r["added"]?.try(&.as_a?.try(&.size)) || t.size} #{t.one? ? "Buch" : "Büchern"}",
               reload: true).as(Tea::Msg)
           rescue ex
             WriteMsg.new("Neue Liste #{name}", error: App.error_text(ex)).as(Tea::Msg)
@@ -465,18 +565,19 @@ module CalibreHub
         end
       end
 
-      def list_books(list : Int64, name : String, ids : Array(Int64), remove : Bool, undoable = true) : Tea::Cmd?
+      def list_books(list : Int64, name : String, t : Target, remove : Bool, undoable = true) : Tea::Cmd?
         source = @source
         app = self
+        column = @category_column
         Tea.cmd do
           begin
-            r = source.list_books(list, ids, remove)
+            r = t.all ? source.list_target(list, t.bulk(column), remove) : source.list_books(list, t.ids, remove)
             changed = (r[remove ? "removed" : "added"]?.try(&.as_a?) || [] of JSON::Any).compact_map(&.as_i64?)
             n = changed.size
             text = "#{n} #{n == 1 ? "Buch" : "Bücher"} #{remove ? "aus #{name} entfernt" : "zu #{name} hinzugefügt"}"
-            text += " (#{ids.size - n} #{remove ? "waren nicht drin" : "waren schon drin"})" if n < ids.size
+            text += " (#{t.size - n} #{remove ? "waren nicht drin" : "waren schon drin"})" if n < t.size
             undo = if undoable && n > 0
-                     Undo.new(text) { app.list_books(list, name, changed, !remove, undoable: false) }
+                     Undo.new(text) { app.list_books(list, name, Target.new(changed, nil), !remove, undoable: false) }
                    end
             WriteMsg.new(text, undo: undo, reload: n > 0).as(Tea::Msg)
           rescue ex
@@ -487,13 +588,17 @@ module CalibreHub
 
       # t: the default list ("Leseliste") on or off, as in the web app
       def toggle_default_list : Tea::Cmd?
+        waiting, cmd = settle_visual { toggle_default_list }
+        return cmd if waiting
         t = target || return fail("Kein Buch")
         l = savable_lists.find { |x| x["isDefault"]?.try(&.as_bool?) } ||
             return fail("Keine Standardliste (:list add NAME setzt eine beliebige)")
+        @last_change = {"toggleList", ""}
         id = l["id"].as_i64
-        books = t.ids.compact_map { |i| loaded_book(i) }
-        on = books.size < t.ids.size || !books.all?(&.lists.includes?(id))
-        list_books(id, list_label(l), t.ids, !on)
+        books = target_books(t)
+        # all matches not all loaded: added, like the web app
+        on = books.size < t.size || !books.all?(&.lists.includes?(id))
+        list_books(id, list_label(l), t, !on)
       end
 
       # --- fast tags --------------------------------------------------------
@@ -518,10 +623,13 @@ module CalibreHub
 
       # on for all when one lacks it, else off; optimistic for one book
       def toggle_tag(tag : String) : Tea::Cmd?
+        waiting, cmd = settle_visual { toggle_tag(tag) }
+        return cmd if waiting
         t = target || return fail("Kein Buch")
-        books = t.ids.compact_map { |i| loaded_book(i) }
+        @last_change = {"fastTag", tag}
+        books = target_books(t)
         has = ->(b : Book) { b.tags.any? { |x| x.downcase == tag.downcase } }
-        on = books.size < t.ids.size || !books.all? { |b| has.call(b) }
+        on = books.size < t.size || !books.all? { |b| has.call(b) }
         action = Tui.book_action(on ? "addTags" : "removeTags").not_nil!
         change(t, {action.id => JSON.parse([tag].to_json)}, "Tag #{tag} #{on ? "an" : "aus"}#{t.suffix}")
       end
@@ -529,6 +637,7 @@ module CalibreHub
       # --- download ---------------------------------------------------------
 
       private def download(t : Target, format : String) : Tea::Cmd?
+        return fail("Herunterladen: nicht für alle Treffer, nur für ausgewählte Bücher") if t.all
         books = t.ids.compact_map { |i| loaded_book(i) }
         return fail("Bücher noch nicht geladen") if books.empty?
         wanted = format.strip.downcase.presence
@@ -575,7 +684,8 @@ module CalibreHub
       private def written(msg : WriteMsg) : Tea::Cmd?
         msg.revert.each { |b| store(b) }
         if err = msg.error
-          return fail("#{msg.text}: #{err}")
+          fail("#{msg.text}: #{err}")
+          return msg.reload? ? refresh : nil
         end
         msg.books.each { |j| store(Book.new(j), full: true) }
         @message = msg.text
@@ -726,7 +836,8 @@ module CalibreHub
         when .commands?      then {true, open_commands}
         when .undo?          then {true, undo}
         when .edit?          then {true, edit_book}
-        when .toggle_select? then toggle_select; {true, nil}
+        when .toggle_select? then {true, toggle_select}
+        when .repeat?        then {true, repeat}
         when .toggle_list?   then {true, toggle_default_list}
         when .fast_tag?      then {true, start_fast_tag}
         when .delete?        then {true, run_action("delete", "")}
@@ -739,6 +850,8 @@ module CalibreHub
         case msg
         when WriteMsg     then {true, written(msg)}
         when JobMsg       then {true, job(msg)}
+        when RestoreMsg   then {true, restored(msg)}
+        when TrashMsg     then {true, trash_loaded(msg)}
         when EditBookMsg  then {true, open_form(msg)}
         when FormSavedMsg then {true, form_saved(msg)}
         else                   {false, nil}

@@ -1,6 +1,7 @@
 require "bubbletea"
 require "./text"
 require "./keys"
+require "./keymap"
 require "./query"
 require "./markdown"
 require "./source"
@@ -8,6 +9,8 @@ require "./rows"
 require "./sidebar"
 require "./theme"
 require "./writes"
+require "./selection"
+require "./trash"
 
 module CalibreHub
   module Tui
@@ -73,6 +76,7 @@ module CalibreHub
       getter detail : Int32? = nil
       getter detail_scroll = 0
       getter? help = false
+      @help_scroll = 0
       getter? searching = false
       getter message : String? = nil
       getter? error = false
@@ -81,6 +85,10 @@ module CalibreHub
       # "auto" from the terminal; specs pin it
       property glamour_style = "auto"
       @keys = KeyEngine.new
+      @bindings = DEFAULT_BINDINGS
+      @leader = Keymap::LEADER
+      # where own bindings come from (help)
+      @keymap_path : String? = nil
       @input : Bubbles::TextInput? = nil
       @detail_lines = [] of String
       @detail_for : {Int64, Int32, Bool}? = nil
@@ -89,6 +97,19 @@ module CalibreHub
       @fetching = Set(Int64).new
 
       def initialize(@source : Source)
+      end
+
+      # own bindings (tui-keys.json); what is wrong in them shows once
+      def keymap=(k : Keymap::Loaded) : Nil
+        @bindings = k.bindings
+        @leader = k.leader
+        @keymap_path = k.path
+        @keys = KeyEngine.new(k.bindings, leader: k.leader)
+        show_error(k.warnings.join("; ")) unless k.warnings.empty?
+      end
+
+      def bindings : Bindings
+        @bindings
       end
 
       def init : Tea::Cmd?
@@ -140,6 +161,7 @@ module CalibreHub
       private def page(msg : PageMsg) : Tea::Cmd?
         if err = msg.error
           @rows.failed(msg.generation, msg.page)
+          drop_waiting
           show_error(err)
           return nil
         end
@@ -149,7 +171,7 @@ module CalibreHub
         @cursor = @cursor.clamp(0, Math.max(0, @rows.size - 1))
         scroll_to_cursor
         @detail_for = nil
-        Tea.batch(load_visible, @detail.try { |d| load_full(d) })
+        Tea.batch(load_visible, @detail.try { |d| load_full(d) }, run_when_loaded)
       end
 
       private def meta(msg : MetaMsg) : Tea::Cmd?
@@ -180,8 +202,16 @@ module CalibreHub
         handled, cmd = write_key(msg)
         return cmd if handled
         return search_key(msg) if @searching
-        if @help
+        if @help || @showing_errors
+          # j/k and the arrows scroll a help longer than the screen
+          step = {"j" => 1, "down" => 1, "k" => -1, "up" => -1, "ctrl+d" => body_height // 2, "ctrl+u" => -(body_height // 2)}[msg.key]?
+          if step && @help
+            @help_scroll = Math.max(0, @help_scroll + step)
+            return nil
+          end
+          @help_scroll = 0
           @help = false
+          @showing_errors = false
           @keys.reset
           return nil
         end
@@ -231,8 +261,9 @@ module CalibreHub
         case action
         when .quit?   then return Tea.quit
         when .help?   then @help = true; return nil
-        when .search? then return start_search
+        when .search? then close_trash; return start_search
         end
+        return trash_act(action, count, token) if @trash
         unless @focus.sidebar? && !action.commands? && !action.undo?
           handled, cmd = write_act(action)
           return cmd if handled
@@ -247,6 +278,7 @@ module CalibreHub
         when .sort?        then requery(@query.next_sort)
         when .order?       then requery(@query.reverse_order)
         when .go_library?  then navigate(Query.new)
+        when .go_trash?    then open_trash
         when .switch_pane? then @focus = @focus.list? ? Focus::Sidebar : Focus::List; nil
         when .back?        then back(token)
         end
@@ -256,16 +288,20 @@ module CalibreHub
         n = count || 1
         page = Math.max(1, rows_height)
         case action
-        when .down?      then move(n)
-        when .up?        then move(-n)
-        when .first?     then move_to(count ? count - 1 : 0)
-        when .last?      then move_to(count ? count - 1 : @rows.size - 1)
-        when .half_down? then scroll_by(n * Math.max(1, page // 2))
-        when .half_up?   then scroll_by(-n * Math.max(1, page // 2))
-        when .next_page? then scroll_by(n * page)
-        when .prev_page? then scroll_by(-n * page)
-        when .open?      then open_detail(@cursor)
-        when .left?      then @focus = Focus::Sidebar; nil
+        when .down?        then move(n)
+        when .up?          then move(-n)
+        when .first?       then move_to(count ? count - 1 : 0)
+        when .last?        then move_to(count ? count - 1 : @rows.size - 1)
+        when .half_down?   then scroll_by(n * Math.max(1, page // 2))
+        when .half_up?     then scroll_by(-n * Math.max(1, page // 2))
+        when .next_page?   then scroll_by(n * page)
+        when .prev_page?   then scroll_by(-n * page)
+        when .open?        then open_detail(@cursor)
+        when .left?        then @focus = Focus::Sidebar; nil
+        when .visual?      then toggle_visual
+        when .select_all?  then select_all
+        when .extend_down? then extend_selection(n)
+        when .extend_up?   then extend_selection(-n)
         when .search_next?, .search_prev?
           return no_search unless @query.q.presence
           move(action.search_next? ? n : -n)
@@ -337,7 +373,7 @@ module CalibreHub
         when .back?, .left?
           @detail = nil
           return load_visible
-        when .sort?, .order?, .go_library?
+        when .sort?, .order?, .go_library?, .go_trash?
           @detail = nil
           return common_act(action, token)
         end
@@ -362,8 +398,10 @@ module CalibreHub
 
       # q/Esc: close what is open, else the previous view; q at the start quits
       private def back(token : String) : Tea::Cmd?
-        unless @selection.empty?
-          @message = "Auswahl aufgehoben (#{@selection.size})"
+        # visual mode ends first (the range stays selected), like the web app
+        return end_visual if @visual
+        if selecting?
+          @message = "Auswahl aufgehoben (#{selection_size})"
           clear_selection
           return nil
         end
@@ -393,6 +431,9 @@ module CalibreHub
       end
 
       private def set_query(q : Query) : Nil
+        @visual = nil
+        drop_waiting
+        @all = nil unless @all.try(&.same_books?(q))
         @query = q
         @rows.reset
         @cursor = 0
@@ -536,8 +577,12 @@ module CalibreHub
       def view : String
         body = if @help
                  help_view
+               elsif @showing_errors && @job_errors
+                 job_errors_view
                elsif f = @form
                  f.view(@width, body_height, choices)
+               elsif @trash
+                 trash_view(@width)
                elsif d = @detail
                  detail_view(d)
                elsif sidebar_visible? && sidebar_width >= @width
@@ -568,6 +613,10 @@ module CalibreHub
         s, o = @query.effective_sort
         count = @rows.loaded? ? "#{@rows.size} #{@rows.size == 1 ? "Buch" : "Bücher"}" : "lädt …"
         right = Theme.muted.render("#{count} · #{SORT_NAMES[s]? || s} #{o == "asc" ? "↑" : "↓"}")
+        if t = @trash
+          chips = [Theme.chip.render("Papierkorb")]
+          right = Theme.muted.render(t.loaded? ? "#{t.size} im Papierkorb" : "lädt …")
+        end
         middle = chips.join(" ")
         used = Lipgloss.width(left) + Lipgloss.width(right) + 2
         middle = "" if Lipgloss.width(middle) > @width - used
@@ -585,7 +634,11 @@ module CalibreHub
         if m = @message
           return @error ? Theme.error.render(Text.truncate(m, @width)) : Theme.muted.render(Text.truncate(m, @width))
         end
-        hint = if @detail
+        hint = if @trash
+                 "r wiederherstellen · Leertaste/v auswählen · q zurück · ? Hilfe"
+               elsif @visual
+                 "j/k erweitern · Befehl wirkt auf die Auswahl · v/Esc Ende · ? Hilfe"
+               elsif @detail
                  "j/k scrollen · n/N nächstes/voriges Buch · q zurück · ? Hilfe"
                elsif @focus.sidebar?
                  "Enter Filter · l/h auf/zu · Tab Bibliothek · ? Hilfe"
@@ -593,9 +646,7 @@ module CalibreHub
                  "Enter öffnen · / suchen · h Seitenleiste · o Sortierung · ? Hilfe"
                end
         pos = @rows.size > 0 ? "#{(@detail || @cursor) + 1}/#{@rows.size}" : ""
-        pending = @keys.pending
-        selected = @selection.empty? ? "" : "#{@selection.size} ausgewählt"
-        right = [pending, selected, pos].reject(&.empty?).join("  ")
+        right = @trash ? trash_status_right : [@keys.pending, selection_label, pos].reject(&.empty?).join("  ")
         left = Text.truncate(hint, Math.max(0, @width - Text.width(right) - 2))
         Theme.muted.render(left) + " " * Math.max(1, @width - Text.width(left) - Text.width(right)) + Theme.accent.render(right)
       end
@@ -651,7 +702,7 @@ module CalibreHub
                   ["…", "", "", "", ""]
                 end
         cells.delete_at(3) unless @category_column
-        marked = book && selected?(book.id)
+        marked = book ? selected?(book.id, i) : selected?(-1_i64, i)
         cells[0] = "● #{cells[0]}" if marked
         if i == @cursor
           line = widths.map_with_index { |w, j| Text.fit(cells[j], w) }.join(" ")
@@ -771,20 +822,48 @@ module CalibreHub
       end
 
       private def help_view : String
-        lines = [Theme.title.render("Tastenkürzel"), ""] of String
-        HELP_GROUPS.each do |(title, actions)|
-          lines << Theme.header.render(title)
+        inner = Math.max(20, @width - 4)
+        # two columns when there is room for them
+        two = inner >= 110
+        col = two ? (inner - 3) // 2 : inner
+        key_w = Math.min(22, col // 3)
+        blocks = HELP_GROUPS.map do |(title, actions)|
+          b = [Theme.header.render(title)]
           actions.each do |a|
-            keys = (DEFAULT_BINDINGS[a]? || [] of String).map { |k| Tui.format_keys(k) }.join(", ")
-            lines << "  #{Theme.accent.render(Text.fit(keys, 24))} #{Theme.text.render(HELP_TEXT[a]? || a.name)}"
+            keys = (@bindings[a]? || [] of String).map { |k| Tui.format_keys(k.gsub(/<leader>/i, @leader)) }.join(", ")
+            text = Text.fit(HELP_TEXT[a]? || a.name, Math.max(4, col - key_w - 3)).rstrip
+            b << "  #{Theme.accent.render(Text.fit(keys, key_w))} #{Theme.text.render(text)}"
           end
-          lines << ""
+          b << ""
         end
+        body = if two
+                 half = blocks.sum(&.size) // 2
+                 left = [] of String
+                 right = [] of String
+                 blocks.each { |b| (left.size < half ? left : right).concat(b) }
+                 pad = ->(ls : Array(String)) { ls.map { |l| l + " " * Math.max(0, col - Lipgloss.width(l)) } }
+                 rows = Math.max(left.size, right.size)
+                 l, r = pad.call(left + [""] * (rows - left.size)), right + [""] * (rows - right.size)
+                 l.zip(r).map { |(a, b)| "#{a}   #{b}" }
+               else
+                 blocks.flatten
+               end
+        lines = [Theme.title.render("Tastenkürzel"), ""] of String
+        lines.concat(body)
         lines << Theme.header.render("Befehle (:, Tab ergänzt)")
-        Text.wrap(Commands::NAMES.map(&.[0]).join(" · "), Math.max(20, @width - 6)).each { |l| lines << "  #{Theme.text.render(l)}" }
+        Text.wrap(Commands::NAMES.map(&.[0]).join(" · "), inner - 2).each { |line| lines << "  #{Theme.text.render(line)}" }
         lines << ""
-        lines << Theme.muted.render("Taste drücken zum Schließen")
+        own = @keymap_path.try { |p| "Eigene Tasten: #{p} (wie hub.keymap.vim im Web, \"leader\": #{@leader.inspect})" }
+        own.try { |o| Text.wrap(o, inner).each { |line| lines << Theme.muted.render(line) } }
         h = body_height
+        if lines.size > h
+          @help_scroll = @help_scroll.clamp(0, lines.size - (h - 1))
+          lines = lines[@help_scroll, h - 1]
+          lines << Theme.muted.render("j/k scrollen, andere Taste schließt")
+        else
+          @help_scroll = 0
+          lines << Theme.muted.render("Taste drücken zum Schließen")
+        end
         acc = lines.first(h)
         acc += [""] * Math.max(0, h - acc.size)
         Lipgloss::Style.new.padding(0, 2).render(acc.join('\n'))

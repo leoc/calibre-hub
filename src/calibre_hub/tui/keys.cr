@@ -4,8 +4,8 @@ module CalibreHub
   module Tui
     # Actions of the TUI. Their names (`Action#name`: "down", "halfDown",
     # "goLibrary" ...) are the web app's keymap names (frontend/src/lib/keymap.ts)
-    # where both have the action, so a later shared keymap config can name them
-    # the same way.
+    # where both have the action, so the same own bindings (tui-keys.json,
+    # the web's hub.keymap.vim) work in both.
     enum Action
       Down
       Up
@@ -36,6 +36,13 @@ module CalibreHub
       Download
       Undo
       Commands
+      Visual
+      SelectAll
+      ExtendDown
+      ExtendUp
+      Repeat
+      GoTrash
+      Restore
 
       def name : String
         to_s.camelcase(lower: true)
@@ -79,6 +86,14 @@ module CalibreHub
       Action::Download     => ["D"],
       Action::Undo         => ["u"],
       Action::Commands     => [":", ">"],
+      # V: lines, which in a table is the same as v
+      Action::Visual     => ["v", "V"],
+      Action::SelectAll  => ["<C-a>"],
+      Action::ExtendDown => ["<S-Down>"],
+      Action::ExtendUp   => ["<S-Up>"],
+      Action::Repeat     => ["."],
+      Action::GoTrash    => ["gt"],
+      Action::Restore    => ["r"],
     }
 
     # Help groups, in this order (like the web app's help)
@@ -86,9 +101,11 @@ module CalibreHub
       {"Bewegen", [Action::Down, Action::Up, Action::First, Action::Last, Action::HalfDown, Action::HalfUp,
                    Action::NextPage, Action::PrevPage, Action::Left, Action::Right, Action::SwitchPane]},
       {"Buch", [Action::Open, Action::SearchNext, Action::SearchPrev]},
-      {"Bearbeiten", [Action::Edit, Action::ToggleSelect, Action::ToggleList, Action::FastTag, Action::Delete,
-                      Action::Download, Action::Undo, Action::Commands]},
-      {"Bibliothek", [Action::Search, Action::Sort, Action::Order, Action::GoLibrary, Action::Back, Action::Help, Action::Quit]},
+      {"Auswahl", [Action::ToggleSelect, Action::Visual, Action::SelectAll, Action::ExtendDown, Action::ExtendUp]},
+      {"Bearbeiten", [Action::Edit, Action::ToggleList, Action::FastTag, Action::Delete,
+                      Action::Download, Action::Repeat, Action::Undo, Action::Commands]},
+      {"Bibliothek", [Action::Search, Action::Sort, Action::Order, Action::GoLibrary, Action::GoTrash, Action::Restore,
+                      Action::Back, Action::Help, Action::Quit]},
     ]
 
     HELP_TEXT = {
@@ -121,6 +138,13 @@ module CalibreHub
       Action::Download     => "Datei ins aktuelle Verzeichnis",
       Action::Undo         => "letzte Änderung zurücknehmen",
       Action::Commands     => "Befehlszeile (Tab ergänzt, ↑/↓ Verlauf)",
+      Action::Visual       => "visueller Modus: Bewegen wählt aus (nochmal: Ende)",
+      Action::SelectAll    => "alle Treffer auswählen",
+      Action::ExtendDown   => "Auswahl nach unten erweitern",
+      Action::ExtendUp     => "Auswahl nach oben erweitern",
+      Action::Repeat       => "letzte Änderung wiederholen (auf Auswahl oder Buch)",
+      Action::GoTrash      => "Papierkorb",
+      Action::Restore      => "im Papierkorb: wiederherstellen",
     }
 
     KEY_NAMES = {
@@ -153,9 +177,30 @@ module CalibreHub
       ["<#{prefix}#{name}>"]
     end
 
-    # "gg" -> ["g", "g"], "<C-d>x" -> ["<C-d>", "x"]
+    CANONICAL = %w(Down Up Left Right Esc Del BS Space Enter Tab Home End PageDown PageUp Insert Leader)
+      .to_h { |n| {n.downcase, n} }
+
+    # "gg" -> ["g", "g"], "<c-d>x" -> ["<C-d>", "x"]; like the web app's
+    # parseKeys (M- is Ctrl, names in their usual spelling)
     def self.parse_keys(keys : String) : Array(String)
-      keys.scan(/<[^<>\s]+>|./).map(&.[0])
+      out = [] of String
+      i = 0
+      while i < keys.size
+        m = keys[i] == '<' ? keys[i..].match(/\A<((?:[CASMcasm]-)*)([^<>\s-]+|-)>/) : nil
+        if m
+          raw = m[1].upcase
+          mods = %w(C A S).select { |x| raw.includes?("#{x}-") || (x == "C" && raw.includes?("M-")) }
+          name = m[2]
+          name = CANONICAL[name.downcase]? ||
+                 (name.matches?(/\Af\d{1,2}\z/i) ? name.upcase : (name.size == 1 && !mods.empty? ? name.downcase : name))
+          out << (mods.empty? && name.size == 1 ? name : "<#{mods.map { |x| "#{x}-" }.join}#{name}>")
+          i += m[0].size
+        else
+          out << keys[i].to_s
+          i += 1
+        end
+      end
+      out
     end
 
     # Shown in the help: "<C-d>" -> "Strg+D", "<Down>" -> "↓"
@@ -188,10 +233,12 @@ module CalibreHub
       @buffer = [] of String
       @count = ""
 
-      def initialize(bindings : Bindings = DEFAULT_BINDINGS, @counts = true)
+      # `leader`: what <Leader> in a binding stands for
+      def initialize(bindings : Bindings = DEFAULT_BINDINGS, @counts = true, leader : String = Keymap::LEADER)
+        lead = Tui.parse_keys(leader)
         bindings.each do |action, list|
           list.each do |keys|
-            toks = Tui.parse_keys(keys)
+            toks = Tui.parse_keys(keys).flat_map { |t| t == "<Leader>" ? lead : [t] }
             next if toks.empty?
             id = toks.join('\0')
             @exact[id] = action unless @exact.has_key?(id)

@@ -9,6 +9,7 @@ module CalibreHub
       Lipgloss.dark_background?
       app = App.new(ApiSource.new(client))
       app.history_file = history_file(ENV.to_h)
+      app.keymap = Keymap.load(Keymap.path(ENV.to_h))
       Tea::Program.new(app, alt_screen: true).run
     end
 

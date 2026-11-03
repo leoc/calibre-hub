@@ -34,6 +34,10 @@ module CalibreHub
       abstract def undo_job(id : String) : JSON::Any
       # POST /api/lists/:id/books(/remove) {bookIds}: {list, added | removed}
       abstract def list_books(list : Int64, ids : Array(Int64), remove : Bool) : JSON::Any
+      # the same with a bulk target ({query, expect, all?}) instead of ids
+      abstract def list_target(list : Int64, target : JSON::Any, remove : Bool) : JSON::Any
+      # GET /api/trash: [{id, title, authors, formats, deletedAt}]
+      abstract def trash : JSON::Any
       # POST /api/lists {name}: the new list
       abstract def create_list(name : String) : JSON::Any
       # GET /api/books/:id/download/:format into path; the bytes written
@@ -90,6 +94,14 @@ module CalibreHub
 
       def list_books(list : Int64, ids : Array(Int64), remove : Bool) : JSON::Any
         @client.post("/api/lists/#{list}/books#{remove ? "/remove" : ""}", {"bookIds" => ids})
+      end
+
+      def list_target(list : Int64, target : JSON::Any, remove : Bool) : JSON::Any
+        @client.post("/api/lists/#{list}/books#{remove ? "/remove" : ""}", {"target" => target})
+      end
+
+      def trash : JSON::Any
+        @client.get("/api/trash")
       end
 
       def create_list(name : String) : JSON::Any

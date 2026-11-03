@@ -751,15 +751,20 @@ Colours follow the terminal's light or dark background.
 | `h`/`l`, `Tab` | sidebar and library; in the sidebar `l`/`h` unfold/fold |
 | `o`/`O` | change the sort / reverse it |
 | `gl` | all books (filters off) |
-| `q`, `Esc` | back (clear the selection, close the book, previous filter); `q` at the start quits |
-| `?` | all keys |
+| `q`, `Esc` | back (end visual mode, clear the selection, close the book, previous filter); `q` at the start quits |
+| `?` | all keys (`j`/`k` scroll) |
 | `e`, `F2` | edit the book: a form for all fields, `Tab` completes (authors, series, category, tags, languages) or moves on, `↑`/`↓` field, `Ctrl-s` saves only the changed fields; on a conflict (409) both versions show, `m` keeps mine on top of the new one, `t` takes the new one |
 | `Space` | select or unselect the book; commands then act on the selection |
+| `v`, `V` | visual mode: moving selects from where it started (on top of what was selected); `v` or `Esc` ends it, a command ends it too and the range stays selected |
+| `Ctrl-a` | all matches of the search (sent as `{query, expect}` with the count shown; 409 when the library changed meanwhile, nothing is changed) |
+| `Shift-↓`/`Shift-↑` | extend the selection |
+| `.` | the last change again (command, fast tag, default list) on the selection or the cursor book |
 | `T` then `1`-`9` | toggle a fast tag (shown at once, taken back if the hub refuses) |
 | `t` | the default list on or off |
 | `dd`, `Del` | to calibre's trash (asks) |
 | `D` | download the file (EPUB first) into the current directory |
 | `u` | undo the last change |
+| `gt` | calibre's trash: `r` restores the cursor entry or the selection (`Space`, `v`, `Ctrl-a`; several ask), one after another with the progress in the status line; `u` deletes them again; `q` back |
 | `:`, `>` | command line: `Tab` completes commands and values (cycles on repeat), `↑`/`↓` history (kept in `$XDG_STATE_HOME/calibre-hub/tui-history`) |
 
 Commands (`:`) use the CLI's words, German ones like the web palette, or
@@ -767,8 +772,9 @@ the web app's action ids (`:addTags x`): `tag add|rm TAGS`, `kategorie A/B`,
 `serie NAME`, `nummerieren NAME` (volumes 1..n in selection order),
 `autor A & B`, `verlag`, `sprache deu, eng`, `bewertung 0-5`, `jahr 1999`
 (`-` clears), `list add|rm|new NAME`, `trash`, `download [FORMAT]`, `edit`,
-`open`, `search Q`, `sort FIELD [asc|desc]`, `select none`, `undo`, `help`,
-`quit`, a number jumps to that line. They follow the web app's book actions
+`open`, `search Q`, `sort FIELD [asc|desc]`, `select all|none`, `undo`,
+`repeat`, `papierkorb`, `restore`, `fehler` (the books a job failed for),
+`help`, `quit`, a number jumps to that line. They follow the web app's book actions
 (`frontend/src/lib/book-actions.ts`): one book is changed right away
 (`PATCH`), a selection as a bulk job (`POST /api/books/bulk`, progress in
 the status line); more than 50 books and deleting ask first. Undo: one book
@@ -776,7 +782,22 @@ back to its previous values (`PATCH` with the `lastModified` of the change),
 lists the other way round, deleted books from the trash, bulk field changes
 through `POST /api/jobs/:id/undo` (hubs without it say so). Bulk changes of
 authors, publisher, languages, rating or year need a hub whose bulk API has
-those fields.
+those fields. A visual range over rows not loaded yet loads them first (a
+range over all rows is sent as all matches); all matches can't be numbered,
+downloaded or undone after deleting (they are in the trash).
+
+Own keys: `$XDG_CONFIG_HOME/calibre-hub/tui-keys.json` (`~/.config/...`), in
+the format of the web app's `hub.keymap.vim` (the action names of
+`frontend/src/lib/keymap.ts`, plus the TUI's own: `sort`, `order`,
+`switchPane`, `searchNext`, `searchPrev`, `fastTag`, `undo`, `repeat`,
+`restore`, `quit`). Own bindings replace the defaults of the actions they
+name and win over default keys; `"leader"` sets what `<Leader>` stands for
+(default `\`), the web app ignores it. Actions only the web app has are
+left out, anything else unknown shows in the status line.
+
+```json
+{"leader": ",", "goTrash": ["<Leader>t"], "down": ["j", "<Down>"]}
+```
 
 It is built on [bubbletea.cr](https://github.com/leoc/bubbletea.cr) (Crystal
 bindings for Bubble Tea, Lip Gloss, Bubbles and Glamour through a Go

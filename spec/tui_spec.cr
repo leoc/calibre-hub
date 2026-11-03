@@ -79,6 +79,10 @@ private class FakeSource < Tui::Source
   property conflict_next = false
   property fail_writes = false
   getter jobs = {} of String => JSON::Any
+  # the next bulk job fails for these books
+  property job_errors_next = [] of Int64
+  # a query target matches this many books now (409 when expect differs)
+  property query_finds : Int32? = nil
   property job_polls_running = 0
 
   private def record(what : String, body) : Nil
@@ -124,14 +128,23 @@ private class FakeSource < Tui::Source
 
   def restore_book(id : Int64) : JSON::Any
     record("RESTORE #{id}", nil)
-    JSON.parse({book: current(id)}.to_json)
+    raise CalibreHub::Cli::HttpError.new(500, JSON.parse(%({"error":"no metadata.opf"}))) if @restore_fails.includes?(id)
+    @trash_entries.reject! { |e| e["id"].as_i64 == id }
+    # a new id
+    book = current(id).as_h.merge({"id" => JSON::Any.new(id + 1000)})
+    JSON.parse({book: book}.to_json)
   end
 
   def bulk(target : JSON::Any, changes : Hash(String, JSON::Any)) : JSON::Any
     record("BULK", {target: target, changes: changes})
+    if (found = @query_finds) && (expect = target["expect"]?)
+      raise CalibreHub::Cli::HttpError.new(409, JSON.parse({error: "count", expected: expect, found: found}.to_json))
+    end
     id = "job#{@jobs.size + 1}"
-    total = target["ids"].as_a.size
-    @jobs[id] = JSON.parse({id: id, status: "done", done: total, total: total, errors: [] of String}.to_json)
+    total = target["ids"]?.try(&.as_a.size) || target["expect"].as_i
+    errors = @job_errors_next.map { |b| {bookId: b, error: "calibre-server: 500"} }
+    @job_errors_next = [] of Int64
+    @jobs[id] = JSON.parse({id: id, status: "done", done: total, total: total, errors: errors}.to_json)
     JSON.parse({jobId: id, total: total}.to_json)
   end
 
@@ -152,6 +165,22 @@ private class FakeSource < Tui::Source
   def list_books(list : Int64, ids : Array(Int64), remove : Bool) : JSON::Any
     record("LIST #{remove ? "rm" : "add"} #{list}", ids)
     JSON.parse({"list" => JSON.parse({id: list, name: "x", count: 1}.to_json), (remove ? "removed" : "added") => JSON.parse(ids.to_json)}.to_json)
+  end
+
+  def list_target(list : Int64, target : JSON::Any, remove : Bool) : JSON::Any
+    record("LIST #{remove ? "rm" : "add"} #{list}", target)
+    JSON.parse({"list" => JSON.parse({id: list, name: "x", count: 1}.to_json), (remove ? "removed" : "added") => [1, 2, 3]}.to_json)
+  end
+
+  # deleted books, newest first; restored ones leave it
+  property trash_entries : Array(JSON::Any) = (1..3).map { |i|
+    JSON.parse({id: 900 + i, title: "Gone #{i}", authors: ["A #{i}"], formats: ["EPUB"], deletedAt: "2026-11-0#{i}T10:00:00Z"}.to_json)
+  }
+  # restore: ids failing
+  property restore_fails = [] of Int64
+
+  def trash : JSON::Any
+    JSON.parse(trash_entries.to_json)
   end
 
   def create_list(name : String) : JSON::Any
@@ -507,13 +536,17 @@ describe Tui::App do
     app.history.should be_empty
   end
 
-  it "shows the help with ? and closes it with any key" do
+  it "shows the help with ?, scrolls it with j/k and closes it with any other key" do
     app, _ = started
     press(app, "?")
     app.help?.should be_true
     screen(app).should contain("Tastenkürzel")
     screen(app).should contain("Strg+D")
-    press(app, "j")
+    screen(app).should contain("j/k scrollen")
+    press(app, "j", "j")
+    app.help?.should be_true
+    screen(app).should_not contain("Tastenkürzel")
+    press(app, "x")
     app.help?.should be_false
     app.cursor.should eq(0)
   end
@@ -830,5 +863,238 @@ describe "Tui markdown back to HTML" do
     md = Tui::Markdown.from_html(html)
     Tui::Markdown.to_html(md).should eq(html)
     Tui::Markdown.to_html("a \\* b").should eq("<p>a * b</p>")
+  end
+end
+
+describe "Tui selection" do
+  it "selects a range in visual mode, acts on it and repeats with ." do
+    app, source = started
+    press(app, "v", "j", "j")
+    screen(app).should contain("-- VISUELL -- 3")
+    screen(app).should contain("● Book 149")
+    command(app, "tag add X")
+    last_write(source).should eq({"BULK", JSON.parse({target: {ids: [150, 149, 148]}, changes: {addTags: ["X"]}}.to_json)})
+    # the command ends visual mode, the range stays selected
+    app.visual?.should be_false
+    app.selection.should eq([150_i64, 149_i64, 148_i64])
+    press(app, "esc")
+    app.selection.should be_empty
+    press(app, "j", "j", "j", ".")
+    last_write(source).should eq({"PATCH 145", JSON.parse(%({"addTags":["X"]}))})
+  end
+
+  it "ends visual mode with v or Esc and keeps the selection" do
+    app, _ = started
+    press(app, "v", "j", "v")
+    app.visual?.should be_false
+    app.selection.size.should eq(2)
+    press(app, "j", "v", "j", "esc")
+    app.selection.size.should eq(4)
+    press(app, "esc")
+    app.selection.should be_empty
+  end
+
+  it "loads the rows of a long range before a command runs on it" do
+    app, source = started
+    press(app, "5", "j", "v", "G")
+    # rows 60..119 were never on screen
+    app.rows[80].should be_nil
+    press(app, "d", "d")
+    screen(app).should contain("145 Bücher in den Papierkorb verschieben?")
+    press(app, "j")
+    target = last_write(source)[1]["target"]["ids"].as_a
+    target.size.should eq(145)
+    target.first.should eq(JSON::Any.new(145_i64))
+  end
+
+  it "takes a range over all rows as all matches of the search" do
+    app, source = started
+    press(app, "v", "G")
+    command(app, "kategorie Fach")
+    screen(app).should contain("150 Bücher ändern?")
+    press(app, "j")
+    last_write(source).should eq({"BULK", JSON.parse(%({"target":{"query":{},"expect":150,"all":true},"changes":{"kategorie":"Fach"}}))})
+  end
+
+  it "selects all matches with Ctrl-a and sends the query with the count shown" do
+    app, source = started
+    press(app, "/")
+    type(app, "dune")
+    press(app, "enter", "ctrl+a")
+    screen(app).should contain("Alle 15 Treffer ausgewählt")
+    screen(app).should contain("● Dune 140")
+    command(app, "tag add X")
+    last_write(source).should eq({"BULK", JSON.parse(%({"target":{"query":{"q":"(dune)"},"expect":15},"changes":{"addTags":["X"]}}))})
+    # the library changed meanwhile: the hub refuses, nothing happens
+    source.query_finds = 14
+    press(app, "d", "d")
+    screen(app).should contain("Alle 15 Treffer in den Papierkorb verschieben?")
+    press(app, "j")
+    screen(app).should contain("trifft jetzt 14 statt 15 Bücher")
+    source.query_finds = nil
+    press(app, "ctrl+a", "d", "d", "j")
+    last_write(source).should eq({"BULK", JSON.parse(%({"target":{"query":{"q":"(dune)"},"expect":15},"changes":{"delete":true}}))})
+    app.all.should be_nil
+  end
+
+  it "keeps all matches over a sort change, not over a new search" do
+    app, _ = started
+    press(app, "ctrl+a", "o")
+    app.all.should_not be_nil
+    command(app, "search dune")
+    app.all.should be_nil
+  end
+
+  it "refuses what needs single books for all matches" do
+    app, source = started
+    press(app, "ctrl+a")
+    command(app, "nummerieren Saga")
+    screen(app).should contain("nicht für alle Treffer")
+    command(app, "download")
+    screen(app).should contain("nicht für alle Treffer")
+    source.writes.should be_empty
+  end
+
+  it "puts all matches on a list with a query target" do
+    app, source = started
+    press(app, "ctrl+a")
+    command(app, "list add reise/meer")
+    last_write(source).should eq({"LIST add 2", JSON.parse(%({"query":{},"expect":150,"all":true}))})
+  end
+
+  it "extends the selection with Shift and the arrows" do
+    app, _ = started
+    press(app, "shift+down", "shift+down")
+    app.selection.should eq([150_i64, 149_i64, 148_i64])
+    press(app, "shift+up")
+    app.selection.size.should eq(3)
+  end
+
+  it "repeats fast tags and says when there is nothing to repeat" do
+    app, source = started
+    press(app, ".")
+    screen(app).should contain("Nichts zu wiederholen")
+    press(app, "T", "1", "j", ".")
+    last_write(source).should eq({"PATCH 149", JSON.parse(%({"removeTags":["leseliste"]}))})
+  end
+
+  it "shows a job's progress and lists the books that failed" do
+    app, source = started
+    source.job_polls_running = 1
+    source.job_errors_next = [149_i64]
+    press(app, " ", "j", " ")
+    command(app, "tag add X")
+    screen(app).should contain("1 Fehler (:fehler zeigt sie)")
+    command(app, "fehler")
+    screen(app).should contain("Fehler: Tags hinzufügen (2)")
+    screen(app).should contain("#149 Book 149: calibre-server: 500")
+    press(app, "x")
+    screen(app).should_not contain("Fehler: Tags")
+  end
+
+  it "draws a progress bar" do
+    Tui.progress(5, 10, 10).should eq("▕█████░░░░░▏ 5/10")
+    Tui.progress(3, nil).should eq("3/?")
+  end
+end
+
+describe "Tui trash" do
+  it "lists the trash and restores the cursor book, undo deletes it again" do
+    app, source = started
+    press(app, "g", "t")
+    screen(app).should contain("Papierkorb")
+    screen(app).should contain("Gone 1")
+    screen(app).should contain("3 im Papierkorb")
+    press(app, "j", "r")
+    last_write(source)[0].should eq("RESTORE 902")
+    screen(app).should contain("Wiederhergestellt: „Gone 2“")
+    app.trash.not_nil!.size.should eq(2)
+    press(app, "u")
+    last_write(source).should eq({"BULK", JSON.parse(%({"target":{"ids":[1902]},"changes":{"delete":true}}))})
+    press(app, "q")
+    app.trash.should be_nil
+    screen(app).should contain("Dune 150")
+  end
+
+  it "restores a selection after asking and lists what failed" do
+    app, source = started
+    source.restore_fails = [903_i64]
+    press(app, "g", "t", "ctrl+a", "r")
+    screen(app).should contain("3 Bücher wiederherstellen? [j/N]")
+    press(app, "j")
+    source.writes.map(&.[0]).should eq(["RESTORE 901", "RESTORE 902", "RESTORE 903"])
+    screen(app).should contain("Wiederhergestellt: 2 von 3, 1 Fehler")
+    command(app, "fehler")
+    screen(app).should contain("#903")
+    screen(app).should contain("no metadata.opf")
+  end
+
+  it "selects in the trash with v and keeps book commands out" do
+    app, source = started
+    press(app, "g", "t", "v", "j")
+    screen(app).should contain("-- VISUELL -- 2")
+    command(app, "tag add X")
+    screen(app).should contain("Im Papierkorb: r stellt wieder her")
+    press(app, "v")
+    app.trash.not_nil!.selection.size.should eq(2)
+    source.writes.should be_empty
+  end
+end
+
+describe Tui::Keymap do
+  it "reads own bindings in the web app's format, with a leader" do
+    k = Tui::Keymap.parse(%({"down": ["n"], "goTrash": ["<Leader>t"], "leader": ",", "copyLink": ["y"], "bogus": ["x"], "up": "k"}))
+    k.bindings[Tui::Action::Down].should eq(["n"])
+    k.bindings[Tui::Action::Up].should eq(["k", "<Up>"])
+    k.leader.should eq(",")
+    k.warnings.should eq(["tui-keys.json: unbekannte Aktion bogus", "tui-keys.json: up braucht eine Liste von Tasten"])
+    Tui::Keymap.parse("{").warnings.first.should contain("kein gültiges JSON")
+  end
+
+  it "finds the file under XDG_CONFIG_HOME or ~/.config" do
+    Tui::Keymap.path({"XDG_CONFIG_HOME" => "/x"}).should eq("/x/calibre-hub/tui-keys.json")
+    Tui::Keymap.path({"HOME" => "/h"}).should eq("/h/.config/calibre-hub/tui-keys.json")
+    Tui::Keymap.load("/nonexistent/tui-keys.json").bindings.should eq(Tui::DEFAULT_BINDINGS)
+  end
+
+  it "uses them in the app; own keys win over default ones" do
+    dir = File.tempname("tui-keys")
+    Dir.mkdir_p(dir)
+    file = File.join(dir, "tui-keys.json")
+    File.write(file, %({"down": ["n"], "goTrash": ["<Leader>t", "t"], "leader": ","}))
+    begin
+      app, _ = started(width: 140, height: 50)
+      app.keymap = Tui::Keymap.load(file)
+      press(app, "n")
+      app.cursor.should eq(1)
+      press(app, "j")
+      app.cursor.should eq(1)
+      press(app, ",", "t")
+      app.trash.should_not be_nil
+      press(app, "q", "t")
+      app.trash.should_not be_nil
+      press(app, "q", "?")
+      screen(app).should contain(",t, t")
+      screen(app).should contain("tui-keys.json")
+    ensure
+      FileUtils.rm_rf(dir)
+    end
+  end
+
+  it "parses keys like the web app" do
+    Tui.parse_keys("<c-D>x").should eq(["<C-d>", "x"])
+    Tui.parse_keys("<M-a>").should eq(["<C-a>"])
+    Tui.parse_keys("<esc><pagedown><f2>").should eq(["<Esc>", "<PageDown>", "<F2>"])
+    Tui.parse_keys("<leader>t").should eq(["<Leader>", "t"])
+    Tui::KeyEngine.new(Tui::Bindings{Tui::Action::GoTrash => ["<Leader>t"]}, leader: " ").feed(" ").should eq(:pending)
+  end
+
+  it "shows the selection keys in the help" do
+    app, _ = started(width: 140, height: 50)
+    press(app, "?")
+    s = screen(app)
+    s.should contain("Auswahl")
+    s.should contain("alle Treffer auswählen")
+    s.should contain("Papierkorb")
   end
 end
