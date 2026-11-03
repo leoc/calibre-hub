@@ -4,6 +4,7 @@ require "../calibre"
 require "../library_db"
 require "../lists"
 require "../secret"
+require "../command"
 
 module CalibreHub
   # Handler: mirrors the synced reading lists (lists.cr) into a folder,
@@ -36,6 +37,9 @@ module CalibreHub
     CONVERTIBLE = %w(AZW3 MOBI AZW KEPUB FB2 LIT DOCX RTF HTMLZ TXT)
     # the files the handler copied, relative to the target
     MANIFEST = ".calibre-hub-files"
+    # below the dispatcher's handler timeout, which doesn't reach the
+    # handler's own child processes
+    CONVERT_TIMEOUT = 5.minutes
     RELEVANT = %w(title authors authorSort series seriesIndex formats)
 
     record Wanted, rel : String, src : String
@@ -312,7 +316,7 @@ module CalibreHub
     private def self.convert(id : Int64, src : String, fmt : String, tmp : String, env) : String
       dst = File.join(tmp, "#{id}.#{fmt.downcase}")
       log = IO::Memory.new
-      status = Process.run("ebook-convert", [src, dst], output: log, error: log)
+      status = Command.run("ebook-convert", [src, dst], CONVERT_TIMEOUT, output: log, error: log)
       raise(log.to_s.lines.last? || "ebook-convert exit #{status.exit_code}") unless status.success?
       calibre = Calibre.new(env["CALIBRE_HUB_CALIBRE_URL"], env["CALIBRE_HUB_CALIBRE_USER"],
         Secret.read(env["CALIBRE_HUB_CALIBRE_PASSWORD_FILE"]), env["CALIBRE_HUB_LIBRARY_ID"]?)

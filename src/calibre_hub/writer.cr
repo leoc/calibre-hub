@@ -2,6 +2,7 @@ require "http"
 require "file_utils"
 require "./covers"
 require "./calibre"
+require "./command"
 require "./detector"
 require "./edit"
 require "./api"
@@ -673,8 +674,11 @@ module CalibreHub
           end
         end
         jpg = File.join(dir, "cover.jpg")
-        status = Process.run("ebook-meta", [file, "--get-cover=#{jpg}"], env: {"QT_QPA_PLATFORM" => "offscreen"},
-          output: Process::Redirect::Close, error: Process::Redirect::Close)
+        status = begin
+          Command.run("ebook-meta", [file, "--get-cover=#{jpg}"], 2.minutes, env: {"QT_QPA_PLATFORM" => "offscreen"})
+        rescue ex : Command::Timeout
+          raise NoCover.new(ex.message || "timeout")
+        end
         raise NoCover.new("no cover in file") unless status.success? && File.exists?(jpg) && File.size(jpg) > 0
         set_cover(id, File.open(jpg, &.getb_to_end))
       ensure

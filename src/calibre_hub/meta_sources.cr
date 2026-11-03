@@ -7,6 +7,7 @@ require "json"
 require "uri"
 require "xml"
 require "./meta_rules"
+require "./command"
 require "./covers"
 require "./zip_limits"
 
@@ -20,6 +21,8 @@ module CalibreHub
       record Info, record : Record, isbns : Array(String), cover : String? = nil
 
       MAX_TEXT = 300_000
+      # a PDF poppler hangs on must not block the metadata job
+      TOOL_TIMEOUT = 1.minute
       # bytes read of the container, the OPF and a page at most (ZIP bombs);
       # a cut OPF fails as XML, a cut page still has its start
       MAX_ENTRY = 4_i64 * 1024 * 1024
@@ -132,10 +135,10 @@ module CalibreHub
 
       private def self.run(cmd : String, args : Array(String)) : String?
         output = IO::Memory.new
-        status = Process.run(cmd, args, output: output, error: Process::Redirect::Close)
+        status = Command.run(cmd, args, TOOL_TIMEOUT, output: output)
         # broken PDFs can still yield invalid UTF-8, which regexes reject
         status.success? ? output.to_s.scrub : nil
-      rescue File::NotFoundError | IO::Error
+      rescue File::NotFoundError | IO::Error | Command::Timeout
         nil
       end
     end

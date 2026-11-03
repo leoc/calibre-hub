@@ -2,6 +2,7 @@ require "db"
 require "json"
 require "xml"
 require "./calibre"
+require "./command"
 require "./covers"
 require "./writer"
 
@@ -58,10 +59,12 @@ module CalibreHub
     def self.read_metadata(dir : String) : JSON::Any
       output = IO::Memory.new
       error = IO::Memory.new
-      status = Process.run("calibre-debug", ["-c", SCRIPT], env: {"BOOK_DIR" => dir, "QT_QPA_PLATFORM" => "offscreen"},
+      status = Command.run("calibre-debug", ["-c", SCRIPT], 2.minutes, env: {"BOOK_DIR" => dir, "QT_QPA_PLATFORM" => "offscreen"},
         output: output, error: error)
       raise Calibre::Error.new("reading metadata.opf failed: #{error.to_s.strip.lines.last?}") unless status.success?
       JSON.parse(output.to_s)
+    rescue ex : Command::Timeout
+      raise Calibre::Error.new("reading metadata.opf failed: #{ex.message}")
     end
 
     # called with the trash id and the new id after a restore (lists)

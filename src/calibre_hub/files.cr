@@ -4,6 +4,7 @@ require "digest/sha1"
 require "file_utils"
 require "json"
 require "./calibre"
+require "./command"
 require "./backlog_pause"
 require "./detector"
 require "./library_db"
@@ -58,16 +59,10 @@ module CalibreHub
     # Runs a command, killed after timeout; {ok, output}
     def self.run(cmd : String, args : Array(String), timeout : Time::Span) : {Bool, String}
       output = IO::Memory.new
-      process = Process.new(cmd, args, env: {"QT_QPA_PLATFORM" => "offscreen"}, output: output, error: output)
-      done = Channel(Process::Status).new(1)
-      spawn { done.send(process.wait) }
-      select
-      when status = done.receive
-        {status.success?, output.to_s}
-      when timeout(timeout)
-        process.terminate rescue nil
-        {false, "timeout after #{timeout.total_seconds.to_i} s"}
-      end
+      status = Command.run(cmd, args, timeout, env: {"QT_QPA_PLATFORM" => "offscreen"}, output: output, error: output)
+      {status.success?, output.to_s}
+    rescue Command::Timeout
+      {false, "timeout after #{timeout.total_seconds.to_i} s"}
     rescue ex : File::Error | IO::Error
       {false, ex.message || "#{cmd} failed"}
     end
