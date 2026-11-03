@@ -1178,7 +1178,8 @@ pkgs.testers.runNixOSTest {
         assert code(f"-b /tmp/jar {H}/api/books/{old['id']}/cover") == "200"
         plain = api("GET", f"/api/books/{units['Some Author']['bookId']}")[1]
         assert plain["formats"] == ["PDF"] and plain["custom"]["kategorie"] is None, plain
-        assert [t for t in plain["tags"] if t != "auto-metadaten"] == [], plain
+        # no folder as a tag; "book.pdf" says nothing, so it goes to the review
+        assert [t for t in plain["tags"] if t != "auto-metadaten"] == ["auto-unsicher"], plain
         assert units["Agatha Test/Inboxbuch (7)"]["status"] == "formatAdded" and units["Agatha Test/Inboxbuch (7)"]["bookId"] == ib["id"], units
         assert "AZW3" in book_by_title("Inboxbuch")["formats"]
         assert units["Krimi"]["status"] == "duplicate" and units["Krimi"]["bookId"] == ib["id"], units["Krimi"]
