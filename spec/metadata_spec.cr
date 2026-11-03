@@ -309,6 +309,8 @@ describe CalibreHub::Meta::Clean do
     {"Microsoft Word - Bericht final", ["Admin"]}                          => {"Bericht final", [] of String, nil, nil, false},
     {"Frank Schätzing", ["Der Schwarm Roman"]}                             => {"Der Schwarm Roman", ["Frank Schätzing"], nil, nil, true},
     {"Wolken - Atlas", ["Unknown"]}                                        => {"Atlas", ["Wolken"], nil, nil, true},
+    # as the backlog import leaves a name without a person (#8408)
+    {"Wine Tasting - A Professional Handbook", ["Unknown"]} => {"Wine Tasting - A Professional Handbook", [] of String, nil, nil, false},
     # found on the live library (02.11.): two authors in one field, acronyms
     {"Positioning", ["Al Ries, Jack Trout"]}                               => {"Positioning", ["Al Ries", "Jack Trout"], nil, nil, false},
     {"GAMP 5", ["ISPE"]}                                                   => {"GAMP 5", ["ISPE"], nil, nil, false},

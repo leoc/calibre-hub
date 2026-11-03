@@ -507,6 +507,12 @@ module CalibreHub
               return {[guess(parts[2], authors([parts[0]]), year, m[1], m[2].to_f)], false}
             end
             a, b = parts.first, parts[1..].join(" - ")
+            # "Wine Tasting - A Professional Handbook": no person on either
+            # side (as the backlog import reads file names), one title
+            if a.split(' ').size >= 2 && FileName.side_score(a) <= 0 && FileName.side_score(parts.last) <= 0 &&
+               FileName.article?(parts.last)
+              return {[guess(t, known, year)], false}
+            end
             sa, sb = name_score(a), name_score(parts.last)
             author_first = guess(b, authors([a]), year)
             author_last = guess(parts[0..-2].join(" - "), authors([parts.last]), year)
@@ -1380,3 +1386,6 @@ module CalibreHub
     end
   end
 end
+
+# the backlog import's reading of file names (uses Clean, used by its readings)
+require "./meta_filename"

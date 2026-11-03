@@ -513,7 +513,8 @@ module CalibreHub
         s.gsub(PERSON_MARK, " ").gsub(/\s*\([^()]*\)\s*/, " ").gsub(/[\[\]]/, " ").gsub(/(?<=\b\p{Lu})\.(?=\p{Lu}\p{Ll})/, ". ").gsub(/\s+/, " ").strip
       end
 
-      private def self.article?(s : String) : Bool
+      # "A Professional Handbook", not "A. Knapp"
+      def self.article?(s : String) : Bool
         first = s.split(' ', 2).first
         !first.matches?(INITIAL) && Clean::ARTICLES.includes?(Text.fold(first))
       end
