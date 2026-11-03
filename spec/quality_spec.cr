@@ -105,6 +105,83 @@ describe "the books of #8528" do
   end
 end
 
+describe "the live dry run of 77533b7 (#8528)" do
+  it "#1167: a collection's code is no part of the title" do
+    name = "HIT04 - So Long, and Thanks for All the Fish - Douglas Adams.mobi"
+    b = book("HIT04 - So Long, and Thanks for All the Fish", ["Douglas Adams"])
+    got = outcome(b, FileName.decide(b, name, nil, now(b)))
+    {got[0], got[1]}.should eq({"So Long, and Thanks for All the Fish", ["Douglas Adams"]})
+    # a number in the name of a thing stays
+    FileName.parse("AK47 - The Story of a Gun.pdf").not_nil!.title.should_not eq "The Story of a Gun"
+  end
+
+  it "#1648: \"et a.\" and \"et al.\" are nobody" do
+    name = "Modern Compiler Design - D. Grune, et a., (Wiley, 2000) WW.djvu"
+    FileName.parse(name).not_nil!.authors.should eq ["D. Grune"]
+    b = book("Modern Compiler Design", ["D. Grune", "et a."])
+    outcome(b, FileName.decide(b, name, nil, now(b)))[1].should eq ["D. Grune"]
+    ["et a.", "et al.", "et al", "u.a."].each do |a|
+      FileName.bad_author?(a).should be_true
+      Meta::Clean.authors(["D. Grune", a]).should eq ["D. Grune"]
+    end
+  end
+
+  it "#1416, #1417: a volume at the end of a run-together name" do
+    FileName.parse("CompilerConstruction2.pdf").not_nil!.title.should eq "Compiler Construction 2"
+    FileName.parse("AkteurGehirn.pdf").not_nil!.title.should eq "Akteur Gehirn"
+  end
+
+  it "#1243: a revision in parentheses is no author" do
+    b = book("Op Amps for Everyone Design Guide (Rev. B)", ["Incorporated Texas Instruments"])
+    outcome(b, FileName.decide_own(b, now(b)))[1].should eq ["Unknown"]
+  end
+
+  it "#76: \"Compliance\" is no person" do
+    b = book("General Principles of Software Validation; Final Guidance for Industry", ["Author: Compliance"])
+    outcome(b, FileName.decide_own(b, now(b)))[1].should eq ["Unknown"]
+  end
+
+  title = Meta::Guess.new("UNIX Power Tools", [] of String)
+
+  it "#1689: an organisation goes from a catalog's authors, the persons stay" do
+    list = [candidate("openlibrary", "UNIX Power Tools", ["Jerry Peek", "Shelley Powers", "Electronic Publishing"], by_isbn: "9780596003302").tap(&.sure = true)]
+    Meta::CrossCheck.verdict(title, list).not_nil!.authors.should eq ["Jerry Peek", "Shelley Powers"]
+  end
+
+  it "a candidate without a person confirms nothing" do
+    {"Symposium on Mathematical Modelling of Estuarine Physics (1978 Hamburg, Germany)", "Electronic Publishing",
+     "McKinsey & Co", "O'Reilly Media", "Institute for Sex Research", "Springer-Verlag GmbH", "Compliance"}.each do |org|
+      r = Meta::Record.new(title: "UNIX Power Tools", authors: [org])
+      Meta::CrossCheck.people(r).should be_empty
+      sure = candidate("openlibrary", "UNIX Power Tools", [org], by_isbn: "9780596003302").tap(&.sure = true)
+      Meta::CrossCheck.verdict(title, [sure, candidate("hardcover", "UNIX Power Tools", [org])]).should be_nil
+    end
+    Meta::CrossCheck.people(Meta::Record.new(authors: ["Man Young Rhee", "Mike Chamberlain (Narrator)", "Hans Bethe (1906-2005)"])).should eq ["Man Young Rhee", "Hans Bethe"]
+  end
+
+  it "keeps organisations out of the authors of a metadata run" do
+    sure = candidate("openlibrary", "UNIX Power Tools", ["Jerry Peek", "Electronic Publishing"], by_isbn: "9780596003302").tap(&.sure = true)
+    Meta::Merge.plan(book("UNIX Power Tools", ["Jerry Peek"], isbn: "9780596003302"), nil, nil, [sure]).none? { |c| c.field == "authors" }.should be_true
+  end
+
+  it "#1719: the book's own ISBN filed under another book isn't sure" do
+    wrong = candidate("openlibrary", "Mathematical modelling of estuarine physics", ["Hans Sündermann"], by_isbn: "9780387097503")
+    g = Meta::Guess.new("Handbook Of Peer To Peer Networking", [] of String)
+    Meta::Score.rank([wrong], [g], [] of String, ["9780387097503"]).first.sure.should be_false
+    Meta::CrossCheck.verdict(g, [wrong]).should be_nil
+    # the right record is, with or without its subtitle, and so is any for a title that says nothing
+    right = candidate("openlibrary", "Handbook of Peer-to-Peer Networking", ["Xuemin Shen"], by_isbn: "9780387097503")
+    Meta::Score.rank([right], [g], [] of String, ["9780387097503"]).first.sure.should be_true
+    junk = candidate("openlibrary", "Mathematical modelling", ["Hans Sündermann"], by_isbn: "9780387097503")
+    Meta::Score.rank([junk], [Meta::Guess.new("8508 Fm Frame", [] of String)], [] of String, ["9780387097503"]).first.sure.should be_true
+  end
+
+  it "#1766: no suggestion by the name \"Chapter 9\"" do
+    g = Meta::Guess.new("Chapter 9: Proportions and Similarity", [] of String)
+    Meta::CrossCheck.verdict(g, [candidate("openlibrary", "CHAPTER 9", ["Robert Bothwell"])]).should be_nil
+  end
+end
+
 describe "title and authors together" do
   it "keeps what a person edited, whatever the other field gets" do
     name = "Vegetarian Nutrition - J. Sabate (CRC, 2001) WW.pdf"

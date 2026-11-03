@@ -287,7 +287,7 @@ module CalibreHub
       UNKNOWN = Set{"unbekannt", "unknown", "unknown author", "autor unbekannt", "n a", "na", "none", "admin",
                     "administrator", "user", "owner", "calibre", "microsoft office user", "author", "autor",
                     "default", "besitzer", "test", "scankromsator", "hypergear tiff pdf convert library",
-                    "click here to log on", "team ling", "team lib", "team ddu"}
+                    "click here to log on", "team ling", "team lib", "team ddu", "et a", "et al", "u a", "and others", "und andere"}
       SOURCES = /z[\s-]?lib(?:rary)?(?:\.\w{2,3})?|1lib(?:\.\w{2,3})?|libgen(?:\.\w{2,3})?|b-ok(?:\.\w{2,3})?|anna['’]?s[\s_]archive|epub|pdf|mobi|azw3?|retail|e-?book|calibre|scan|ocr|dl|www\.[\w.-]+/i
       JUNK    = [
         /\s*[\(\[\{]\s*(?:#{SOURCES.source})(?:\s*[,;]\s*(?:#{SOURCES.source}))*\s*[\)\]\}]/i,
@@ -736,6 +736,25 @@ module CalibreHub
         d <= 1 ? 1.0 : d <= 5 ? 0.5 : 0.0
       end
 
+      # A catalog can file an ISBN under another book (Open Library has the
+      # Handbook of Peer-to-Peer Networking's as "Mathematical modelling of
+      # estuarine physics"): no word of weight in common with a title that
+      # says something, for a book without an author. With an author the
+      # ISBN corrects a book whose names are another's.
+      def self.other_book?(guesses : Array(Guess), r : Record) : Bool
+        theirs = words([r.title, r.subtitle].compact.join(" "))
+        return false if theirs.empty?
+        guesses.all? do |g|
+          mine = words(g.title)
+          next false if mine.empty? || !g.authors.empty? || FileName.bad_title?(g.title)
+          2 * (mine & theirs).size < {mine.size, theirs.size}.min
+        end
+      end
+
+      private def self.words(title : String) : Set(String)
+        Text.tokens(title).reject { |w| w.size < 3 || Clean::SMALL.includes?(w) }.to_set
+      end
+
       # Scores the candidates against the best fitting guess and marks the
       # sure ones: found by an ISBN that is trusted (in calibre or the
       # book's OPF) or that agrees with the book (from the text)
@@ -744,7 +763,7 @@ module CalibreHub
         candidates.each do |c|
           c.score = guesses.max_of { |g| score(g, languages, c.fields) }
           if isbn = c.by_isbn
-            c.sure = trusted_isbns.includes?(isbn) || c.score >= 0.5
+            c.sure = trusted_isbns.includes?(isbn) && !other_book?(guesses, c.fields) || c.score >= 0.5
             c.score = 1.0 if c.sure
           end
         end
@@ -764,7 +783,16 @@ module CalibreHub
     # the reading's author, or, for a reading without an author, from two
     # catalogs that agree on title and author with nobody else agreeing on
     # another; a short title alone proves nothing. Anything less is unsure.
+    # Only persons count (people): a candidate without one confirms nothing.
     module CrossCheck
+      # The authors of a record that are persons: without life dates and
+      # notes, no organisations, events or publishers, nobody who only reads
+      # or translates
+      def self.people(r : Record) : Array(String)
+        list = (r.authors || [] of String).reject(&.matches?(/\((?:narrator|translator|illustrator|reader)\)/i))
+        Clean.authors(list.map { |a| FileName.clean_author(a) }).reject { |a| FileName.organization?(a) }
+      end
+
       # 0..1, how many words two titles share
       private def self.overlap(a : Array(String), b : Array(String)) : Float64
         return 0.0 if a.empty? || b.empty?
@@ -786,23 +814,25 @@ module CalibreHub
       def self.verdict(guess : Guess, candidates : Array(Candidate)) : Verdict?
         named = !guess.authors.empty?
         about = guess.title.matches?(COMPANIONS)
-        people = candidates.reject { |c| Clean.authors(c.fields.authors || [] of String).empty? }
+        people = candidates.reject { |c| people(c.fields).empty? }
         people = people.reject { |c| !c.sure && c.fields.title.to_s.matches?(COMPANIONS) } unless about
         list = people.select { |c| c.sure || same_title?(guess.title, c.fields, named) }
         if list.empty?
           # "Code Complete: A Practical Handbook…": a catalog without the
           # subtitle has the book, or another one of that name: a suggestion
           main = Text.main_title(guess.title)
+          # "Chapter 9: Proportions" is no book of the name "Chapter 9"
+          return nil if FileName.bad_title?(main)
           short = main == guess.title ? [] of Candidate : people.select { |c| Text.key(main) == Text.key(Text.main_title(c.fields.title.to_s)) }
           return short.empty? ? nil : result(false, Merge.ordered(short, "authors"))
         end
         list = Merge.ordered(list, "authors")
         return result(true, [list.first]) if list.first.sure
         if named
-          agree = list.select { |c| guess.authors.all? { |a| Score.authors([a], c.fields.authors.not_nil!) >= 0.8 } }
+          agree = list.select { |c| guess.authors.all? { |a| Score.authors([a], people(c.fields)) >= 0.8 } }
           return agree.empty? ? result(false, list) : result(true, agree)
         end
-        groups = list.group_by { |c| Text.tokens(Clean.authors(c.fields.authors.not_nil!).first).last? }.values
+        groups = list.group_by { |c| Text.tokens(people(c.fields).first).last? }.values
         groups = groups.sort_by { |g| -g.map(&.source).uniq.size }
         best = groups.first
         rivals = groups[1..].any? { |g| g.map(&.source).uniq.size >= 2 }
@@ -811,7 +841,7 @@ module CalibreHub
 
       private def self.result(confirmed : Bool, list : Array(Candidate)) : Verdict
         first = list.first
-        Verdict.new(confirmed, first.fields.title, Clean.authors(first.fields.authors.not_nil!), first.source, list.map(&.source).uniq)
+        Verdict.new(confirmed, first.fields.title, people(first.fields), first.source, list.map(&.source).uniq)
       end
     end
 
@@ -996,7 +1026,7 @@ module CalibreHub
         weak = Clean.unknown_authors?(authors) || !FileName.checked?(book) && authors.all? { |a| FileName.bad_author?(a) }
         if weak && verdict.try(&.confirmed)
           authors, authors_source = verdict.not_nil!.authors, verdict.not_nil!.source
-        elsif (ab = ordered(accepted, "authors").first?) && (ba = ab.fields.authors) && !(theirs = Clean.authors(ba)).empty?
+        elsif (ab = ordered(accepted, "authors").first?) && !(theirs = CrossCheck.people(ab.fields)).empty?
           if weak
             # one catalog's word for a book without an author is not enough
           elsif authors.size == theirs.size && authors.zip(theirs).all? { |m, o| Text.key(m) == Text.key(o) || fuller?(o, m) } &&
@@ -1009,7 +1039,7 @@ module CalibreHub
         # co-authors: a sure match naming all of ours and more (Kegan & Lahey)
         unless Clean.unknown_authors?(authors)
           ordered(accepted.select(&.sure), "authors").each do |c|
-            theirs = Clean.authors(c.fields.authors || next)
+            theirs = CrossCheck.people(c.fields)
             next unless theirs.size > authors.size
             next unless authors.all? { |m| theirs.any? { |o| Text.key(o) == Text.key(m) } }
             authors = theirs.map { |o| authors.find { |m| Text.key(m) == Text.key(o) } || o }

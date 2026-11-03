@@ -281,7 +281,15 @@ module CalibreHub
         return true if Clean.unknown_author?(a)
         s = a.strip
         return true if s.matches?(/[\d()\[\]]|\/\/|https?:|\.(?:com|org|net)\b|\bedition\b/i) || s.matches?(/\Aauthor:/i)
-        publisher_name?(s) || title_like?(s)
+        organization?(s) || title_like?(s)
+      end
+
+      # An organisation or event, not a person: "Symposium on Mathematical
+      # Modelling", "Electronic Publishing", "McKinsey & Co", "Compliance"
+      ORGANIZATION = /\b(?:symposium|conference|congress|workshop|seminar|meeting|proceedings|institute?|institut|university|universit[aä]t|college|society|gesellschaft|association|committee|commission|council|board|foundation|stiftung|corporation|incorporated|company|ministry|department|agency|academy|akademie|laboratory|laboratories|compliance|co|corp)\b\.?/i
+
+      def self.organization?(s : String) : Bool
+        s.matches?(ORGANIZATION) || publisher_name?(s)
       end
 
       # What is left of a name with notes around it: "Beck (Hg.)", "Author:
@@ -377,6 +385,9 @@ module CalibreHub
           publisher ||= parts[3]?.try { |p| p if publisher?(p) }
           parts = parts.first(2).reverse
         end
+        # "HIT04 - So Long, and Thanks for All the Fish - Douglas Adams": the
+        # code of a collection, no part of the title
+        parts.shift if parts.size >= 3 && parts.first.matches?(/\A\p{Lu}{2,5}\d{2,3}\z/)
         # "07 - Compilers - Principles…": a number in a list of files, whose
         # names need a clear person to have an author
         numbered = parts.size >= 2 && parts.first.matches?(/\A\d{1,3}\.?\z/)
@@ -594,7 +605,8 @@ module CalibreHub
             # "Basic Engineering Mathematics [by John Bird]"
             author = m[1]
             s = s.sub(m[0], "")
-          elsif author.nil? && (m = s.match(/\s*\(([^()]+)\)\s*\z/)) && side_score(m[1]) >= 2 && !s.sub(m[0], "").matches?(/\s[-–]\s/)
+          elsif author.nil? && (m = s.match(/\s*\(([^()]+)\)\s*\z/)) && side_score(m[1]) >= 2 && !s.sub(m[0], "").matches?(/\s[-–]\s/) &&
+                !m[1].matches?(/\A(?:rev|ver|vol|bd|nr|no)\b/i)
             author = m[1]
             s = s.sub(m[0], "")
           end
@@ -653,7 +665,7 @@ module CalibreHub
         t = Clean.strip_junk(t)
         # "AkteurGehirn", "CompilerConstruction1"
         if t.matches?(/\A(?:\p{Lu}\p{Ll}{2,}){2,}\d*\z/) && !COMPOUNDS.includes?(Text.key(t))
-          t = t.gsub(/(?<=\p{Ll})(?=\p{Lu})/, " ")
+          t = t.gsub(/(?<=\p{Ll})(?=\p{Lu}|\d)/, " ")
         end
         # "Eyes of the Dragon, The"
         if m = t.match(/\A(.+),\s+(The|A|An|Der|Die|Das|Le|La|Les)\z/)
