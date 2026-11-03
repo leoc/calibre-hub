@@ -106,8 +106,17 @@ module CalibreHub
           @out.puts "backlog import is off (no backlogImport.roots)"
         else
           @out.puts "roots: #{st["roots"].as_a.join(", ")}#{st["running"].as_bool ? ", an import is running (hooks paused)" : ""}"
+          st["phase"]?.try(&.as_s?).try { |p| @out.puts "phase: #{p}" }
+          st["backlog"]?.try(&.as_h?).try { |b| backlog_line(b) }
+          st["followup"]?.try(&.as_h?).try do |f|
+            queues = f["queues"].as_h.map { |k, v| "#{k} #{v}" }.join(", ")
+            @out.puts "followup: #{f["total"]} books#{queues.empty? ? "" : " (#{queues})"}#{f["paused"].as_bool ? ", waiting for the import" : ""}"
+          end
           st["runs"].as_a.each do |r|
             progress = case
+                       when r["status"] == "scanning" && r["phase"]? == "check"
+                         scan = r["scan"]
+                         "checking #{scan["planned"]}/#{scan["units"]} books"
                        when r["status"] == "scanning"
                          "scanning #{r["scan"]?.try(&.as_h?).try(&.["files"]?) || 0} files"
                        when r["dryRun"].as_bool
@@ -118,11 +127,50 @@ module CalibreHub
             books = r["summary"]?.try(&.as_h?).try(&.["books"]?).try { |b| "  #{b} books" } || ""
             results = r["results"].as_h.map { |k, v| "#{v} #{k}" }.join(", ")
             @out.puts "  #{r["id"]}  #{r["createdAt"]}  #{r["path"]}  #{progress}#{books}  #{results}"
+            run_details(r)
           end
         end
         st["cleanups"].as_a.each do |c|
           @out.puts "  cleanup #{c["id"]}  #{c["createdAt"]}  #{c["total"]} books  #{c["job"]["status"]? || "-"}#{c["undoJob"].raw ? ", undone: #{c["undoJob"]["status"]}" : ""}"
         end
+      end
+
+      # imported of the backlog's new books, what is open by the latest run
+      private def backlog_line(b : Hash(String, JSON::Any))
+        imported = b["imported"].as_i64
+        total = b["total"].as_i64
+        open = b["open"]
+        pct = total > 0 ? " (#{(imported * 100.0 / total).round(1)} %)" : ""
+        eta = b["etaSeconds"]?.try(&.as_i64?).try { |s| ", about #{Runner.duration(s)} left" } || ""
+        @out.puts "backlog: #{imported} of ~#{total} new books imported#{pct}, #{b["formatAdded"]} with formats added, #{b["duplicates"]} duplicates#{eta}"
+        basis = b["basis"]?.try(&.as_h?).try { |r| " (by run #{r["runId"]}: #{r["paths"].as_a.join(", ")})" } || ""
+        @out.puts "  open: #{open["books"]} books, #{open["formats"]} with formats to add, #{open["duplicates"]} duplicates, #{open["failed"]} failed#{basis}"
+      end
+
+      # where a scanning or running run is, its times and failed books
+      private def run_details(r : JSON::Any)
+        if {"scanning", "running"}.includes?(r["status"]?.try(&.as_s?))
+          parts = [] of String
+          r["elapsedSeconds"]?.try(&.as_i64?).try { |s| parts << "running #{Runner.duration(s)}" }
+          r["filesPerSecond"]?.try(&.as_f?).try { |v| parts << "#{v} files/s" }
+          r["booksPerMinute"]?.try(&.as_f?).try { |v| parts << "#{v} books/min" }
+          r["etaSeconds"]?.try(&.as_i64?).try { |s| parts << "about #{Runner.duration(s)} left" }
+          @out.puts "    #{parts.join(", ")}" unless parts.empty?
+          r["current"]?.try(&.as_s?).try { |c| @out.puts "    at #{c}" }
+        end
+        failures = r["failures"]?.try(&.as_a?) || [] of JSON::Any
+        failures.first(5).each { |f| @out.puts "    failed: #{f["path"]}: #{f["detail"]? || "-"}" }
+        n = r["results"]["failed"]?.try(&.as_i?) || failures.size
+        @out.puts "    … #{n - 5} more failed" if n > 5
+      end
+
+      # 3725 -> "1h 02m", 250 -> "4m 10s"
+      def self.duration(seconds : Int64) : String
+        h, rest = seconds.divmod(3600)
+        m, s = rest.divmod(60)
+        return "#{h}h #{m.to_s.rjust(2, '0')}m" if h > 0
+        return "#{m}m #{s.to_s.rjust(2, '0')}s" if m > 0
+        "#{s}s"
       end
 
       private def import_cleanup(args : Args)

@@ -497,6 +497,31 @@ describe "hub import" do
     end
   end
 
+  it "shows phase, rates, ETA, the backlog's progress and the followup" do
+    running = {id: "r3", path: "/srv/alt", dryRun: false, status: "running", phase: "import", createdAt: "2026-11-03T08:00:00Z",
+               current: "/srv/alt/Autor/Buch (12)", elapsedSeconds: 3725, booksPerMinute: 21.5, etaSeconds: 250,
+               done: 260, total: 500, summary: {books: 500}, results: {imported: 250, duplicate: 8, failed: 2, pending: 240},
+               failures: [{path: "/srv/alt/kaputt.pdf", detail: "HTTP 500"}]}
+    with_stub do |s|
+      s.on("GET", "/api/import", {enabled: true, roots: ["/srv"], running: true, scanning: false, phase: "import",
+                                  backlog: {imported: 260, formatAdded: 3, duplicates: 40, total: 17500,
+                                            open: {books: 17240, formats: 12, duplicates: 300, failed: 2},
+                                            basis: {runId: "r3", paths: ["/srv/alt"], createdAt: "2026-11-03T08:00:00Z"}, etaSeconds: 48_000},
+                                  followup: {paused: true, total: 270, queues: {metadata: 260, embed: 10}},
+                                  runs: [running], cleanups: [] of String})
+      code, stdo, _ = cli(s, "import", "status")
+      code.should eq(0)
+      stdo.should contain("phase: import")
+      stdo.should contain("backlog: 260 of ~17500 new books imported (1.5 %), 3 with formats added, 40 duplicates, about 13h 20m left")
+      stdo.should contain("open: 17240 books, 12 with formats to add, 300 duplicates, 2 failed (by run r3: /srv/alt)")
+      stdo.should contain("followup: 270 books (metadata 260, embed 10), waiting for the import")
+      stdo.should contain("r3  2026-11-03T08:00:00Z  /srv/alt  running 260/500  500 books")
+      stdo.should contain("running 1h 02m, 21.5 books/min, about 4m 10s left")
+      stdo.should contain("at /srv/alt/Autor/Buch (12)")
+      stdo.should contain("failed: /srv/alt/kaputt.pdf: HTTP 500")
+    end
+  end
+
   it "cleans up inbox imports and undoes it" do
     entry = {bookId: 120, title: "A", folders: ["Defaults", "Algebra"], kategorie: "Defaults.Algebra",
              tags: ["Algebra", "Defaults"], removeTags: ["Algebra", "Defaults"], clearKategorie: true}

@@ -495,6 +495,83 @@ describe CalibreHub::ImportJobs do
     end
   end
 
+  it "reports phase, times, failures and the whole backlog's progress" do
+    tmpdir do |root|
+      write(File.join(root, "A", "a1.pdf"), pdf("a1"))
+      write(File.join(root, "A", "a2.pdf"), pdf("a2"))
+      write(File.join(root, "B", "b1.pdf"), pdf("b1"))
+      write(File.join(root, "B", "b2.pdf"), pdf("b2"))
+      fake = FakeCalibre.new
+      calibre = fake.calibre
+      db = state_db
+      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
+      empty = jobs.backlog
+      empty["total"].should eq 0
+      empty["basis"].raw.should be_nil
+
+      dry = wait_run(jobs, jobs.start(".", true)["id"].as_s)
+      dry["phase"].should eq "planned"
+      dry["startedAt"].as_s.should_not be_empty
+      dry["finishedAt"].should eq dry["scannedAt"]
+      dry["scan"]["phase"].should eq "check"
+      dry["current"].raw.should be_nil
+      jobs.backlog["open"]["books"].should eq 4
+      jobs.backlog["basis"]["runId"].should eq dry["id"]
+
+      run = jobs.start(".", false, 2)
+      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
+      done = jobs.run(run["id"].as_s).not_nil!
+      done["phase"].should eq "done"
+      done["elapsedSeconds"].as_i.should be >= 0
+      done["finishedAt"].as_s.should_not be_empty
+      done["failures"].as_a.should be_empty
+      done["etaSeconds"].raw.should be_nil
+      b = jobs.backlog(30.0)
+      {b["imported"], b["total"], b["open"]["books"], b["open"]["failed"]}.should eq({2, 4, 2, 0})
+      b["basis"]["runId"].should eq run["id"]
+      # 2 books left at 30 a minute
+      b["etaSeconds"].should eq 4
+
+      # a book calibre-server fails on stays open
+      fake.no_such_book << 1_i64
+      write(File.join(root, "C", "Bekannt (1)", "metadata.opf"), opf("Bekannt", "Alte Autorin"))
+      write(File.join(root, "C", "Bekannt (1)", "b.pdf"), pdf("bk"))
+      fake.add(1, "Bekannt", ["Alte Autorin"], ["EPUB"])
+      run = jobs.start(".", false)
+      wait_job(jobs, run["jobId"].as_s)
+      failed = jobs.run(run["id"].as_s).not_nil!
+      failed["failures"].as_a.size.should eq 1
+      failed["failures"][0]["path"].as_s.should end_with "Bekannt (1)"
+      failed["failures"][0]["detail"].as_s.should contain "HTTP 500"
+      b = jobs.backlog
+      {b["imported"], b["total"], b["open"]["books"], b["open"]["formats"], b["open"]["failed"]}.should eq({4, 4, 0, 1, 1})
+    end
+  end
+
+  it "counts the hooks' followup of imported books" do
+    db = state_db
+    db.exec "create table meta (key text primary key, value text)"
+    calibre = FakeCalibre.new.calibre
+    jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), ["/tmp"], nil, retries: 0)
+    jobs.followup = [
+      CalibreHub::ImportJobs::FollowupHook.new("metadata", "metadata_event_seq", "added", jobs: "metadata_jobs"),
+      CalibreHub::ImportJobs::FollowupHook.new("embed", "embed_event_seq", "changed", queue: "embed_queue"),
+      # not set up: nothing
+      CalibreHub::ImportJobs::FollowupHook.new("convert", "convert_event_seq", "added", jobs: "convert_jobs"),
+    ]
+    3.times { |i| db.exec "insert into events (type, book_id, payload, created_at) values (?, ?, '{}', 0)", i == 2 ? "changed" : "added", i + 10 }
+    db.exec "insert into meta (key, value) values ('metadata_event_seq', '0'), ('embed_event_seq', '0')"
+    db.exec "create table metadata_jobs (id text, status text, ids text, done integer)"
+    # one book done, one to go, then the author pass (0)
+    db.exec "insert into metadata_jobs values ('m1', 'running', '[5,6,0]', 1), ('m0', 'done', '[7]', 1)"
+    db.exec "create table embed_queue (book_id integer primary key)"
+    db.exec "insert into embed_queue values (4)"
+    f = jobs.followup_status
+    f["queues"].as_h.transform_values(&.as_i).should eq({"metadata" => 3, "embed" => 2, "convert" => 0})
+    f["total"].should eq 5
+    f["paused"].should be_false
+  end
+
   it "matches only books still in the library and plans files of removed books again" do
     tmpdir do |root|
       # different past the first KiB, where the partial MD5 starts

@@ -195,6 +195,8 @@ module CalibreHub
       getter already = 0
       # files looked at, book files or not
       getter files = 0
+      # the folder being walked
+      getter current : String? = nil
       # (files, units) now and then while walking
       property on_progress : Proc(Int32, Int32, Nil)?
       @entries = 0
@@ -246,6 +248,7 @@ module CalibreHub
       end
 
       private def walk(dir : String, top = false)
+        @current = dir
         children = begin
           Dir.children(dir).sort
         rescue ex : File::Error

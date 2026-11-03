@@ -469,6 +469,15 @@ module CalibreHub
     end
     imports = config.import_roots.empty? ? nil : ImportJobs.new(db, calibre, writer, config.import_roots, config.library)
     imports.try { |i| puts "backlog import: roots #{i.roots.join(", ")}" }
+    # the hooks that work off imported books, for the import's followup
+    imports.try do |i|
+      i.followup = [
+        metadata_jobs && ImportJobs::FollowupHook.new("metadata", "metadata_event_seq", "added", jobs: "metadata_jobs"),
+        classify_jobs && ImportJobs::FollowupHook.new("classify", "classify_event_seq", "added", jobs: "classify_jobs"),
+        config.convert ? ImportJobs::FollowupHook.new("convert", "convert_event_seq", "added", jobs: "convert_jobs") : nil,
+        embedder && ImportJobs::FollowupHook.new("embed", "embed_event_seq", "changed", queue: "embed_queue"),
+      ].compact
+    end
     cleanup = config.category_column ? ImportCleanup.new(db, calibre, writer, config.category_column, File.dirname(File.expand_path(config.state_db))) : nil
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
