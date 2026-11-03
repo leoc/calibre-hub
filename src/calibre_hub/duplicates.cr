@@ -260,11 +260,14 @@ module CalibreHub
       score : Float64, items : Array(Dedup::Item), covers : Hash(Int64, Bool)
 
     # All groups, sure ones first, then by score
-    def groups(threshold = @threshold) : Array(Group)
+    # only: just the group of this book, so details and covers are fetched
+    # for it alone
+    def groups(threshold = @threshold, only : Int64? = nil) : Array(Group)
       info = library_info
       items = @calibre.list("").map { |b| item(b, info) }
       pairs = Dedup.pairs(items, threshold, ->checksum(Dedup::FileInfo), ignored)
       ids = Dedup.groups(pairs)
+      ids = ids.select(&.includes?(only)) if only
       return [] of Group if ids.empty?
       detailed = @calibre.books(ids.flatten, Calibre::DETAIL_FIELDS).index_by(&.id)
       covers = info.covers || ids.flatten.to_h { |id| {id, @calibre.has_cover?(id)} }
@@ -280,7 +283,7 @@ module CalibreHub
 
     # The other books a book looks like a duplicate of (upload, inbox)
     def similar(id : Int64) : Array(Book)
-      g = groups.find(&.ids.includes?(id)) || return [] of Book
+      g = groups(only: id).first? || return [] of Book
       g.items.map(&.book).reject { |b| b.id == id }
     end
 
