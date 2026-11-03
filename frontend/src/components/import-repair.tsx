@@ -21,6 +21,11 @@ export function decidedLabel(by: string | null, unsureTag: string): string {
   return key ? t(key) : by
 }
 
+const sourceName = (source: string) => {
+  const key = sourceLabel(source)
+  return key ? t(key) : source
+}
+
 // The repair of plain-file imports on the import page: plan proposals (a
 // job), then review them per book (old → new, who decided) and accept or
 // reject single books, the selected ones or all
@@ -127,6 +132,8 @@ function RepairItem(props: {
 }) {
   const { entry: e } = props
   const name = e.file.split("/").pop() ?? e.file
+  const changes = e.changes.filter((c) => c.field !== "candidate")
+  const candidate = e.changes.find((c) => c.field === "candidate")?.new as { title?: string; authors: string[]; source: string } | undefined
   const title = props.title ?? `#${e.bookId}`
   return (
     <li className="space-y-1 py-2 text-sm" data-book={e.bookId}>
@@ -137,9 +144,9 @@ function RepairItem(props: {
         </label>
         <span className={muted}>{t("repair.decided", { by: decidedLabel(e.decided, props.unsureTag) })}</span>
       </div>
-      <p className={cn("break-all", muted)}>{name}</p>
+      {name && <p className={cn("break-all", muted)}>{name}</p>}
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-        {e.changes.map((c) => (
+        {changes.map((c) => (
           <div key={c.field} className="contents">
             <dt className="font-medium">{fieldLabel(c.field)}</dt>
             <dd className="break-words">
@@ -150,6 +157,11 @@ function RepairItem(props: {
           </div>
         ))}
       </dl>
+      {candidate && (
+        <p className={muted}>
+          {t("repair.candidate", { title: candidate.title ?? title, authors: candidate.authors.join(", "), source: sourceName(candidate.source) })}
+        </p>
+      )}
       <div className="flex gap-2">
         <Button size="sm" disabled={props.busy} onClick={props.onAccept}>
           {t("repair.accept")}

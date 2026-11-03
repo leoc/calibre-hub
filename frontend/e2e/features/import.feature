@@ -34,6 +34,12 @@ Feature: Import progress
     Then the runs list a finished import that took "Dauer 1 Std. 02 Min. · 20,2 Bücher/min"
     And the runs link 3 reports
 
+  Scenario: The quality report measures the library and the last runs
+    When I open the import page
+    Then the quality report says "212 von 1.846 Büchern auffällig"
+    And the quality report counts "Autor unbekannt" with "191"
+    And the quality report lists a run with "120 von 437 auffällig"
+
   Scenario: The repair of plain-file imports is reviewed book by book
     When I open the import page
     Then the repair proposes "Formulas and Theorems in Pure Mathematics" decided by "Dateiname"

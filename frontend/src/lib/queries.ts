@@ -93,6 +93,13 @@ export const importRepairQuery = queryOptions({
   refetchInterval: (q) => (q.state.data?.job?.status === "running" ? 2000 : false),
 })
 
+// the quality report of the library and the last runs
+export const importQualityQuery = queryOptions({
+  queryKey: ["import-quality"],
+  queryFn: api.importQuality,
+  staleTime: 60_000,
+})
+
 export const metadataChangesQuery =(query: MetadataChangesQuery = {}) =>
   queryOptions({
     queryKey: ["metadata-changes", query],

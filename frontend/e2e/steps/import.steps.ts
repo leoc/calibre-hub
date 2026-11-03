@@ -93,6 +93,22 @@ Then("the page doesn't scroll sideways", async ({ page }) => {
   expect(overflow).toBeLessThanOrEqual(0)
 })
 
+// the quality report (src/components/import-quality.tsx)
+const quality = (page: Page) => region(page, "Qualität")
+
+Then("the quality report says {string}", async ({ page }, text: string) => {
+  await expect(quality(page).getByRole("status")).toHaveText(text)
+})
+
+Then("the quality report counts {string} with {string}", async ({ page }, reason: string, count: string) => {
+  await expect(quality(page).getByRole("term").filter({ hasText: reason })).toBeVisible()
+  await expect(quality(page).getByRole("definition").filter({ hasText: count })).toBeVisible()
+})
+
+Then("the quality report lists a run with {string}", async ({ page }, text: string) => {
+  await expect(quality(page).getByRole("list", { name: "Letzte Importläufe" })).toContainText(text)
+})
+
 // the repair of plain-file imports (src/components/import-repair.tsx)
 const repair = (page: Page) => region(page, "Reparatur")
 const proposals = (page: Page) => repair(page).getByRole("list", { name: "Reparatur" }).getByRole("listitem")

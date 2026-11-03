@@ -175,6 +175,19 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
         unsureTag: "auto-unsicher",
       })
     }),
+    // the quality report: the library and two runs
+    http.get("/api/import/quality", () =>
+      HttpResponse.json({
+        total: 1846,
+        suspect: 212,
+        reasons: { unknownAuthor: 191, notAPerson: 0, publisherAuthor: 4, titleSaysNothing: 11, leftoverTitle: 1, fileNameTitle: 24, unsure: 11 },
+        runs: [
+          { run: "77ec37bda5d6d688", at: "2026-11-03T08:48:59Z", total: 437, suspect: 120 },
+          { run: "8c6205172f4fdbb7", at: "2026-11-03T07:35:32Z", total: 196, suspect: 41 },
+        ],
+        books: [{ id: 1617, title: "Compilers: Principles, Techniques and Tools", authors: ["Unknown"], reasons: ["unknownAuthor"] }],
+      }),
+    ),
     http.post("/api/import/repair", () => {
       repairJob = { status: "done", done: 3, total: 3, errors: [] }
       return HttpResponse.json({ dryRun: true, books: 3, job: { id: "repair-plan", ...repairJob } }, { status: 202 })

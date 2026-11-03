@@ -256,6 +256,8 @@ export interface ImportRepairEntry {
   decided: string | null
   status: "pending" | "applied" | "rejected" | "failed"
   at: string
+  // field "candidate": what the catalogs suggest but couldn't confirm
+  // ({title, authors, source}), shown for the review and never applied
   changes: { field: string; old: unknown; new: unknown }[]
 }
 
@@ -266,6 +268,16 @@ export interface ImportRepairReview {
   // the latest plan or accept job
   job: Job | null
   unsureTag: string
+}
+
+// How many books look wrong (GET /api/import/quality): counts per reason,
+// the last import runs, a few of the books
+export interface ImportQuality {
+  total: number
+  suspect: number
+  reasons: Record<string, number>
+  runs: { run: string; at: string; total: number; suspect: number }[]
+  books: { id: number; title: string; authors: string[]; reasons: string[] }[]
 }
 
 export interface ImportStatus {
@@ -440,6 +452,7 @@ export const api = {
   metadataStatus: () => request<MetadataStatus>("/api/metadata/status"),
   importStatus: () => request<ImportStatus>("/api/import"),
   importRepair: () => request<ImportRepairReview>("/api/import/repair"),
+  importQuality: () => request<ImportQuality>("/api/import/quality"),
   metadataChanges: (query: MetadataChangesQuery = {}) =>
     request<{ changes: MetadataChange[]; books: Book[] }>(`/api/metadata/changes?${new URLSearchParams(Object.entries(query).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])))}`),
   // q: own search text instead of the book's title and author

@@ -6,6 +6,7 @@ import { buttonVariants } from "@/components/ui/button"
 import { ErrorMessage } from "@/components/error-view"
 import { LibraryLink } from "@/components/library-link"
 import { ImportOverview } from "@/components/backlog-import"
+import { ImportQuality } from "@/components/import-quality"
 import { ImportRepair } from "@/components/import-repair"
 
 // The backlog import live: phase, the whole backlog, the running run with
@@ -30,6 +31,7 @@ export function ImportPage() {
       ) : (
         <>
           <ImportOverview status={data} />
+          {data.enabled && <ImportQuality />}
           {data.enabled && <ImportRepair />}
         </>
       )}
