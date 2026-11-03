@@ -2,6 +2,8 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckCircle2, CircleAlert, ListMinus, Loader2, X } from "lucide-react"
 import { ApiError, DEFAULT_CONFIG, write, type BulkTarget, type ReadingList } from "@/lib/api"
+import { refreshPrivateTags } from "@/lib/run-action"
+import { useIsAdmin } from "@/lib/session"
 import { BOOK_ACTIONS, bookAction, commandLabel, needsConfirm, type ActionTarget, type BookActionDef } from "@/lib/book-actions"
 import { isBulkJob, trackedJobs, useTrackedJobs, type TrackedJob } from "@/lib/jobs"
 import { startChange } from "@/lib/run-action"
@@ -34,6 +36,9 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
   const [listResult, setListResult] = useState<{ text: string; key: string } | null>(null)
   const bulkList = useBulkList()
   const qc = useQueryClient()
+  // a reader changes only their own lists and private tags
+  const admin = useIsAdmin()
+  const [privateAction, setPrivateAction] = useState<"add" | "remove" | null>(null)
   const count = sel.all ? total : sel.ids.size
   const { tree, user } = useListTree(search.list != null)
   const node = tree && findNode(tree, search, user)
@@ -49,7 +54,7 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
   // the Delete key with books selected
-  useEffect(() => onBulkRequest(setAction), [])
+  useEffect(() => (admin ? onBulkRequest(setAction) : undefined), [admin])
 
   // ids keep the order they were selected in (numbering a series)
   const target: BulkTarget = sel.all ? bulkTarget(search, config.categoryColumn, total) : { ids: [...sel.ids] }
@@ -93,11 +98,14 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
         </div>
       ) : (
         <div className={row}>
-          {BAR.filter((a) => a.group === "edit").map((a) => (
-            <Button key={a.id} variant="outline" size="sm" disabled={!count} onClick={() => setAction(a.id as Action)}>
-              {t(a.bar!)}
-            </Button>
-          ))}
+          {admin &&
+            BAR.filter((a) => a.group === "edit").map((a) => (
+              <Button key={a.id} variant="outline" size="sm" disabled={!count} onClick={() => setAction(a.id as Action)}>
+                {t(a.bar!)}
+              </Button>
+            ))}
+          <BarButton def={bookAction("addPrivateTags")} disabled={!count} onClick={() => setPrivateAction("add")} />
+          <BarButton def={bookAction("removePrivateTags")} disabled={!count} onClick={() => setPrivateAction("remove")} />
           <BarButton def={bookAction("addToList")} disabled={!count} onClick={() => setListAction("add")} />
           {/* on a list with its sublists' books the removal would miss those: then the dialog */}
           {search.list != null && !inShelf && (search.direct || !hasSublists) ? (
@@ -118,10 +126,13 @@ export function BulkBar({ search, pageIds, total }: { search: LibrarySearch; pag
           ) : (
             <BarButton def={bookAction("removeFromList")} disabled={!count} onClick={() => setListAction("remove")} />
           )}
-          <BarButton def={bookAction("delete")} disabled={!count} onClick={() => setAction("delete")} />
+          {admin && <BarButton def={bookAction("delete")} disabled={!count} onClick={() => setAction("delete")} />}
         </div>
       )}
       {action && <BulkDialog action={action} count={count} target={target} onClose={() => setAction(null)} />}
+      {privateAction && (
+        <BulkPrivateTagsDialog remove={privateAction === "remove"} count={count} target={target} onClose={() => setPrivateAction(null)} onDone={(text) => (setListDone(text), void refreshPrivateTags(qc))} />
+      )}
       {listAction && <BulkListDialog remove={listAction === "remove"} count={count} target={target} onClose={() => setListAction(null)} onDone={setListDone} />}
     </div>
   )
@@ -195,6 +206,57 @@ function BulkListDialog({
             {t("edit.cancel")}
           </Button>
           <Button onClick={() => list && run(list)} disabled={!list || bulkList.isPending}>
+            {t("bulk.apply")}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// Adds the user's private tags to the selection, or removes them; at once,
+// no job: they live in the hub
+function BulkPrivateTagsDialog({
+  remove,
+  count,
+  target,
+  onClose,
+  onDone,
+}: {
+  remove: boolean
+  count: number
+  target: BulkTarget
+  onClose: () => void
+  onDone: (message: string) => void
+}) {
+  const { data: cats } = useQuery(categoriesQuery)
+  const [tags, setTags] = useState<string[]>([])
+  const def = bookAction(remove ? "removePrivateTags" : "addPrivateTags")
+  const run = useMutation({
+    mutationFn: () => write.privateTags(target, remove ? { remove: tags } : { add: tags }),
+    onSuccess: (r) => {
+      onDone(t("actions.privateTagsDone", { label: t(def.bar!), count: formatNumber(r.changed.length) }))
+      onClose()
+    },
+  })
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent aria-describedby={undefined}>
+        <DialogTitle className="text-lg font-semibold">
+          {t(def.bar!)} · {t("bulk.selected", { count: formatNumber(count) })}
+        </DialogTitle>
+        <ChipsInput aria-label={t("book.privateTags")} value={tags} onChange={setTags} suggestions={cats?.privateTags ?? []} allowNew={!remove} />
+        <p className="text-xs text-muted-foreground eink:text-black">{t("book.privateTagsHint")}</p>
+        {run.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {run.error instanceof ApiError ? run.error.message : String(run.error)}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>
+            {t("edit.cancel")}
+          </Button>
+          <Button onClick={() => run.mutate()} disabled={!tags.length || run.isPending}>
             {t("bulk.apply")}
           </Button>
         </div>

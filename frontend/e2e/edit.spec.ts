@@ -46,7 +46,7 @@ test("bulk: add a tag to the whole page", async ({ page, isMobile }) => {
   await page.goto("/?series=Erdsee")
   await page.getByRole("button", { name: "Auswählen" }).click()
   await page.getByRole("button", { name: "Seite auswählen" }).click()
-  await page.getByRole("button", { name: "Tags hinzufügen" }).click()
+  await page.getByRole("button", { name: "Tags hinzufügen", exact: true }).click()
   await page.getByRole("combobox", { name: "Tags" }).fill("bulk-test")
   await page.keyboard.press("Enter")
   await page.getByRole("button", { name: "Anwenden" }).click()

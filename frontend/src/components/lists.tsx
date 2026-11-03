@@ -6,7 +6,7 @@ import { ApiError, coverUrl, VISIBILITIES, type Book, type ListPatch, type Readi
 import { fromForm, ruleComplete, toForm } from "@/lib/shelves"
 import { RuleEditor, RuleLine } from "./shelf"
 import { bookQuery, sessionQuery } from "@/lib/queries"
-import { isAdmin, mayConfigureList } from "@/lib/session"
+import { mayConfigureList, maySync } from "@/lib/session"
 import {
   buildListTree,
   defaultList,
@@ -548,8 +548,8 @@ export function ListEditDialog({
                     <input type="checkbox" checked={isDefault} onChange={(e) => setDefault(e.target.checked)} className="size-4 eink:size-6" />
                     {t("list.default")}
                   </label>
-                  {/* the reader folder is the admin's e-reader */}
-                  {isAdmin(session) && (
+                  {/* the admin's e-reader, or a reader folder of the user's own */}
+                  {maySync(session) && (
                     <label className={check}>
                       <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} className="size-4 eink:size-6" />
                       {t("list.sync")}

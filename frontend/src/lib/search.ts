@@ -19,6 +19,12 @@ export const librarySearchSchema = z.object({
     .transform((v) => (Array.isArray(v) ? v : [v]))
     .optional()
     .catch(undefined),
+  // the user's private tags
+  ptag: z
+    .union([z.string(), z.array(z.string())])
+    .transform((v) => (Array.isArray(v) ? v : [v]))
+    .optional()
+    .catch(undefined),
   author: z.string().optional().catch(undefined),
   series: z.string().optional().catch(undefined),
   lang: z.string().optional().catch(undefined),
@@ -42,7 +48,7 @@ export const librarySearchSchema = z.object({
 
 export type LibrarySearch = z.infer<typeof librarySearchSchema>
 
-const FILTER_KEYS = ["q", "kategorie", "tag", "author", "series", "lang", "unsorted", "list", "listPath"] as const
+const FILTER_KEYS = ["q", "kategorie", "tag", "ptag", "author", "series", "lang", "unsorted", "list", "listPath"] as const
 
 export function hasFilters(s: LibrarySearch) {
   return FILTER_KEYS.some((k) => (Array.isArray(s[k]) ? s[k].length > 0 : !!s[k]))
@@ -94,6 +100,7 @@ export function toBookQuery(s: LibrarySearch, categoryColumn: string | null = nu
     q: q || undefined,
     kategorie: s.kategorie,
     tag: s.tag,
+    ptag: s.ptag,
     author: s.author,
     series: s.series,
     list: s.list,
@@ -116,4 +123,11 @@ export function toggleTag(s: LibrarySearch, tag: string): LibrarySearch {
   const tags = s.tag ?? []
   const next = tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag]
   return withFilter(s, { tag: next.length ? next : undefined })
+}
+
+// the same for the user's private tags
+export function togglePrivateTag(s: LibrarySearch, tag: string): LibrarySearch {
+  const tags = s.ptag ?? []
+  const next = tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag]
+  return withFilter(s, { ptag: next.length ? next : undefined })
 }

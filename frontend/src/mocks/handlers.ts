@@ -7,16 +7,19 @@ import { progressHandlers, storeFormat } from "./progress"
 import { duplicateHandlers } from "./duplicates"
 import { readerSettingsHandlers } from "./reader-settings"
 import { dropFromLists, listHandlers, listQueryIds, seedLists, withLists } from "./lists"
+import { privateCounts, privateFilter, privateTagHandlers, withPrivateTags } from "./private-tags"
 
 
 // the filters a bulk {query} may have (Jobs::QUERY_KEYS)
-const QUERY_KEYS = ["q", "kategorie", "tag", "author", "series", "list", "listPath", "listOwner", "direct"]
+const QUERY_KEYS = ["q", "kategorie", "tag", "ptag", "author", "series", "list", "listPath", "listOwner", "direct"]
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
 seedLists(books, matches)
 let loggedIn = true
 // "lea" logs in as a reader, anyone else as the admin
-let session: Session = { user: "arthur", role: "admin" }
+let session: Session = { user: "arthur", role: "admin", sync: true }
+// the book as the user sees it: their lists and private tags
+const view = <T extends Book>(b: T): T => withPrivateTags(session.user, withLists(b))
 
 const SORT_KEY: Record<string, (b: Book) => string | number> = {
   title: (b) => b.title.toLowerCase(),
@@ -54,8 +57,10 @@ function filterBooks(p: URLSearchParams) {
   const k = p.get("kategorie")
   const members = listQueryIds(p)
   const inList = members !== undefined ? new Set(members ?? []) : null
+  const tagged = privateFilter(session.user, p)
   return books.filter((b) => {
     if (inList && !inList.has(b.id)) return false
+    if (tagged && !tagged.has(b.id)) return false
     const cat = b.custom.kategorie as string | null
     if (k && !(cat === k || cat?.startsWith(`${k}.`))) return false
     if (p.getAll("tag").some((t) => !b.tags.includes(t))) return false
@@ -170,7 +175,7 @@ export const readHandlers = [
     const { user, password } = (await request.json()) as { user: string; password: string }
     if (password !== "hub") return HttpResponse.json({ error: "wrong user or password" }, { status: 401 })
     loggedIn = true
-    session = user === "lea" ? { user, role: "reader" } : { user: "arthur", role: "admin" }
+    session = user === "lea" ? { user, role: "reader", sync: false } : { user: "arthur", role: "admin", sync: true }
     return HttpResponse.json(session)
   }),
   http.delete("/api/session", () => {
@@ -178,7 +183,7 @@ export const readHandlers = [
     return new HttpResponse(null, { status: 204 })
   }),
   http.get("/api/config", () => auth() ?? HttpResponse.json({ fastTags: ["leseliste"], categoryColumn: "kategorie", classify: true, metadata: true })),
-  http.get("/api/categories", () => auth() ?? HttpResponse.json(categories(books))),
+  http.get("/api/categories", () => auth() ?? HttpResponse.json({ ...categories(books), privateTags: privateCounts(session.user) })),
   http.get("/api/books", ({ request }) => {
     const denied = auth()
     if (denied) return denied
@@ -199,11 +204,11 @@ export const readHandlers = [
     }
     const offset = Number(p.get("offset") ?? 0)
     const limit = Math.min(Number(p.get("limit") ?? 50), 500)
-    return HttpResponse.json({ total: list.length, offset, limit, books: list.slice(offset, offset + limit).map(({ comments: _c, ...b }) => withLists(b)) })
+    return HttpResponse.json({ total: list.length, offset, limit, books: list.slice(offset, offset + limit).map(({ comments: _c, ...b }) => view(b)) })
   }),
   http.get("/api/books/:id", ({ params }) => {
     const b = books.find((x) => x.id === Number(params.id))
-    return auth() ?? (b ? HttpResponse.json(withLists(b)) : HttpResponse.json({ error: "not found" }, { status: 404 }))
+    return auth() ?? (b ? HttpResponse.json(view(b)) : HttpResponse.json({ error: "not found" }, { status: 404 }))
   }),
   http.get("/api/books/:id/cover", ({ params }) => {
     const custom = customCovers.get(Number(params.id))
@@ -495,8 +500,10 @@ export const setLoggedIn = (v: boolean) => {
   loggedIn = v
 }
 
-const listMocks = listHandlers(books, (target) => ("ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query))))
+const resolveTarget = (target: BulkTarget) => ("ids" in target ? books.filter((b) => target.ids.includes(b.id)) : filterBooks(bookSearchParams(target.query)))
+const listMocks = listHandlers(books, resolveTarget)
+const privateTagMocks = privateTagHandlers(books, () => session.user, resolveTarget)
 
 const duplicates = duplicateHandlers({ books, touch, moveToTrash, restoreFromTrash, withLists, delay })
 
-export const handlers = [...listMocks, ...progressHandlers, ...readerSettingsHandlers, ...writeHandlers, ...metadata, ...duplicates, ...readHandlers]
+export const handlers = [...listMocks, ...privateTagMocks, ...progressHandlers, ...readerSettingsHandlers, ...writeHandlers, ...metadata, ...duplicates, ...readHandlers]

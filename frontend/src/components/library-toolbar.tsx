@@ -4,11 +4,10 @@ import { selection, useSelection } from "@/lib/selection"
 import { DEFAULT_CONFIG, type Sort } from "@/lib/api"
 import { configQuery } from "@/lib/queries"
 import { nameFromRule, ruleFromSearch, shelfDialog } from "@/lib/shelves"
-import { defaultOrder, effectiveSort, sortsFor, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
+import { defaultOrder, effectiveSort, sortsFor, togglePrivateTag, toggleTag, withFilter, type LibrarySearch } from "@/lib/search"
 import { setView, useView } from "@/lib/prefs"
 import { categoryLabel } from "@/lib/kategorie"
 import { useGoLibrary } from "@/lib/use-library"
-import { useIsAdmin } from "@/lib/session"
 import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
 import { Badge } from "./ui/badge"
@@ -21,8 +20,6 @@ import { CompactPager } from "./pagination"
 export function LibraryToolbar({ search, total, page = 1, pages = 1 }: { search: LibrarySearch; total: number | undefined; page?: number; pages?: number }) {
   const view = useView()
   const sel = useSelection()
-  // readers don't change many books at once
-  const admin = useIsAdmin()
   const go = useGoLibrary()
   const { sort, order } = effectiveSort(search)
 
@@ -35,11 +32,10 @@ export function LibraryToolbar({ search, total, page = 1, pages = 1 }: { search:
         </p>
         <CompactPager search={search} page={page} pages={pages} />
         <div className="flex items-center gap-2 max-sm:w-full">
-          {admin && (
-            <Button variant={sel.active ? "default" : "outline"} size="sm" aria-pressed={sel.active} aria-label={t("bulk.start")} title={t("bulk.start")} onClick={sel.active ? selection.stop : selection.start}>
-              <ListChecks /> <span className="hidden sm:inline">{t("bulk.start")}</span>
-            </Button>
-          )}
+          {/* readers select too: for their lists and private tags */}
+          <Button variant={sel.active ? "default" : "outline"} size="sm" aria-pressed={sel.active} aria-label={t("bulk.start")} title={t("bulk.start")} onClick={sel.active ? selection.stop : selection.start}>
+            <ListChecks /> <span className="hidden sm:inline">{t("bulk.start")}</span>
+          </Button>
           <label className="flex min-w-0 items-center gap-1.5 text-sm max-sm:flex-1">
             <span className="sr-only">{t("sort.label")}</span>
             <select
@@ -99,6 +95,7 @@ function ActiveFilters({ search }: { search: LibrarySearch }) {
   if (search.author) chips.push({ key: "a", label: t("filter.author"), value: search.author, next: withFilter(search, { author: undefined }) })
   if (search.series) chips.push({ key: "s", label: t("filter.series"), value: search.series, next: withFilter(search, { series: undefined }) })
   search.tag?.forEach((tag) => chips.push({ key: `t:${tag}`, label: t("filter.tag"), value: tag, next: toggleTag(search, tag) }))
+  search.ptag?.forEach((tag) => chips.push({ key: `p:${tag}`, label: t("filter.privateTag"), value: tag, next: togglePrivateTag(search, tag) }))
   if (search.lang) chips.push({ key: "l", label: t("filter.lang"), value: languageName(search.lang), next: withFilter(search, { lang: undefined }) })
   if (!chips.length) return null
   return (

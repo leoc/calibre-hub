@@ -14,7 +14,8 @@ export const isShelf = (l: Pick<ReadingList, "rule"> | null | undefined): boolea
 // The library's filters as a rule, all of them must match; null without
 // filters or on a list's page (its books aren't a search)
 export function ruleFromSearch(s: LibrarySearch, categoryColumn: string | null): ShelfRule | null {
-  if (inListView(s)) return null
+  // private tags live in the hub, a shelf's calibre search can't see them
+  if (inListView(s) || s.ptag?.length) return null
   const c: ShelfCondition[] = []
   if (s.q?.trim()) c.push({ field: "text", value: s.q.trim() })
   if (s.kategorie) c.push({ field: "kategorie", value: s.kategorie })

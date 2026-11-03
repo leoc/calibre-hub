@@ -21,6 +21,9 @@ export interface Book {
   custom: Record<string, unknown>
   // ids of the reading lists the book is in (older hubs: missing)
   lists?: number[]
+  // the user's private tags (only theirs, kept in the hub, not in calibre;
+  // older hubs: missing)
+  privateTags?: string[]
 }
 
 export const VISIBILITIES = ["private", "readable", "editable"] as const
@@ -133,6 +136,8 @@ export interface Categories {
   authors: Named[]
   series: Named[]
   languages: Named[]
+  // the user's private tags (older hubs: missing)
+  privateTags?: Named[]
 }
 
 export interface HubConfig {
@@ -334,6 +339,8 @@ export interface BookQuery {
   q?: string
   kategorie?: string
   tag?: string[]
+  // the user's private tags (all of them)
+  ptag?: string[]
   author?: string
   series?: string
   // books of a reading list (and its sublists unless direct)
@@ -386,6 +393,8 @@ export function bookSearchParams(query: BookQuery): URLSearchParams {
 export interface Session {
   user: string
   role?: "admin" | "reader"
+  // may sync lists to a reader folder (admins; readers with their own)
+  sync?: boolean
 }
 
 export const api = {
@@ -541,7 +550,19 @@ export interface ListChange {
   removed?: number[]
 }
 
+// a change of private tags: the books it changed
+export interface PrivateTagsChange {
+  total: number
+  changed: number[]
+}
+
 export const write = {
+  // the user's private tags: add and/or remove on books
+  privateTags: (target: BulkTarget, change: { add?: string[]; remove?: string[] }) =>
+    request<PrivateTagsChange>("/api/private-tags", { method: "POST", ...json({ target, ...change }) }),
+  // one book's private tags become these
+  setPrivateTags: (bookId: number, tags: string[]) =>
+    request<{ bookId: number; privateTags: string[] }>(`/api/books/${bookId}/private-tags`, { method: "PUT", ...json({ tags }) }),
   // keepalive: also when the page is closing
   saveProgress: (bookId: number, p: ProgressSave, keepalive = false) =>
     request<ProgressEntry>(`/api/books/${bookId}/progress`, { method: "PUT", keepalive, ...json(p) }),

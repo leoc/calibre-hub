@@ -6,7 +6,7 @@ import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery, importSt
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
 import { favoriteTree, findNode, flattenListTree, useListTree } from "@/lib/lists"
 import { ListTree } from "./list-tree"
-import { hasFilters, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
+import { hasFilters, togglePrivateTag, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
 import { matchNamed } from "@/lib/palette"
 import { formatNumber, languageName, t } from "@/i18n"
 import { cn } from "@/lib/utils"
@@ -76,6 +76,14 @@ export function Sidebar({ search, onNavigate }: Props) {
         <>
           <NamedSection title={t("nav.authors")} items={cats.authors} selected={search.author} make={(n) => withFilter(search, { author: n })} onNavigate={onNavigate} />
           <NamedSection title={t("nav.series")} items={cats.series} selected={search.series} make={(n) => withFilter(search, { series: n })} onNavigate={onNavigate} />
+          {/* the user's own tags first: few, and only theirs */}
+          <NamedSection
+            title={t("nav.privateTags")}
+            items={cats.privateTags ?? []}
+            selected={search.ptag ?? []}
+            make={(n) => (n ? togglePrivateTag(search, n) : search)}
+            onNavigate={onNavigate}
+          />
           <NamedSection
             title={t("nav.tags")}
             items={cats.tags}

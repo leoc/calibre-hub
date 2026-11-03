@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { ArrowDownUp, ArrowLeft, BookmarkPlus, BookText, Check, CopyCheck, Folder, FolderTree, Import, Keyboard, LayoutGrid, LibraryBig, List, ListFilter, ListIcon, ListPlus, LogOut, Palette, Pencil, Search, Sparkles, Tag, Trash2, User, WandSparkles, X } from "lucide-react"
+import { ArrowDownUp, ArrowLeft, BookmarkPlus, BookText, Check, CopyCheck, Folder, FolderTree, Import, Keyboard, LayoutGrid, LibraryBig, List, ListFilter, ListIcon, ListPlus, LockKeyhole, LogOut, Palette, Pencil, Search, Sparkles, Tag, Trash2, User, WandSparkles, X } from "lucide-react"
 import { api, coverUrl, DEFAULT_CONFIG, type Sort } from "@/lib/api"
 import { booksQuery, categoriesQuery, configQuery } from "@/lib/queries"
 import { flattenListTree, inList, lastUsedList, listLabel, nodeCount, nodeSearch, saveDialog, useListMembership, useListTree } from "@/lib/lists"
@@ -11,7 +11,8 @@ import { bookAction, commandLabel, needsConfirm, offeredActions, parseDirect, va
 import { runAction } from "@/lib/run-action"
 import { useActionTarget } from "@/lib/use-action-target"
 import { toast } from "@/lib/toast"
-import { defaultOrder, sortsFor, toggleTag, withFilter } from "@/lib/search"
+import { defaultOrder, sortsFor, togglePrivateTag, toggleTag, withFilter } from "@/lib/search"
+import { useIsAdmin } from "@/lib/session"
 import { useLibrarySearch } from "@/lib/use-library"
 import { useRouterState } from "@tanstack/react-router"
 import { setView } from "@/lib/prefs"
@@ -106,7 +107,9 @@ export function CommandPalette({ initialInput, onClose }: Props) {
 
   // commands on books (src/lib/book-actions.ts): as typed ("tag krimi"), or
   // a second step that picks the value ("Tag hinzufügen" -> the tags)
-  const defs = target ? offeredActions(target, config) : [bookAction("newList")]
+  // a reader: only what changes their own things (lists, private tags)
+  const admin = useIsAdmin()
+  const defs = target ? offeredActions(target, config, admin) : [bookAction("newList")]
   const sources = { cats, lists, book: openBook }
   const ctx = { qc: queryClient, navigate }
   const runNow = (def: BookActionDef, value?: ActionValue) => {
@@ -164,13 +167,18 @@ export function CommandPalette({ initialInput, onClose }: Props) {
     () => [
       { id: "all", label: t("nav.all"), icon: <LibraryBig />, run: () => go({}) },
       { id: "lists", label: t("nav.lists"), icon: <ListIcon />, run: () => closeThen(() => navigate({ to: "/lists" })) },
-      { id: "trash", label: t("trash.title"), icon: <Trash2 />, run: () => closeThen(() => navigate({ to: "/trash" })) },
-      { id: "duplicates", label: t("dup.title"), icon: <CopyCheck />, run: () => closeThen(() => navigate({ to: "/duplicates" })) },
-      { id: "import", label: t("import.page"), icon: <Import />, run: () => closeThen(() => navigate({ to: "/import" })) },
-      ...(config.classify
+      // the library's upkeep is the admin's
+      ...(admin
+        ? [
+            { id: "trash", label: t("trash.title"), icon: <Trash2 />, run: () => closeThen(() => navigate({ to: "/trash" })) },
+            { id: "duplicates", label: t("dup.title"), icon: <CopyCheck />, run: () => closeThen(() => navigate({ to: "/duplicates" })) },
+            { id: "import", label: t("import.page"), icon: <Import />, run: () => closeThen(() => navigate({ to: "/import" })) },
+          ]
+        : []),
+      ...(config.classify && admin
         ? [{ id: "suggestions", label: t("suggest.title"), icon: <Sparkles />, run: () => closeThen(() => navigate({ to: "/suggestions" })) }]
         : []),
-      ...(config.metadata
+      ...(config.metadata && admin
         ? [{ id: "metadata", label: t("meta.title"), icon: <WandSparkles />, run: () => closeThen(() => navigate({ to: "/metadata" })) }]
         : []),
       { id: "grid", label: t("view.grid"), icon: <LayoutGrid />, run: () => (setView("grid"), close()) },
@@ -197,13 +205,15 @@ export function CommandPalette({ initialInput, onClose }: Props) {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [search, config.classify, config.metadata],
+    [search, config.classify, config.metadata, admin],
   )
 
   const limit = scope === "all" ? 5 : 30
   const authors = cats && wants("authors") ? matchNamed(cats.authors, text, limit) : []
   const series = cats && wants("series") ? matchNamed(cats.series, text, limit) : []
   const tags = cats && wants("tags") ? matchNamed(cats.tags, text, limit) : []
+  // the user's own tags, in the same scope ("t ")
+  const privateTags = cats && wants("tags") ? matchNamed(cats.privateTags ?? [], text, limit) : []
   // shown and matched as "A/B"
   const kategorien = cats && wants("kategorie") ? matchNamed(categorySuggestions(cats.kategorie), text, limit) : []
   // every level of the tree as a path ("Urlaub/2026"), also one without a
@@ -365,6 +375,7 @@ export function CommandPalette({ initialInput, onClose }: Props) {
             {!!authors.length && <CommandGroup heading={t("palette.authors")}>{named(authors, <User />, (i) => go(withFilter({}, { author: i.name })), "a")}</CommandGroup>}
             {!!series.length && <CommandGroup heading={t("palette.series")}>{named(series, <BookText />, (i) => go(withFilter({}, { series: i.name })), "s")}</CommandGroup>}
             {!!kategorien.length && <CommandGroup heading={t("palette.kategorie")}>{named(kategorien, <FolderTree />, (i) => go(withFilter({}, { kategorie: i.path })), "k")}</CommandGroup>}
+            {!!privateTags.length && <CommandGroup heading={t("palette.privateTags")}>{named(privateTags, <LockKeyhole />, (i) => go(togglePrivateTag({}, i.name)), "p")}</CommandGroup>}
             {!!tags.length && <CommandGroup heading={t("palette.tags")}>{named(tags, <Tag />, (i) => go(toggleTag({}, i.name)), "t")}</CommandGroup>}
             {!!listItems.length && (
               <CommandGroup heading={t("palette.lists")}>

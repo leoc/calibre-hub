@@ -87,7 +87,7 @@ When("I create the shelf {string} for the tag {string} in the overview", async (
 })
 
 When("I add the tag {string} to the selection", async ({ page }, tag: string) => {
-  await page.getByRole("button", { name: "Tags hinzufügen" }).click()
+  await page.getByRole("button", { name: "Tags hinzufügen", exact: true }).click()
   await page.getByRole("combobox", { name: "Tags" }).fill(tag)
   await page.keyboard.press("Enter")
   await page.getByRole("button", { name: "Anwenden" }).click()

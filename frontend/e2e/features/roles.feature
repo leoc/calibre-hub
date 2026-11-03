@@ -1,15 +1,16 @@
 # Roles: an admin edits the library, a reader only reads and keeps their own
-# lists. The server answers a reader's other writes with 403; the app
+# lists and private tags (selecting books for those). The server answers a
+# reader's other writes, and the library's upkeep pages, with 403; the app
 # doesn't offer them. The mocks log "lea" in as a reader, anyone else as
 # the admin (password "hub"); the mock session lives in the page, so the
 # steps navigate inside the app after logging in.
 
 Feature: Roles
 
-  Scenario: A reader sees no editing, upload or selection
+  Scenario: A reader sees no editing or upload, but selects for her own things
     Given I am logged in as "lea"
     Then there is no upload
-    And there is no button "Auswählen"
+    And there is a button "Auswählen"
     When I open the first book in the library
     Then the detail offers no button "Bearbeiten"
     And the detail offers no button "Löschen"

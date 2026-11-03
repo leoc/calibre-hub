@@ -14,6 +14,7 @@ import {
   ListMinus,
   ListOrdered,
   ListPlus,
+  LockKeyhole,
   Sparkles,
   Star,
   Tag,
@@ -54,7 +55,7 @@ export interface ActionTarget {
 
 export const bookTarget = (book: Book): ActionTarget => ({ bulk: { ids: [book.id] }, count: 1, book, ordered: true })
 
-export type ValueKind = "tag" | "bookTag" | "kategorie" | "series" | "author" | "publisher" | "language" | "rating" | "year" | "list" | "bookList" | "name"
+export type ValueKind = "tag" | "bookTag" | "privateTag" | "bookPrivateTag" | "kategorie" | "series" | "author" | "publisher" | "language" | "rating" | "year" | "list" | "bookList" | "name"
 
 // A value to pick: what is stored (category dotted, list id, language code)
 // and what is shown
@@ -73,6 +74,8 @@ export interface ActionValue {
 export type BookActionId =
   | "addTags"
   | "removeTags"
+  | "addPrivateTags"
+  | "removePrivateTags"
   | "kategorie"
   | "series"
   | "seriesNumbered"
@@ -96,7 +99,8 @@ export type BookActionId =
   | "offline"
   | "delete"
 
-export type ActionGroup = "edit" | "lists" | "maintenance" | "device"
+// mine: the user's own data on books (private tags), for readers too
+export type ActionGroup = "edit" | "mine" | "lists" | "maintenance" | "device"
 
 export interface BookActionDef {
   id: BookActionId
@@ -124,6 +128,9 @@ export interface BookActionDef {
   needs?: "metadata" | "classify"
   // always asks (deleting)
   confirm?: boolean
+  // a reader may run it: it changes only the reader's own things (lists,
+  // private tags) or none
+  reader?: boolean
   // field changes: a bulk job, undoable
   changes?: (value: string | string[] | null, target: ActionTarget) => BulkChanges
   // offered for these books at all
@@ -253,6 +260,30 @@ export const BOOK_ACTIONS: BookActionDef[] = [
     clear: "actions.yearClear",
     changes: (v) => ({ pubYear: one(v) ? Number(one(v)) : null }),
   },
+  // --- the user's private tags (in the hub, not in calibre) -----------------
+  {
+    id: "addPrivateTags",
+    group: "mine",
+    label: "actions.addPrivateTags",
+    bar: "bulk.addPrivateTags",
+    valued: "actions.addPrivateTagsValue",
+    icon: LockKeyhole,
+    keywords: ["mein tag hinzufugen", "meinen tag hinzufugen", "mein tag", "meinen tag", "+mein"],
+    value: "privateTag",
+    allowNew: true,
+    reader: true,
+  },
+  {
+    id: "removePrivateTags",
+    group: "mine",
+    label: "actions.removePrivateTags",
+    bar: "bulk.removePrivateTags",
+    valued: "actions.removePrivateTagsValue",
+    icon: LockKeyhole,
+    keywords: ["mein tag entfernen", "meinen tag entfernen", "-mein"],
+    value: "bookPrivateTag",
+    reader: true,
+  },
   // --- lists (never a magic shelf: its rule finds its books) ----------------
   {
     id: "addToList",
@@ -264,6 +295,7 @@ export const BOOK_ACTIONS: BookActionDef[] = [
     keywords: ["zu liste", "in liste", "liste"],
     value: "list",
     allowNew: true,
+    reader: true,
   },
   {
     id: "removeFromList",
@@ -274,6 +306,7 @@ export const BOOK_ACTIONS: BookActionDef[] = [
     icon: ListMinus,
     keywords: ["aus liste"],
     value: "bookList",
+    reader: true,
   },
   {
     id: "newList",
@@ -284,6 +317,7 @@ export const BOOK_ACTIONS: BookActionDef[] = [
     keywords: ["neue liste"],
     value: "name",
     free: true,
+    reader: true,
   },
   // --- maintenance runs -------------------------------------------------------
   { id: "metadata", group: "maintenance", label: "actions.metadata", icon: WandSparkles, keywords: [], needs: "metadata" },
@@ -314,22 +348,24 @@ export const BOOK_ACTIONS: BookActionDef[] = [
     offered: (target) => !target.book || target.book.formats.length > 0,
   },
   // --- device and export ----------------------------------------------------
-  { id: "read", group: "device", label: "actions.read", icon: BookOpenText, keywords: [], one: true, offered: (target) => !!target.book && !!readerFormat(target.book) },
+  { id: "read", group: "device", label: "actions.read", icon: BookOpenText, keywords: [], one: true, reader: true, offered: (target) => !!target.book && !!readerFormat(target.book) },
   {
     id: "download",
     group: "device",
     label: "book.download",
     icon: Download,
     keywords: [],
+    reader: true,
     offered: (target) => !target.book || target.book.formats.length > 0,
   },
-  { id: "copyLink", group: "device", label: "actions.copyLink", icon: Link2, keywords: [] },
+  { id: "copyLink", group: "device", label: "actions.copyLink", icon: Link2, keywords: [], reader: true },
   {
     id: "offline",
     group: "device",
     label: "offline.make",
     icon: CloudDownload,
     keywords: [],
+    reader: true,
     offered: (target) => typeof caches !== "undefined" && (!target.book || !!readerFormat(target.book)),
   },
   { id: "delete", group: "device", label: "bulk.delete", bar: "bulk.delete", icon: Trash2, keywords: [], confirm: true, changes: () => ({ delete: true }) },
@@ -337,10 +373,11 @@ export const BOOK_ACTIONS: BookActionDef[] = [
 
 export const bookAction = (id: BookActionId): BookActionDef => BOOK_ACTIONS.find((a) => a.id === id)!
 
-// The actions offered for these books with this hub's features
-export function offeredActions(target: ActionTarget, config: Pick<HubConfig, "metadata" | "classify">): BookActionDef[] {
+// The actions offered for these books with this hub's features; a reader
+// gets only those that change nothing of the library (admin: false)
+export function offeredActions(target: ActionTarget, config: Pick<HubConfig, "metadata" | "classify">, admin = true): BookActionDef[] {
   return BOOK_ACTIONS.filter(
-    (a) => (!a.one || target.book) && (!a.needs || config[a.needs]) && (a.offered?.(target) ?? true),
+    (a) => (admin || a.reader) && (!a.one || target.book) && (!a.needs || config[a.needs]) && (a.offered?.(target) ?? true),
   )
 }
 
@@ -392,6 +429,7 @@ export function parseDirect(text: string, defs: BookActionDef[] = BOOK_ACTIONS):
 // --- values ---------------------------------------------------------------------
 
 export interface ValueSources {
+  // privateTags: the user's own
   cats?: Categories
   lists?: ReadingList[]
   // one book: its own tags and lists to remove
@@ -412,6 +450,10 @@ export function existingValues(kind: ValueKind, src: ValueSources, text: string,
       return named(cats?.tags ?? [], text, limit)
     case "bookTag":
       return named(src.book ? src.book.tags.map((name) => ({ name, count: 0 })) : (cats?.tags ?? []), text, limit)
+    case "privateTag":
+      return named(cats?.privateTags ?? [], text, limit)
+    case "bookPrivateTag":
+      return named(src.book ? (src.book.privateTags ?? []).map((name) => ({ name, count: 0 })) : (cats?.privateTags ?? []), text, limit)
     case "series":
       return named(cats?.series ?? [], text, limit)
     case "author":

@@ -4,9 +4,10 @@ import { ApiError, write, type Book, type BookPage, type BookPatch, type Classif
 // Put a changed book into every cached list and its detail entry.
 // Writes answer without the book's lists; those stay as cached.
 export function storeBook(qc: QueryClient, book: Book) {
-  qc.setQueryData<Book>(["book", book.id], (old) => ({ ...book, comments: book.comments ?? old?.comments, lists: book.lists ?? old?.lists }))
+  // an edit's answer has no lists or private tags (they are the user's, not calibre's): kept
+  qc.setQueryData<Book>(["book", book.id], (old) => ({ ...book, comments: book.comments ?? old?.comments, lists: book.lists ?? old?.lists, privateTags: book.privateTags ?? old?.privateTags }))
   qc.setQueriesData<BookPage>({ queryKey: ["books"] }, (page) =>
-    page && { ...page, books: page.books.map((b) => (b.id === book.id ? { ...book, comments: undefined, lists: book.lists ?? b.lists } : b)) },
+    page && { ...page, books: page.books.map((b) => (b.id === book.id ? { ...book, comments: undefined, lists: book.lists ?? b.lists, privateTags: book.privateTags ?? b.privateTags } : b)) },
   )
 }
 

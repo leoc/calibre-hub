@@ -62,6 +62,15 @@ async function eachBook(books: Book[], label: string, fn: (b: Book) => Promise<u
   return errors
 }
 
+// After a change of private tags: the books (their tags) and the sidebar's counts
+export async function refreshPrivateTags(qc: QueryClient) {
+  await Promise.all([
+    qc.invalidateQueries({ queryKey: ["books"] }),
+    qc.invalidateQueries({ queryKey: ["book"] }),
+    qc.invalidateQueries({ queryKey: ["categories"] }),
+  ])
+}
+
 export async function runAction(ctx: RunContext, def: BookActionDef, target: ActionTarget, value?: ActionValue): Promise<void> {
   const { qc, navigate } = ctx
   // "Tag ‚Noten‘ hinzufügen (3)", also for a new one
@@ -72,6 +81,16 @@ export async function runAction(ctx: RunContext, def: BookActionDef, target: Act
       return
     }
     switch (def.id) {
+      case "addPrivateTags":
+      case "removePrivateTags": {
+        if (!value) return
+        const tag = changeValue(value)
+        if (!tag) return
+        const r = await write.privateTags(target.bulk, def.id === "addPrivateTags" ? { add: [tag] } : { remove: [tag] })
+        await refreshPrivateTags(qc)
+        toast.show(t("actions.privateTagsDone", { label, count: formatNumber(r.changed.length) }))
+        return
+      }
       case "addToList":
       case "removeFromList": {
         if (!value) return

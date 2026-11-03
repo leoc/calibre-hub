@@ -7,7 +7,7 @@ import { RuleLine } from "@/components/shelf"
 import { ApiError } from "@/lib/api"
 import { flattenListTree, listLabel, nodeSearch, useListTree, useUpdateList, type ListNode } from "@/lib/lists"
 import { sessionQuery } from "@/lib/queries"
-import { isAdmin, mayConfigureList } from "@/lib/session"
+import { mayConfigureList, maySync } from "@/lib/session"
 import { withFilter } from "@/lib/search"
 import { formatNumber, t } from "@/i18n"
 import { cn } from "@/lib/utils"
@@ -172,8 +172,8 @@ function ListRow({ node, user, nested, folded, onFold }: { node: ListNode; user?
               {/* a shelf finds its books itself: no reader sync, never the default list */}
               {!list.rule && (
                 <>
-                  {/* the reader folder is the admin's e-reader */}
-                  {isAdmin(session) && (
+                  {/* the admin's e-reader, or a reader folder of the user's own */}
+                  {maySync(session) && (
                     <Button variant="outline" size="sm" aria-pressed={list.sync} disabled={update.isPending} onClick={() => toggle({ sync: !list.sync })}>
                       <RefreshCw /> {t("list.syncAction")}
                     </Button>

@@ -23,6 +23,7 @@ import { OfflineButton } from "./offline"
 import { readerFormat, sortFormats } from "@/lib/reader"
 import { sanitize } from "@/lib/sanitize"
 import { useIsAdmin } from "@/lib/session"
+import { PrivateTags } from "./private-tags"
 
 export { sortFormats } from "@/lib/reader"
 
@@ -147,6 +148,12 @@ function BookView({ book, onNavigate, onEdit, onDeleted }: { book: Book; onNavig
                 </LibraryLink>
               ))}
             </span>
+          </Row>
+        )}
+        {/* the user's own, apart from calibre's shared tags (older hubs: none) */}
+        {book.privateTags && (
+          <Row label={t("book.privateTags")}>
+            <PrivateTags book={book} onNavigate={onNavigate} />
           </Row>
         )}
         {book.languages.length > 0 && (
