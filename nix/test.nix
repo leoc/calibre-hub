@@ -1228,6 +1228,43 @@ pkgs.testers.runNixOSTest {
         assert [u["files"][0]["path"] for u in again] == [f"{ALT}/Teil2/Drittes Stueck.pdf"], again
         assert again[0]["bookId"] != gone and api("GET", f"/api/books/{again[0]['bookId']}")[0] == 200, again
 
+    with subtest("backlog import reads file names (#8408)"):
+        # "Author - Title (Publisher, Year)": calibre alone made it the title
+        # "Carr" by "Formulas" and "Theorems in Pure Mathematics 2e (Chelsea, 1970)"
+        WW = f"{ALT}/Algebra"
+        carr_name = "Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).pdf"
+        put(f"{WW}/{carr_name}", pdf(b"c"))
+        status, run = api("POST", "/api/import", {"path": "Algebra", "dryRun": False})
+        assert status == 202, (status, run)
+        j = wait_job(run["jobId"], 180)
+        assert j["status"] == "done" and j["errors"] == [], j
+        unit = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"][0]
+        assert unit["status"] == "imported", unit
+        carr = api("GET", f"/api/books/{unit['bookId']}")[1]
+        assert carr["title"] == "Formulas and Theorems in Pure Mathematics" and carr["authors"] == ["Carr"], carr
+        assert carr["publisher"] == "Chelsea" and carr["pubdate"].startswith("1970-01-01"), carr
+
+        # a book added the old way (calibre's add-book with the file name, as
+        # the import did before): the repair plans the fix, dry run by default
+        brass = "Brass - Advanced Data Structures (Cambridge, 2008).pdf"
+        put(f"{WW}/{brass}", pdf(b"b"))
+        out = machine.succeed(f"curl -sf --user scripts:scripts-secret -X POST --data-binary '@{WW}/{brass}' "
+                              f"'http://127.0.0.1:8083/cdb/add-book/1/y/{urllib.parse.quote(brass)}/library'")
+        old_id = json.loads(out)["book_id"]
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{old_id}", timeout=30)
+        old = api("GET", f"/api/books/{old_id}")[1]
+        assert old["title"] == "Brass" and old["authors"] == ["Advanced Data Structures (Cambridge, 2008)"], old
+        machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"insert into import_files (path, size, mtime, status, book_id, run_id, at) "
+                        f"values ('{WW}/{brass}', 1, 1, 'imported', {old_id}, 'old', strftime('%s', 'now'))\"")
+        status, dry = api("POST", "/api/import/repair", {"minId": old_id, "maxId": old_id})
+        assert status == 200 and dry["dryRun"] is True and dry["books"] == 1, (status, dry)
+        planned = {c["field"]: c["new"] for c in dry["changes"]}
+        assert planned["title"] == "Advanced Data Structures" and planned["authors"] == ["Brass"], dry
+        assert planned["publisher"] == "Cambridge University Press" and planned["pubdate"] == "2008", dry
+        assert api("GET", f"/api/books/{old_id}")[1]["title"] == "Brass"
+        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import repair --min-id {old_id} --max-id {old_id}")
+        assert "Advanced Data Structures" in out and "1 books" in out and "dry run" in out, out
+
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
         assert ib["custom"]["kategorie"] == "Roman.Krimi" and {"Krimi", "Roman"} <= set(ib["tags"]), ib
