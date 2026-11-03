@@ -71,8 +71,27 @@ Feature: Reading
   Scenario: Scripts in a book never run
     Given the reader is open for the book file "script.epub" as "EPUB"
     Then the reader shows the chapter "Kapitel 1"
+    And the book's pages are sandboxed with "allow-same-origin"
+    And the book's pages carry the policy "script-src 'none'"
     When I press "PageDown" in the reader 2 times
     Then no script from the book has run
+
+  # WebKit (Safari, every browser on iOS) fires no events in frames without
+  # allow-scripts, so there the frames allow scripts and only the removal
+  # and the policy keep the book's scripts out. Playwright's WebKit doesn't
+  # run here (nixpkgs ships other Playwright browsers than the npm package
+  # wants); the reader takes Chromium for WebKit when it has Safari's
+  # GestureEvent. The check in real Safari: README "Reader in Safari".
+  Scenario: Scripts in a book never run in WebKit's frames either
+    Given the reader takes the browser for WebKit
+    # E-Ink: taps inside the page turn it, events from the book's frame
+    And E-Ink mode is on
+    And the reader is open for the book file "script.epub" as "EPUB"
+    Then the book's pages are sandboxed with "allow-same-origin allow-scripts"
+    And the book's pages carry the policy "script-src 'none'"
+    When I tap the right third of the page
+    Then the reading progress is above 0 %
+    And no script from the book has run
 
   Scenario: E-Ink: tap zones instead of swiping
     Given E-Ink mode is on

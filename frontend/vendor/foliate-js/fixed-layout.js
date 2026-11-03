@@ -1,3 +1,5 @@
+import { bookSandbox } from './book-security.js'
+
 const parseViewport = str => str
     ?.split(/[,;\s]/) // NOTE: technically, only the comma is valid
     ?.filter(x => x)
@@ -81,10 +83,10 @@ export class FixedLayout extends HTMLElement {
             display: 'none',
             overflow: 'hidden',
         })
-        // calibre-hub: no `allow-scripts`, scripts in books would run with
-        // the app's origin (README.md). Upstream allows them because WebKit
-        // doesn't fire events in such frames, https://bugs.webkit.org/show_bug.cgi?id=218086
-        iframe.setAttribute('sandbox', 'allow-same-origin')
+        // calibre-hub: `allow-scripts` only on WebKit, which fires no events
+        // in frames without it; scripts in books would run with the app's
+        // origin (book-security.js, README.md)
+        iframe.setAttribute('sandbox', bookSandbox())
         iframe.setAttribute('scrolling', 'no')
         iframe.setAttribute('part', 'filter')
         this.#root.append(element)

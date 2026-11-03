@@ -1,3 +1,5 @@
+import { bookSandbox } from './book-security.js'
+
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 const debounce = (f, wait, immediate) => {
@@ -239,10 +241,10 @@ class View {
             display: 'none',
             width: '100%', height: '100%',
         })
-        // calibre-hub: no `allow-scripts`, scripts in books would run with
-        // the app's origin (README.md). Upstream allows them because WebKit
-        // doesn't fire events in such frames, https://bugs.webkit.org/show_bug.cgi?id=218086
-        this.#iframe.setAttribute('sandbox', 'allow-same-origin')
+        // calibre-hub: `allow-scripts` only on WebKit, which fires no events
+        // in frames without it; scripts in books would run with the app's
+        // origin (book-security.js, README.md)
+        this.#iframe.setAttribute('sandbox', bookSandbox())
         this.#iframe.setAttribute('scrolling', 'no')
     }
     get element() {

@@ -23,6 +23,24 @@ scripts only from the app's own files, so no inline scripts in `index.html`
 `jitless`), and the reader's book pages can't run scripts. `HUB_CSP=1`
 makes the dev server send the same policy.
 
+### Reader in Safari
+
+Playwright's WebKit doesn't run in this setup (nixpkgs' Playwright browsers
+are older than the npm package), so the e2e tests take Chromium for WebKit
+(`e2e/features/reading.feature`, Safari's `GestureEvent`). After changes
+to the reader or `vendor/foliate-js/book-security.js`, check once in Safari
+(Mac, iPhone or iPad) on the deployed hub with `e2e/fixtures/script.epub`
+uploaded as a book:
+
+- the book opens, arrow keys (Mac) and swipes/taps (iPhone, iPad) turn
+  pages, E-Ink tap zones work
+- Web Inspector → the book's frame: `sandbox="allow-same-origin
+  allow-scripts"`, a `Content-Security-Policy` meta first in its head, no
+  `<script>`, no `on…` attributes
+- the console of the app: no `pwned` in localStorage, no request to
+  `/api/pwned` in the network tab (only CSP reports, if any)
+- delete the test book afterwards
+
 Don't start a local calibre-server for development: calibre allows one
 program per user and that blocks calibre Desktop.
 

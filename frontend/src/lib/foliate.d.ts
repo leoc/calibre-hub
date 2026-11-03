@@ -55,6 +55,12 @@ declare module "foliate-js/view.js" {
 }
 
 // calibre-hub's own addition to the vendored copy (README there)
-declare module "foliate-js/strip-scripts.js" {
+declare module "foliate-js/book-security.js" {
+  export function isWebKit(win?: { navigator?: { userAgent?: string; maxTouchPoints?: number }; GestureEvent?: unknown }): boolean
+  export function bookSandbox(webkit?: boolean): string
+  export const BOOK_CSP: string
+  export const BOOK_CSP_META: string
   export function stripScripts<T extends Document>(doc: T): T
+  export function addBookCSP<T extends Document>(doc: T): T
+  export function protectDocument<T extends Document>(doc: T): T
 }

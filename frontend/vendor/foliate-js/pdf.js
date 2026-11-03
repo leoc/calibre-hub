@@ -5,6 +5,7 @@ import * as pdfjsLib from 'pdfjs-dist'
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import textLayerBuilderCSS from './vendor/pdfjs/text_layer_builder.css?raw'
 import annotationLayerBuilderCSS from './vendor/pdfjs/annotation_layer_builder.css?raw'
+import { BOOK_CSP_META } from './book-security.js'
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc
 
 const render = async (page, doc, zoom) => {
@@ -75,6 +76,7 @@ const renderPage = async (page, getImageBlob) => {
         <!DOCTYPE html>
         <html lang="en">
         <meta charset="utf-8">
+        ${BOOK_CSP_META}
         <meta name="viewport" content="width=${viewport.width}, height=${viewport.height}">
         <style>
         html, body {

@@ -1,3 +1,5 @@
+import { BOOK_CSP_META } from './book-security.js'
+
 const normalizeWhitespace = str => str ? str
     .replace(/[\t\n\f\r ]+/g, ' ')
     .replace(/^[\t\n\f\r ]+/, '')
@@ -222,7 +224,7 @@ body:not(.notesBodyType) > .title, body:not(.notesBodyType) > .epigraph {
 
 const template = html => `<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
-    <head><link href="${style}" rel="stylesheet" type="text/css"/></head>
+    <head>${BOOK_CSP_META}<link href="${style}" rel="stylesheet" type="text/css"/></head>
     <body>${html}</body>
 </html>`
 

@@ -268,6 +268,30 @@ Then("the reader asks {string}", async ({ page }, text: string) => {
   await expect(page.getByRole("alertdialog", { name: text })).toBeVisible()
 })
 
+// what foliate-js' isWebKit() looks for besides iOS; then the app starts
+// again with it
+Given("the reader takes the browser for WebKit", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window, "GestureEvent", { value: class GestureEvent extends UIEvent {} }))
+  await page.reload()
+  await page.waitForFunction(() => navigator.serviceWorker?.controller != null)
+})
+
+// the book's pages: blob: frames inside foliate-js' closed shadow roots
+const bookFrames = (page: Page) => page.frames().filter((f) => f !== page.mainFrame() && f.url().startsWith("blob:"))
+
+Then("the book's pages are sandboxed with {string}", async ({ page }, sandbox: string) => {
+  await expect.poll(() => bookFrames(page).length).toBeGreaterThan(0)
+  for (const f of bookFrames(page)) expect(await (await f.frameElement()).getAttribute("sandbox")).toBe(sandbox)
+})
+
+Then("the book's pages carry the policy {string}", async ({ page }, policy: string) => {
+  await expect.poll(() => bookFrames(page).length).toBeGreaterThan(0)
+  for (const f of bookFrames(page)) {
+    const csp = await f.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute("content") ?? null)
+    expect(csp).toContain(policy)
+  }
+})
+
 Then("no script from the book has run", async ({ page }) => {
   // the handlers would have fired on load; give late ones a moment
   await page.waitForTimeout(500)

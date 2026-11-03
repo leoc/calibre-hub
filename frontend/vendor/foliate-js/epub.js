@@ -1,5 +1,5 @@
 import * as CFI from './epubcfi.js'
-import { stripScripts } from './strip-scripts.js'
+import { protectDocument } from './book-security.js'
 
 const NS = {
     CONTAINER: 'urn:oasis:names:tc:opendocument:xmlns:container',
@@ -823,7 +823,8 @@ class Loader {
                 doc = new DOMParser().parseFromString(str, item.mediaType)
             }
             // calibre-hub: before anything is loaded for the document
-            stripScripts(doc)
+            // (book-security.js)
+            protectDocument(doc)
             // replace hrefs in XML processing instructions
             // this is mainly for SVGs that use xml-stylesheet
             if ([MIME.XHTML, MIME.SVG].includes(item.mediaType)) {
@@ -862,7 +863,7 @@ class Loader {
             for (const el of doc.querySelectorAll('[style]'))
                 el.setAttribute('style',
                     await this.replaceCSS(el.getAttribute('style'), href, parents))
-            // calibre-hub: inline scripts are removed above (stripScripts)
+            // calibre-hub: inline scripts are removed above (protectDocument)
             const result = new XMLSerializer().serializeToString(doc)
             return this.createURL(href, result, item.mediaType, parent)
         }
