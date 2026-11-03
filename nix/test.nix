@@ -1233,7 +1233,8 @@ pkgs.testers.runNixOSTest {
         # "Carr" by "Formulas" and "Theorems in Pure Mathematics 2e (Chelsea, 1970)"
         WW = f"{ALT}/Algebra"
         carr_name = "Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).pdf"
-        put(f"{WW}/{carr_name}", pdf(b"c"))
+        # fill bytes no earlier file of the test has (same file = duplicate)
+        put(f"{WW}/{carr_name}", pdf(b"q"))
         status, run = api("POST", "/api/import", {"path": "Algebra", "dryRun": False})
         assert status == 202, (status, run)
         j = wait_job(run["jobId"], 180)
@@ -1247,7 +1248,7 @@ pkgs.testers.runNixOSTest {
         # a book added the old way (calibre's add-book with the file name, as
         # the import did before): the repair plans the fix, dry run by default
         brass = "Brass - Advanced Data Structures (Cambridge, 2008).pdf"
-        put(f"{WW}/{brass}", pdf(b"b"))
+        put(f"{WW}/{brass}", pdf(b"r"))
         out = machine.succeed(f"curl -sf --user scripts:scripts-secret -X POST --data-binary '@{WW}/{brass}' "
                               f"'http://127.0.0.1:8083/cdb/add-book/1/y/{urllib.parse.quote(brass)}/library'")
         old_id = json.loads(out)["book_id"]
