@@ -20,16 +20,28 @@ private class FakeLibrary
   getter url : String
   # changes the book behind the hub's back on the next set-fields
   property interfere : Proc(Nil)?
+  # reading one of these books takes too long this many times (read timeout)
+  getter slow = {} of Int64 => Int32
+  # calibre-server down: every request fails
+  property down = false
 
   def initialize
     @server = HTTP::Server.new do |ctx|
       path = ctx.request.path
       body = JSON.parse(ctx.request.body.try(&.gets_to_end).presence || "null")
       ctx.response.content_type = "application/json"
+      if @down
+        ctx.response.status_code = 503
+        next
+      end
       case path
       when "/cdb/cmd/list/0"
         search = body[3].as_s
         ids = search.empty? ? @books.keys : search.scan(/id:(\d+)/).map(&.[1].to_i64).select { |id| @books.has_key?(id) }
+        if ids.size == 1 && (@slow[ids.first]? || 0) > 0
+          @slow[ids.first] -= 1
+          sleep 400.milliseconds
+        end
         fields = body[0].as_a.map(&.as_s.sub('*', '#'))
         data = fields.to_h do |f|
           {f, ids.to_h { |id| {id.to_s, f == "cover" ? JSON::Any.new(@covers.includes?(id) ? "/lib/#{id}/cover.jpg" : nil) : (@books[id][f]? || JSON::Any.new(nil))} }}
@@ -185,20 +197,23 @@ private def book(title = "Dune", authors = ["Frank Herbert"], author_sort : Stri
 end
 
 private def setup(read_file : CalibreHub::Metadata::FileReader? = nil, sources = %w(file openlibrary dnb),
-                   hardcover_token : String? = nil, alert : CalibreHub::Meta::Hardcover::Alert? = nil)
+                   hardcover_token : String? = nil, alert : CalibreHub::Meta::Hardcover::Alert? = nil,
+                   read_timeout : Time::Span? = nil)
   library = FakeLibrary.new
   web = FakeSources.new
   http = CalibreHub::Meta::Http.new(Time::Span.zero, 5.seconds)
   hardcover = CalibreHub::Meta::Hardcover.new(http, hardcover_token, "#{web.url}/hc", alert)
-  writer = CalibreHub::Writer.new(library.calibre, nil, nil, nil)
+  calibre = library.calibre
+  read_timeout.try { |t| calibre.read_timeout = t }
+  writer = CalibreHub::Writer.new(calibre, nil, nil, nil)
   db = DB.open("sqlite3://#{File.tempname("hub-metadata", ".sqlite")}?max_pool_size=1")
   db.exec "create table if not exists meta (key text primary key, value text)"
   db.exec "create table if not exists events (id integer primary key autoincrement, type text not null, book_id integer not null, payload text not null, created_at integer not null, done_at integer)"
-  m = CalibreHub::Metadata.new(library.calibre, writer, CalibreHub::MetaLog.new(db), sources,
+  m = CalibreHub::Metadata.new(calibre, writer, CalibreHub::MetaLog.new(db), sources,
     CalibreHub::Meta::OpenLibrary.new(http, "#{web.url}/ol", "#{web.url}/covers"),
     CalibreHub::Meta::Dnb.new(http, "#{web.url}/dnb"), http, nil,
     read_file || ->(_b : CalibreHub::Book) { nil.as(CalibreHub::Meta::FileMeta::Info?) }, hardcover: hardcover)
-  jobs = CalibreHub::MetadataJobs.new(db, library.calibre, writer, m)
+  jobs = CalibreHub::MetadataJobs.new(db, calibre, writer, m)
   {library, web, m, jobs, db}
 end
 
@@ -940,6 +955,64 @@ describe CalibreHub::Metadata do
     jobs.ready_for_classify?(event, 12, Time.utc).should be_true
     # waits at most CLASSIFY_WAIT
     jobs.ready_for_classify?(event + 1, 13, Time.utc - 1.hour).should be_true
+  end
+
+  it "retries a book after a read timeout, then fails it and goes on (live 03.11.: stopped at 19/114)" do
+    library, _, m, jobs, _ = setup(sources: [] of String, read_timeout: 150.milliseconds)
+    jobs.retry_policy(3, 10.milliseconds, 20.milliseconds)
+    library.add(30, "Dune", ["Frank Herbert"])
+    library.add(31, "Erdsee", ["Ursula K. Le Guin"])
+    library.add(32, "Kindred", ["Octavia E. Butler"])
+    # two timeouts, then it answers; 32 never does in time
+    library.slow[30_i64] = 2
+    library.slow[32_i64] = 10
+    job = wait_job(jobs, jobs.submit_target(JSON.parse(%({"ids": [30, 32, 31]}))).id)
+    job.status.should eq("done")
+    job.error.should be_nil
+    job.done.should eq(3)
+    job.errors.map(&.[:bookId]).should eq([32_i64])
+    job.errors.first[:error].should contain("tried 4 times")
+    m.log.status(30).should eq("done")
+    m.log.status(32).should eq("failed")
+    m.log.status(31).should eq("done")
+  end
+
+  it "pauses a job while calibre-server is down and goes on when it is back" do
+    library, _, m, jobs, _ = setup(sources: [] of String)
+    jobs.retry_policy(0, 10.milliseconds, 20.milliseconds)
+    library.add(33, "Dune", ["Frank Herbert"])
+    library.down = true
+    job = jobs.submit_target(JSON.parse(%({"ids": [33]})))
+    sleep 150.milliseconds
+    jobs[job.id]?.not_nil!.status.should eq("running")
+    m.log.status(33).should eq("queued")
+    library.down = false
+    job = wait_job(jobs, job.id)
+    job.status.should eq("done")
+    job.errors.should be_empty
+    m.log.status(33).should eq("done")
+  end
+
+  it "runs the books a stopped job left queued again" do
+    library, _, m, jobs, db = setup(sources: [] of String)
+    library.add(40, "Dune", ["Frank Herbert"])
+    library.add(41, "Erdsee", ["Ursula K. Le Guin"])
+    library.add(42, "Kindred", ["Octavia E. Butler"])
+    # an "added" catch-up that stopped at its first book (before retries)
+    db.exec "insert into metadata_jobs (id, status, done, ids, changes, created_at, error) values ('old', 'failed', 1, '[40,41]', '{\"target\":\"added\"}', 0, 'calibre-server: Read timed out')"
+    m.log.set_status(40, "done")
+    m.log.set_status(41, "queued")
+    # 42 is queued in a job that is still running: not twice
+    db.exec "insert into metadata_jobs (id, status, done, ids, changes, created_at) values ('running', 'running', 0, '[42]', '{\"target\":\"added\"}', 0)"
+    m.log.set_status(42, "queued")
+    job = jobs.requeue_stranded.not_nil!
+    job.total.should eq(1)
+    wait_job(jobs, job.id).status.should eq("done")
+    m.log.status(41).should eq("done")
+    wait_job(jobs, "running")
+    m.log.status(42).should eq("done")
+    # follow_events does it on every pass; nothing left now
+    jobs.requeue_stranded.should be_nil
   end
 
   it "names standards by the rules, without online sources, and tags older editions ersetzt" do

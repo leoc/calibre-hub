@@ -97,6 +97,13 @@ module CalibreHub
       list(book_id, reverted: false, limit: 10_000)
     end
 
+    # the books a job changed (active changes)
+    def books(job_id : String) : Array(Int64)
+      ids = [] of Int64
+      @db.query_each("select distinct book_id from metadata_changes where job_id = ? and reverted_at is null order by book_id", job_id) { |rs| ids << rs.read(Int64) }
+      ids
+    end
+
     def reverted!(id : Int64)
       @db.exec "update metadata_changes set reverted_at = ? where id = ?", Time.utc.to_unix, id
     end
@@ -593,6 +600,7 @@ module CalibreHub
 
     def follow_events
       return if Backlog.paused?(@db)
+      requeue_stranded
       from = cursor || 0_i64
       ids = [] of Int64
       last = from
@@ -619,7 +627,46 @@ module CalibreHub
     class Retry < Exception
     end
 
+    # A book (or the author pass) that timed out or got a server error
+    # while calibre-server answers otherwise is tried this many times more,
+    # after backoff, 2 x backoff, ...; then it fails and the job goes on.
+    # calibre-server down (its health check fails) pauses the job until it
+    # answers again, without counting.
+    def retry_policy(@retries : Int32, @backoff : Time::Span, @outage_wait : Time::Span)
+    end
+
+    @retries = 3
+    @backoff = 10.seconds
+    @outage_wait = 30.seconds
+
     protected def apply(job : Job, index : Int32, id : Int64, resumed : Bool)
+      attempts = 0
+      loop do
+        begin
+          return apply_once(job, id)
+        rescue ex : Calibre::Unavailable | Meta::SourceError | IO::TimeoutError
+          unless healthy?
+            wait_for_calibre(job, ex)
+            next
+          end
+          attempts += 1
+          if attempts > @retries
+            @metadata.log.set_status(id, "failed", job.id) unless id == AUTHORS
+            raise Exception.new("#{ex.message} (tried #{attempts} times)")
+          end
+          pause = @backoff * (2 ** (attempts - 1))
+          STDERR.puts "metadata: job #{job.id}: book #{id}: #{ex.message}, retry #{attempts}/#{@retries} in #{pause.total_seconds.to_i} s"
+          sleep pause
+        end
+      end
+    rescue ex : Retry
+      raise ex
+    rescue ex
+      @metadata.log.set_status(id, ex.is_a?(Writer::NotFound) ? "done" : "failed", job.id) unless id == AUTHORS
+      raise ex
+    end
+
+    private def apply_once(job : Job, id : Int64)
       if id == AUTHORS
         n = @metadata.unify_authors(job.id)
         puts "metadata: job #{job.id}: #{n} books with unified author names" if n > 0
@@ -636,13 +683,43 @@ module CalibreHub
           raise Retry.new("changed in the meantime, tried again on the next run")
         end
       end
-    rescue ex : Calibre::Unavailable
-      raise Abort.new(ex.message)
-    rescue ex : Retry
-      raise ex
-    rescue ex
-      @metadata.log.set_status(id, ex.is_a?(Writer::NotFound) ? "done" : "failed", job.id) unless id == AUTHORS
-      raise ex
+    end
+
+    # calibre-server answers a cheap search
+    private def healthy? : Bool
+      @calibre.search("", "id", true, 0, 1)
+      true
+    rescue Calibre::Error | IO::Error | Socket::Error
+      false
+    end
+
+    # An outage: the job waits until calibre-server answers again
+    private def wait_for_calibre(job : Job, ex : Exception)
+      STDERR.puts "metadata: job #{job.id} paused, calibre-server unavailable: #{ex.message}"
+      waited = Time.instant
+      until healthy?
+        sleep @outage_wait
+      end
+      STDERR.puts "metadata: job #{job.id} goes on after #{(Time.instant - waited).total_seconds.to_i} s"
+    end
+
+    # Books still queued for a run that no running job has (left by a job
+    # that stopped early, e.g. before the hub retried timeouts) get a job
+    # of their own, so an added book never misses its run
+    def requeue_stranded : Job?
+      queued = [] of Int64
+      @db.query_each("select book_id from metadata_books where status = 'queued' order by book_id") { |rs| queued << rs.read(Int64) }
+      return nil if queued.empty?
+      pending = Set(Int64).new
+      @db.query_each("select ids, done from #{@table} where status = 'running'") do |rs|
+        ids, done = rs.read(String, Int32)
+        Array(Int64).from_json(ids)[done..]?.try { |rest| pending.concat(rest) }
+      end
+      stranded = queued.reject { |id| pending.includes?(id) }
+      return nil if stranded.empty?
+      job = enqueue_books(stranded, false, "added")
+      puts "metadata: job #{job.id} for #{stranded.size} books left queued"
+      job
     end
   end
 end

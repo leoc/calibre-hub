@@ -25,6 +25,8 @@ module CalibreHub
     record SearchResult, total : Int32, ids : Array(Int64)
 
     getter custom_columns : Array(String)
+    # how long a request may take (adding a large book, a slow list)
+    property read_timeout : Time::Span = 60.seconds
 
     def initialize(url : String, @user : String, @password : String, @library : String? = nil,
                    @custom_columns : Array(String) = [] of String)
@@ -266,7 +268,7 @@ module CalibreHub
     private def client
       HTTP::Client.new(@url).tap do |c|
         c.connect_timeout = 5.seconds
-        c.read_timeout = 60.seconds
+        c.read_timeout = @read_timeout
       end
     end
   end
