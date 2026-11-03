@@ -43,7 +43,7 @@ export function ImportQuality() {
       )}
       {data.books.length > 0 && (
         <details className="text-sm">
-          <summary>{t("quality.examples", { count: n(data.books.length) })}</summary>
+          <summary className="cursor-pointer eink:min-h-11 touch:min-h-11">{t("quality.examples", { count: n(data.books.length) })}</summary>
           <ul className="mt-1 space-y-0.5">
             {data.books.map((b) => (
               <li key={b.id} className="break-words">
