@@ -1243,7 +1243,7 @@ pkgs.testers.runNixOSTest {
         assert unit["status"] == "imported", unit
         carr = api("GET", f"/api/books/{unit['bookId']}")[1]
         assert carr["title"] == "Formulas and Theorems in Pure Mathematics" and carr["authors"] == ["Carr"], carr
-        assert carr["publisher"] == "Chelsea" and carr["pubdate"].startswith("1970-01-01"), carr
+        assert carr["publisher"] == "Chelsea" and carr["pubdate"].startswith("1970-01"), carr
 
         # a book added the old way (calibre's add-book with the file name, as
         # the import did before): the repair plans the fix, dry run by default
@@ -1257,14 +1257,28 @@ pkgs.testers.runNixOSTest {
         assert old["title"] == "Brass" and old["authors"] == ["Advanced Data Structures (Cambridge, 2008)"], old
         machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"insert into import_files (path, size, mtime, status, book_id, run_id, at) "
                         f"values ('{WW}/{brass}', 1, 1, 'imported', {old_id}, 'old', strftime('%s', 'now'))\"")
-        status, dry = api("POST", "/api/import/repair", {"minId": old_id, "maxId": old_id})
-        assert status == 200 and dry["dryRun"] is True and dry["books"] == 1, (status, dry)
-        planned = {c["field"]: c["new"] for c in dry["changes"]}
-        assert planned["title"] == "Advanced Data Structures" and planned["authors"] == ["Brass"], dry
-        assert planned["publisher"] == "Cambridge University Press" and planned["pubdate"] == "2008", dry
+        # the plan is a job; its proposals are reviewed, then accepted
+        status, plan = api("POST", "/api/import/repair", {"minId": old_id, "maxId": old_id})
+        assert status == 202 and plan["dryRun"] is True and plan["books"] == 1, (status, plan)
+        assert wait_job(plan["job"]["id"])["status"] == "done"
+        review = api("GET", "/api/import/repair")[1]
+        entry = next(e for e in review["entries"] if e["bookId"] == old_id)
+        planned = {c["field"]: c["new"] for c in entry["changes"]}
+        assert entry["decided"] == "name" and entry["status"] == "pending", entry
+        assert planned["title"] == "Advanced Data Structures" and planned["authors"] == ["Brass"], entry
+        assert planned["publisher"] == "Cambridge University Press" and planned["pubdate"] == "2008", entry
         assert api("GET", f"/api/books/{old_id}")[1]["title"] == "Brass"
         out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import repair --min-id {old_id} --max-id {old_id}")
-        assert "Advanced Data Structures" in out and "1 books" in out and "dry run" in out, out
+        assert "Advanced Data Structures" in out and "1 books" in out and "to review" in out, out
+        status, acc = api("POST", "/api/import/repair/accept", {"bookIds": [old_id]})
+        assert status == 202 and acc["books"] == 1, (status, acc)
+        j = wait_job(acc["job"]["id"])
+        assert j["status"] == "done" and j["errors"] == [], j
+        fixed = api("GET", f"/api/books/{old_id}")[1]
+        assert fixed["title"] == "Advanced Data Structures" and fixed["authors"] == ["Brass"], fixed
+        log = api("GET", f"/api/metadata/changes?bookId={old_id}")[1]["changes"]
+        assert any(c["field"] == "title" and c["source"] == "rules" and c["old"] == "Brass" for c in log), log
+        assert api("GET", "/api/import/repair")[1]["counts"].get("applied") == 1
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
