@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from "react"
+import { useEffect, useMemo, useState, type MouseEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { importRepairQuery } from "@/lib/queries"
@@ -8,6 +8,7 @@ import type { MetadataField } from "@/lib/api"
 import { formatNumber, t } from "@/i18n"
 import { BookCover } from "@/components/book-cover"
 import { BookDetail } from "@/components/book-detail"
+import { isTyping } from "@/components/keyboard"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
@@ -55,7 +56,8 @@ function visible(entries: ImportRepairEntry[], band: ConfidenceBand | "all", lev
 // books or the whole library), then review them per book (old → new, who
 // decided, how sure) by band and level, and accept or reject single books,
 // the selected ones or the bulk band. A click on a proposal opens it next
-// to its book in a drawer, deciding there goes on to the next one
+// to its book in a drawer, deciding there (also by key) goes on to the next
+// one without waiting: accept jobs run one after the other
 export function ImportRepair() {
   const qc = useQueryClient()
   const { data } = useQuery(importRepairQuery)
@@ -66,10 +68,19 @@ export function ImportRepair() {
   const [limit, setLimit] = useState(PAGE)
   const [open, setOpen] = useState<number | null>(null)
   const [edit, setEdit] = useState(false)
+  // decided in the drawer, still open until their job gets there
+  const [decided, setDecided] = useState<Set<number>>(new Set())
+  const undecide = (ids?: number[]) =>
+    setDecided((s) => {
+      const next = new Set(s)
+      ids?.forEach((id) => next.delete(id))
+      return next
+    })
   const refresh = () => qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
   const plan = useMutation({ mutationFn: (library: boolean) => write.planImportRepair(library), onSettled: refresh })
   const accept = useMutation({
     mutationFn: (ids?: number[]) => write.acceptImportRepair(ids),
+    onError: (_, ids) => undecide(ids),
     onSettled: () => {
       setSelected(new Set())
       refresh()
@@ -77,12 +88,13 @@ export function ImportRepair() {
   })
   const reject = useMutation({
     mutationFn: (ids?: number[]) => write.rejectImportRepair(ids),
+    onError: (_, ids) => undecide(ids),
     onSettled: () => {
       setSelected(new Set())
       refresh()
     },
   })
-  const entries = useMemo(() => visible(data?.entries ?? [], band, level, sort), [data?.entries, band, level, sort])
+  const entries = useMemo(() => visible((data?.entries ?? []).filter((e) => !decided.has(e.bookId)), band, level, sort), [data?.entries, decided, band, level, sort])
   const books = useMemo(() => new Map(data?.books.map((b) => [b.id, b])), [data?.books])
   if (!data) return null
   const bulk = data.entries.filter((e) => e.band === "bulk").length
@@ -101,6 +113,12 @@ export function ImportRepair() {
     setEdit(false)
   }
   const after = (id: number) => entries[entries.findIndex((e) => e.bookId === id) + 1]?.bookId ?? null
+  const before = (id: number) => entries[entries.findIndex((e) => e.bookId === id) - 1]?.bookId ?? id
+  const decide = (id: number, send: (ids: number[]) => void) => {
+    setDecided((s) => new Set(s).add(id))
+    send([id])
+    show(after(id))
+  }
   const current = entries.find((e) => e.bookId === open)
   return (
     <section className="space-y-3" aria-labelledby="import-repair">
@@ -196,19 +214,14 @@ export function ImportRepair() {
         entry={current}
         book={current && books.get(current.bookId)}
         unsureTag={data.unsureTag}
-        busy={busy}
+        busy={data.planning}
         edit={edit}
         onEdit={setEdit}
         onClose={() => show(null)}
         onSkip={(id) => show(after(id))}
-        onAccept={(id) => {
-          accept.mutate([id])
-          show(after(id))
-        }}
-        onReject={(id) => {
-          reject.mutate([id])
-          show(after(id))
-        }}
+        onBack={(id) => show(before(id))}
+        onAccept={(id) => decide(id, accept.mutate)}
+        onReject={(id) => decide(id, reject.mutate)}
       />
     </section>
   )
@@ -329,8 +342,9 @@ function RepairProposal({ entry: e, title, unsureTag }: { entry: ImportRepairEnt
   )
 }
 
-// The proposal above its book: read, look into the book, correct it by
-// hand, then decide; a field edited here stays when accepting
+// The proposal above its book: read, look into the book, decide. A book
+// corrected by hand here has changed since the plan and can only be
+// rejected, accepting it fails and leaves the correction alone
 function RepairSheet(props: {
   entry?: ImportRepairEntry
   book?: Book
@@ -340,11 +354,32 @@ function RepairSheet(props: {
   onEdit: (on: boolean) => void
   onClose: () => void
   onSkip: (id: number) => void
+  onBack: (id: number) => void
   onAccept: (id: number) => void
   onReject: (id: number) => void
 }) {
   const { entry: e, book } = props
   const title = book?.title ?? (e ? `#${e.bookId}` : t("app.title"))
+  const id = e?.bookId
+  const { busy, edit, onEdit, onSkip, onBack, onAccept, onReject } = props
+  useEffect(() => {
+    if (id === undefined || edit) return
+    const onKey = (ev: KeyboardEvent) => {
+      // a dialog of the book's detail on top of the drawer keeps its keys
+      if (ev.defaultPrevented || ev.isComposing || ev.ctrlKey || ev.metaKey || ev.altKey || isTyping(ev.target)) return
+      if (document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length > 1) return
+      // a held key moves on, but never decides book after book
+      if (ev.key === "j") onSkip(id)
+      else if (ev.key === "k") onBack(id)
+      else if (ev.key === "e") onEdit(true)
+      else if (ev.key === "a" && !busy && !ev.repeat) onAccept(id)
+      else if (ev.key === "x" && !busy && !ev.repeat) onReject(id)
+      else return
+      ev.preventDefault()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [id, busy, edit, onEdit, onSkip, onBack, onAccept, onReject])
   return (
     <Sheet open={e != null} onOpenChange={(o) => !o && props.onClose()}>
       <SheetContent side="right" className="sm:max-w-2xl" aria-describedby={undefined}>
@@ -364,6 +399,7 @@ function RepairSheet(props: {
                   {t("repair.skip")}
                 </Button>
               </div>
+              <p className={cn("hidden text-xs md:block touch:hidden eink:hidden", muted)}>{t("repair.keys")}</p>
             </div>
             {/* no bottom padding: the edit form's sticky bar sits flush at the bottom */}
             <div className="min-h-0 flex-1 overflow-y-auto px-6">

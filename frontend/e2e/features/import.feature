@@ -82,6 +82,21 @@ Feature: Import progress
     When I close the drawer
     Then the repair has 2 open proposals and "1 übernommen"
 
+  Scenario: Proposals are decided by key in the drawer
+    When I open the import page
+    And I click the first proposal
+    Then the drawer shows the proposal "→ Dune" and the book
+    When I press "j"
+    Then the drawer shows the proposal "→ Formulas and Theorems in Pure Mathematics" and the book
+    When I press "k"
+    Then the drawer shows the proposal "→ Dune" and the book
+    When I press "a"
+    Then the drawer shows the proposal "→ Formulas and Theorems in Pure Mathematics" and the book
+    When I press "x"
+    And I close the drawer
+    Then the repair has 1 open proposals and "1 übernommen"
+    And the repair has 1 open proposals and "1 abgelehnt"
+
   @narrow
   Scenario: On a phone the page fits the screen
     When I open the import page from the menu

@@ -304,7 +304,9 @@ module CalibreHub
          changes: p.changes.map { |c| {field: c.field, old: c.old, new: c.new} }}
       end
       job = last.try(&.[0])
-      JSON.parse({entries: entries, books: books, counts: counts, job: job, unsureTag: Meta.unsure_tag}.to_json)
+      # a plan rewrites the proposals, an accept job only works them off
+      planning = !!job.try { |j| j.status == "running" && j.changes["mode"]?.try(&.as_s?) == "plan" }
+      JSON.parse({entries: entries, books: books, counts: counts, job: job, planning: planning, unsureTag: Meta.unsure_tag}.to_json)
     end
 
     # The rule flow on one book. path: the file an import read

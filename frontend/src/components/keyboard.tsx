@@ -17,7 +17,7 @@ import { collectHints, HelpPanel, HintLayer, SettingsPanel, type Hints } from ".
 
 // Keys only act outside text fields and while no dialog is open; the book
 // detail panel lets them through (j/k go to the next book there).
-const isTyping = (el: EventTarget | null) =>
+export const isTyping = (el: EventTarget | null) =>
   el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
 export const dialogOpen = () => !!document.querySelector('[role="dialog"]:not([data-keys="pass"]), [role="alertdialog"]')
 // Enter and Space keep their own meaning on buttons and links, except on the books

@@ -363,6 +363,7 @@ export const de = {
   "repair.accept": "Übernehmen",
   "repair.reject": "Ablehnen",
   "repair.skip": "Überspringen",
+  "repair.keys": "a übernehmen · x ablehnen · j überspringen · k zurück · e bearbeiten · Esc schließen",
   "repair.bookPage": "Buchseite",
   "repair.select": "Auswählen: {title}",
   "repair.decided": "entschieden von: {by}",

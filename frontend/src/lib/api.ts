@@ -286,6 +286,8 @@ export interface ImportRepairReview {
   counts: Partial<Record<ImportRepairEntry["status"], number>>
   // the latest plan or accept job
   job: Job | null
+  // a plan is running: nothing can be decided until it's done
+  planning: boolean
   unsureTag: string
 }
 

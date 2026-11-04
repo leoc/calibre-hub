@@ -175,6 +175,7 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
         books: books.filter((b) => ids.includes(b.id)),
         counts: { ...repairCounts, pending: repair.length },
         job: repairJob,
+        planning: false,
         unsureTag: "auto-unsicher",
       })
     }),

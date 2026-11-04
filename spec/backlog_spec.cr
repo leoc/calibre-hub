@@ -817,6 +817,7 @@ describe CalibreHub::ImportRepair do
       fields.call(208).should eq ["title", "authors", "authorSort"]
       asked.map { |n| File.basename(n) }.sort.should eq ["Herbert - Dune.pdf", "Wine Tasting - A Professional Handbook.pdf"]
       review["counts"]["pending"].should eq 7
+      review["planning"].as_bool.should be_false
       review["books"].as_a.map(&.["id"].as_i64).sort.should eq [201_i64, 202_i64, 203_i64, 204_i64, 205_i64, 207_i64, 208_i64]
       fake.books[201_i64]["title"].should eq "Carr"
 
