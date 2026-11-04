@@ -640,6 +640,9 @@ export interface PrivateTagsChange {
 }
 
 export const write = {
+  // a backlog import run of a folder: a dry run or the import itself
+  startImport: (path: string, dryRun: boolean, limit: number) =>
+    request<ImportRun>("/api/import", { method: "POST", ...json({ path, dryRun, limit }) }),
   // the repair: plan (a job; library: every book, not only the suspicious
   // ones), then accept proposals (bookIds, or the bulk band) or reject them
   planImportRepair: (library = false) =>

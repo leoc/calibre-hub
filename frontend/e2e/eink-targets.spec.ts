@@ -115,6 +115,13 @@ test("E-Ink: the import page", async ({ page }) => {
   expect(await smallTargets(page)).toEqual([])
 })
 
+test("E-Ink: the next portion on the import page", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.import", "reviewed"))
+  await page.goto("/import")
+  await expect(page.getByRole("button", { name: /^Portion starten/ })).toBeVisible()
+  expect(await smallTargets(page, "section[aria-labelledby=import-portion]")).toEqual([])
+})
+
 test("E-Ink: trash and login", async ({ page }) => {
   await page.goto("/")
   await expect(results(page)).toBeVisible()

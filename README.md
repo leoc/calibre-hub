@@ -485,6 +485,19 @@ that add a book or formats; duplicates on the way go along, the rest is
 `deferred`. The next run with the same folders skips what was handled and
 takes the next N.
 
+The Import page starts the next portion of the first root without the CLI,
+in two steps: "Nächste Portion prüfen" is a dry run with the limit of the
+field (500 by default, 1 or more like `--limit`); its numbers come with the
+button "Portion starten (N Bücher)", which imports that limit. N counts the
+duplicates that go along; the import scans again, so the numbers can still
+move a little if the library changed. There is no start without a dry run of
+that limit as the newest run, and another limit asks for a new dry run. Both
+steps wait, with the reason next to the button, while an import or a scan
+runs, the followup still has books or a repair plan runs; open proposals
+don't hold a portion back. A dry run becomes the basis of the backlog's open
+numbers like any scanned run, which is why it waits for a running import:
+beside one, those numbers would stand still.
+
 Progress: the web app's Import page (sidebar, command palette, linked from
 the Metadaten page) and `hub import status` show the phase (scan, duplicate
 check, import, followup), the folder or book a run is at, its running
@@ -501,6 +514,8 @@ bound, they skip books that need nothing). The page polls every 2 s while
 a run is going, every 10 s during the followup.
 
 ```sh
+hub import . --limit 500            # the next portion of the first root: a dry run,
+hub import . --limit 500 --apply    # then the import
 hub import alt                      # dry run of <first root>/alt
 hub import /srv/media/ebooks/inbox --apply --report report.json
 hub import alt neu --limit 200 --apply   # the next 200 books of both

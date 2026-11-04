@@ -1,10 +1,26 @@
-import { useQuery } from "@tanstack/react-query"
+import { useState } from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { ArrowRight } from "lucide-react"
-import { importStatusQuery } from "@/lib/queries"
-import type { ImportBacklog, ImportFollowup, ImportRun, ImportStatus } from "@/lib/api"
-import { activeRuns, followupQueues, formatDuration, hookLabel, live, percent, runProgress } from "@/lib/import"
+import { importRepairQuery, importStatusQuery } from "@/lib/queries"
+import { write, type ImportBacklog, type ImportFollowup, type ImportRun, type ImportStatus } from "@/lib/api"
+import {
+  activeRuns,
+  backlogDone,
+  followupQueues,
+  formatDuration,
+  hookLabel,
+  live,
+  percent,
+  PORTION,
+  portionBlock,
+  portionLimit,
+  portionRun,
+  runProgress,
+} from "@/lib/import"
 import { formatNumber, locale, t } from "@/i18n"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
 const dateTime = (iso: string) => new Date(iso).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" })
@@ -39,7 +55,7 @@ export function BacklogImport() {
 }
 
 // The import page's body: phase, the whole backlog, the live runs with
-// rates and ETA, the followup, and every run with its result
+// rates and ETA, the followup, the next portion, and every run with its result
 export function ImportOverview({ status }: { status: ImportStatus }) {
   const runs = activeRuns(status)
   return (
@@ -60,6 +76,7 @@ export function ImportOverview({ status }: { status: ImportStatus }) {
         <ActiveRun key={run.id} run={run} />
       ))}
       {status.followup && <Followup followup={status.followup} />}
+      {status.enabled && <NextPortion status={status} />}
       <section className="space-y-2" aria-labelledby="import-runs">
         <h2 id="import-runs" className="text-lg font-semibold">
           {t("import.runs")}
@@ -78,6 +95,85 @@ export function ImportOverview({ status }: { status: ImportStatus }) {
         </ul>
       </section>
     </div>
+  )
+}
+
+// The next portion in two steps: a dry run, then its numbers with the button
+// that imports them; there is no button without the numbers. The dry run is
+// the status's newest run, so it is still there after leaving the page; the
+// import scans again and goes by the same limit.
+function NextPortion({ status }: { status: ImportStatus }) {
+  const qc = useQueryClient()
+  const repair = useQuery(importRepairQuery)
+  // the dry run asked for here
+  const [checked, setChecked] = useState<string | null>(null)
+  const [typed, setTyped] = useState<string | null>(null)
+  const root = status.roots?.[0] ?? ""
+  const dry = portionRun(status, checked)
+  const text = typed ?? String(dry?.limit ?? PORTION)
+  const limit = portionLimit(text)
+  const refresh = () => qc.invalidateQueries({ queryKey: importStatusQuery.queryKey })
+  const check = useMutation({ mutationFn: (n: number) => write.startImport(root, true, n), onSuccess: (run) => setChecked(run.id), onSettled: refresh })
+  const start = useMutation({ mutationFn: (n: number) => write.startImport(root, false, n), onSettled: refresh })
+  const planned = dry?.status === "planned" && dry.summary?.selected ? dry : null
+  // another limit than the dry run's: its numbers aren't this portion's
+  const shown = planned && planned.limit === limit ? planned : null
+  const selected = shown?.summary?.selected
+  const block = portionBlock(status, repair.data?.planning ?? false)
+  const reason = block
+    ? t(`import.portion.block.${block}`, { count: n(status.followup?.total) })
+    : limit == null
+      ? t("import.portion.limitInvalid")
+      : planned && !shown
+        ? t("import.portion.changed")
+        : null
+  const disabled = block != null || limit == null || repair.isPending || check.isPending || start.isPending
+  const why = reason && (
+    <p role="status" className="text-sm">
+      {reason}
+    </p>
+  )
+  const failed = check.error ?? start.error
+  return (
+    <section className="space-y-2" aria-labelledby="import-portion">
+      <h2 id="import-portion" className="text-lg font-semibold">
+        {t("import.portion")}
+      </h2>
+      {(backlogDone(status) || selected?.books === 0) && <p className="text-sm">{t("import.portion.none")}</p>}
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="inline-flex w-36 flex-col gap-1 text-sm">
+          {t("import.portion.limit")}
+          <Input type="number" min={1} step={1} value={text} aria-invalid={limit == null} onChange={(e) => setTyped(e.target.value)} />
+        </label>
+        <Button variant={selected?.books ? "outline" : "default"} disabled={disabled} onClick={() => limit && check.mutate(limit)}>
+          {t("import.portion.check")}
+        </Button>
+        {!shown && why}
+      </div>
+      {(dry?.status === "failed" || dry?.status === "gone") && (
+        <p role="alert" className="text-sm text-destructive eink:text-black">
+          {t("import.portion.failed", { error: dry.error ?? t("import.status.gone") })}
+        </p>
+      )}
+      {shown?.summary && (
+        <div className="space-y-1 text-sm">
+          <Summary run={shown} summary={shown.summary} />
+          <div className="flex flex-wrap items-center gap-2">
+            {selected?.books ? (
+              <Button disabled={disabled} onClick={() => start.mutate(shown.limit as number)}>
+                {t("import.portion.start", { count: n(selected.books) })}
+              </Button>
+            ) : null}
+            {why}
+          </div>
+        </div>
+      )}
+      {failed && (
+        <p role="alert" className="text-sm text-destructive eink:text-black">
+          {failed.message}
+        </p>
+      )}
+    </section>
   )
 }
 
@@ -263,7 +359,10 @@ function Summary({ run, summary: s }: { run: ImportRun; summary: NonNullable<Imp
         })}
       </p>
       {run.limit != null && s.selected && (
-        <p className="tabular-nums">{t("import.limit", { books: n(s.selected.books), limit: n(run.limit), deferred: n(s.deferred) })}</p>
+        <>
+          <p className="tabular-nums">{t("import.limit", { books: n(s.selected.books), limit: n(run.limit), deferred: n(s.deferred) })}</p>
+          <p className="tabular-nums">{t("import.portion.selected", { add: n(s.selected.toAdd), formats: n(s.selected.toAddFormats), duplicates: n(s.selected.duplicates) })}</p>
+        </>
       )}
       {!run.dryRun && (
         <p className="tabular-nums">

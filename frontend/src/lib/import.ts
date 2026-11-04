@@ -30,6 +30,44 @@ export function activeRuns(status: ImportStatus): ImportRun[] {
   return (status.runs ?? []).filter(live).sort((a, b) => Number(a.dryRun) - Number(b.dryRun))
 }
 
+// the size of a portion, as `hub import --limit` takes it
+export const PORTION = 500
+const MAX_LIMIT = 2_147_483_647
+
+// a whole number from 1 up, else null
+export function portionLimit(text: string): number | null {
+  const n = Number(text)
+  return Number.isInteger(n) && n >= 1 && n <= MAX_LIMIT ? n : null
+}
+
+// The dry run a portion goes by: the newest run, nothing ran since. Of the
+// first root, or the one asked for here (checked; the hub answers with the
+// folder's real path, a root may be a link). Without a limit it's no portion.
+export function portionRun(status: ImportStatus, checked: string | null): ImportRun | null {
+  const run = status.runs?.[0]
+  if (!run?.dryRun || run.limit == null) return null
+  return run.id === checked || run.path === status.roots?.[0] ? run : null
+}
+
+// Why no portion can begin now. planning: a repair plan runs. A dry run
+// beside an import would become the backlog's basis and stay there with
+// books the import takes meanwhile; open proposals don't matter here.
+export function portionBlock(status: ImportStatus, planning: boolean): "import" | "scan" | "followup" | "repair" | null {
+  if (status.running) return "import"
+  if (status.scanning) return "scan"
+  if (status.followup?.total) return "followup"
+  return planning ? "repair" : null
+}
+
+// The latest scanned run went through the whole first root and left
+// nothing; a run of a subfolder says nothing about the rest
+export function backlogDone(status: ImportStatus): boolean {
+  const b = status.backlog
+  const root = status.roots?.[0]
+  if (!b?.basis || !root || !b.basis.paths.includes(root)) return false
+  return b.open.books + b.open.formats + b.open.duplicates === 0
+}
+
 // {done, total} of a live run's bar; null while the scan walks the
 // folders (their size isn't known yet)
 export function runProgress(run: ImportRun): { done: number; total: number } | null {

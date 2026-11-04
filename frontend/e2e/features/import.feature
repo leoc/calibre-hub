@@ -97,6 +97,73 @@ Feature: Import progress
     Then the repair has 1 open proposals and "1 übernommen"
     And the repair has 1 open proposals and "1 abgelehnt"
 
+  Scenario: The next portion is checked by a dry run, then started
+    Given the import is "idle"
+    When I open the import page
+    Then the next portion offers no start
+    When I check the next portion
+    Then the next portion says "Ein Probelauf läuft gerade."
+    And the next portion shows "17.900 Bücher, 6.000 aus calibre-Ordnern; neu 17.500, Formate ergänzen 100, Duplikate 300, schon importiert 1.500, übersprungen 2.100"
+    And the next portion shows "dieser Lauf: 508 Bücher (höchstens 500 neue), 17.392 für spätere Läufe"
+    And the next portion shows "davon neu 490, Formate ergänzen 10, Duplikate 8"
+    And the review fits the screen
+    When I start the portion of 508 books
+    Then the next portion says "Ein Import läuft gerade."
+    And the next portion offers no start
+    And the hub got a dry run of 500 books, then an import of 500 books
+
+  Scenario: Another limit needs its own dry run
+    Given the import is "idle"
+    When I open the import page
+    And I check the next portion
+    Then the next portion can start 508 books
+    When I set the portion to 200 books
+    Then the next portion says "Die Anzahl ist geändert, bitte neu prüfen."
+    And the next portion offers no start
+    When I check the next portion
+    Then the next portion can start 208 books
+    When I start the portion of 208 books
+    Then the hub got a dry run of 500 books, a dry run of 200 books, then an import of 200 books
+
+  Scenario: A limit below 1 is refused
+    Given the import is "idle"
+    When I open the import page
+    And I set the portion to 0 books
+    Then the next portion is blocked by "Bitte eine ganze Zahl ab 1 eintragen."
+
+  Scenario: A dry run from before is still there
+    Given the import is "reviewed"
+    When I open the import page
+    Then the next portion can start 508 books
+
+  Scenario: No portion while an import runs
+    When I open the import page
+    Then the next portion is blocked by "Ein Import läuft gerade."
+
+  Scenario: No portion while the followup has work
+    Given the import is "followup"
+    When I open the import page
+    Then the next portion is blocked by "Der Nachlauf hat noch 120 Bücher offen."
+
+  Scenario: No portion while a repair plan runs
+    Given the import is "planning"
+    When I open the import page
+    Then the next portion is blocked by "Die Reparatur plant gerade."
+
+  Scenario: Open proposals leave the next portion free
+    Given the import is "idle"
+    When I open the import page
+    Then the repair has 3 open proposals and "0 übernommen"
+    And the next portion can be checked
+
+  Scenario: Nothing left in the backlog
+    Given the import is "empty"
+    When I open the import page
+    Then the next portion shows "Im Altbestand ist nichts mehr offen."
+    When I check the next portion
+    Then the next portion shows "0 Bücher, 0 aus calibre-Ordnern; neu 0, Formate ergänzen 0, Duplikate 0, schon importiert 1.500, übersprungen 2.100"
+    And the next portion offers no start
+
   @narrow
   Scenario: On a phone the page fits the screen
     When I open the import page from the menu

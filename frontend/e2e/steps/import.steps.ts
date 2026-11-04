@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test"
 import { createBdd } from "playwright-bdd"
 
-const { When, Then } = createBdd()
+const { Given, When, Then } = createBdd()
 
 // Labels as in src/i18n/de.ts; the mock import in src/mocks/metadata.ts
 
@@ -91,6 +91,78 @@ Then("the page doesn't scroll sideways", async ({ page }) => {
   await expect(running(page)).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(0)
+})
+
+// the next portion (NextPortion in src/components/backlog-import.tsx)
+const portion = (page: Page) => region(page, "Nächste Portion")
+const checkButton = (page: Page) => portion(page).getByRole("button", { name: "Nächste Portion prüfen" })
+const startButton = (page: Page) => portion(page).getByRole("button", { name: /^Portion starten/ })
+// what the page posted to the hub in a scenario
+const posted = new WeakMap<Page, string[]>()
+
+// the mock's state between two portions (src/mocks/metadata.ts)
+Given("the import is {string}", async ({ page }, mode: string) => {
+  await page.addInitScript((m) => localStorage.setItem("hub.mock.import", m), mode)
+  const runs: string[] = []
+  posted.set(page, runs)
+  page.on("request", (r) => {
+    if (r.method() !== "POST" || new URL(r.url()).pathname !== "/api/import") return
+    const { dryRun, limit } = r.postDataJSON() as { dryRun: boolean; limit: number }
+    runs.push(`${dryRun ? "a dry run" : "an import"} of ${limit} books`)
+  })
+})
+
+When("I check the next portion", async ({ page }) => {
+  await checkButton(page).click()
+})
+
+When("I set the portion to {int} books", async ({ page }, books: number) => {
+  await portion(page).getByLabel("Bücher je Portion").fill(String(books))
+})
+
+When("I start the portion of {int} books", async ({ page }, books: number) => {
+  await portion(page).getByRole("button", { name: `Portion starten (${books} Bücher)`, exact: true }).click()
+})
+
+Then("the next portion offers no start", async ({ page }) => {
+  await expect(startButton(page)).toHaveCount(0)
+})
+
+Then("the next portion can start {int} books", async ({ page }, books: number) => {
+  await expect(startButton(page)).toHaveText(`Portion starten (${books} Bücher)`)
+  await expect(startButton(page)).toBeEnabled()
+})
+
+Then("the next portion can be checked", async ({ page }) => {
+  await expect(checkButton(page)).toBeEnabled()
+})
+
+Then("the next portion says {string}", async ({ page }, reason: string) => {
+  await expect(portion(page).getByRole("status")).toHaveText(reason)
+})
+
+Then("the next portion shows {string}", async ({ page }, text: string) => {
+  await expect(portion(page).getByText(text, { exact: true })).toBeVisible()
+})
+
+Then("the next portion is blocked by {string}", async ({ page }, reason: string) => {
+  await expect(portion(page).getByRole("status")).toHaveText(reason)
+  await expect(checkButton(page)).toBeDisabled()
+  await expect(startButton(page)).toHaveCount(0)
+})
+
+Then("the review fits the screen", async ({ page }) => {
+  await expect(startButton(page)).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(0)
+})
+
+Then("the hub got a dry run of {int} books, then an import of {int} books", async ({ page }, dry: number, books: number) => {
+  await expect.poll(() => posted.get(page)).toEqual([`a dry run of ${dry} books`, `an import of ${books} books`])
+})
+
+Then("the hub got a dry run of {int} books, a dry run of {int} books, then an import of {int} books", async ({ page }, first: number, second: number, books: number) => {
+  await expect.poll(() => posted.get(page)).toEqual([`a dry run of ${first} books`, `a dry run of ${second} books`, `an import of ${books} books`])
 })
 
 // the quality report (src/components/import-quality.tsx)

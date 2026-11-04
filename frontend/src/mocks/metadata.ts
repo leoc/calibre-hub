@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Book, ImportRepairEntry, Job, MetadataCandidate, MetadataChange, MetadataField, MetadataSource, MetadataStatus, MetadataTarget } from "@/lib/api"
+import type { Book, ImportRepairEntry, ImportRun, Job, MetadataCandidate, MetadataChange, MetadataField, MetadataSource, MetadataStatus, MetadataTarget } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 
 // Metadata cleanup of the mock hub: a few changed books from the start (a
@@ -162,6 +162,55 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
   const samples: { band: string; checked: number; correct: number; at: string }[] = []
   let repairJob: Job | null = null
 
+  // The hub between two portions, for the e2e steps (localStorage
+  // hub.mock.import): idle, reviewed (a dry run done before), followup,
+  // planning (a repair plan), empty (nothing left). Without it the running
+  // import below, which answers POST /api/import with a 409.
+  const BACKLOG = "/srv/media/ebooks/backlog"
+  const importMode = () => localStorage.getItem("hub.mock.import")
+  const portionSummary = (limit: number, empty: boolean): NonNullable<ImportRun["summary"]> => ({
+    books: empty ? 0 : 17_900, files: empty ? 0 : 21_400, formats: empty ? {} : { EPUB: 9000, PDF: 8000, MOBI: 900 }, calibreFolders: empty ? 0 : 6000, withCover: 5900,
+    toAdd: empty ? 0 : 17_500, toAddFormats: empty ? 0 : 100, duplicates: { total: empty ? 0 : 300 }, alreadyImported: 1500,
+    selected: empty ? { books: 0, toAdd: 0, toAddFormats: 0, duplicates: 0 } : { books: limit + 8, toAdd: limit - 10, toAddFormats: 10, duplicates: 8 },
+    deferred: empty ? 0 : 17_900 - limit - 8,
+    skipped: { total: 2100, byReason: { "not a book format": 2100 }, byType: { jpg: 2100 } },
+  })
+  const portionRunOf = (id: string, dryRun: boolean, limit: number, extra: Partial<ImportRun>): ImportRun => ({
+    id, path: BACKLOG, paths: [BACKLOG], dryRun, limit, createdAt: "2026-11-04T09:00:00Z", jobId: `j-${id}`, status: "scanning",
+    done: null, total: 0, error: null, summary: null, results: {}, failures: [], ...extra,
+  })
+  const planned = (run: ImportRun) => {
+    const summary = portionSummary(run.limit ?? 0, importMode() === "empty")
+    return { ...run, status: "planned" as const, phase: "planned" as const, summary, total: summary.books,
+      results: { pending: summary.selected?.books ?? 0, deferred: summary.deferred ?? 0 } }
+  }
+  let portions: ImportRun[] = []
+  let scanPolls = 0
+  function portionStatus() {
+    if (importMode() === "reviewed" && !portions.length) portions = [planned(portionRunOf("p0", true, 500, {}))]
+    // a dry run takes two polls, an import 5 books each
+    const newest = portions[0]
+    if (newest?.status === "scanning" && (scanPolls += 1) > 1) portions[0] = planned(newest)
+    if (newest?.status === "running") newest.done = Math.min((newest.done ?? 0) + 5, newest.total)
+    const running = portions[0]?.status === "running"
+    const scanning = portions[0]?.status === "scanning"
+    const empty = importMode() === "empty"
+    const followup = importMode() === "followup" ? 120 : 0
+    return {
+      enabled: true, roots: [BACKLOG], running, scanning, hooksPaused: running, phase: running ? "import" : scanning ? "scan" : followup ? "followup" : null,
+      backlog: {
+        imported: 1500, formatAdded: 40, duplicates: 106,
+        open: { books: empty ? 0 : 17_500, formats: empty ? 0 : 100, duplicates: empty ? 0 : 300, failed: 0 },
+        total: empty ? 1500 : 19_000,
+        basis: { runId: "p-1", paths: [BACKLOG], createdAt: "2026-11-03T09:00:00Z" },
+        etaSeconds: null,
+      },
+      followup: { paused: running, total: followup, queues: followup ? { metadata: followup } : {} },
+      runs: portions,
+      cleanups: [],
+    }
+  }
+
   return [
     // the backlog import: a running import of 500 books (5 more each time
     // it is polled), a dry run walking another folder, a finished import,
@@ -174,8 +223,8 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
         entries: repair,
         books: books.filter((b) => ids.includes(b.id)),
         counts: { ...repairCounts, pending: repair.length },
-        job: repairJob,
-        planning: false,
+        job: importMode() === "planning" ? { status: "running", done: 3, total: 40, errors: [] } : repairJob,
+        planning: importMode() === "planning",
         unsureTag: "auto-unsicher",
       })
     }),
@@ -238,7 +287,21 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
       repairCounts.rejected += before - repair.length
       return HttpResponse.json({ rejected: before - repair.length })
     }),
+    http.post("/api/import", async ({ request }) => {
+      const body = (await request.json()) as { path: string; dryRun: boolean; limit: number }
+      if (!importMode() || portions[0]?.status === "running") return HttpResponse.json({ error: "an import is running" }, { status: 409 })
+      if (body.path !== BACKLOG) return HttpResponse.json({ error: "not below an import root", field: "path" }, { status: 400 })
+      const id = `p${portions.length + 1}`
+      scanPolls = 0
+      const summary = portionSummary(body.limit, false)
+      const run = body.dryRun
+        ? portionRunOf(id, true, body.limit, { phase: "scan", scan: { files: 120, units: 40, planned: 0, phase: "scan" } })
+        : portionRunOf(id, false, body.limit, { status: "running", phase: "import", done: 0, total: summary.selected?.books ?? 0, summary, results: { pending: summary.selected?.books ?? 0 } })
+      portions = [run, ...portions]
+      return HttpResponse.json(run, { status: 202 })
+    }),
     http.get("/api/import", () => {
+      if (importMode()) return HttpResponse.json(portionStatus())
       importPolls += 1
       const done = Math.min(260 + importPolls * 5, 500)
       const summary = {
