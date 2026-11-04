@@ -233,7 +233,7 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
       HttpResponse.json({
         total: 1846,
         suspect: 212,
-        reasons: { unknownAuthor: 191, notAPerson: 0, publisherAuthor: 4, titleSaysNothing: 11, leftoverTitle: 1, fileNameTitle: 24, unsure: 11 },
+        reasons: { unknownAuthor: 191, notAPerson: 0, publisherAuthor: 4, swappedPair: 3, pathTitle: 2, titleSaysNothing: 11, leftoverTitle: 1, fileNameTitle: 24, unsure: 11 },
         runs: [
           { run: "77ec37bda5d6d688", at: "2026-11-03T08:48:59Z", total: 437, suspect: 120 },
           { run: "8c6205172f4fdbb7", at: "2026-11-03T07:35:32Z", total: 196, suspect: 41 },

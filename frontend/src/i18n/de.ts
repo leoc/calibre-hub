@@ -308,6 +308,8 @@ export const de = {
   "quality.reason.notAPerson": "Autor ist keine Person",
   "quality.reason.publisherAuthor": "Verlag als Autor",
   "quality.reason.titleSaysNothing": "Titel sagt nichts",
+  "quality.reason.swappedPair": "Titel und Autor vertauscht",
+  "quality.reason.pathTitle": "Pfad als Titel",
   "quality.reason.leftoverTitle": "Reste im Titel",
   "quality.reason.fileNameTitle": "Dateiname als Titel",
   "quality.reason.unsure": "zur Prüfung getaggt",

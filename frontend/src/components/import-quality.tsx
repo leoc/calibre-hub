@@ -18,6 +18,8 @@ const REASON: Record<string, MessageKey> = {
   notAPerson: "quality.reason.notAPerson",
   publisherAuthor: "quality.reason.publisherAuthor",
   titleSaysNothing: "quality.reason.titleSaysNothing",
+  swappedPair: "quality.reason.swappedPair",
+  pathTitle: "quality.reason.pathTitle",
   leftoverTitle: "quality.reason.leftoverTitle",
   fileNameTitle: "quality.reason.fileNameTitle",
   unsure: "quality.reason.unsure",
