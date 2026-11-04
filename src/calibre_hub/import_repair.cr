@@ -67,8 +67,8 @@ module CalibreHub
     property decider : Meta::FileName::Decider?
     # asks the catalogs about readings without an author (Metadata#checker)
     property checker : Meta::FileName::Checker?
-    # reads a book's file for the rule flow (Metadata#file_info)
-    property reader : Proc(Book, Meta::FileMeta::Info?)?
+    # reads a book's file for the rule flow (Metadata#flow_info)
+    property reader : Proc(Book, String?, Meta::FileMeta::Info?)?
     # asks the catalogs for an ISBN (Metadata#isbn_lookup)
     property by_isbn : Meta::Flow::Lookup?
     # the books with an ISBN (Metadata#owners)
@@ -311,7 +311,7 @@ module CalibreHub
       log = @log.active(book.id).reverse
       imported = imported_proc(book, path, baseline, log, hand)
       input = Meta::Flow::Input.new(book, imported, path.try { |p| File.basename(p) }, path.try { |p| hint(File.dirname(p)) })
-      input.info = @reader.try(&.call(book))
+      input.info = @reader.try(&.call(book, path))
       input.by_isbn = @by_isbn
       input.decider = @decider
       input.checker = @checker

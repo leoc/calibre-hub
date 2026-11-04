@@ -541,6 +541,9 @@ called is read from the book first, the file name comes last.
 2. Metadata in the file: an EPUB's OPF and calibre's own are trusted, a PDF,
    DjVu, MOBI or CHM only where a field fits the text or the name. Known junk
    (`Click here to log on`, `Administrator`, `Untitled Document`) never counts.
+   The repair reads the file an import read, else the library's file directly:
+   calibre-server writes the book's metadata into what it hands out, and
+   metadata that are the book's own again prove nothing.
 3. The file name as described above. What's missing comes from the catalogs
    when two of them agree, anything less goes to the review with the unsure
    tag and a suggestion. A format that can't be read falls to this level.

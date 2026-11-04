@@ -354,8 +354,8 @@ module CalibreHub
         imported: handled["imported"], formatAdded: handled["formatAdded"], duplicates: handled["duplicate"],
         open: {books: open["add"], formats: open["addFormats"], duplicates: open["duplicate"], failed: failed},
         # the new books of the backlog: imported and still to add
-        total:      handled["imported"] + open["add"],
-        basis:      basis.try { |b| {runId: b[0], paths: b[2].try { |p| JSON.parse(p) } || [b[1]], createdAt: Time.unix(b[3]).to_rfc3339} },
+        total: handled["imported"] + open["add"],
+        basis: basis.try { |b| {runId: b[0], paths: b[2].try { |p| JSON.parse(p) } || [b[1]], createdAt: Time.unix(b[3]).to_rfc3339} },
         etaSeconds: rate && rate > 0 && left > 0 ? (left * 60 / rate).to_i64 : nil,
       }.to_json)
     end

@@ -503,8 +503,9 @@ module CalibreHub
     # the rule flow (Meta::Flow): the book's pages and the catalogs by ISBN
     Meta::Ocr.jobs = config.ocr_jobs
     if m = metadata_jobs.try(&.metadata)
+      m.library = config.library
       repair.try do |r|
-        r.reader = ->(b : Book) { m.file_info(b, flow: true) }
+        r.reader = ->(b : Book, path : String?) { m.flow_info(b, path) }
         r.by_isbn = m.isbn_lookup
         r.owners = m.owners
         m.review = ->(id : Int64, note : Meta::Flow::Note) { r.flag(id, note); nil }

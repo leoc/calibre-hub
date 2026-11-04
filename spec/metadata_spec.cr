@@ -1452,6 +1452,17 @@ describe "the metadata run after the rule flow" do
     library.books[23]["title"].should eq "Effortless: Make It Easier to Do What Matters Most"
   end
 
+  it "takes no metadata for evidence that calibre wrote into the file itself" do
+    b = book("Brass", ["Advanced Data Structures (Cambridge, 2008)"])
+    written = CalibreHub::Meta::FileMeta::Info.new(record(title: "Brass", authors: ["Someone"], isbn: "9780201914658"), [] of String, front: "text")
+    got = CalibreHub::Metadata.without_own(b, written)
+    got.record.title.should be_nil
+    got.record.isbn.should eq "9780201914658"
+    got.front.should eq "text"
+    own = CalibreHub::Meta::FileMeta::Info.new(record(title: "Advanced Data Structures"), [] of String)
+    CalibreHub::Metadata.without_own(b, own).record.title.should eq "Advanced Data Structures"
+  end
+
   it "reads the flow's formats only when the flow asks" do
     CalibreHub::Metadata::QUICK_FORMATS.should_not contain "MOBI"
     CalibreHub::Meta::FileMeta::FORMATS.should contain "CHM"

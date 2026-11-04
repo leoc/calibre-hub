@@ -10,6 +10,7 @@ require "./backlog_pause"
 require "./covers"
 require "./writer"
 require "./classify"
+require "./files"
 
 module CalibreHub
   # The cleanup's change log (old/new per field, revertible) and per book
@@ -346,6 +347,8 @@ module CalibreHub
     getter nightly : String?
     # an ISBN conflict the run found goes to the review (ImportRepair#flag)
     property review : Proc(Int64, Meta::Flow::Note, Nil)?
+    # the library folder, read directly (BookFiles.library_files)
+    property library : String?
 
     def initialize(@calibre : Calibre, @writer : Writer, @log : MetaLog, @sources : Array(String),
                    @openlibrary : Meta::OpenLibrary?, @dnb : Meta::Dnb?, @http : Meta::Http,
@@ -388,6 +391,29 @@ module CalibreHub
       ensure
         FileUtils.rm_rf(dir)
       end
+    end
+
+    # The book as the rule flow sees it. calibre-server writes the book's
+    # metadata into a file it hands out, and the embed step into the library's
+    # files, so only the file an import read (path) says something of its
+    # own. Otherwise the library's file, and metadata that are the book's
+    # own again are no evidence, only the text and the pages are.
+    def flow_info(book : Book, path : String?) : Meta::FileMeta::Info?
+      if path && File.exists?(path) && (fmt = File.extname(path).lchop('.').upcase) && Meta::FileMeta::FORMATS.includes?(fmt)
+        return read_flow(path, fmt)
+      end
+      files = BookFiles.library_files(@library, book.id)
+      fmt = Meta::FileMeta::FORMATS.find { |f| files.has_key?(f) && File.exists?(files[f]) }
+      info = fmt ? read_flow(files[fmt], fmt) : file_info(book, flow: true)
+      info.try { |i| Metadata.without_own(book, i) }
+    end
+
+    # the file's metadata unless they are what the book has anyway
+    def self.without_own(book : Book, info : Meta::FileMeta::Info) : Meta::FileMeta::Info
+      r = info.record
+      own = Meta::FileName.same_text?(r.title, book.title) ||
+            (r.authors.try { |a| Meta::FileName.same_authors?(a, book.authors) } || false)
+      own ? info.copy_with(record: Meta::Record.new(isbn: r.isbn)) : info
     end
 
     # A file on disk for the rule flow, with OCR when it has no text layer

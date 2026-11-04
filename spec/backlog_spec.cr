@@ -943,7 +943,7 @@ describe CalibreHub::ImportRepair do
       log = CalibreHub::MetaLog.new(db)
       repair = CalibreHub::ImportRepair.new(db, calibre, writer, log)
       warren = CalibreHub::Meta::Record.new(title: "Hacker's Delight", authors: ["Henry S. Warren"], isbn: "9780201914658")
-      repair.reader = ->(b : CalibreHub::Book) do
+      repair.reader = ->(b : CalibreHub::Book, _path : String?) do
         text = b.id.in?(501, 505) ? "Hacker's Delight\nHenry S. Warren\nCopyright 2003\nISBN 0-201-91465-4\n" : ""
         CalibreHub::Meta::FileMeta::Info.new(CalibreHub::Meta::Record.new, [] of String, nil, text, "", "PDF").as(CalibreHub::Meta::FileMeta::Info?)
       end
