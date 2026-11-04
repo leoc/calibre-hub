@@ -1,11 +1,15 @@
-import { useMemo, useState } from "react"
+import { useMemo, useState, type MouseEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Link } from "@tanstack/react-router"
 import { importRepairQuery } from "@/lib/queries"
-import { write, type ConfidenceBand, type ImportRepairEntry, type ImportRepairReview, type RepairNote } from "@/lib/api"
+import { write, type Book, type ConfidenceBand, type ImportRepairEntry, type ImportRepairReview, type RepairNote } from "@/lib/api"
 import { fieldLabel, formatValue, sourceLabel } from "@/lib/metadata"
 import type { MetadataField } from "@/lib/api"
 import { formatNumber, t } from "@/i18n"
+import { BookCover } from "@/components/book-cover"
+import { BookDetail } from "@/components/book-detail"
 import { Button } from "@/components/ui/button"
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
 
 const muted = "text-muted-foreground eink:text-black"
@@ -50,7 +54,8 @@ function visible(entries: ImportRepairEntry[], band: ConfidenceBand | "all", lev
 // The repair on the import page: plan proposals (a job, of the suspicious
 // books or the whole library), then review them per book (old → new, who
 // decided, how sure) by band and level, and accept or reject single books,
-// the selected ones or the bulk band
+// the selected ones or the bulk band. A click on a proposal opens it next
+// to its book in a drawer, deciding there goes on to the next one
 export function ImportRepair() {
   const qc = useQueryClient()
   const { data } = useQuery(importRepairQuery)
@@ -59,6 +64,8 @@ export function ImportRepair() {
   const [level, setLevel] = useState("all")
   const [sort, setSort] = useState<Sort>("sure")
   const [limit, setLimit] = useState(PAGE)
+  const [open, setOpen] = useState<number | null>(null)
+  const [edit, setEdit] = useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
   const plan = useMutation({ mutationFn: (library: boolean) => write.planImportRepair(library), onSettled: refresh })
   const accept = useMutation({
@@ -76,7 +83,7 @@ export function ImportRepair() {
     },
   })
   const entries = useMemo(() => visible(data?.entries ?? [], band, level, sort), [data?.entries, band, level, sort])
-  const titles = useMemo(() => new Map(data?.books.map((b) => [b.id, b.title])), [data?.books])
+  const books = useMemo(() => new Map(data?.books.map((b) => [b.id, b])), [data?.books])
   if (!data) return null
   const bulk = data.entries.filter((e) => e.band === "bulk").length
   const running = data.job?.status === "running"
@@ -89,6 +96,12 @@ export function ImportRepair() {
       else next.add(id)
       return next
     })
+  const show = (id: number | null) => {
+    setOpen(id)
+    setEdit(false)
+  }
+  const after = (id: number) => entries[entries.findIndex((e) => e.bookId === id) + 1]?.bookId ?? null
+  const current = entries.find((e) => e.bookId === open)
   return (
     <section className="space-y-3" aria-labelledby="import-repair">
       <h2 id="import-repair" className="text-lg font-semibold">
@@ -159,11 +172,12 @@ export function ImportRepair() {
             <RepairItem
               key={e.bookId}
               entry={e}
-              title={titles.get(e.bookId)}
+              book={books.get(e.bookId)}
               unsureTag={data.unsureTag}
               checked={selected.has(e.bookId)}
               busy={busy}
               onToggle={() => toggle(e.bookId)}
+              onOpen={() => show(e.bookId)}
               onAccept={() => accept.mutate([e.bookId])}
               onReject={() => reject.mutate([e.bookId])}
             />
@@ -178,6 +192,24 @@ export function ImportRepair() {
           </Button>
         </div>
       )}
+      <RepairSheet
+        entry={current}
+        book={current && books.get(current.bookId)}
+        unsureTag={data.unsureTag}
+        busy={busy}
+        edit={edit}
+        onEdit={setEdit}
+        onClose={() => show(null)}
+        onSkip={(id) => show(after(id))}
+        onAccept={(id) => {
+          accept.mutate([id])
+          show(after(id))
+        }}
+        onReject={(id) => {
+          reject.mutate([id])
+          show(after(id))
+        }}
+      />
     </section>
   )
 }
@@ -201,31 +233,75 @@ function RepairState({ review }: { review: ImportRepairReview }) {
 
 function RepairItem(props: {
   entry: ImportRepairEntry
-  title?: string
+  book?: Book
   unsureTag: string
   checked: boolean
   busy: boolean
   onToggle: () => void
+  onOpen: () => void
   onAccept: () => void
   onReject: () => void
 }) {
-  const { entry: e } = props
+  const { entry: e, book } = props
+  const title = book?.title ?? `#${e.bookId}`
+  // the whole row opens the drawer, except its controls and selecting text
+  const open = (ev: MouseEvent<HTMLLIElement>) => {
+    if ((ev.target as Element).closest("a, button, input, label") || !window.getSelection()?.isCollapsed) return
+    props.onOpen()
+  }
+  return (
+    <li className="flex cursor-pointer gap-3 py-2 text-sm" data-book={e.bookId} onClick={open}>
+      {/* the title below is the same button for keyboards and screen readers */}
+      {book && (
+        <button type="button" tabIndex={-1} aria-hidden className="shrink-0 self-start" onClick={props.onOpen}>
+          <BookCover book={book} compact className="w-16" />
+        </button>
+      )}
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <label className="inline-flex min-h-9 items-center justify-center eink:min-h-12 eink:min-w-12 touch:min-h-11 touch:min-w-11">
+            <input type="checkbox" className="size-4 eink:size-6" checked={props.checked} onChange={props.onToggle} aria-label={t("repair.select", { title })} />
+          </label>
+          <button type="button" className="min-h-9 min-w-0 break-words text-left font-medium hover:underline eink:min-h-12 touch:min-h-11" onClick={props.onOpen}>
+            {title}
+          </button>
+          <Link
+            to="/books/$id"
+            params={{ id: e.bookId }}
+            search={{}}
+            target="_blank"
+            className={cn("inline-flex min-h-9 items-center underline eink:min-h-12 touch:min-h-11", muted)}
+          >
+            {t("repair.bookPage")}
+          </Link>
+        </div>
+        <RepairProposal entry={e} title={title} unsureTag={props.unsureTag} />
+        <div className="flex gap-2">
+          <Button size="sm" disabled={props.busy} onClick={props.onAccept}>
+            {t("repair.accept")}
+          </Button>
+          <Button size="sm" variant="outline" disabled={props.busy} onClick={props.onReject}>
+            {t("repair.reject")}
+          </Button>
+        </div>
+      </div>
+    </li>
+  )
+}
+
+// who decided, how sure and old → new: in the list and in the drawer
+function RepairProposal({ entry: e, title, unsureTag }: { entry: ImportRepairEntry; title: string; unsureTag: string }) {
   const name = e.file.split("/").pop() ?? e.file
   const changes = e.changes.filter((c) => c.field !== "candidate")
   const candidate = e.changes.find((c) => c.field === "candidate")?.new as { title?: string; authors: string[]; source: string } | undefined
-  const title = props.title ?? `#${e.bookId}`
   return (
-    <li className="space-y-1 py-2 text-sm" data-book={e.bookId}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <label className="inline-flex min-h-9 items-center gap-2 font-medium eink:min-h-12 touch:min-h-11">
-          <input type="checkbox" className="size-4 eink:size-6" checked={props.checked} onChange={props.onToggle} aria-label={t("repair.select", { title })} />
-          {title}
-        </label>
-        <span className={muted}>{t("repair.decided", { by: decidedLabel(e.decided, props.unsureTag) })}</span>
+    <div className="space-y-1">
+      <p className="flex flex-wrap gap-x-3">
+        <span className={muted}>{t("repair.decided", { by: decidedLabel(e.decided, unsureTag) })}</span>
         <span className={cn("tabular-nums", muted)}>
           {e.confidence !== null && e.level !== null ? t("repair.confidence", { value: n(e.confidence), level: levelLabel(e.level) }) : t("repair.confidence.none")}
         </span>
-      </div>
+      </p>
       {e.notes.map((note) => (
         <p key={note.kind} className="font-medium">
           {noteText(note)}
@@ -249,14 +325,53 @@ function RepairItem(props: {
           {t("repair.candidate", { title: candidate.title ?? title, authors: candidate.authors.join(", "), source: sourceName(candidate.source) })}
         </p>
       )}
-      <div className="flex gap-2">
-        <Button size="sm" disabled={props.busy} onClick={props.onAccept}>
-          {t("repair.accept")}
-        </Button>
-        <Button size="sm" variant="outline" disabled={props.busy} onClick={props.onReject}>
-          {t("repair.reject")}
-        </Button>
-      </div>
-    </li>
+    </div>
+  )
+}
+
+// The proposal above its book: read, look into the book, correct it by
+// hand, then decide; a field edited here stays when accepting
+function RepairSheet(props: {
+  entry?: ImportRepairEntry
+  book?: Book
+  unsureTag: string
+  busy: boolean
+  edit: boolean
+  onEdit: (on: boolean) => void
+  onClose: () => void
+  onSkip: (id: number) => void
+  onAccept: (id: number) => void
+  onReject: (id: number) => void
+}) {
+  const { entry: e, book } = props
+  const title = book?.title ?? (e ? `#${e.bookId}` : t("app.title"))
+  return (
+    <Sheet open={e != null} onOpenChange={(o) => !o && props.onClose()}>
+      <SheetContent side="right" className="sm:max-w-2xl" aria-describedby={undefined}>
+        <SheetTitle className="sr-only">{title}</SheetTitle>
+        {e && (
+          <>
+            <div className="max-h-[45dvh] space-y-2 overflow-y-auto border-b py-3 pr-12 pl-6 text-sm eink:border-b-2">
+              <RepairProposal entry={e} title={title} unsureTag={props.unsureTag} />
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" disabled={props.busy} onClick={() => props.onAccept(e.bookId)}>
+                  {t("repair.accept")}
+                </Button>
+                <Button size="sm" variant="outline" disabled={props.busy} onClick={() => props.onReject(e.bookId)}>
+                  {t("repair.reject")}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => props.onSkip(e.bookId)}>
+                  {t("repair.skip")}
+                </Button>
+              </div>
+            </div>
+            {/* no bottom padding: the edit form's sticky bar sits flush at the bottom */}
+            <div className="min-h-0 flex-1 overflow-y-auto px-6">
+              <BookDetail key={e.bookId} id={e.bookId} placeholder={book} edit={props.edit} onEdit={props.onEdit} onNavigate={props.onClose} onDeleted={() => props.onSkip(e.bookId)} />
+            </div>
+          </>
+        )}
+      </SheetContent>
+    </Sheet>
   )
 }

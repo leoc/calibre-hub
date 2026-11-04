@@ -144,6 +144,30 @@ When("I select the first proposal and reject the selected ones", async ({ page }
   await repair(page).getByRole("button", { name: /^Ausgewählte ablehnen/ }).click()
 })
 
+Then("the first proposal shows a cover and links to its book", async ({ page }) => {
+  const first = proposals(page).first()
+  await expect(first.locator("img")).toBeVisible()
+  await expect(first.getByRole("link", { name: "Buchseite" })).toHaveAttribute("href", /\/books\/\d+/)
+})
+
+When("I click the first proposal", async ({ page }) => {
+  await proposals(page).first().getByText("entschieden von:").click()
+})
+
+Then("the drawer shows the proposal {string} and the book", async ({ page }, change: string) => {
+  const drawer = page.getByRole("dialog")
+  await expect(drawer.getByText(change.replace("→ ", ""), { exact: true })).toBeVisible()
+  await expect(drawer.getByRole("button", { name: "Bearbeiten" })).toBeVisible()
+})
+
+When("I accept the proposal in the drawer", async ({ page }) => {
+  await page.getByRole("dialog").getByRole("button", { name: "Übernehmen", exact: true }).click()
+})
+
+When("I close the drawer", async ({ page }) => {
+  await page.keyboard.press("Escape")
+})
+
 Then("the first proposal says {string}", async ({ page }, text: string) => {
   await expect(proposals(page).first().getByText(text)).toBeVisible()
 })

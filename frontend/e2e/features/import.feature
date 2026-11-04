@@ -72,6 +72,16 @@ Feature: Import progress
     When I select the first proposal and reject the selected ones
     Then the repair has 1 open proposals and "1 abgelehnt"
 
+  Scenario: A proposal opens next to its book and is decided there
+    When I open the import page
+    Then the first proposal shows a cover and links to its book
+    When I click the first proposal
+    Then the drawer shows the proposal "→ Dune" and the book
+    When I accept the proposal in the drawer
+    Then the drawer shows the proposal "→ Formulas and Theorems in Pure Mathematics" and the book
+    When I close the drawer
+    Then the repair has 2 open proposals and "1 übernommen"
+
   @narrow
   Scenario: On a phone the page fits the screen
     When I open the import page from the menu
