@@ -436,6 +436,16 @@ in
         example = "03:15";
         description = "Local time of a nightly run over the incomplete books (plus author unification); null for none.";
       };
+      ocrJobs = mkOption {
+        type = types.ints.unsigned;
+        default = 2;
+        description = ''
+          Books without a text layer read by OCR at the same time (first and
+          last pages, one thread each, low priority), so a big import doesn't
+          take the host. 0: no OCR, such a book is decided by its metadata
+          and file name.
+        '';
+      };
       useModel = mkOption {
         type = types.bool;
         default = cfg.classify.enable;
@@ -753,10 +763,19 @@ in
       ++ lib.optional ((cfg.classify.enable || cfg.metadata.useModel) && config.services.ollama.enable) "ollama.service";
       wants = [ "calibre-server.service" ];
       unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable ++ map toString cfg.backlogImport.roots;
-      # ebook-convert for the reading list and conversions, pdfinfo/pdftotext for metadata
+      # ebook-convert for the reading list and conversions; the rule flow
+      # reads books with pdfinfo/pdftotext/pdftoppm, djvutxt/djvused/ddjvu,
+      # ebook-meta/ebook-convert, and scans with tesseract
       path = [
         calibre
         pkgs.poppler-utils
+        pkgs.djvulibre
+        (pkgs.tesseract.override {
+          enableLanguages = [
+            "deu"
+            "eng"
+          ];
+        })
       ];
       environment = {
         HOME = "/var/lib/calibre-hub";
@@ -793,6 +812,7 @@ in
         CALIBRE_HUB_METADATA_SOURCES = lib.concatStringsSep "," cfg.metadata.sources;
         CALIBRE_HUB_METADATA_NIGHTLY = lib.optionalString (cfg.metadata.nightly != null) cfg.metadata.nightly;
         CALIBRE_HUB_METADATA_MODEL = lib.boolToString cfg.metadata.useModel;
+        CALIBRE_HUB_OCR_JOBS = toString cfg.metadata.ocrJobs;
         CALIBRE_HUB_METADATA_INTERVAL = toString cfg.metadata.requestInterval;
         CALIBRE_HUB_OPENLIBRARY_URL = cfg.metadata.openLibraryUrl;
         CALIBRE_HUB_OPENLIBRARY_COVERS_URL = cfg.metadata.openLibraryCoversUrl;

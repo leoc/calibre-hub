@@ -6,6 +6,9 @@
   crystal,
   shards,
   sqlite,
+  poppler-utils,
+  djvulibre,
+  tesseract,
 }:
 crystal.buildCrystalPackage {
   pname = "calibre-hub";
@@ -28,6 +31,17 @@ crystal.buildCrystalPackage {
   buildInputs = [ sqlite ];
   # kemal's exception_page asks `shards version` at compile time
   nativeBuildInputs = [ shards ];
+  # the specs read scans (spec/fixtures/metadata/scan.*)
+  nativeCheckInputs = [
+    poppler-utils
+    djvulibre
+    (tesseract.override {
+      enableLanguages = [
+        "deu"
+        "eng"
+      ];
+    })
+  ];
 
   postInstall = ''
     $out/bin/calibre-hub cli completion fish --prog calibre-hub > calibre-hub.fish

@@ -227,8 +227,11 @@ module CalibreHub
       # "logik-stud.dvi", "file:///F|/…", "test", "untitled", "()", "8508 Fm
       # Frame", "19 3.eps", "MMMonth". "Chapter 1: Reasoning in Geometry" says
       # something.
-      BAD_TITLE = /\A(?:test|untitled(?: document)?|unbenannt|title|titel|unknown|document|dokument|vorlage|cover|book\d*|doc\d*|new document|new page \d+|djvu document|e-?book\s*pdf|microsoft word.*|chap(?:ter)?\s*\d+(?:\s+\d+\.\.\d+)?|chap\d+.*|ch\d+.*|app\d+|rev\d+|\p{L}?\d+\s+\d+\.\.\d+|pii:.*|\S+\.(?:dvi|docx?|indd|qxd|tex|ps|rtf|html?|pdf|p65|pm\d|fm|wpd|txt))\z/i
+      BAD_TITLE = /\A(?:test|click here to log on|untitled(?: document)?|unbenannt|title|titel|unknown|document|dokument|vorlage|cover|book\d*|doc\d*|new document|new page \d+|djvu document|e-?book\s*pdf|microsoft word.*|chap(?:ter)?\s*\d+(?:\s+\d+\.\.\d+)?|chap\d+.*|ch\d+.*|app\d+|rev\d+|\p{L}?\d+\s+\d+\.\.\d+|pii:.*|\S+\.(?:dvi|docx?|indd|qxd|tex|ps|rtf|html?|pdf|p65|pm\d|fm|wpd|txt))\z/i
       FRAME_FILE = /\.(?:qxd|indd|dvi|p65)\b|\.(?:eps|vp|fm|key|tiff?)\z|\bfm\s+(?:frame|r\d)\b|\bfrontmatter\b|\bsup\s+tm\b|\bopener\z/i
+
+      # the code of a collection in front of a title
+      CODE_PREFIX = /\A\p{Lu}{2,5}\d{2,3}\s*[-–:]\s/
 
       def self.bad_title?(t : String) : Bool
         s = t.strip
@@ -250,6 +253,8 @@ module CalibreHub
         return true if bad_title?(t)
         s = t.strip
         return true if s.matches?(Clean::RIPPER) || s.matches?(/\bripped\s+by\b/i)
+        # "HIT04 - So Long, and Thanks for All the Fish": a collection's code
+        return true if s.matches?(CODE_PREFIX)
         # "4. Thomas S. Kuhn - The Structure…", "07 - Compilers"
         return true if s.matches?(/\A\d{1,3}(?:\.\s|\s+[-–]\s)/)
         # "Cambridge Quantum Processes Mar 2009 eBook-ELOHiM"
@@ -275,11 +280,15 @@ module CalibreHub
         book.identifiers["isbn"]?.nil? && book.title.matches?(/\s\d{1,2}(?:st|nd|rd|th)\s+edition\b/i)
       end
 
+      # who a tool or a typesetter put into this library's files as author
+      FILE_OWNERS = Set{"administrator", "besitzer", "jasmine fradique", "danny", "owner", "user"}
+
       # Not a person: a tool or owner of the file, a publisher, an edition,
       # a title or a subtitle
       def self.bad_author?(a : String) : Bool
         return true if Clean.unknown_author?(a)
         s = a.strip
+        return true if FILE_OWNERS.includes?(Text.tokens(s).join(' '))
         return true if s.matches?(/[\d()\[\]]|\/\/|https?:|\.(?:com|org|net)\b|\bedition\b/i) || s.matches?(/\Aauthor:/i)
         organization?(s) || title_like?(s)
       end
@@ -656,6 +665,11 @@ module CalibreHub
         else
           {s.strip, nil}
         end
+      end
+
+      # a title from anywhere, cleaned like a name's
+      def self.clean_title(t : String) : String
+        finish_title(t)
       end
 
       private def self.finish_title(t : String) : String

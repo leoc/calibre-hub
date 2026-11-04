@@ -80,6 +80,9 @@ module CalibreHub
       # the volume of a multi-volume work ("2" for "Vol. 2"), DNB 245 n/p
       @[JSON::Field(ignore: true)]
       property volume : String?
+      # false: a sure match whose title isn't in the book's text
+      @[JSON::Field(ignore: true)]
+      property own_title : Bool = true
 
       def initialize(@source, @fields, @url = nil, @by_isbn = nil, @edition = true, @ref = nil)
       end
@@ -124,17 +127,60 @@ module CalibreHub
         base + ((10 - sum % 10) % 10).to_s
       end
 
-      PATTERN = /(?:ISBN(?:-1[03])?[:\s]*)?(?<![\d-])((?:97[89][\s‐-]?)?\d[\d\s‐-]{7,15}[\dXx])(?![\d])/i
+      # the ISBN-10 of a 978 ISBN-13
+      def self.to10(s13 : String) : String?
+        return nil unless s13.size == 13 && s13.starts_with?("978")
+        base = s13[3, 9]
+        sum = 0
+        base.each_char_with_index { |c, i| sum += c.to_i * (10 - i) }
+        check = (11 - sum % 11) % 11
+        base + (check == 10 ? "X" : check.to_s)
+      end
+
+      PATTERN = /(?:ISBN(?:[- ]?1[03](?=[:\s]))?[:\s-]*|(?<![\d-]))((?:97[89][\s‐–-]?)?\d[\d\s‐–-]{7,15}[\dXx])(?![\d])/i
+      # what stands on a copyright page
+      COPYRIGHT = /©|\(c\)\s*\d{4}|copyright|all rights reserved|alle rechte|library of congress|cataloging|bibliografische|nationalbibliothek|british library|published by|first published|printed in|gedruckt in/i
+      # what stands above a list of other books
+      LIST = /also (?:by|available|from|in this series)|other (?:books|titles)|more (?:books|titles)|related titles|in the same series|weitere (?:b(?:ü|ue)cher|titel)|ebenfalls (?:bei|erschienen)|lieferbare titel/i
+      # how far from an ISBN these count
+      NEAR = 400
+      # this many ISBNs that close together are a list of books
+      LIST_SIZE = 3
+
+      # An ISBN found in a book. strict: from the last pages or a list of
+      # books, where it may be another book's: it needs more proof (Fit).
+      record Found, isbn : String, labelled : Bool, copyright : Bool, strict : Bool do
+        # labelled on the copyright page first, a list last
+        def rank : Int32
+          (strict ? 4 : 0) + (labelled ? 0 : 2) + (copyright ? 0 : 1)
+        end
+      end
 
       # Valid ISBNs in a text, labelled ones ("ISBN 978-...") first, each once
       def self.scan(text : String) : Array(String)
-        labelled = [] of String
-        other = [] of String
+        found(text).sort_by { |f| f.labelled ? 0 : 1 }.map(&.isbn)
+      end
+
+      # The ISBNs of a book's first and last pages, the likeliest first
+      def self.found(front : String, back = "") : Array(Found)
+        list = hits(front, false) + hits(back, true)
+        list.each_with_index.to_a.sort_by { |f, i| {f.rank, i} }.map(&.[0]).uniq(&.isbn)
+      end
+
+      private def self.hits(text : String, last : Bool) : Array(Found)
+        all = [] of {String, Bool, Int32}
         text.scan(PATTERN) do |m|
           isbn = normalize(m[1]) || next
-          (m[0].upcase.starts_with?("ISBN") ? labelled : other) << isbn
+          all << {isbn, m[0].upcase.starts_with?("ISBN"), m.begin(0)}
         end
-        (labelled + other).uniq
+        all.map do |isbn, labelled, at|
+          from = {at - NEAR, 0}.max
+          copyright = (text[from, 2 * NEAR]? || "").matches?(COPYRIGHT)
+          others = all.select { |i, _, p| (p - at).abs <= NEAR && i != isbn }.map(&.[0]).uniq.size
+          # a printing's hardcover and paperback stand side by side
+          list = (text[from, at - from]? || "").matches?(LIST) || others + 1 > LIST_SIZE || (others + 1 == LIST_SIZE && !copyright)
+          Found.new(isbn, labelled, copyright, last || list)
+        end
       end
     end
 
@@ -738,10 +784,13 @@ module CalibreHub
 
       # A catalog can file an ISBN under another book (Open Library has the
       # Handbook of Peer-to-Peer Networking's as "Mathematical modelling of
-      # estuarine physics"): no word of weight in common with a title that
-      # says something. The title search decides then, the book keeps its
-      # ISBN.
-      def self.other_book?(guesses : Array(Guess), r : Record) : Bool
+      # estuarine physics"). With the book's text: neither the record's
+      # title nor an author appears in it (Fit; "Der Wüstenplanet" with the
+      # catalog title "Dune" fits by Frank Herbert). Without: no word of
+      # weight in common with a title that says something. The title search
+      # decides then, the book keeps its ISBN.
+      def self.other_book?(guesses : Array(Guess), r : Record, words : Words? = nil) : Bool
+        return !Fit.check(r, words).any? if words && !words.empty?
         theirs = words([r.title, r.subtitle].compact.join(" "))
         return false if theirs.empty?
         guesses.all? do |g|
@@ -758,13 +807,18 @@ module CalibreHub
       # Scores the candidates against the best fitting guess and marks the
       # sure ones: found by an ISBN that is trusted (in calibre or the
       # book's OPF) unless it names another book (other_book?), or that
-      # agrees with the book (from the text)
+      # agrees with the book (from the text). words: the book's first
+      # pages. A sure record whose title isn't in them is a translation's,
+      # its title isn't this book's (own_title).
       def self.rank(candidates : Array(Candidate), guesses : Array(Guess), languages : Array(String),
-                    trusted_isbns : Array(String)) : Array(Candidate)
+                    trusted_isbns : Array(String), words : Words? = nil) : Array(Candidate)
+        words = nil if words.try(&.empty?)
         candidates.each do |c|
           c.score = guesses.max_of { |g| score(g, languages, c.fields) }
           if isbn = c.by_isbn
-            c.sure = trusted_isbns.includes?(isbn) && !other_book?(guesses, c.fields) || c.score >= 0.5
+            other = other_book?(guesses, c.fields, words)
+            c.sure = trusted_isbns.includes?(isbn) && !other || c.score >= 0.5 && !(words && other)
+            c.own_title = false if words && c.sure && !c.fields.title.try { |t| Fit.title?(t, words) }
             c.score = 1.0 if c.sure
           end
         end
@@ -1003,7 +1057,7 @@ module CalibreHub
           bt = Text.main_title(bt)
           if Text.key(bt) == Text.key(title) && better_form?(bt, title)
             title, title_source = bt, best.source
-          elsif best.sure && (title_messy?(title) || Text.similarity(title, bt) < 0.5)
+          elsif best.sure && best.own_title && (title_messy?(title) || Text.similarity(title, bt) < 0.5)
             title, title_source = bt, best.source
           end
         end

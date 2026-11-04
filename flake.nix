@@ -89,6 +89,8 @@
             curl
             jq
             poppler-utils
+            djvulibre
+            tesseract
           ];
           QT_QPA_PLATFORM = "offscreen";
           # libbubbletea_go for `hub tui` and its specs (read at compile time)

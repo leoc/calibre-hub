@@ -7,18 +7,46 @@ require "json"
 require "uri"
 require "xml"
 require "./meta_rules"
+require "./meta_text"
+require "./meta_ocr"
 require "./command"
 require "./covers"
 require "./zip_limits"
+require "file_utils"
 
 module CalibreHub
   module Meta
-    # Metadata in the book file itself: the EPUB's OPF and its first and
-    # last pages (ISBN on the copyright page), or a PDF's info dict and
-    # first pages (poppler's pdfinfo/pdftotext)
+    # Metadata in the book file itself and the text of its first and last
+    # pages (the ISBN on the copyright page, the title and author catalog
+    # records are checked against): an EPUB's OPF and spine, a PDF's info
+    # dict and pages (poppler's pdfinfo/pdftotext), a DjVu's annotations and
+    # text layer (djvused, djvutxt), MOBI, AZW and CHM through calibre's
+    # ebook-meta and ebook-convert (they only read the file, calibre-server
+    # stays the only writer). A file without a text layer goes to Ocr.
     module FileMeta
+      # fewer letters on the first pages than this: no text layer
+      MIN_LETTERS = 300
+
       # cover: the text of a PDF's first page (a standard's title page)
-      record Info, record : Record, isbns : Array(String), cover : String? = nil
+      # front, back: the text of the first and last pages. ocr: from Ocr.
+      record Info, record : Record, isbns : Array(String), cover : String? = nil,
+        front : String = "", back : String = "", format : String = "", ocr : Bool = false do
+        # the ISBNs in the book, the likeliest first
+        def found : Array(Isbn::Found)
+          Isbn.found(front, back)
+        end
+
+        # the text a record is checked against, nil without one
+        def words : Words?
+          w = Words.new(front)
+          w.empty? ? nil : w
+        end
+
+        # no text layer worth the name: a scan, a watermark at most
+        def scan? : Bool
+          front.count(&.letter?) < MIN_LETTERS
+        end
+      end
 
       MAX_TEXT = 300_000
       # a PDF poppler hangs on must not block the metadata job
@@ -26,18 +54,38 @@ module CalibreHub
       # bytes read of the container, the OPF and a page at most (ZIP bombs);
       # a cut OPF fails as XML, a cut page still has its start
       MAX_ENTRY = 4_i64 * 1024 * 1024
+      # the formats read, the order a book's format is chosen in
+      FORMATS = %w(EPUB PDF DJVU DJV MOBI AZW3 AZW PRC CHM)
+      # first and last pages of a format with pages
+      FRONT_PAGES = 8
+      BACK_PAGES  = 3
+      # calibre has no pages for these: as much text as those pages hold
+      FRONT_BYTES = 48 * 1024
+      BACK_BYTES  = 16 * 1024
+      # calibre starts slowly and takes a CHM apart
+      CONVERT_TIMEOUT = 3.minutes
 
       # nil when the file can't be read; the online sources still run.
       # Crystal's zip reader rejects entries with an invalid DOS timestamp
       # (seen in the wild), which calibre and readers don't mind.
       def self.read(path : String, format : String) : Info?
         case format.upcase
-        when "EPUB" then epub(path)
-        when "PDF"  then pdf(path)
+        when "EPUB"                       then epub(path)
+        when "PDF"                        then pdf(path)
+        when "DJVU", "DJV"                then djvu(path)
+        when "MOBI", "AZW3", "AZW", "PRC" then calibre(path, "MOBI")
+        when "CHM"                        then calibre(path, "CHM")
         end
       rescue ex : ArgumentError | Compress::Zip::Error | XML::Error | IO::Error
         Log.warn { "metadata: can't read #{File.basename(path)}: #{ex.message}" }
         nil
+      end
+
+      # The file's text by OCR when it has no text layer (Ocr), with its ISBNs
+      def self.with_ocr(info : Info, path : String, cache : Ocr::Cache? = nil) : Info
+        return info unless info.scan? && info.format.in?("PDF", "DJVU")
+        pages = Ocr.read(path, info.format, cache) || return info
+        info.copy_with(front: pages[0], back: pages[1], isbns: Isbn.found(*pages).map(&.isbn), ocr: true)
       end
 
       def self.epub(path : String) : Info?
@@ -51,15 +99,18 @@ module CalibreHub
           record = opf(opf_xml)
           base = File.dirname(opf_path)
           pages = spine(opf_xml).map { |href| base == "." ? href : "#{base}/#{href}" }
-          pages = (pages.first(6) + pages.last(3)).uniq
-          text = String.build do |io|
-            pages.each do |p|
-              entry = zip[URI.decode(p)]? || zip[p]? || next
-              io << strip_tags(text_of.call(entry, true)) << '\n'
-              break if io.bytesize > MAX_TEXT
+          text = ->(list : Array(String)) do
+            String.build do |io|
+              list.each do |p|
+                entry = zip[URI.decode(p)]? || zip[p]? || next
+                io << strip_tags(text_of.call(entry, true)) << '\n'
+                break if io.bytesize > MAX_TEXT
+              end
             end
           end
-          Info.new(record, Isbn.scan(text))
+          front = text.call(pages.first(6))
+          back = text.call(pages.last(3) - pages.first(6))
+          Info.new(record, Isbn.found(front, back).map(&.isbn), front: front, back: back, format: "EPUB")
         end
       rescue ex : Compress::Zip::Error | XML::Error | IO::Error | ZipLimits::TooLarge
         STDERR.puts "metadata: #{File.basename(path)}: #{ex.message}"
@@ -114,8 +165,69 @@ module CalibreHub
 
       def self.pdf(path : String) : Info?
         info = run("pdfinfo", ["-enc", "UTF-8", path]) || return nil
-        text = run("pdftotext", ["-l", "6", "-enc", "UTF-8", path, "-"]) || ""
-        Info.new(pdf_info(info), Isbn.scan(text[0, MAX_TEXT]? || text), text.split('\f', 2).first.presence)
+        pages = info[/^Pages:\s*(\d+)/m, 1]?.try(&.to_i?) || 0
+        front = cut(run("pdftotext", ["-l", FRONT_PAGES.to_s, "-enc", "UTF-8", path, "-"]) || "")
+        from = {pages - BACK_PAGES + 1, FRONT_PAGES + 1}.max
+        back = pages > FRONT_PAGES ? cut(run("pdftotext", ["-f", from.to_s, "-enc", "UTF-8", path, "-"]) || "") : ""
+        Info.new(pdf_info(info), Isbn.found(front, back).map(&.isbn), front.split('\f', 2).first.presence, front, back, "PDF")
+      end
+
+      def self.djvu(path : String) : Info?
+        pages = run("djvused", ["-e", "n", path]).try(&.strip.to_i?) || return nil
+        front = cut(run("djvutxt", ["--page=1-#{{FRONT_PAGES, pages}.min}", path]) || "")
+        from = {pages - BACK_PAGES + 1, FRONT_PAGES + 1}.max
+        back = pages > FRONT_PAGES ? cut(run("djvutxt", ["--page=#{from}-#{pages}", path]) || "") : ""
+        meta = run("djvused", ["-e", "print-meta", path]) || ""
+        Info.new(djvu_meta(meta), Isbn.found(front, back).map(&.isbn), nil, front, back, "DJVU")
+      end
+
+      # djvused's `key "value"` lines; most files have neither
+      def self.djvu_meta(text : String) : Record
+        fields = {} of String => String
+        text.each_line do |l|
+          k, _, v = l.partition(/\s+/)
+          fields[k.downcase] = v.strip.strip('"') unless v.strip.empty?
+        end
+        record_of(fields["title"]?, fields["author"]?)
+      end
+
+      # A format calibre reads: its metadata as OPF (ebook-meta), its text
+      # through ebook-convert. A file calibre can't convert still has its
+      # metadata.
+      def self.calibre(path : String, format : String) : Info?
+        dir = File.tempname("book")
+        Dir.mkdir(dir)
+        begin
+          opf_path = File.join(dir, "book.opf")
+          run("ebook-meta", [path, "--to-opf=#{opf_path}"], CONVERT_TIMEOUT) || return nil
+          record = opf(File.read(opf_path).scrub)
+          txt = File.join(dir, "book.txt")
+          front = back = ""
+          if run("ebook-convert", [path, txt, "--txt-output-formatting=plain"], CONVERT_TIMEOUT) && File.exists?(txt)
+            front, back = ends(txt)
+          end
+          Info.new(record, Isbn.found(front, back).map(&.isbn), nil, front, back, format)
+        ensure
+          FileUtils.rm_rf(dir)
+        end
+      end
+
+      # the start and the end of a text file
+      private def self.ends(path : String) : {String, String}
+        File.open(path) do |f|
+          head = Bytes.new({FRONT_BYTES.to_i64, f.size}.min)
+          f.read_fully(head)
+          rest = f.size - head.size
+          return {String.new(head).scrub, ""} if rest <= 0
+          tail = Bytes.new({BACK_BYTES.to_i64, rest}.min)
+          f.seek(-tail.size, IO::Seek::End)
+          f.read_fully(tail)
+          {String.new(head).scrub, String.new(tail).scrub}
+        end
+      end
+
+      private def self.cut(text : String) : String
+        text[0, MAX_TEXT]? || text
       end
 
       # pdfinfo's "Key: value" lines; "Microsoft Word - x.doc" titles and
@@ -126,16 +238,20 @@ module CalibreHub
           k, _, v = l.partition(':')
           fields[k.strip] = v.strip unless v.strip.empty?
         end
-        title = fields["Title"]?.try { |t| Clean.strip_junk(t) }.presence
-        title = nil if title && title.matches?(/\A(?:untitled|unbenannt|document|dokument\d*)\z/i)
-        author = fields["Author"]?.presence
-        author = nil if author && Clean.unknown_author?(author)
+        record_of(fields["Title"]?, fields["Author"]?)
+      end
+
+      private def self.record_of(title : String?, author : String?) : Record
+        title = title.try { |t| Clean.strip_junk(t) }.presence
+        title = nil if title && (title.matches?(/\A(?:untitled|unbenannt|document|dokument\d*)\z/i) || FileName.bad_title?(title))
+        author = author.presence
+        author = nil if author && (Clean.unknown_author?(author) || FileName::FILE_OWNERS.includes?(Text.tokens(author).join(' ')))
         Record.new(title: title, authors: author.try { |a| Clean.split_authors(a) })
       end
 
-      private def self.run(cmd : String, args : Array(String)) : String?
+      private def self.run(cmd : String, args : Array(String), timeout = TOOL_TIMEOUT) : String?
         output = IO::Memory.new
-        status = Command.run(cmd, args, TOOL_TIMEOUT, output: output)
+        status = Command.run(cmd, args, timeout, output: output)
         # broken PDFs can still yield invalid UTF-8, which regexes reject
         status.success? ? output.to_s.scrub : nil
       rescue File::NotFoundError | IO::Error | Command::Timeout
