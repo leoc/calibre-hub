@@ -537,7 +537,16 @@ called is read from the book first, the file name comes last.
    lists need their title in the text. A catalog record is only taken when it
    fits the book's first pages: its title or an author appears there. A
    German book keeps its title when the record has only the English one, and
-   gets the author and ISBN. Level 1 wins over everything, also the file name.
+   gets the author and ISBN. Level 1 wins over everything, also the file name,
+   unless the book says it is something else: a title or name that says
+   something and disagrees with the record is a contradiction. The title page
+   settles it (75, reviewed). If the text has the book's own title, the record
+   is something it quotes (a reference list, a foreword's other edition) and
+   isn't used; if nothing settles it, 50 and nothing is written. Junk titles
+   (`test`, `New Page 12`, a surname) contradict nothing. A record never
+   removes a person the book has: it adds and spells (`Meta::People`), only
+   non-persons go, and a record that knows nobody of the book (an edited
+   volume's contributor) changes no author and is reviewed.
 2. Metadata in the file: an EPUB's OPF and calibre's own are trusted, a PDF,
    DjVu, MOBI or CHM only where a field fits the text or the name. Known junk
    (`Click here to log on`, `Administrator`, `Untitled Document`) never counts.

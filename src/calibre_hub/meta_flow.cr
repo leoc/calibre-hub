@@ -2,6 +2,7 @@ require "json"
 require "./book"
 require "./meta_confidence"
 require "./meta_filename"
+require "./meta_quality"
 require "./meta_sources"
 
 module CalibreHub
@@ -104,17 +105,18 @@ module CalibreHub
         FileName.bad_title?(g.title) ? nil : g
       end
 
-      # An ISBN's level: {isbn, how it came, strict}
+      # An ISBN's level: {isbn, how it came, strict}. The book's own first:
+      # another edition's ISBN in its pages is no contradiction when its
+      # own record fits.
       private def self.isbns(input : Input) : Array({String, String, Bool})
         info = input.info || return [] of {String, String, Bool}
         text = info.ocr ? SOURCE_OCR : SOURCE_TEXT
         own = own_isbn(input.book)
         found = info.found
-        # the book's own first when its pages have it
-        found = found.sort_by { |f| f.isbn == own ? 0 : 1 } if own
-        list = found.reject(&.strict).map { |f| {f.isbn, text, false} }
+        list = [] of {String, String, Bool}
+        own.try { |i| list << {i, found.any? { |f| f.isbn == i } ? text : SOURCE_CALIBRE, false} }
+        list += found.reject(&.strict).map { |f| {f.isbn, text, false} }
         info.record.isbn.try { |i| Isbn.normalize(i).try { |n| list << {n, SOURCE_OPF, false} } }
-        own.try { |i| list << {i, SOURCE_CALIBRE, false} }
         list += found.select(&.strict).map { |f| {f.isbn, text, true} }
         list.uniq(&.[0]).first(MAX_ISBNS)
       end
@@ -126,6 +128,7 @@ module CalibreHub
       private def self.by_isbn(input : Input, words : Words?, reading : Guess?) : Decision?
         lookup = input.by_isbn || return nil
         return nil unless words
+        page = input.info.try(&.found.select(&.copyright).map(&.isbn)) || [] of String
         isbns(input).each do |isbn, source, strict|
           fits = lookup.call(isbn).compact_map do |c|
             fit = Fit.check(c.fields, words)
@@ -134,40 +137,106 @@ module CalibreHub
           end
           next if fits.empty?
           c, fit = fits.sort_by { |x, f| {f.both? ? 0 : 1, f.title ? 0 : 1, Merge::PRECEDENCE["authors"].index(x.source) || 9} }.first
-          return level_isbn(input, c, fit, isbn, source, reading)
+          verdict = judge(input, c.fields, fit, words, reading, source != SOURCE_TEXT && source != SOURCE_OCR || page.includes?(isbn))
+          next if verdict == :quoted
+          return level_isbn(input, c, fit, isbn, source, reading, words, verdict)
         end
         nil
       end
 
-      private def self.level_isbn(input : Input, c : Candidate, fit : Fit::Result, isbn : String, isbn_source : String, reading : Guess?) : Decision
+      # what the book says it is: its name and its title, as far as they say
+      # something. A surname, a code or "New Page 12" is no title.
+      private def self.own_titles(input : Input, reading : Guess?, r : Record) : Array(String)
+        book = input.book
+        names = (book.authors + (reading.try(&.authors) || [] of String) + (r.authors || [] of String)).flat_map { |a| Text.tokens(a) }.to_set
+        [reading.try(&.title), book.title].compact.uniq.select do |t|
+          words = Text.tokens(t)
+          !FileName.bad_title?(t) && !Quality.file_name?(t) && FileName.side_score(t) < 2 &&
+            !FileName.known_publisher?(t) && !(words.size == 1 && names.includes?(words.first))
+        end
+      end
+
+      # the same title, also in another spelling
+      private def self.same_title?(a : String, b : String) : Bool
+        x, y = Text.key(a), Text.key(b)
+        return true if Text.key(Text.main_title(a)) == Text.key(Text.main_title(b))
+        short, long = x.size < y.size ? {x, y} : {y, x}
+        return false if short.empty?
+        return true if long.includes?(short) && (Text.tokens(x.size < y.size ? a : b).size >= 2 || short.size * 2 >= long.size)
+        Text.similarity(a, b) >= 0.6 || Levenshtein.distance(x, y) * 7 <= long.size
+      end
+
+      TRANSLATED = /original(?:titel|ausgabe)|orginalausgabe|titel der original|aus dem \p{L}+ von|übersetz|translated (?:from|by)/i
+
+      # The text names the record's title as the original's, or is in another
+      # language than the title and has this ISBN on its copyright page
+      private def self.translated?(input : Input, title : String, on_copyright_page : Bool) : Bool
+        front = input.info.try(&.front) || return false
+        front.scan(TRANSLATED) do |m|
+          return true if Fit.title?(title, Words.new(front[m.end(0), 200]? || ""))
+        end
+        return false unless on_copyright_page
+        case Lang.of_text(front)
+        when "deu" then !Lang.german_title?(title)
+        when "eng" then Lang.german_title?(title)
+        else            false
+        end
+      end
+
+      # How the record stands to what the book says it is. An ISBN in a book
+      # is not always the book's: a guidance quotes its sources, a foreword
+      # the English edition. So a title or name that says something and
+      # disagrees is a contradiction, which only the title page settles.
+      # :agrees; :translation (the author fits, another language, the ISBN on
+      # the copyright page, or the text names it the original); :subtitle (the book's title is the record's
+      # subtitle); :confirmed (the title page shows the record, not the book's
+      # title); :quoted (the text has the book's title: the record is
+      # something it quotes); :against (nothing says which is right)
+      private def self.judge(input : Input, r : Record, fit : Fit::Result, words : Words, reading : Guess?, on_copyright_page : Bool) : Symbol
+        title = catalog_title(r)
+        owns = own_titles(input, reading, r)
+        return :agrees if owns.empty? || owns.any? { |t| same_title?(t, title) }
+        return :translation if fit.authors && translated?(input, title, on_copyright_page)
+        main = Text.tokens(Text.main_title(title))
+        return :subtitle if owns.any? { |t| words.phrase?(main + Text.tokens(t)) }
+        return :confirmed if on_copyright_page && Fit.title_page?(title, words) && !owns.any? { |t| Fit.title_page?(t, words) }
+        return :quoted if owns.any? { |t| Fit.title?(t, words) }
+        :against
+      end
+
+      private def self.level_isbn(input : Input, c : Candidate, fit : Fit::Result, isbn : String, isbn_source : String,
+                                  reading : Guess?, words : Words, verdict : Symbol) : Decision
         book = input.book
         changes = [] of Change
-        title_value = catalog_title(c.fields)
-        own = own_title(book, reading)
-        # a translation: the catalog's title isn't this book's. Catalogs
-        # write titles like sentences, the book's form of the same title stays
-        same = own && Text.key(Text.main_title(own)) == Text.key(Text.main_title(title_value))
-        title = (fit.title && !same ? title_value : own) || title_value
-        unless keep_title?(book, title)
-          changes << Change.new("title", JSON::Any.new(book.title), JSON::Any.new(title), c.source)
+        record_title = catalog_title(c.fields)
+        owns = own_titles(input, reading, c.fields)
+        title = case verdict
+                when :agrees      then chosen_title(book, reading, record_title)
+                when :translation then (owns.includes?(book.title) ? book.title : owns.first?) || record_title
+                when :subtitle    then "#{Text.main_title(record_title)}: #{owns.first}"
+                else                   record_title
+                end
+        authors, known = authors_for(book, reading, c.fields, title, words)
+        # "Buss - 3D Computer Graphics": the author in front of a title in order
+        parts = book.title.split(/\s+[-–]\s+/)
+        named = parts.size >= 2 && authors.any? { |x| People.tokens(x).last? == Text.key(parts.first) }
+        unless verdict != :subtitle && !named && keep_title?(book, title)
+          changes << Change.new("title", JSON::Any.new(book.title), JSON::Any.new(title), c.source) unless FileName.same_text?(book.title, title)
         end
-        people = own_people(c.fields, input.info.try(&.words), reading)
-        unless people.empty? || keep_authors?(book, people)
-          changes.concat(author_changes(book, people, c.source))
-        end
-        t = fit.title ? Confidence::ISBN_BOTH : Confidence::ISBN_ONE
+        changes.concat(author_changes(book, authors, c.source)) unless authors.empty? || FileName.same_authors?(book.authors, authors)
+        t = fit.title && verdict == :agrees ? Confidence::ISBN_BOTH : Confidence::ISBN_ONE
         a = fit.authors ? Confidence::ISBN_BOTH : Confidence::ISBN_ONE
-        if reading && !reading.authors.empty? && !people.empty? && !FileName.same_book?(reading.title, title) &&
-           Score.authors(reading.authors, people) < 0.5
-          t -= Confidence::ISBN_AGAINST_NAME
-          a -= Confidence::ISBN_AGAINST_NAME
+        a = {a, Confidence::ISBN_OTHER_PEOPLE}.min unless known
+        case verdict
+        when :confirmed then t = a = Confidence::ISBN_CONFIRMED
+        when :against   then t = a = Confidence::ISBN_AGAINST
         end
         notes = [] of Note
-        have = own_isbn(book)
-        if have && have != isbn
+        own = own_isbn(book)
+        if own && own != isbn
           notes << Note.new("isbnConflict", isbn)
-          isbn, isbn_source = have, SOURCE_CALIBRE
-        elsif have.nil?
+          isbn, isbn_source = own, SOURCE_CALIBRE
+        elsif own.nil?
           others = (input.owners.try(&.call(isbn)) || [] of Int64) - [book.id]
           if others.empty?
             changes << Change.new("isbn", JSON::Any.new(book.identifiers["isbn"]?), JSON::Any.new(isbn), c.source)
@@ -179,19 +248,24 @@ module CalibreHub
         Decision.new(changes, c.source, LEVEL_ISBN, c.source, t, a, isbn, isbn_source, notes)
       end
 
-      # The record's persons: those in the book's text when any is ("Cambridge
-      # India" isn't), the one the name knows first
-      private def self.own_people(r : Record, words : Words?, reading : Guess?) : Array(String)
+      # The authors after a record: its persons in the book's text when any
+      # is ("Cambridge India" isn't), merged with the book's and its name's
+      # (People.merge). The book's own count only for this title: a file with
+      # another book's metadata has that book's authors.
+      private def self.authors_for(book : Book, reading : Guess?, r : Record, title : String, words : Words) : {Array(String), Bool}
         people = CrossCheck.people(r)
-        here = words ? people.select { |a| words.person?(a) } : people
+        here = people.select { |a| words.person?(a) }
         people = here unless here.empty?
-        return people unless reading
-        people.each_with_index.to_a.sort_by { |a, i| {Score.authors([a], reading.authors) >= 0.8 ? 0 : 1, i} }.map(&.[0])
+        own = !FileName.bad_title?(book.title) && FileName.same_book?(book.title, title) ? People.clean(book.authors) : [] of String
+        # "Glitch - The Hidden Impact…", "OpenGL": a word of the title is nobody
+        title_words = Text.tokens(catalog_title(r))
+        named = (own + (reading.try(&.authors) || [] of String)).reject { |a| People.tokens(a).size < 2 && People.tokens(a).all? { |w| title_words.includes?(w) } }
+        People.merge(named, people, words)
       end
 
-      # The record's title with its subtitle
+      # The record's title with its subtitle, without a series in parentheses
       private def self.catalog_title(r : Record) : String
-        t = Text.main_title(r.title || "").strip
+        t = Text.main_title(r.title || "").strip.sub(/\s*\([^()]*\)\z/, "")
         sub = r.subtitle.try(&.strip)
         sub && Merge.subtitle?(sub, t) ? "#{t}: #{sub}" : t
       end
@@ -202,21 +276,30 @@ module CalibreHub
         reading.try(&.title) || (book.title unless FileName.leftover_title?(book.title))
       end
 
+      # Of two forms of a title the book's, when the catalog's has nothing
+      # more: catalogs write titles like sentences, abbreviate ("Bd. 1"), lose
+      # the volume
+      private def self.chosen_title(book : Book, reading : Guess?, record : String) : String
+        # "Genetic Engineering Principles & Methods Volume 9-Springer US"
+        if Text.volume(book.title) && !Text.volume(record) && same_title?(book.title, record)
+          return reading.try(&.title) || FileName.parse("#{book.title}.pdf").try(&.title) || book.title
+        end
+        own = own_title(book, reading) || return record
+        # a name in one word is no form of a title: "buildabinaryclock…"
+        own = book.title unless own.includes?(' ') || FileName.leftover_title?(book.title)
+        return record unless same_title?(own, record)
+        return own if Text.key(Text.main_title(own)) == Text.key(Text.main_title(record)) && !record.includes?(':')
+        return own if Text.key(own) == Text.key(record) || Text.volume(own) && !Text.volume(record)
+        return own if record.split(' ')[1..].count(&.[0].uppercase?) == 0 && record.includes?(' ')
+        return own if Levenshtein.distance(Text.key(own), Text.key(record)) * 7 <= Text.key(own).size
+        record
+      end
+
       # the same book under a title that is in order stays
       private def self.keep_title?(book : Book, title : String) : Bool
         return true if FileName.same_text?(book.title, title)
         return false if FileName.leftover_title?(book)
         FileName.same_book?(book.title, title)
-      end
-
-      # the same people stay: "Carr" gets the catalog's name in full, "Donald
-      # Knuth" isn't "Donald E. Knuth" enough for a change
-      private def self.keep_authors?(book : Book, theirs : Array(String)) : Bool
-        return false if FileName.weak_authors?(book) || book.authors.size != theirs.size
-        book.authors.all? do |m|
-          words = Text.tokens(m)
-          words.size >= 2 && theirs.any? { |o| Text.tokens(o).last? == words.last }
-        end
       end
 
       private def self.author_changes(book : Book, authors : Array(String), source : String) : Array(Change)
@@ -247,7 +330,8 @@ module CalibreHub
         book = input.book
         record = input.info.try(&.record)
         title = meta_title(record.try(&.title))
-        authors = Clean.authors((record.try(&.authors) || [] of String).map { |a| FileName.clean_author(a) }).reject { |a| FileName.bad_author?(a) }
+        listed = (record.try(&.authors) || [] of String).flat_map { |a| a.matches?(/\s(?:and|und)\s/) ? FileName.split_authors(a) : [a] }
+        authors = Clean.authors(listed.map { |a| FileName.clean_author(a) }).reject { |a| FileName.bad_author?(a) }
         trusted = input.info.try(&.format) == "EPUB"
         unless trusted
           title = nil unless title && fits?(title, words, input.name)
@@ -321,8 +405,12 @@ module CalibreHub
                 Confidence::META_NAME - Confidence::META_AGAINST_NAME
               end
         end
-        if !authors.empty? && !keep_authors?(book, authors) && !same_people?(book.authors, authors)
-          changes.concat(author_changes(book, authors, source))
+        unless authors.empty?
+          # a file doesn't remove a co-author either
+          own = FileName.same_book?(book.title, title) ? People.clean(book.authors) : [] of String
+          merged, known = People.merge(own, authors, words)
+          authors = merged if known
+          changes.concat(author_changes(book, authors, source)) unless same_people?(book.authors, authors)
         end
         changes.concat(name_extras(input))
         isbn, isbn_source = meta_isbn(input, changes)
@@ -428,14 +516,19 @@ module CalibreHub
         hand = input.hand
         hand = hand + Set{"authorSort"} if hand.includes?("authors")
         changes = d.changes.reject { |c| hand.includes?(c.field) }
-        t = hand.includes?("title") ? Confidence::HAND : d.title
-        a = hand.includes?("authors") ? Confidence::HAND : d.authors
+        t = hand.includes?("title") ? Confidence::HAND : d.title.clamp(0, 100)
+        a = hand.includes?("authors") ? Confidence::HAND : d.authors.clamp(0, 100)
         d = d.copy_with(changes: changes, title: t, authors: a)
         unsure_tag = Meta.unsure_tag
         tags = Merge.value(book, "tags").as_a.map(&.as_s)
         if d.confidence < Confidence::REVIEW
           names = changes.select { |c| FileName::NAME_FIELDS.includes?(c.field) }
           changes -= names
+          # an ISBN nobody confirms isn't this book's yet
+          if changes.any? { |c| c.field == "isbn" }
+            changes = changes.reject { |c| c.field == "isbn" }
+            d = d.copy_with(isbn: nil, isbn_source: nil)
+          end
           unless names.empty? || changes.any? { |c| c.field == FileName::CANDIDATE }
             title = names.find { |c| c.field == "title" }.try(&.new.as_s?)
             authors = names.find { |c| c.field == "authors" }.try(&.new.as_a?.try(&.map(&.as_s))) || [] of String

@@ -686,6 +686,21 @@ module CalibreHub
                          "von", "vom", "zur", "zum", "im", "über", "auf", "nicht", "wie", "sich", "ist", "sie", "ihr",
                          "ihre", "ihres", "unser", "durch", "oder", "aus", "bei", "nach", "wenn", "warum", "was"}
 
+      ENGLISH_WORDS = Set{"the", "and", "of", "to", "that", "this", "with", "from", "which", "have", "are", "for", "not", "you"}
+      GERMAN_TEXT   = Set{"der", "die", "das", "und", "nicht", "ist", "ein", "eine", "mit", "auf", "sich", "für", "den", "von"}
+
+      # deu or eng when a text is clearly one of them, by its function words
+      def self.of_text(text : String) : String?
+        de = en = 0
+        text.downcase.scan(/\p{L}+/) do |m|
+          de += 1 if GERMAN_TEXT.includes?(m[0])
+          en += 1 if ENGLISH_WORDS.includes?(m[0])
+        end
+        return "deu" if de >= 10 && de > 2 * en
+        return "eng" if en >= 10 && en > 2 * de
+        nil
+      end
+
       # umlauts or German function words
       def self.german_title?(title : String) : Bool
         return true if title.matches?(/[äöüÄÖÜß]/)
@@ -845,7 +860,22 @@ module CalibreHub
       # or translates
       def self.people(r : Record) : Array(String)
         list = (r.authors || [] of String).reject(&.matches?(/\((?:narrator|translator|illustrator|reader)\)/i))
-        Clean.authors(list.map { |a| FileName.clean_author(a) }).reject { |a| FileName.organization?(a) }
+        once(Clean.authors(list.map { |a| FileName.clean_author(a) }).reject { |a| FileName.organization?(a) })
+      end
+
+      # a person a catalog has twice: "J. O. Bird" and "John Bird", "Arnold
+      # Robbins" and the "Arthur Robbins" of a bad entry
+      private def self.once(list : Array(String)) : Array(String)
+        kept = [] of String
+        list.each do |a|
+          words = People.tokens(a)
+          twin = kept.any? do |k|
+            other = People.tokens(k)
+            !words.empty? && !other.empty? && other.last == words.last && other.first[0] == words.first[0]
+          end
+          kept << a unless twin
+        end
+        kept
       end
 
       # 0..1, how many words two titles share

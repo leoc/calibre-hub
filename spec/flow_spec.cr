@@ -6,6 +6,7 @@ require "../src/calibre_hub/meta_quality"
 private alias Meta = CalibreHub::Meta
 private alias Confidence = CalibreHub::Meta::Confidence
 private alias Flow = CalibreHub::Meta::Flow
+private alias M = CalibreHub::Meta::People
 
 private def book(title : String, authors : Array(String), isbn : String? = nil, tags = [] of String) : CalibreHub::Book
   CalibreHub::Book.new(id: 1_i64, title: title, authors: authors, author_sort: Meta::AuthorSort.for(authors),
@@ -41,7 +42,7 @@ end
 
 DUNE     = "9783453317178"
 WARREN   = "9780201914658"
-PAGES_DE = "Frank Herbert\nDer Wüstenplanet\nRoman\nDeutsche Übersetzung\n© 1965 Frank Herbert\nAlle Rechte vorbehalten\nISBN 978-3-453-31717-8\n"
+PAGES_DE = "Frank Herbert\nDer Wüstenplanet\nRoman\nDie Geschichte von dem Planeten und der Familie, die sich auf den Wüsten mit einer Macht nicht ein für alle Mal von dem Haus der anderen löst und die ist.\n© 1965 Frank Herbert\nAlle Rechte vorbehalten\nISBN 978-3-453-31717-8\n"
 
 describe Meta::Isbn do
   it "takes a label with a hyphen and an OCR'd line" do
@@ -156,7 +157,7 @@ describe Meta::Flow do
       d.level.should eq 1
       changed(d).has_key?("title").should be_false
       changed(d)["authors"].should eq JSON.parse(%(["Frank Herbert"]))
-      {d.title, d.authors, d.confidence}.should eq({90, 98, 90})
+      {d.title, d.authors, d.confidence}.should eq({85, 98, 85})
     end
 
     it "takes the record's title when the book's says nothing" do
@@ -191,13 +192,202 @@ describe Meta::Flow do
       changed(d)["authors"].should eq JSON.parse(%(["Nelson H. F. Beebe", "Arnold Robbins"]))
     end
 
-    it "says when the text came from OCR, and subtracts a name that says another book" do
-      b = book("Something", ["Unknown"])
-      i = input(b, "Knuth - The Art of Computer Programming.pdf", text, ocr: true)
+    it "says when the text came from OCR" do
+      b = book("Unknown", ["Unknown"])
+      i = input(b, nil, text, ocr: true)
       i.by_isbn = catalog({WARREN => hackers})
+      Flow.decide(i).not_nil!.isbn_source.should eq "ocr"
+    end
+
+    describe "a record against what the book says it is" do
+      # #1734: the PDF's title is a standard's, the file a short name, the title page the record's
+      it "wants the title page's word for it" do
+        pages = "Signal Processing for Communications, by P.Prandoni and M. Vetterli, © 2008, EPFL Press\nSIGNAL PROCESSING FOR COMMUNICATIONS\nISBN 978-0-201-91465-8 (EPFL Press)\n"
+        r = Meta::Record.new(title: "Signal Processing for Communications", authors: ["Paolo Prandoni", "Martin Vetterli"])
+        i = input(book("ISO 15930 - Electronic document file format for prepress digital data exchange", ["Unknown"]), "sp4comm_corrected.pdf", pages)
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        {d.level, d.confidence, d.band}.should eq({1, 75, "review"})
+        changed(d)["title"].should eq "Signal Processing for Communications"
+      end
+
+      # #76: FDA guidance, its reference list quotes a book on software quality
+      it "doesn't turn a text into a source it quotes" do
+        pages = "General Principles of Software Validation; Final Guidance for Industry and FDA Staff\n" + "the quality of software is the issue of software quality here. " * 40 +
+                "\nReferences\nCraig Kaplan, Ralph Clark, Victor Tang, Secrets of Software Quality, McGraw-Hill, 1995. ISBN 0-201-91465-4.\n"
+        r = Meta::Record.new(title: "Secrets of software quality", authors: ["Craig Kaplan", "Ralph Clark", "Victor Tang"])
+        i = input(book("General Principles of Software Validation; Final Guidance for Industry and FDA Staff", ["Author: Compliance"]), nil, pages)
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        d.level.should_not eq 1
+        changed(d).has_key?("title").should be_false
+        changed(d).has_key?("isbn").should be_false
+      end
+
+      it "doesn't count small words as a title in the text" do
+        Meta::Fit.title?("Secrets of software quality", Meta::Words.new("the quality of software is of the essence")).should be_false
+      end
+
+      # #1622: "Fuzzy-Systeme" quotes its English edition's ISBN in the foreword
+      it "doesn't take a foreword's ISBN of another edition" do
+        pages = "Geleitwort\nAs a treatise on fuzzy logic, Foundations of Fuzzy Systems by R. Kruse, J. Gebhardt and F. Klawonn has few equals.\n" +
+                "Die englische Ausgabe ist erschienen bei Wiley, ISBN 0-201-91465-4. Das darin enthaltene Vorwort von Zadeh haben wir hier und der Text ist nicht von mit auf ein eine den\n"
+        r = Meta::Record.new(title: "Foundations of fuzzy systems", authors: ["Rudolf Kruse", "Jörg Gebhardt", "Frank Klawonn"])
+        i = input(book("Fuzzy Logic", ["Unknown"]), "Fuzzy Logic.pdf", pages)
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        d.confidence.should be < 90
+        changed(d).has_key?("isbn").should be_false if d.level != 1
+        (changed(d)["title"]? == "Foundations of fuzzy systems" && d.confidence >= 90).should be_false
+      end
+
+      it "writes nothing when nothing settles it" do
+        pages = "Words about something\nHenry S. Warren\n" + "text " * 500 + "ISBN 0-201-91465-4\n"
+        i = input(book("Mein Buch über Dinge", ["Unknown"]), nil, pages)
+        i.by_isbn = catalog({WARREN => hackers})
+        d = Flow.decide(i).not_nil!
+        {d.level, d.confidence}.should eq({1, 50})
+        changed(d).keys.sort.should eq ["candidate", "tags"]
+        d.isbn.should be_nil
+      end
+
+      # #1467: the whole handbook, the file is named after its subtitle
+      it "takes a title that is the record's subtitle" do
+        pages = "Handbook of Research on Urban Informatics:\nThe Practice and Promise of the Real-Time City\nMarcus Foth\nCopyright 2009\nISBN 978-0-201-91465-8 (hardcover)\n"
+        r = Meta::Record.new(title: "Handbook of research on urban informatics", authors: ["Marcus Foth"])
+        i = input(book("The Practice and Promise of the Real-Time City", ["Unknown"]), "The Practice and Promise of the Real-Time City.pdf", pages)
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        {d.level, d.confidence}.should eq({1, 85})
+        changed(d)["title"].should eq "Handbook of research on urban informatics: The Practice and Promise of the Real-Time City"
+      end
+
+      # #1657, #1432, #1724: junk or another book's metadata, the name agrees with the record
+      it "doesn't take junk for a contradiction" do
+        security = "Network Security Bible\nEric Cole\nRonald Krutz\nJames W. Conley\nCopyright 2005\nISBN 0-201-91465-4\n"
+        r = Meta::Record.new(title: "Network Security Bible", authors: ["Eric Cole", "Ronald L. Krutz", "James W. Conley"])
+        i = input(book("Peer To Peer Computing: The Evolution Of A Disruptive Technology", ["Brian D. Goodman Ramesh Subramanian"]), "Cole - Network Security Bible (Wiley, 2005).pdf", security)
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        d.confidence.should eq 98
+        changed(d)["authors"].should eq JSON.parse(%(["Eric Cole", "Ronald L. Krutz", "James W. Conley"]))
+        {"test", "New Page 12", "Unknown", "Warren"}.each do |junk|
+          i = input(book(junk, ["Test"]), nil, text)
+          i.by_isbn = catalog({WARREN => hackers})
+          Flow.decide(i).not_nil!.confidence.should eq 98
+        end
+      end
+
+      # #1161, #1163: the German text names the original title
+      it "keeps a translation's title even when the text names the original" do
+        pages = "ÜBER DAS BUCH: Dirk Gently's Holistische Detektei von Douglas Adams\nTitel der Originalausgabe: Dirk Gently's Holistic Detective Agency\nCopyright 1987\nISBN 0-201-91465-4\n"
+        r = Meta::Record.new(title: "Dirk Gently's Holistic Detective Agency", authors: ["Douglas Adams"], subtitle: "Dirk Gently 1")
+        i = input(book("Dirk Gently's Holistische Detektei", ["Douglas Adams"]), "Adams, Douglas - Dirk Gentlys holistische Detektei.pdf", pages)
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        changed(d).has_key?("title").should be_false
+        {d.level, d.confidence}.should eq({1, 85})
+      end
+    end
+
+    describe "the authors of a record" do
+      it "doesn't lose a co-author a record leaves out (#77, #1608)" do
+        pages = "Testing Business Ideas\nDavid J. Bland\nAlexander Osterwalder\nCopyright 2019\nISBN 0-201-91465-4\n"
+        r = Meta::Record.new(title: "Testing Business Ideas", authors: ["David J. Bland"])
+        i = input(book("Testing Business Ideas", ["David J. Bland", "Alexander Osterwalder"]), nil, pages)
+        i.by_isbn = catalog({WARREN => r})
+        changed(Flow.decide(i)).has_key?("authors").should be_false
+        r = Meta::Record.new(title: "Programming Clojure", authors: ["Aaron Bedra", "Stuart Halloway"])
+        i = input(book("Programming Clojure", ["Alex Miller", "Aaron Bedra", "Stuart Halloway"]), "Programming Clojure, 2nd edition.pdf", "Programming Clojure\nAlex Miller\nStuart Halloway\nAaron Bedra\nISBN 0-201-91465-4\n")
+        i.by_isbn = catalog({WARREN => r})
+        changed(Flow.decide(i)).has_key?("authors").should be_false
+      end
+
+      it "takes out what is no person and matches names loosely (#1, #67, #1804)" do
+        M.merge(M.clean(["Joshua Foer", "Mike Chamberlain (Narrator) Joshua Foer"]), ["Joshua Foer"]).should eq({["Joshua Foer"], true})
+        M.merge(["Richard D. Booker", "Earl Boysen"], ["Richard Booker"]).should eq({["Richard D. Booker", "Earl Boysen"], true})
+        M.merge(["P Adams", "K Smith", "R Vyborny"], ["P. Adams"]).should eq({["P Adams", "K Smith", "R Vyborny"], true})
+        M.merge(["EUSTACE L. DERENIAK", "TERESA D. DERENIAK"], ["Eustace L. Dereniak"]).should eq({["Eustace L. Dereniak", "Teresa D. Dereniak"], true})
+        M.merge(["Richard Brodie"], ["Brodie Richard"]).should eq({["Richard Brodie"], true})
+        M.merge(["Anthony Meredith"], ["Anthony Meredith Sj"]).should eq({["Anthony Meredith"], true})
+        M.merge(["Marco Cesati Daniel P. Bovet"], ["Daniel P. Bovet", "Marco Cesati"]).should eq({["Daniel P. Bovet", "Marco Cesati"], true})
+        M.merge(M.clean(["Darling", "David"]), ["David Darling"]).should eq({["David Darling"], true})
+        M.merge(M.clean(["D. Grune", "et a."]), ["Dick Grune", "Henri E. Bal"]).should eq({["Dick Grune", "Henri E. Bal"], true})
+        M.clean(["H. Delfs", "H. Knebl (Springer", "2007) WW"]).should eq ["H. Delfs", "H. Knebl"]
+        M.clean(["E. Kohn, D. Herzog (2001) WW"]).should eq ["E. Kohn", "D. Herzog"]
+        M.clean(["Mark. Stamp", "CrossReach Publications"]).should eq ["Mark Stamp"]
+      end
+
+      # #1697: the name's "author" is its title
+      it "doesn't take a word of the title for a person" do
+        r = Meta::Record.new(title: "Glitch", subtitle: "The Hidden Impact of Faulty Software", authors: ["Jeff Papows"])
+        i = input(book("Glitch", ["Jeff Papows", "Ph D. Jeff Papows"]), "Glitch - The Hidden Impact of Faulty Software.pdf", "Glitch\nThe Hidden Impact of Faulty Software\nJeff Papows, Ph.D.\nISBN 0-201-91465-4\n")
+        i.by_isbn = catalog({WARREN => r})
+        changed(Flow.decide(i))["authors"].should eq JSON.parse(%(["Jeff Papows"]))
+      end
+
+      # #1580: the surname in front, a word of the title as author
+      it "takes the author out of a title and a title's word out of the authors" do
+        r = Meta::Record.new(title: "3D Computer Graphics", subtitle: "A Mathematical Introduction with OpenGL", authors: ["Samuel R. Buss"])
+        i = input(book("Buss - 3D Computer Graphics", ["A Mathematical Introduction", "OpenGL"]), "Buss - 3D Computer Graphics - A Mathematical Introduction with OpenGL.pdf",
+          "3D Computer Graphics\nA Mathematical Introduction with OpenGL\nSamuel R. Buss\nISBN 0-201-91465-4\n")
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        changed(d)["title"].as_s.should start_with "3D Computer Graphics"
+        changed(d)["authors"].should eq JSON.parse(%(["Samuel R. Buss"]))
+      end
+
+      # #1776: Artin is a contributor, the editors are in the name
+      it "doesn't replace editors with a contributor" do
+        pages = "Arithmetic Geometry\nEdited by G. Cornell and J. H. Silverman\nContents\nMichael Artin: Neron Models\nISBN 0-201-91465-4\nCopyright 1986\n"
+        r = Meta::Record.new(title: "Arithmetic Geometry", authors: ["Michael Artin"])
+        i = input(book("Arithmetic Geometry", ["G. Cornell", "J. Silverman (Springer", "1986) WW"]), "Arithmetic Geometry - G. Cornell, J. Silverman (Springer, 1986) WW.djvu", pages)
+        i.by_isbn = catalog({WARREN => r})
+        d = Flow.decide(i).not_nil!
+        changed(d)["authors"].should eq JSON.parse(%(["G. Cornell", "J. Silverman"]))
+        d.confidence.should eq 70
+      end
+
+      it "makes no change of the same authors (#84)" do
+        r = Meta::Record.new(title: "GAMP Good Practice Guide", authors: ["ISPE"])
+        i = input(book("GAMP Good Practice Guide", ["ISPE"]), nil, "GAMP Good Practice Guide\nISPE\nISBN 0-201-91465-4\n")
+        i.by_isbn = catalog({WARREN => r})
+        changed(Flow.decide(i)).has_key?("authors").should be_false
+      end
+
+      it "takes a person a catalog has twice once (#1684, #1818)" do
+        r = Meta::Record.new(authors: ["Linda Lamb", "Arnold Robbins", "Arthur Robbins"])
+        Meta::CrossCheck.people(r).should eq ["Linda Lamb", "Arnold Robbins"]
+        Meta::CrossCheck.people(Meta::Record.new(authors: ["J. O. Bird", "John Bird"])).should eq ["J. O. Bird"]
+      end
+    end
+
+    it "takes the book's form of a title (#1828, #1696, #1214)" do
+      {
+        {"Chihara - Structural Account of Mathematics (Oxford, 2004).pdf", "A structural account of mathematics", "Structural Account of Mathematics"},
+        {"Digitale Hardware- und Softwaresysteme.pdf", "Digitale Hardware, Software-Systeme", "Digitale Hardware- und Softwaresysteme"},
+        {"Genetic Engineering Principles & Methods Volume 9.pdf", "Genetic Engineering", "Genetic Engineering Principles & Methods Volume 9"},
+      }.each do |name, record, want|
+        i = input(book("Unknown", ["Unknown"]), name, "#{record}\nHenry S. Warren\nISBN 0-201-91465-4\n")
+        i.by_isbn = catalog({WARREN => Meta::Record.new(title: record, authors: ["Henry S. Warren"])})
+        changed(Flow.decide(i))["title"].should eq want
+      end
+    end
+
+    it "doesn't take a file name in one word for a form of the title (#1184)" do
+      t = "Build a Binary Clock with Elixir and Nerves"
+      i = input(book(t, ["Bruce A. Tate Frank Hunleth"]), "buildabinaryclockwithelixirandnerves.epub", "#{t}\nFrank Hunleth\nBruce A. Tate\nISBN 0-201-91465-4\n")
+      i.by_isbn = catalog({WARREN => Meta::Record.new(title: t, authors: ["Frank Hunleth", "Bruce A. Tate"])})
+      changed(Flow.decide(i)).has_key?("title").should be_false
+    end
+
+    it "takes the book's own record before another edition's ISBN in its pages (#15)" do
+      other = "9780387984797"
+      i = input(book("Hacker's Delight", ["Henry S. Warren"], isbn: other), nil, text)
+      i.by_isbn = catalog({WARREN => hackers, other => hackers})
       d = Flow.decide(i).not_nil!
-      d.isbn_source.should eq "ocr"
-      d.confidence.should eq 88
+      d.notes.should be_empty
+      d.confidence.should eq 98
     end
 
     it "never overwrites an ISBN, the contradiction goes to the review" do
@@ -347,6 +537,11 @@ describe Meta::Flow do
       d = Flow.decide(i).not_nil!
       {d.level, d.confidence}.should eq({3, 85})
       changed(d)["authors"].should eq JSON.parse(%(["Tom DeMarco"]))
+    end
+
+    it "never goes below 0 (#68)" do
+      b = book("57390", ["Unknown"])
+      Flow.decide(input(b, nil, "word " * 200)).not_nil!.confidence.should eq 0
     end
 
     it "is at 40 with the model, at 10 with a title that says nothing" do

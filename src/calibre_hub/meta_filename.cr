@@ -82,7 +82,7 @@ module CalibreHub
                        "norton", "hachette", "random", "simon", "createspace", "chelsea", "aw", "mit", "ap",
                        "cambridge", "oxford", "princeton", "yale", "harvard", "chicago", "blackwell", "kluwer", "birkhauser",
                        "birkhäuser", "dummies", "newnes", "delmar", "prentice", "mcgraw", "addison", "borland", "imperial",
-                       "infinity", "premier", "pfeiffer", "glencoe", "capstone", "rodale", "puffin", "picador", "macgraw", "tor",
+                       "infinity", "premier", "pfeiffer", "kaufmann", "glencoe", "capstone", "rodale", "puffin", "picador", "macgraw", "tor",
                        "baen", "ace", "daw", "orbit", "gollancz", "bantam", "ballantine", "del rey", "jossey", "bass"}
       # words of titles, never of names (lower case, folded)
       TITLE_NOUNS = Set{"introduction", "guide", "handbook", "manual", "programming", "mathematics", "mathematical",
@@ -281,7 +281,8 @@ module CalibreHub
       end
 
       # who a tool or a typesetter put into this library's files as author
-      FILE_OWNERS = Set{"administrator", "besitzer", "jasmine fradique", "danny", "owner", "user"}
+      FILE_OWNERS = Set{"administrator", "besitzer", "jasmine fradique", "danny", "owner", "user", "scankromsator",
+                        "team ling", "unation", "various", "c h beck", "cliffsnotes", "hq"}
 
       # Not a person: a tool or owner of the file, a publisher, an edition,
       # a title or a subtitle
@@ -295,7 +296,7 @@ module CalibreHub
 
       # An organisation or event, not a person: "Symposium on Mathematical
       # Modelling", "Electronic Publishing", "McKinsey & Co", "Compliance"
-      ORGANIZATION = /\b(?:symposium|conference|congress|workshop|seminar|meeting|proceedings|institute?|institut|university|universit[aä]t|college|society|gesellschaft|association|committee|commission|council|board|foundation|stiftung|corporation|incorporated|company|ministry|department|agency|academy|akademie|laboratory|laboratories|compliance|co|corp)\b\.?/i
+      ORGANIZATION = /\b(?:professor|symposium|conference|congress|workshop|seminar|meeting|proceedings|institute?|institut|university|universit[aä]t|college|society|gesellschaft|association|committee|commission|council|board|foundation|stiftung|corporation|incorporated|company|ministry|department|agency|academy|akademie|laboratory|laboratories|compliance|co|corp)\b\.?/i
 
       def self.organization?(s : String) : Bool
         s.matches?(ORGANIZATION) || publisher_name?(s)

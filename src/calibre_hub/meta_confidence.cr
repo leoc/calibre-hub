@@ -7,9 +7,11 @@ module CalibreHub
     # band).
     module Confidence
       # the ISBN in the book, the catalog record fits the book's text: title
-      # and author appear in it (ISBN_BOTH), a field that doesn't ISBN_ONE
+      # and author appear in it (ISBN_BOTH), a field that doesn't ISBN_ONE.
+      # 90 at first; the review of the first live dry run found the errors
+      # left in the bulk band here, so this is looked at one by one.
       ISBN_BOTH = 98
-      ISBN_ONE  = 90
+      ISBN_ONE  = 85
       # EPUB, OPF, calibre (a PDF that fits its text or name) and the file
       # name: it fits, or says nothing
       META_NAME    = 90
@@ -33,10 +35,17 @@ module CalibreHub
       # a field edited by hand is what the book is called
       HAND = 100
 
+      # an ISBN's record against a book's own title or name that says
+      # something: the title page shows the record, or nothing does
+      ISBN_CONFIRMED = 75
+      ISBN_AGAINST   = 50
+      # the record's persons are nobody the book or its name knows (an
+      # edited volume's contributor): the book's stay
+      ISBN_OTHER_PEOPLE = 70
+
       # contradictions subtract: the metadata and the name are another book,
-      # an ISBN's record and the name, the text and what the name says
+      # the text and what the name says
       META_AGAINST_NAME = 25
-      ISBN_AGAINST_NAME = 10
       TEXT_AGAINST_NAME = 15
 
       # >= BULK can be accepted in bulk, >= REVIEW is reviewed one by one,
