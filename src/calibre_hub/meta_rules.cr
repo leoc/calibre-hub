@@ -739,14 +739,14 @@ module CalibreHub
       # A catalog can file an ISBN under another book (Open Library has the
       # Handbook of Peer-to-Peer Networking's as "Mathematical modelling of
       # estuarine physics"): no word of weight in common with a title that
-      # says something, for a book without an author. With an author the
-      # ISBN corrects a book whose names are another's.
+      # says something. The title search decides then, the book keeps its
+      # ISBN.
       def self.other_book?(guesses : Array(Guess), r : Record) : Bool
         theirs = words([r.title, r.subtitle].compact.join(" "))
         return false if theirs.empty?
         guesses.all? do |g|
           mine = words(g.title)
-          next false if mine.empty? || !g.authors.empty? || FileName.bad_title?(g.title)
+          next false if mine.empty? || FileName.bad_title?(g.title)
           2 * (mine & theirs).size < {mine.size, theirs.size}.min
         end
       end
@@ -757,7 +757,8 @@ module CalibreHub
 
       # Scores the candidates against the best fitting guess and marks the
       # sure ones: found by an ISBN that is trusted (in calibre or the
-      # book's OPF) or that agrees with the book (from the text)
+      # book's OPF) unless it names another book (other_book?), or that
+      # agrees with the book (from the text)
       def self.rank(candidates : Array(Candidate), guesses : Array(Guess), languages : Array(String),
                     trusted_isbns : Array(String)) : Array(Candidate)
         candidates.each do |c|

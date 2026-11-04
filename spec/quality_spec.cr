@@ -169,6 +169,9 @@ describe "the live dry run of 77533b7 (#8528)" do
     g = Meta::Guess.new("Handbook Of Peer To Peer Networking", [] of String)
     Meta::Score.rank([wrong], [g], [] of String, ["9780387097503"]).first.sure.should be_false
     Meta::CrossCheck.verdict(g, [wrong]).should be_nil
+    # with an author, too
+    named = Meta::Guess.new("Handbook Of Peer To Peer Networking", ["Xuemin Shen"])
+    Meta::Score.rank([wrong], [named], [] of String, ["9780387097503"]).first.sure.should be_false
     # the right record is, with or without its subtitle, and so is any for a title that says nothing
     right = candidate("openlibrary", "Handbook of Peer-to-Peer Networking", ["Xuemin Shen"], by_isbn: "9780387097503")
     Meta::Score.rank([right], [g], [] of String, ["9780387097503"]).first.sure.should be_true

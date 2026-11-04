@@ -388,8 +388,15 @@ describe CalibreHub::Meta::Score do
     # an ISBN from the text of another book (an ad page) isn't
     other = CalibreHub::Meta::Guess.new("Kochen für Anfänger", ["Tim Mälzer"])
     CalibreHub::Meta::Score.rank([c], [other], [] of String, [] of String).first.sure.should be_false
-    # unless calibre or the OPF has it
-    CalibreHub::Meta::Score.rank([c], [other], [] of String, ["9783608938289"]).first.sure.should be_true
+    # nor is one calibre or the OPF has, when the record is another book:
+    # catalogs file ISBNs under wrong records (#8528)
+    CalibreHub::Meta::Score.rank([c], [other], [] of String, ["9783608938289"]).first.sure.should be_false
+    # a word of the title in common is enough, with the book's other names
+    near = CalibreHub::Meta::Guess.new("Der Herr der Ringe: Die Gefährten", ["Falscher Name"])
+    CalibreHub::Meta::Score.rank([c], [near], [] of String, ["9783608938289"]).first.sure.should be_true
+    # and a title that says nothing can't disagree
+    junk = CalibreHub::Meta::Guess.new("8508 Fm Frame", ["Jasmine Fradique"])
+    CalibreHub::Meta::Score.rank([c], [junk], [] of String, ["9783608938289"]).first.sure.should be_true
   end
 
   it "proves nothing with a short title and no author" do
@@ -1411,6 +1418,23 @@ describe "Mc and Mac" do
     # a source's "McKeown" is the better spelling
     CalibreHub::Meta::Merge.better_form?("Greg McKeown", "Greg Mckeown").should be_true
     CalibreHub::Meta::Merge.better_form?("Greg Mckeown", "Greg McKeown").should be_false
+  end
+end
+
+describe "an ISBN filed under another book" do
+  it "searches by title, and the record changes nothing in the metadata run (#8528)" do
+    _, web, m, _, _ = setup(sources: %w(openlibrary dnb))
+    # the fixtures have this ISBN as Der Herr der Ringe
+    b = book("The Left Hand of Darkness", ["Ursula K. Le Guin"], isbn: "9783608938289")
+    g = CalibreHub::Meta::Guess.new(b.title, b.authors)
+    list, _ = m.lookup(b, [g], nil)
+    web.requests.any?(&.includes?("search.json")).should be_true
+    list.none?(&.sure).should be_true
+    list.first.fields.title.should eq "The Left Hand of Darkness"
+    wrong = list.find!(&.by_isbn)
+    wrong.score.should be < CalibreHub::Meta::ACCEPT
+    changes = CalibreHub::Meta::Merge.plan(b, g, nil, [wrong])
+    changes.should be_empty
   end
 end
 

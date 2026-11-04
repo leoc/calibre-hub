@@ -659,8 +659,9 @@ in `meta_sources.cr`):
    and author search only when no ISBN gave a sure match, and only where
    the book fits the source:
    - **Hardcover** (GraphQL, needs `metadata.hardcoverTokenFile`): editions
-     by ISBN-13/10. A title search needs the author; a hit counts only with
-     a title similarity of at least 0.9, the same author, no placeholder
+     by ISBN-13/10. A hit of a title search counts only with a title
+     similarity of at least 0.9, the same author (a title alone needs three
+     words, for the cross-check of a book without an author), no placeholder
      ("Untitled") and no book about the book (summary, workbook), and the
      work needs an edition in the book's language (`language.code3`;
      unknown: German for a German-looking title, else English). ISBN,
@@ -676,11 +677,15 @@ in `meta_sources.cr`):
    240 or a translator in 700 $4 `trl`) when the book isn't German, another
    language (DNB 041 a), another volume (245 n/p "Vol. 3" for a book "Vol.
    1"). A match by the book's own ISBN (calibre's or the OPF's) is always
-   kept: it is this edition.
+   kept: it should be this edition.
 4. Score 0..1: title 60 %, authors 30 %, language and year 10 %. A match
    by ISBN is **sure** when the ISBN is in calibre or the OPF, or when the
    result also agrees with the book (score ≥ 0.5; an ISBN on an ad page
-   doesn't). A text match from 0.75 is **accepted**.
+   doesn't). Catalogs file ISBNs under wrong records, so even the book's
+   own ISBN isn't sure when the record has no word of weight in common with
+   a title that says something (a translation's other title counts as
+   that): the title search runs as if there were no ISBN, and the book
+   keeps it. A text match from 0.75 is **accepted**.
 5. Merge per field: rules' title and authors, then the file, then the
    candidates in the field's order of sources (from the comparison runs):
 
