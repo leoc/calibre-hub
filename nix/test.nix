@@ -1305,8 +1305,9 @@ pkgs.testers.runNixOSTest {
         units = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"]
         assert len(units) == 3 and all(u["status"] == "imported" for u in units), units
         sql = lambda q: machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"{q}\"").strip()
-        assert sql("select count(*) from ocr_pages") == "1", sql("select key from ocr_pages")
-        assert "Herbert" in sql("select front from ocr_pages limit 1")
+        # both scans; the key starts with the file's size
+        scans = sql("select front from ocr_pages where key like '16041-%' or key like '25722-%'")
+        assert scans.count("Herbert") == 2, scans
         levels = {u["bookId"]: sql(f"select level || ' ' || confidence from metadata_decisions where book_id = {u['bookId']}") for u in units}
         mobi = next(u["bookId"] for u in units if u["files"][0]["path"].endswith(".mobi"))
         assert levels[mobi] == "2 90", levels
