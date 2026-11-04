@@ -131,6 +131,7 @@ module CalibreHub
         page = input.info.try(&.found.select(&.copyright).map(&.isbn)) || [] of String
         isbns(input).each do |isbn, source, strict|
           fits = lookup.call(isbn).compact_map do |c|
+            next if Text.tokens(c.fields.title || "").empty?
             fit = Fit.check(c.fields, words)
             next if strict ? !c.fields.title.try { |t| Fit.title?(t, words, strict: true) } : !fit.any?
             {c, fit}
@@ -211,7 +212,7 @@ module CalibreHub
         record_title = catalog_title(c.fields)
         owns = own_titles(input, reading, c.fields)
         title = case verdict
-                when :agrees      then chosen_title(book, reading, record_title)
+                when :agrees      then chosen_title(book, reading, record_title, words)
                 when :translation then (owns.includes?(book.title) ? book.title : owns.first?) || record_title
                 when :subtitle    then "#{Text.main_title(record_title)}: #{owns.first}"
                 else                   record_title
@@ -259,15 +260,27 @@ module CalibreHub
         own = !FileName.bad_title?(book.title) && FileName.same_book?(book.title, title) ? People.clean(book.authors) : [] of String
         # "Glitch - The Hidden Impact…", "OpenGL": a word of the title is nobody
         title_words = Text.tokens(catalog_title(r))
-        named = (own + (reading.try(&.authors) || [] of String)).reject { |a| People.tokens(a).size < 2 && People.tokens(a).all? { |w| title_words.includes?(w) } }
+        name = reading.try(&.authors) || [] of String
+        # the book and the record agree: a name doesn't add anybody, its
+        # "D. Clark" is the series' editor
+        if own.any? { |a| people.any? { |t| People.same?(a, t) } }
+          name = name.select { |a| (own + people).any? { |t| People.same?(a, t) } }
+        end
+        named = (own + name).reject { |a| People.tokens(a).size < 2 && People.tokens(a).all? { |w| title_words.includes?(w) } }
         People.merge(named, people, words)
       end
 
+      # what a shop adds to a title: "…, with CDROM", "(with CD-ROM)"
+      SHOP_NOTE = /[,:]?\s*\(?\b(?:with|incl\.?|includes|\+)\s+(?:a\s+|an\s+)?(?:cd-?rom|dvd|cd)\b\)?\s*\z/i
+
       # The record's title with its subtitle, without a series in parentheses
+      # or a note
       private def self.catalog_title(r : Record) : String
         t = Text.main_title(r.title || "").strip.sub(/\s*\([^()]*\)\z/, "")
-        sub = r.subtitle.try(&.strip)
-        sub && Merge.subtitle?(sub, t) ? "#{t}: #{sub}" : t
+        t = t.sub(SHOP_NOTE, "")
+        sub = r.subtitle.try(&.strip.sub(SHOP_NOTE, ""))
+        return "#{t}: #{sub}" if sub && Merge.subtitle?(sub, t)
+        t
       end
 
       # what the book itself says it is called, besides a catalog: its name,
@@ -279,7 +292,7 @@ module CalibreHub
       # Of two forms of a title the book's, when the catalog's has nothing
       # more: catalogs write titles like sentences, abbreviate ("Bd. 1"), lose
       # the volume
-      private def self.chosen_title(book : Book, reading : Guess?, record : String) : String
+      private def self.chosen_title(book : Book, reading : Guess?, record : String, words : Words) : String
         # "Genetic Engineering Principles & Methods Volume 9-Springer US"
         if Text.volume(book.title) && !Text.volume(record) && same_title?(book.title, record)
           return reading.try(&.title) || FileName.parse("#{book.title}.pdf").try(&.title) || book.title
@@ -288,11 +301,34 @@ module CalibreHub
         # a name in one word is no form of a title: "buildabinaryclock…"
         own = book.title unless own.includes?(' ') || FileName.leftover_title?(book.title)
         return record unless same_title?(own, record)
+        # "From Journeyman to Master" in the book, a later edition's subtitle in the catalog
+        return own if own.includes?(':') && record.includes?(':') && Fit.title?(subtitle_of(own), words) && !Fit.title?(subtitle_of(record), words)
         return own if Text.key(Text.main_title(own)) == Text.key(Text.main_title(record)) && !record.includes?(':')
         return own if Text.key(own) == Text.key(record) || Text.volume(own) && !Text.volume(record)
-        return own if record.split(' ')[1..].count(&.[0].uppercase?) == 0 && record.includes?(' ')
+        return own if sentence?(record)
         return own if Levenshtein.distance(Text.key(own), Text.key(record)) * 7 <= Text.key(own).size
         record
+      end
+
+      private def self.subtitle_of(title : String) : String
+        title.partition(':')[2].strip
+      end
+
+      # a title in several words, capitals only at its start
+      private def self.sentence?(title : String) : Bool
+        words = title.split(' ', remove_empty: true)
+        words.size >= 2 && words[1..].none?(&.[0].uppercase?)
+      end
+
+      # The same words in no better form: "Ethernet Definitive Guide" for
+      # "Ethernet: The Definitive Guide". A title that is in order stays,
+      # whoever has a plainer version.
+      private def self.worse_form?(old : String, new : String) : Bool
+        return false if FileName.leftover_title?(old)
+        content = ->(t : String) { Text.tokens(t).reject { |w| w.size < 3 || Clean::SMALL.includes?(w) }.sort }
+        return false unless content.call(old) == content.call(new)
+        form = ->(t : String) { Text.tokens(t).size + (t.includes?(':') ? 1 : 0) - (sentence?(t) ? 1 : 0) }
+        form.call(new) <= form.call(old)
       end
 
       # the same book under a title that is in order stays
@@ -516,6 +552,7 @@ module CalibreHub
         hand = input.hand
         hand = hand + Set{"authorSort"} if hand.includes?("authors")
         changes = d.changes.reject { |c| hand.includes?(c.field) }
+        changes = changes.reject { |c| c.field == "title" && c.new.as_s?.try { |t| worse_form?(book.title, t) } }
         t = hand.includes?("title") ? Confidence::HAND : d.title.clamp(0, 100)
         a = hand.includes?("authors") ? Confidence::HAND : d.authors.clamp(0, 100)
         d = d.copy_with(changes: changes, title: t, authors: a)

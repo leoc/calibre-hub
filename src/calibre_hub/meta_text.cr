@@ -119,7 +119,8 @@ module CalibreHub
       end
 
       # The persons in an author field: "J. Silverman (Springer", "1986) WW",
-      # "Mark. Stamp", "Barry, S. Davis", "et a." as an import left them
+      # "Mark. Stamp", "Barry, S. Davis", "et a." as an import left them, a
+      # series in front: "(Genetic Engineering) Barbara R. Hough-Evans"
       def self.clean(list : Array(String)) : Array(String)
         list.reject(&.matches?(NARRATOR)).flat_map { |a| pieces(a) }.reject do |a|
           a.empty? || a.matches?(/\Aet\.?\s+al?\.?\z/i) || FileName.bad_author?(a)
@@ -128,7 +129,7 @@ module CalibreHub
 
       private def self.pieces(author : String) : Array(String)
         author.split(/\s+[-–]\s+/).flat_map do |p|
-          s = FileName.clean_author(p.sub(/\s*\(.*\z/, ""))
+          s = FileName.clean_author(p.sub(/\A\s*\([^()]*\)\s*/, "").sub(/\s*\(.*\z/, ""))
           s = s.gsub(/(?<=\p{L}{2})\.(?=\s)/, "").sub(/,?\s+et\.?\s+al?\.?\z/i, "").strip
           parts = s.split(/\s*,\s*/).reject(&.empty?)
           parts.size >= 2 && parts.all?(&.includes?(' ')) ? parts : [s]
@@ -145,6 +146,9 @@ module CalibreHub
           one, other = x.size == 1 ? {x, y} : {y, x}
           return other.includes?(one.first) || other.join.ends_with?(one.first)
         end
+        # "B. Valmir" of a file for "Valmir C. Barbosa": the names turned round
+        return true if x.last == y.first && x.first[0] == y.last[0] && (x.first.size == 1 || y.last.size == 1)
+        return true if y.last == x.first && y.first[0] == x.last[0] && (y.first.size == 1 || x.last.size == 1)
         return false unless surname?(x.last, y.last)
         f, g = x.first, y.first
         f == g || ((f.size == 1 || g.size == 1) && f[0] == g[0])
@@ -161,6 +165,16 @@ module CalibreHub
         theirs.size >= 2 && mine.size > theirs.size && theirs.all? { |w| mine.includes?(w) }
       end
 
+      # two people in one entry, listed on their own too: "S. Orszag C.
+      # Bender" next to "Carl M. Bender" and "Steven A. Orszag"
+      private def self.joined(entry : String, others : Array(String)) : Array(String)
+        words = tokens(entry)
+        return [] of String if words.size < 3
+        list = others.select { |o| o != entry && tokens(o).size >= 2 && words.includes?(tokens(o).last) && !same?(o, entry) }
+        list = list.uniq { |o| tokens(o).last }
+        list.size >= 2 ? list : [] of String
+      end
+
       # {the authors, did the record know any of the book's}. The book's
       # order and persons, the record's fuller spelling, then the persons
       # only the record has. A record that knows nobody of the book changes
@@ -171,9 +185,11 @@ module CalibreHub
         end
         return {theirs, true} if own.empty?
         return {own.map { |a| spelled(a) }, true} if theirs.empty?
-        known = own.any? { |a| theirs.any? { |t| same?(a, t) || inside?(a, t) } }
+        known = own.any? { |a| theirs.any? { |t| same?(a, t) || inside?(a, t) } || !joined(a, theirs).empty? }
         return {own.map { |a| spelled(a) }, false} unless known
         merged = own.flat_map do |a|
+          parts = joined(a, theirs + own)
+          next parts unless parts.empty?
           inner = theirs.select { |t| inside?(a, t) }
           next inner if inner.size >= 2
           # "Medieval Studies Lisa Maurizio", but "Richard D. Booker" stays

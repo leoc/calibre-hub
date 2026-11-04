@@ -1005,6 +1005,21 @@ describe CalibreHub::ImportRepair do
     end
   end
 
+  it "plans no book that went to the trash after its import (#1182)" do
+    tmpdir do |root|
+      path = File.join(root, "Duffy - Advanced Engineering Mathematics (1998).pdf")
+      write(path, pdf)
+      fake = FakeCalibre.new
+      db = state_db
+      db.exec "create table if not exists meta (key text primary key, value text)"
+      CalibreHub::ImportJobs.migrate(db)
+      db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', 1182, 'r', 100)", path
+      calibre = fake.calibre
+      repair = CalibreHub::ImportRepair.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), CalibreHub::MetaLog.new(db))
+      repair.submit_repair({} of String => JSON::Any, true)["books"].should eq 0
+    end
+  end
+
   it "reads the proposals of an older plan" do
     p = CalibreHub::ImportRepair::Proposed.from_json(%({"field": "title", "old": "a", "new": "b"}))
     p.source.should eq "rules"

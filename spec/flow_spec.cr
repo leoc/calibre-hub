@@ -326,6 +326,29 @@ describe Meta::Flow do
         changed(Flow.decide(i))["authors"].should eq JSON.parse(%(["Jeff Papows"]))
       end
 
+      it "takes a joined name and an inverted one apart (#1806, #1597)" do
+        M.merge(["S. Orszag C. Bender"], ["Carl M. Bender", "Steven A. Orszag"]).should eq({["Carl M. Bender", "Steven A. Orszag"], true})
+        M.same?("B. Valmir", "Valmir C. Barbosa").should be_true
+        M.same?("Arthur Robbins", "Arnold Robbins").should be_false
+        M.merge(["V.C. Barbosa", "B. Valmir"], ["Valmir C. Barbosa"]).should eq({["Valmir C. Barbosa"], true})
+      end
+
+      it "keeps a person behind a series (#1214)" do
+        M.clean(["(Genetic Engineering) Barbara R. Hough-Evans", "Eric H. Davidson (auth.)"]).should eq ["Barbara R. Hough-Evans", "Eric H. Davidson"]
+        M.merge(M.clean(["(Genetic Engineering) Barbara R. Hough-Evans", "Eric H. Davidson (auth.)", "Jane K. Setlow (auth.)"]), ["Eric H. Davidson", "Jane K. Setlow"])
+          .should eq({["Barbara R. Hough-Evans", "Eric H. Davidson", "Jane K. Setlow"], true})
+      end
+
+      # #1825: Clark edits the series, Previato this volume
+      it "adds nobody of the name when the book and the record agree" do
+        r = Meta::Record.new(title: "Dictionary of Applied Math for Engineers and Scientists", authors: ["Emma Previato"])
+        i = input(book("Dictionary of Applied Math for Engineers and Scientists", ["Emma Previato"]),
+          "CRC Press - Dictionary of Applied Math for Engineers and Scientists - D. Clark.pdf",
+          "Dictionary of Applied Math for Engineers and Scientists\nDouglas N. Clark Editor-in-Chief\nEmma Previato\nCopyright 2003\nISBN 0-201-91465-4\n")
+        i.by_isbn = catalog({WARREN => r})
+        changed(Flow.decide(i)).has_key?("authors").should be_false
+      end
+
       # #1580: the surname in front, a word of the title as author
       it "takes the author out of a title and a title's word out of the authors" do
         r = Meta::Record.new(title: "3D Computer Graphics", subtitle: "A Mathematical Introduction with OpenGL", authors: ["Samuel R. Buss"])
@@ -372,6 +395,40 @@ describe Meta::Flow do
         i.by_isbn = catalog({WARREN => Meta::Record.new(title: record, authors: ["Henry S. Warren"])})
         changed(Flow.decide(i))["title"].should eq want
       end
+    end
+
+    # #1708
+    it "doesn't replace a title by the same words in a worse form" do
+      t = "Ethernet: The Definitive Guide"
+      i = input(book(t, ["Charles E. Spurgeon"]), "O'Reilly - Ethernet Definitive Guide.pdf", "#{t}\nCharles E. Spurgeon\nISBN 0-201-91465-4\n")
+      i.by_isbn = catalog({WARREN => Meta::Record.new(title: "Ethernet", subtitle: "The Definitive Guide", authors: ["Charles E. Spurgeon"])})
+      changed(Flow.decide(i)).has_key?("title").should be_false
+      # the name's reading on the last level as well
+      changed(Flow.decide(input(book(t, ["Charles E. Spurgeon"]), "O'Reilly - Ethernet Definitive Guide.pdf"))).has_key?("title").should be_false
+      # a better form goes through
+      d = Flow.decide(input(book("Bioinformatics - A Practical Approach", ["S. Ye (CRC, 2008) WW"]), "Bioinformatics  - A Practical Approach - S. Ye (CRC, 2008) WW.pdf"))
+      changed(d)["title"].should eq "Bioinformatics: A Practical Approach"
+    end
+
+    it "drops a shop's note and keeps the subtitle of the book (#1572, #1665)" do
+      i = input(book("Jones - Artificial Intelligence", ["A Systems Approach (Infinity, 2008)"]), "Jones - Artificial Intelligence - A Systems Approach (Infinity, 2008).pdf",
+        "Artificial Intelligence\nA Systems Approach\nM. Tim Jones\nISBN 0-201-91465-4\n")
+      i.by_isbn = catalog({WARREN => Meta::Record.new(title: "Artificial Intelligence", subtitle: "A Systems Approach, with CDROM", authors: ["M. Tim Jones"])})
+      changed(Flow.decide(i))["title"].should eq "Artificial Intelligence: A Systems Approach"
+      i = input(book("09 - The Pragmatic Programmer", ["From Journeyman to Master"]), "09 - The Pragmatic Programmer - From Journeyman to Master.pdf",
+        "The Pragmatic Programmer\nFrom Journeyman to Master\nAndrew Hunt\nISBN 0-201-91465-4\n")
+      i.by_isbn = catalog({WARREN => Meta::Record.new(title: "The Pragmatic Programmer", subtitle: "Your Journey to Mastery", authors: ["Andrew Hunt"])})
+      changed(Flow.decide(i))["title"].should eq "The Pragmatic Programmer: From Journeyman to Master"
+    end
+
+    # #1281
+    it "survives a catalog title with double spaces, and one without any" do
+      pages = "Sex, Sin, and Zen\nBrad Warner\nISBN 0-201-91465-4\n"
+      i = input(book("Sex, Sin, and Zen: Buddhist Exploration of Sex", ["Brad Warner"]), nil, pages)
+      i.by_isbn = catalog({WARREN => Meta::Record.new(title: "Sex, Sin,  and Zen:  A Buddhist Exploration", authors: ["Brad Warner"])})
+      Flow.decide(i).not_nil!.level.should eq 1
+      i.by_isbn = catalog({WARREN => Meta::Record.new(title: "", authors: ["Brad Warner"])})
+      Flow.decide(i).not_nil!.level.should_not eq 1
     end
 
     it "doesn't take a file name in one word for a form of the title (#1184)" do

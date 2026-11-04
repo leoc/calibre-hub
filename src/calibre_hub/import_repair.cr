@@ -130,7 +130,9 @@ module CalibreHub
       library = params.delete("library").try(&.as_bool?) || false
       done = Set(Int64).new
       @db.query_each("select book_id from import_repairs where status in ('applied', 'rejected')") { |rs| done << rs.read(Int64) }
-      files = files(params).reject { |id, _| done.includes?(id) }
+      # an import's row outlives a book moved to the trash
+      known = @calibre.list("", Calibre::DETAIL_FIELDS).map(&.id).to_set
+      files = files(params).select { |id, _| known.includes?(id) && !done.includes?(id) }
       others = portion(params).select { |b| !done.includes?(b.id) && !files.has_key?(b.id) && (library || !Meta::Quality.reasons(b).empty?) }.map(&.id)
       ids = files.keys + others
       job = enqueue(ids, {"mode" => JSON::Any.new("plan"), "apply" => JSON::Any.new(!dry_run),
@@ -470,7 +472,8 @@ module CalibreHub
       case job.changes["mode"]?.try(&.as_s?)
       when "plan"
         path = job.changes["files"]?.try(&.[id.to_s]?).try(&.as_s?)
-        book = @calibre.book(id) || raise Writer::NotFound.new
+        # gone since the plan started: nothing to plan
+        book = @calibre.book(id) || return
         baseline = baselines([id])[id]?
         decision = decide(book, path, baseline) || return
         store(id, path || "", decision, job.id)
