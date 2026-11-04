@@ -142,9 +142,11 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
 
   let importPolls = 0
   const [r1, r2, r3] = books
+  const sure = (confidence: number, band: ImportRepairEntry["band"], level: ImportRepairEntry["level"], source: string) =>
+    ({ confidence, band, level, source, titleConfidence: confidence, authorsConfidence: confidence, notes: [] })
   let repair: ImportRepairEntry[] = [
     { bookId: r1.id, file: "/srv/media/ebooks/backlog/Defaults/Algebra/Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu",
-      decided: "name", status: "pending", at: "2026-11-03T12:00:00Z",
+      decided: "name", status: "pending", at: "2026-11-03T12:00:00Z", ...sure(70, "review", 3, "rules"),
       changes: [
         { field: "title", old: r1.title, new: "Formulas and Theorems in Pure Mathematics" },
         { field: "authors", old: r1.authors, new: ["Carr"] },
@@ -152,11 +154,12 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
         { field: "pubdate", old: null, new: "1970" },
       ] },
     { bookId: r2.id, file: "/srv/media/ebooks/backlog/fiction.science/Herbert - Dune.mobi", decided: "hardcover", status: "pending",
-      at: "2026-11-03T12:00:00Z", changes: [{ field: "title", old: r2.title, new: "Dune" }, { field: "authors", old: r2.authors, new: ["Herbert"] }] },
+      at: "2026-11-03T12:00:00Z", ...sure(98, "bulk", 1, "hardcover"), changes: [{ field: "title", old: r2.title, new: "Dune" }, { field: "authors", old: r2.authors, new: ["Herbert"] }] },
     { bookId: r3.id, file: "/srv/media/ebooks/backlog/Defaults/Wine Tasting - A Professional Handbook.pdf", decided: "unsure", status: "pending",
-      at: "2026-11-03T12:00:00Z", changes: [{ field: "tags", old: [], new: ["auto-unsicher"] }] },
+      at: "2026-11-03T12:00:00Z", ...sure(30, "unsure", 3, "rules"), changes: [{ field: "tags", old: [], new: ["auto-unsicher"] }] },
   ]
   const repairCounts = { applied: 0, rejected: 0, failed: 0 }
+  const samples: { band: string; checked: number; correct: number; at: string }[] = []
   let repairJob: Job | null = null
 
   return [
@@ -186,15 +189,32 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
           { run: "8c6205172f4fdbb7", at: "2026-11-03T07:35:32Z", total: 196, suspect: 41 },
         ],
         books: [{ id: 1617, title: "Compilers: Principles, Techniques and Tools", authors: ["Unknown"], reasons: ["unknownAuthor"] }],
+        bands: { bulk: 900, review: 500, unsure: 346, none: 100 },
+        levels: { "1": 700, "2": 600, "3": 446 },
+        isbn: { with: 800, without: 1046, sources: { text: 400, ocr: 120, calibre: 280 } },
+        conflicts: { duplicates: [{ isbn: "9780201914658", books: [1, 2] }], duplicateCount: 1, noted: [], notedCount: 3 },
+        samples,
       }),
     ),
+    http.get("/api/import/quality/sample", ({ request }) =>
+      HttpResponse.json({
+        band: new URL(request.url).searchParams.get("band"),
+        books: [{ id: r2.id, title: r2.title, authors: r2.authors, confidence: 98, level: 1, source: "hardcover" }],
+      }),
+    ),
+    http.post("/api/import/quality/sample", async ({ request }) => {
+      const body = (await request.json()) as { band: string; checked: number; correct: number }
+      const sample = { ...body, at: "2026-11-04T12:00:00Z" }
+      samples.splice(0, samples.length, sample)
+      return HttpResponse.json(sample, { status: 201 })
+    }),
     http.post("/api/import/repair", () => {
       repairJob = { status: "done", done: 3, total: 3, errors: [] }
       return HttpResponse.json({ dryRun: true, books: 3, job: { id: "repair-plan", ...repairJob } }, { status: 202 })
     }),
     http.post("/api/import/repair/accept", async ({ request }) => {
-      const body = (await request.json()) as { bookIds?: number[]; all?: boolean }
-      const take = repair.filter((e) => body.all || body.bookIds?.includes(e.bookId))
+      const body = (await request.json()) as { bookIds?: number[]; band?: string }
+      const take = repair.filter((e) => e.band === body.band || body.bookIds?.includes(e.bookId))
       for (const e of take) {
         const b = books.find((x) => x.id === e.bookId)
         if (!b) continue

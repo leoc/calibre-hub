@@ -1,7 +1,7 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { importRepairQuery } from "@/lib/queries"
-import { write, type ImportRepairEntry, type ImportRepairReview } from "@/lib/api"
+import { write, type ConfidenceBand, type ImportRepairEntry, type ImportRepairReview, type RepairNote } from "@/lib/api"
 import { fieldLabel, formatValue, sourceLabel } from "@/lib/metadata"
 import type { MetadataField } from "@/lib/api"
 import { formatNumber, t } from "@/i18n"
@@ -10,12 +10,24 @@ import { cn } from "@/lib/utils"
 
 const muted = "text-muted-foreground eink:text-black"
 const n = (v: number | undefined | null) => formatNumber(v ?? 0)
+const select = "min-h-9 rounded-md border bg-background px-2 text-sm eink:min-h-12 eink:border-2 touch:min-h-11"
+// entries on the page at a time: a whole library has thousands
+const PAGE = 100
+
+export const BANDS: ConfidenceBand[] = ["bulk", "review", "unsure"]
+const LEVELS = [1, 2, 3] as const
+type Sort = "sure" | "unsure" | "book"
+
+export const bandLabel = (band: ConfidenceBand) =>
+  t(band === "bulk" ? "repair.band.bulk" : band === "review" ? "repair.band.review" : "repair.band.unsure")
+export const levelLabel = (level: 1 | 2 | 3) => t(level === 1 ? "repair.level.1" : level === 2 ? "repair.level.2" : "repair.level.3")
 
 // who decided an unclear file name: the name, the folder, the file, a
 // metadata source, the model, or nobody (the unsure tag)
 export function decidedLabel(by: string | null, unsureTag: string): string {
   if (!by || by === "name") return t("repair.decided.name")
   if (by === "folder") return t("repair.decided.folder")
+  if (by === "calibre") return t("repair.decided.calibre")
   if (by === "unsure") return t("repair.decided.unsure", { tag: unsureTag })
   const key = sourceLabel(by)
   return key ? t(key) : by
@@ -26,15 +38,29 @@ const sourceName = (source: string) => {
   return key ? t(key) : source
 }
 
-// The repair of plain-file imports on the import page: plan proposals (a
-// job), then review them per book (old → new, who decided) and accept or
-// reject single books, the selected ones or all
+// the entries of a filter, in the order chosen; without a value last
+function visible(entries: ImportRepairEntry[], band: ConfidenceBand | "all", level: string, sort: Sort) {
+  const list = entries.filter((e) => (band === "all" || e.band === band) && (level === "all" || String(e.level) === level))
+  const value = (e: ImportRepairEntry) => e.confidence ?? -1
+  if (sort === "sure") list.sort((a, b) => value(b) - value(a) || a.bookId - b.bookId)
+  if (sort === "unsure") list.sort((a, b) => value(a) - value(b) || a.bookId - b.bookId)
+  return list
+}
+
+// The repair on the import page: plan proposals (a job, of the suspicious
+// books or the whole library), then review them per book (old → new, who
+// decided, how sure) by band and level, and accept or reject single books,
+// the selected ones or the bulk band
 export function ImportRepair() {
   const qc = useQueryClient()
   const { data } = useQuery(importRepairQuery)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [band, setBand] = useState<ConfidenceBand | "all">("all")
+  const [level, setLevel] = useState("all")
+  const [sort, setSort] = useState<Sort>("sure")
+  const [limit, setLimit] = useState(PAGE)
   const refresh = () => qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
-  const plan = useMutation({ mutationFn: write.planImportRepair, onSettled: refresh })
+  const plan = useMutation({ mutationFn: (library: boolean) => write.planImportRepair(library), onSettled: refresh })
   const accept = useMutation({
     mutationFn: (ids?: number[]) => write.acceptImportRepair(ids),
     onSettled: () => {
@@ -49,7 +75,10 @@ export function ImportRepair() {
       refresh()
     },
   })
+  const entries = useMemo(() => visible(data?.entries ?? [], band, level, sort), [data?.entries, band, level, sort])
+  const titles = useMemo(() => new Map(data?.books.map((b) => [b.id, b.title])), [data?.books])
   if (!data) return null
+  const bulk = data.entries.filter((e) => e.band === "bulk").length
   const running = data.job?.status === "running"
   const busy = running || plan.isPending || accept.isPending || reject.isPending
   const ids = [...selected].filter((id) => data.entries.some((e) => e.bookId === id))
@@ -68,13 +97,16 @@ export function ImportRepair() {
       <p className={cn("text-sm", muted)}>{t("repair.hint")}</p>
       <RepairState review={data} />
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" disabled={busy} onClick={() => plan.mutate()}>
+        <Button variant="outline" disabled={busy} onClick={() => plan.mutate(false)}>
           {t("repair.plan")}
+        </Button>
+        <Button variant="outline" disabled={busy} onClick={() => plan.mutate(true)}>
+          {t("repair.planLibrary")}
         </Button>
         {data.entries.length > 0 && (
           <>
-            <Button disabled={busy} onClick={() => accept.mutate(undefined)}>
-              {t("repair.acceptAll")}
+            <Button disabled={busy || bulk === 0} onClick={() => accept.mutate(undefined)}>
+              {t("repair.acceptBulk", { count: n(bulk) })}
             </Button>
             <Button variant="secondary" disabled={busy || ids.length === 0} onClick={() => accept.mutate(ids)}>
               {t("repair.acceptSelected", { count: n(ids.length) })}
@@ -85,15 +117,49 @@ export function ImportRepair() {
           </>
         )}
       </div>
+      {data.entries.length > 0 && (
+        <div className="flex flex-wrap gap-3 text-sm">
+          <label className="inline-flex items-center gap-2">
+            {t("repair.band")}
+            <select className={select} value={band} onChange={(e) => setBand(e.target.value as ConfidenceBand | "all")}>
+              <option value="all">{t("repair.band.all")}</option>
+              {BANDS.map((b) => (
+                <option key={b} value={b}>
+                  {bandLabel(b)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2">
+            {t("repair.level")}
+            <select className={select} value={level} onChange={(e) => setLevel(e.target.value)}>
+              <option value="all">{t("repair.level.all")}</option>
+              {LEVELS.map((l) => (
+                <option key={l} value={l}>
+                  {levelLabel(l)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2">
+            {t("repair.sort")}
+            <select className={select} value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+              <option value="sure">{t("repair.sort.sure")}</option>
+              <option value="unsure">{t("repair.sort.unsure")}</option>
+              <option value="book">{t("repair.sort.book")}</option>
+            </select>
+          </label>
+        </div>
+      )}
       {data.entries.length === 0 ? (
         !running && <p className="text-sm">{t("repair.none")}</p>
       ) : (
         <ul className="divide-y border-y eink:divide-y-2 eink:border-y-2" aria-label={t("repair.title")}>
-          {data.entries.map((e) => (
+          {entries.slice(0, limit).map((e) => (
             <RepairItem
               key={e.bookId}
               entry={e}
-              title={data.books.find((b) => b.id === e.bookId)?.title}
+              title={titles.get(e.bookId)}
               unsureTag={data.unsureTag}
               checked={selected.has(e.bookId)}
               busy={busy}
@@ -104,9 +170,22 @@ export function ImportRepair() {
           ))}
         </ul>
       )}
+      {entries.length > limit && (
+        <div className="flex items-center gap-3 text-sm">
+          <span className={muted}>{t("repair.shown", { shown: n(limit), total: n(entries.length) })}</span>
+          <Button variant="outline" size="sm" onClick={() => setLimit(limit + PAGE)}>
+            {t("repair.more")}
+          </Button>
+        </div>
+      )}
     </section>
   )
 }
+
+const noteText = (note: RepairNote) =>
+  note.kind === "duplicateIsbn"
+    ? t("repair.note.duplicateIsbn", { isbn: note.isbn, books: note.books.map((id) => `#${id}`).join(", ") })
+    : t("repair.note.isbnConflict", { isbn: note.isbn })
 
 function RepairState({ review }: { review: ImportRepairReview }) {
   const job = review.job
@@ -143,7 +222,15 @@ function RepairItem(props: {
           {title}
         </label>
         <span className={muted}>{t("repair.decided", { by: decidedLabel(e.decided, props.unsureTag) })}</span>
+        <span className={cn("tabular-nums", muted)}>
+          {e.confidence !== null && e.level !== null ? t("repair.confidence", { value: n(e.confidence), level: levelLabel(e.level) }) : t("repair.confidence.none")}
+        </span>
       </div>
+      {e.notes.map((note) => (
+        <p key={note.kind} className="font-medium">
+          {noteText(note)}
+        </p>
+      ))}
       {name && <p className={cn("break-all", muted)}>{name}</p>}
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
         {changes.map((c) => (

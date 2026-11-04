@@ -109,6 +109,18 @@ Then("the quality report lists a run with {string}", async ({ page }, text: stri
   await expect(quality(page).getByRole("list", { name: "Letzte Importläufe" })).toContainText(text)
 })
 
+Then("the quality report shows {string}", async ({ page }, text: string) => {
+  await expect(quality(page).getByText(text)).toBeVisible()
+})
+
+When("I draw a sample and record {int} of {int} right", async ({ page }, correct: number, checked: number) => {
+  await quality(page).getByRole("button", { name: "Stichprobe ziehen" }).click()
+  await expect(quality(page).getByText("Zu prüfen (1)")).toBeVisible()
+  await quality(page).getByLabel("Geprüft").fill(String(checked))
+  await quality(page).getByLabel("Richtig").fill(String(correct))
+  await quality(page).getByRole("button", { name: "Ergebnis speichern" }).click()
+})
+
 // the repair of plain-file imports (src/components/import-repair.tsx)
 const repair = (page: Page) => region(page, "Reparatur")
 const proposals = (page: Page) => repair(page).getByRole("list", { name: "Reparatur" }).getByRole("listitem")
@@ -130,6 +142,30 @@ When("I accept the repair of the first proposal", async ({ page }) => {
 When("I select the first proposal and reject the selected ones", async ({ page }) => {
   await proposals(page).first().getByRole("checkbox").check()
   await repair(page).getByRole("button", { name: /^Ausgewählte ablehnen/ }).click()
+})
+
+Then("the first proposal says {string}", async ({ page }, text: string) => {
+  await expect(proposals(page).first().getByText(text)).toBeVisible()
+})
+
+Then("the repair lists {int} proposals", async ({ page }, count: number) => {
+  await expect(proposals(page)).toHaveCount(count)
+})
+
+When("I show the band {string} of the repair", async ({ page }, band: string) => {
+  await repair(page).getByLabel("Sicherheit").selectOption({ label: band })
+})
+
+When("I show the level {string} of the repair", async ({ page }, level: string) => {
+  await repair(page).getByLabel("Stufe").selectOption({ label: level })
+})
+
+When("I sort the repair by {string}", async ({ page }, sort: string) => {
+  await repair(page).getByLabel("Sortierung").selectOption({ label: sort })
+})
+
+When("I accept the sure proposals", async ({ page }) => {
+  await repair(page).getByRole("button", { name: /^Sichere übernehmen/ }).click()
 })
 
 Then("the repair has {int} open proposals and {string}", async ({ page }, count: number, text: string) => {

@@ -246,16 +246,35 @@ export interface ImportCleanup {
   undoJob: Job | null
 }
 
-// The repair of books imported from plain files (POST /api/import/repair
-// plans, GET lists the open proposals): per book the fields the file name
-// gives, and who decided an unclear name
+// How sure a decision is: bulk from 90, review from 60, unsure below
+export type ConfidenceBand = "bulk" | "review" | "unsure"
+
+// a conflict for the review: the same ISBN on other books, or another ISBN
+// in the book than the one it has
+export interface RepairNote {
+  kind: "duplicateIsbn" | "isbnConflict"
+  isbn: string
+  books: number[]
+}
+
+// The repair by the rule flow (POST /api/import/repair plans, GET lists the
+// open proposals): per book the fields to change, who decided, how sure it
+// is and on which level (1 ISBN in the book, 2 the file's metadata, 3 the
+// file name). Older plans have no confidence.
 export interface ImportRepairEntry {
   bookId: number
   file: string
-  // name, folder, file, hardcover, dnb, openlibrary, model, unsure
+  // name, folder, file, calibre, hardcover, dnb, openlibrary, model, unsure
   decided: string | null
   status: "pending" | "applied" | "rejected" | "failed"
   at: string
+  confidence: number | null
+  band: ConfidenceBand | null
+  level: 1 | 2 | 3 | null
+  source: string | null
+  titleConfidence: number | null
+  authorsConfidence: number | null
+  notes: RepairNote[]
   // field "candidate": what the catalogs suggest but couldn't confirm
   // ({title, authors, source}), shown for the review and never applied
   changes: { field: string; old: unknown; new: unknown }[]
@@ -278,6 +297,31 @@ export interface ImportQuality {
   reasons: Record<string, number>
   runs: { run: string; at: string; total: number; suspect: number }[]
   books: { id: number; title: string; authors: string[]; reasons: string[] }[]
+  // what the rule flow decided, "none": not planned yet
+  bands: Record<ConfidenceBand | "none", number>
+  levels: Record<"1" | "2" | "3", number>
+  isbn: { with: number; without: number; sources: Record<string, number> }
+  conflicts: {
+    duplicates: { isbn: string; books: number[] }[]
+    duplicateCount: number
+    noted: { id: number; title: string; notes: RepairNote[] }[]
+    notedCount: number
+  }
+  // the last sample check of each band
+  samples: ImportSample[]
+}
+
+export interface ImportSample {
+  band: ConfidenceBand
+  checked: number
+  correct: number
+  at: string
+}
+
+// books of a band to check by hand (GET /api/import/quality/sample)
+export interface ImportSampleBooks {
+  band: ConfidenceBand
+  books: { id: number; title: string; authors: string[]; confidence: number; level: number; source: string }[]
 }
 
 export interface ImportStatus {
@@ -453,6 +497,7 @@ export const api = {
   importStatus: () => request<ImportStatus>("/api/import"),
   importRepair: () => request<ImportRepairReview>("/api/import/repair"),
   importQuality: () => request<ImportQuality>("/api/import/quality"),
+  importSample: (band: ConfidenceBand) => request<ImportSampleBooks>(`/api/import/quality/sample?band=${band}`),
   metadataChanges: (query: MetadataChangesQuery = {}) =>
     request<{ changes: MetadataChange[]; books: Book[] }>(`/api/metadata/changes?${new URLSearchParams(Object.entries(query).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])))}`),
   // q: own search text instead of the book's title and author
@@ -593,13 +638,17 @@ export interface PrivateTagsChange {
 }
 
 export const write = {
-  // the repair of plain-file imports: plan (a job), then accept or reject
-  // proposals (bookIds, or all)
-  planImportRepair: () => request<{ dryRun: boolean; books: number; job: Job }>("/api/import/repair", { method: "POST", ...json({ dryRun: true }) }),
+  // the repair: plan (a job; library: every book, not only the suspicious
+  // ones), then accept proposals (bookIds, or the bulk band) or reject them
+  planImportRepair: (library = false) =>
+    request<{ dryRun: boolean; books: number; job: Job }>("/api/import/repair", { method: "POST", ...json({ dryRun: true, ...(library ? { library } : {}) }) }),
   acceptImportRepair: (bookIds?: number[]) =>
-    request<{ books: number; job: Job }>("/api/import/repair/accept", { method: "POST", ...json(bookIds ? { bookIds } : { all: true }) }),
+    request<{ books: number; job: Job }>("/api/import/repair/accept", { method: "POST", ...json(bookIds ? { bookIds } : { band: "bulk" }) }),
   rejectImportRepair: (bookIds?: number[]) =>
     request<{ rejected: number }>("/api/import/repair/reject", { method: "POST", ...json(bookIds ? { bookIds } : { all: true }) }),
+  // a sample check: of `checked` books of a band `correct` were right
+  addImportSample: (sample: Pick<ImportSample, "band" | "checked" | "correct">) =>
+    request<ImportSample>("/api/import/quality/sample", { method: "POST", ...json(sample) }),
   // the user's private tags: add and/or remove on books
   privateTags: (target: BulkTarget, change: { add?: string[]; remove?: string[] }) =>
     request<PrivateTagsChange>("/api/private-tags", { method: "POST", ...json({ target, ...change }) }),

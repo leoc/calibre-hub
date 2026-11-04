@@ -40,6 +40,28 @@ Feature: Import progress
     And the quality report counts "Autor unbekannt" with "191"
     And the quality report lists a run with "120 von 437 auffällig"
 
+  Scenario: The quality report shows the bands and keeps a sample check
+    When I open the import page
+    Then the quality report counts "sicher (ab 90)" with "900"
+    And the quality report counts "im Buch, per OCR" with "120 (15 %)"
+    And the quality report shows "Konflikte: 1 ISBN doppelt, 3 Bücher vermerkt"
+    When I draw a sample and record 29 of 30 right
+    Then the quality report shows "sicher (ab 90): 29 von 30 richtig (97 %)"
+
+  Scenario: The repair shows how sure a proposal is, filters and accepts a band
+    When I open the import page
+    Then the first proposal says "Sicherheit 98, ISBN im Buch"
+    When I show the band "unsicher (unter 60)" of the repair
+    Then the repair lists 1 proposals
+    When I show the band "alle" of the repair
+    And I sort the repair by "unsicherste zuerst"
+    Then the first proposal says "Sicherheit 30, Dateiname"
+    When I show the level "ISBN im Buch" of the repair
+    Then the repair lists 1 proposals
+    When I show the level "alle" of the repair
+    And I accept the sure proposals
+    Then the repair has 2 open proposals and "1 übernommen"
+
   Scenario: The repair of plain-file imports is reviewed book by book
     When I open the import page
     Then the repair proposes "Formulas and Theorems in Pure Mathematics" decided by "Dateiname"
