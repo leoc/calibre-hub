@@ -524,13 +524,49 @@ hub import cleanup --min-id 114 --apply
 hub import undo <cleanup id> --apply
 ```
 
+Rule flow (`Meta::Flow`, on import and in the repair): what a book is
+called is read from the book first, the file name comes last.
+
+1. ISBN in the book: the first and last pages of PDF, EPUB, DjVu, MOBI, AZW
+   and CHM are read (poppler, djvulibre, calibre's `ebook-meta` and
+   `ebook-convert`, which only read the file). A PDF or DjVu without a text
+   layer goes through Tesseract (deu+eng): the first 6 and last 2 pages at
+   most, `metadata.ocrJobs` books at a time, one thread each, 90 s per page
+   and 5 minutes per book, kept by the file's key in the state DB. Labelled
+   ISBNs near the copyright page count first; ISBNs of the last pages and of
+   lists need their title in the text. A catalog record is only taken when it
+   fits the book's first pages: its title or an author appears there. A
+   German book keeps its title when the record has only the English one, and
+   gets the author and ISBN. Level 1 wins over everything, also the file name.
+2. Metadata in the file: an EPUB's OPF and calibre's own are trusted, a PDF,
+   DjVu, MOBI or CHM only where a field fits the text or the name. Known junk
+   (`Click here to log on`, `Administrator`, `Untitled Document`) never counts.
+3. The file name as described above. What's missing comes from the catalogs
+   when two of them agree, anything less goes to the review with the unsure
+   tag and a suggestion. A format that can't be read falls to this level.
+
+Every decision has a confidence, per title and authors, the book gets the
+lower one. The table is `src/calibre_hub/meta_confidence.cr`. From 90 a
+proposal can be accepted in bulk, from 60 it is reviewed, below 60 the book
+gets the unsure tag and no title or author is written, also on import. Value,
+level, source and the ISBN's source are kept per book (`metadata_decisions`),
+every change in the change log with its source and level (`POST
+/api/metadata/changes/revert` also takes `source` and `level`). A field edited
+by hand never changes: the event log has a change that neither the cleanup's
+log knows nor an import made right after adding the book. An ISBN is never
+replaced: another one in the book, or the same one on another book, goes to
+the review. A level 1 decision that is written binds the metadata run.
+
 Repair of imported books (`POST /api/import/repair`, `hub import repair`):
 for every book an import added from a plain file (`import_files`, the unit's
 primary format), optionally from `since` (when the file was imported) or
 with a book id from `minId` to `maxId`, the file name is read again as above.
 Every other book the quality report finds suspicious is planned too (an
-upload, the inbox, a calibre folder): its title is read like a file name. So
-a plan without limits covers the whole library.
+upload, the inbox, a calibre folder): its title is read like a file name.
+`library: true` (`hub import repair --library`, "Ganze Bibliothek prüfen" on
+the import page) plans every book of the library, a dry run unless asked
+otherwise; it reads each file and asks the catalogs for its ISBNs, so it
+runs for hours on a big library.
 
 Title and authors are decided together. Where the book still has what an
 import left there (calibre's reading of the name, a title that says nothing,
@@ -561,12 +597,14 @@ gets `auto-metadaten`), and the repaired books get a metadata run (target
 ids). Unclear names are decided as on import (the file, the sources, the
 model, else the unsure tag), so the plan is a job. Its proposals (per
 book: the fields old and new, who decided) are reviewed on the import page
-("Reparatur": accept single books, the selected ones or all, reject) or by
-the API, and kept in the state DB (`import_repairs`). Accepting applies a
+("Reparatur": with confidence and level per proposal, filtered and sorted by
+them, accept single books, the selected ones or the bulk band, reject) or by
+the API (`band: "bulk"`, `all: true` is everything from 60), and kept in the
+state DB (`import_repairs`). Accepting applies a
 proposal only if the book still has the values the plan saw, else that book
 fails ("changed since the plan") and the next plan proposes it anew; books
 accepted or rejected are left out of later plans. `--apply` (`dryRun:
-false`) accepts every proposal right away.
+false`) accepts what may be accepted in bulk right away, the rest waits.
 
 The quality report (`GET /api/import/quality`, `hub import quality`, the
 section "Qualität" on the import page) counts the suspicious books of the
@@ -574,11 +612,16 @@ library, of the last import runs, or of one portion (`--run`, `--since`,
 `--min-id`, `--max-id`) and says why, by the rules above: `unknownAuthor`,
 `notAPerson`, `publisherAuthor`, `titleSaysNothing`, `leftoverTitle`,
 `fileNameTitle`, `unsure`. Authors of books with an ISBN count as checked,
-standards are left out.
+standards are left out. It also shows the distribution per band and level,
+the share of books with an ISBN per source (`text`, `ocr`, `opf`, a catalog,
+`calibre` for what was there), ISBN conflicts, and the sample checks: `GET
+/api/import/quality/sample?band=bulk` picks 30 books of a band, `POST` with
+`band`, `checked`, `correct` keeps the measured hit rate.
 
 ```sh
 hub import repair --min-id 1153                    # plan, then list the proposals
 hub import repair --min-id 1153 --max-id 2000 --apply
+hub import repair --library                        # the whole library as a dry run
 ```
 
 ## Category suggestions (local model)
@@ -839,7 +882,7 @@ hub upload dune.pdf --add-format-to 12
 hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
 hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
 hub import alt                           # backlog import: dry run, --apply imports, --limit N a portion
-hub import repair --min-id 1153          # names of plain-file imports read again: proposals, --apply accepts them
+hub import repair --min-id 1153          # the rule flow on plain-file imports: proposals, --apply accepts what is 90 or surer
 hub import quality --run 77ec37bda5d6d688  # how many books of a portion look wrong, and why
 ```
 

@@ -119,7 +119,7 @@ module CalibreHub
         Flag.new("offset", "N", "show: skip the first N books"),
         Flag.new("yes", short: 'y', help: "delete: don't ask for confirmation"),
       ], choices: %w(ls show create add rm delete)),
-      Command.new("import", "import <path>... [--apply] [--limit N] | import status | import cleanup (--min-id N | --since TIME) [--apply] | import undo <cleanup> [--apply] | import repair [--min-id N] [--max-id N] [--since TIME] [--apply] | import quality [--run ID] [--min-id N] [--max-id N] [--since TIME]",
+      Command.new("import", "import <path>... [--apply] [--limit N] | import status | import cleanup (--min-id N | --since TIME) [--apply] | import undo <cleanup> [--apply] | import repair [--library] [--min-id N] [--max-id N] [--since TIME] [--apply] | import quality [--run ID] [--min-id N] [--max-id N] [--since TIME]",
         "import an old collection without folder categories or tags (dry run unless --apply; paths on the hub, relative to its first import root), show runs, take back the folder categories and tags the inbox set, repair title and authors of imported books, or measure how many books of a portion look wrong", [
         Flag.new("apply", help: "import, clean up, undo or repair instead of a dry run"),
         Flag.new("limit", "N", "import at most N books (new books and formats, in scan order); the next run takes the next N"),
@@ -128,6 +128,7 @@ module CalibreHub
         Flag.new("max-id", "N", "cleanup, repair, quality: books up to this id"),
         Flag.new("since", "TIME", "cleanup, repair, quality: books added since (2026-11-02T18:00, local time)"),
         Flag.new("run", "ID", "quality: the books of this import run"),
+        Flag.new("library", help: "repair: plan every book of the library, not only the suspicious ones"),
       ]),
       Command.new("tui", "tui", "browse the library in the terminal (Vim keys, ? shows them)"),
       Command.new("completion", "completion fish|bash [--prog hub|calibre-hub]",

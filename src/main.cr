@@ -80,6 +80,8 @@ module CalibreHub
     getter hardcover_url : String = env("CALIBRE_HUB_HARDCOVER_URL", "https://api.hardcover.app/v1/graphql")
     # pause between two requests to the same source
     getter metadata_interval : Time::Span = env("CALIBRE_HUB_METADATA_INTERVAL", "1000").to_i.milliseconds
+    # books read by OCR at the same time, 0: none (Meta::Ocr)
+    getter ocr_jobs : Int32 = env("CALIBRE_HUB_OCR_JOBS", "2").to_i
     # embed metadata and cover into the book files after edits, debounced
     getter embed : Bool = env("CALIBRE_HUB_EMBED", "false") == "true"
     getter embed_delay : Time::Span = env("CALIBRE_HUB_EMBED_DELAY", "60").to_i.seconds
@@ -496,8 +498,27 @@ module CalibreHub
       imports.try &.decider = decider
       repair.try &.decider = decider
     end
-    # readings without an author: the catalogs (the import's metadata run asks them on its own)
+    # readings without an author: the catalogs
     repair.try &.checker = metadata_jobs.try(&.metadata.checker)
+    # the rule flow (Meta::Flow): the book's pages and the catalogs by ISBN
+    Meta::Ocr.jobs = config.ocr_jobs
+    if m = metadata_jobs.try(&.metadata)
+      repair.try do |r|
+        r.reader = ->(b : Book) { m.file_info(b, flow: true) }
+        r.by_isbn = m.isbn_lookup
+        r.owners = m.owners
+        m.review = ->(id : Int64, note : Meta::Flow::Note) { r.flag(id, note); nil }
+      end
+      imports.try do |i|
+        i.reader = ->(path : String, format : String) { m.read_flow(path, format) }
+        i.by_isbn = m.isbn_lookup
+        i.checker = m.checker
+      end
+    end
+    imports.try do |i|
+      i.decisions = repair.try(&.log)
+      i.review = repair.try { |r| ->(id : Int64, path : String, d : Meta::Flow::Decision) { r.flagged(id, path, d); nil } }
+    end
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members

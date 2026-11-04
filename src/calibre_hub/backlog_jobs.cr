@@ -532,6 +532,7 @@ module CalibreHub
       end
       notes = [] of String
       book = nil
+      decided = nil.as(Meta::Flow::Decision?)
       begin
         if opf
           @calibre.set_fields(id, opf.changes)
@@ -542,9 +543,11 @@ module CalibreHub
           # calibre has only its own reading of it ("Title - Author")
           fields = {"tags" => JSON.parse("[]")}
           if b = @calibre.book(id)
-            named, how = ImportJobs.name_fields(b, primary.path, hint(unit.dir), @decider)
+            decision = decide(b, primary, hint(unit.dir), ix)
+            named, how = ImportJobs.name_fields(b, decision)
             fields.merge!(named)
             unit.decided = how
+            decided = decision
           end
           @calibre.set_fields(id, fields)
           book = @calibre.book(id)
@@ -582,28 +585,52 @@ module CalibreHub
       unit.status = "imported"
       unit.detail = notes.join("; ").presence
       @writer.written([id])
+      decided.try { |d| record_decision(id, primary.path, d) }
     end
 
-    # set-fields changes from the file name of a book calibre just added
-    # from that file (Meta::FileName): its title and authors where calibre
-    # read them from the name (or the file's title says nothing), the
-    # publisher, year and series where the file has none
-    # An unclear name (which side is the author) that the file can't
-    # decide goes to the metadata sources and the model (main.cr); still
-    # unclear, title and authors stay and the book gets Meta.unsure_tag.
+    # What the rule flow (Meta::Flow) makes of a book calibre just added
+    # from that file: the ISBN in its pages, its metadata, its name. An
+    # unclear name goes to the metadata sources and the model (main.cr).
+    private def decide(book : Book, primary, hint : Symbol?, ix : Backlog::Index) : Meta::Flow::Decision?
+      input = Meta::Flow::Input.new(book, ->(field : String) { Meta::Merge.value(book, field).as(JSON::Any?) },
+        File.basename(primary.path), hint)
+      input.info = @reader.try(&.call(primary.path, primary.format))
+      input.by_isbn = @by_isbn
+      input.decider = @decider
+      input.checker = @checker
+      input.owners = ->(isbn : String) { ix.isbn_books(isbn) }
+      Meta::Flow.decide(input)
+    end
+
+    # set-fields changes of a decision: what it may write. Below the
+    # threshold that is no title or author (Meta::Flow), the book is tagged.
     # {set-fields changes, who decided}
-    def self.name_fields(book : Book, path : String, hint : Symbol?, decider : Meta::FileName::Decider? = nil) : {Hash(String, JSON::Any), String?}
-      name = File.basename(path)
-      decided = Meta::FileName.decide(book, name, hint, ->(field : String) { Meta::Merge.value(book, field).as(JSON::Any?) }, decider)
-      return {({} of String => JSON::Any), nil} unless decided
-      changes, how = decided
+    def self.name_fields(book : Book, decision : Meta::Flow::Decision?) : {Hash(String, JSON::Any), String?}
+      return {({} of String => JSON::Any), nil} unless decision
       fields = {} of String => JSON::Any
+      changes = decision.changes
       # the tags are set anew on import (the file's are dropped)
-      fields["tags"] = JSON.parse([Meta.unsure_tag].to_json) if changes.any? { |c| c.field == "tags" }
+      tags = changes.find { |c| c.field == "tags" }
+      fields["tags"] = tags.new if tags && tags.new.as_a.size > 0
       changes = changes.reject { |c| c.field == "tags" || c.field == Meta::FileName::CANDIDATE }
       fields.merge!(Edit.changes(Meta::Merge.patch(book, changes.to_h { |c| {c.field, c.new} }), book, nil)) unless changes.empty?
-      {fields, how}
+      {fields, decision.how}
     end
+
+    # the decision in the state DB, a conflict to the review
+    private def record_decision(id : Int64, path : String, d : Meta::Flow::Decision)
+      @decisions.try &.decide(id, d, "written")
+      @review.try &.call(id, path, d) unless d.notes.empty?
+    end
+
+    # reads a file for the rule flow (Metadata#read_flow), catalogs by ISBN
+    # (Metadata#isbn_lookup), a reading without an author (Metadata#checker),
+    # where decisions are kept, what goes to the review (ImportRepair#flagged)
+    property reader : Proc(String, String, Meta::FileMeta::Info?)?
+    property by_isbn : Meta::Flow::Lookup?
+    property checker : Meta::FileName::Checker?
+    property decisions : MetaLog?
+    property review : Proc(Int64, String, Meta::Flow::Decision, Nil)?
 
     # decides unclear file names (Metadata#decider), when the cleanup is on
     property decider : Meta::FileName::Decider?

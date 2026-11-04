@@ -1438,6 +1438,26 @@ describe "an ISBN filed under another book" do
   end
 end
 
+describe "the metadata run after the rule flow" do
+  it "doesn't contradict a level 1 decision, a plan binds nothing (#8528)" do
+    library, _, m, _, _ = setup(sources: %w(hardcover), hardcover_token: "hc-token")
+    decision = CalibreHub::Meta::Flow::Decision.new([] of CalibreHub::Meta::Change, "dnb", 1, "dnb", 98, 98)
+    library.add(23, "Effortless", ["Greg Mckeown"], publisher: "Crown", languages: ["eng"])
+    m.log.decide(23, decision, "written")
+    m.run(23)
+    library.books[23]["title"].should eq "Effortless"
+    library.books[23]["authors"].should eq ["Greg Mckeown"]
+    m.log.decide(23, decision, "planned")
+    m.run(23)
+    library.books[23]["title"].should eq "Effortless: Make It Easier to Do What Matters Most"
+  end
+
+  it "reads the flow's formats only when the flow asks" do
+    CalibreHub::Metadata::QUICK_FORMATS.should_not contain "MOBI"
+    CalibreHub::Meta::FileMeta::FORMATS.should contain "CHM"
+  end
+end
+
 describe "the catalogs for a reading without an author" do
   it "asks them, and a source that fails counts as not knowing (#8528)" do
     _, web, m, _, _ = setup(sources: %w(openlibrary dnb))

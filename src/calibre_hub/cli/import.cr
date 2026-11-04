@@ -225,26 +225,35 @@ module CalibreHub
         @out.puts "#{report["suspect"]} of #{report["total"]} books suspicious"
         report["reasons"].as_h.each { |reason, count| @out.puts "  #{reason}: #{count}" unless count == 0 }
         report["runs"].as_a.each { |r| @out.puts "  run #{r["run"]}  #{r["at"]}  #{r["suspect"]} of #{r["total"]}" }
+        if bands = report["bands"]?
+          @out.puts "confidence: #{bands.as_h.map { |band, count| "#{band} #{count}" }.join(", ")}"
+          isbn = report["isbn"]
+          @out.puts "ISBN: #{isbn["with"]} books (#{isbn["sources"].as_h.map { |s, count| "#{s} #{count}" }.join(", ")}), #{isbn["without"]} without"
+          c = report["conflicts"]
+          @out.puts "conflicts: #{c["duplicateCount"]} ISBNs on two books, #{c["notedCount"]} books noted"
+          report["samples"].as_a.each { |s| @out.puts "  sample #{s["band"]}: #{s["correct"]} of #{s["checked"]} right" }
+        end
         rows = report["books"].as_a.map { |b| [b["id"].to_s, b["title"].as_s, b["authors"].as_a.join(", "), b["reasons"].as_a.join(", ")] }
         Output.table(@out, ["ID", "Title", "Authors", "Why"], rows) unless rows.empty?
       end
 
-      # hub import repair [--since TIME] [--min-id N] [--max-id N] [--apply]
+      # hub import repair [--library] [--since TIME] [--min-id N] [--max-id N] [--apply]
       private def import_repair(args : Args)
         body = {} of String => JSON::Any
         args["since"]?.try { |s| body["since"] = JSON::Any.new(s) }
         args["min-id"]?.try { |v| body["minId"] = JSON::Any.new(Runner.id(v)) }
         args["max-id"]?.try { |v| body["maxId"] = JSON::Any.new(Runner.id(v)) }
+        body["library"] = JSON::Any.new(true) if args.flag?("library")
         apply = args.flag?("apply")
         body["dryRun"] = JSON::Any.new(!apply)
-        # the plan is a job (unclear names ask the sources and the model)
+        # the plan is a job (the book's pages, the catalogs, the model)
         result = client.post("/api/import/repair", body)
         job = wait_job(result["job"]["id"].as_s, result["books"].as_i64)
         raise Failure.new(SERVER, "repair #{job["status"]}: #{job["error"]? || ""}") unless job["status"]? == "done"
         if apply
           return @out.puts job.to_json if @json
           errors = job["errors"]?.try(&.as_a.size) || 0
-          @out.puts "repair: done, #{job["done"]} books checked#{errors > 0 ? ", #{errors} failed" : ""} (revert: Metadaten page or POST /api/metadata/changes/revert)"
+          @out.puts "repair: done, #{job["done"]} books checked#{errors > 0 ? ", #{errors} failed" : ""} (the rest waits for a review; revert: Metadaten page or POST /api/metadata/changes/revert)"
           return
         end
         review = client.get("/api/import/repair")
@@ -252,11 +261,12 @@ module CalibreHub
         rows = review["entries"].as_a.flat_map do |e|
           e["changes"].as_a.map do |c|
             [e["bookId"].to_s, c["field"].as_s, Output.value(c["old"]?), Output.value(c["new"]?),
-             e["decided"]?.try(&.as_s?) || "-", File.basename(e["file"].as_s.presence || "-")]
+             e["decided"]?.try(&.as_s?) || "-", e["confidence"]?.try(&.as_i?).try(&.to_s) || "-",
+             e["level"]?.try(&.as_i?).try(&.to_s) || "-", File.basename(e["file"].as_s.presence || "-")]
           end
         end
-        Output.table(@out, ["ID", "Field", "Now", "From the file name", "Decided by", "File"], rows) unless rows.empty?
-        @out.puts "#{review["entries"].as_a.size} books, #{rows.size} changes to review (import page; --apply accepts all)"
+        Output.table(@out, ["ID", "Field", "Now", "Proposed", "Decided by", "Sure", "Level", "File"], rows) unless rows.empty?
+        @out.puts "#{review["entries"].as_a.size} books, #{rows.size} changes to review (import page; --apply accepts what is 90 or surer)"
       end
 
       private def cleanup_entries(entries : Array(JSON::Any))

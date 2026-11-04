@@ -1266,6 +1266,7 @@ pkgs.testers.runNixOSTest {
         entry = next(e for e in review["entries"] if e["bookId"] == old_id)
         planned = {c["field"]: c["new"] for c in entry["changes"]}
         assert entry["decided"] == "name" and entry["status"] == "pending", entry
+        assert entry["confidence"] == 70 and entry["level"] == 3 and entry["band"] == "review", entry
         assert planned["title"] == "Advanced Data Structures" and planned["authors"] == ["Brass"], entry
         assert planned["publisher"] == "Cambridge University Press" and planned["pubdate"] == "2008", entry
         assert api("GET", f"/api/books/{old_id}")[1]["title"] == "Brass"
@@ -1287,6 +1288,43 @@ pkgs.testers.runNixOSTest {
         assert report["total"] >= 1 and "unknownAuthor" in report["reasons"] and len(report["runs"]) >= 1, report
         out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import quality --min-id {old_id} --max-id {old_id}")
         assert "0 of 1 books suspicious" in out, out
+
+    with subtest("the rule flow reads the book first (#8528)"):
+        # a scan without a text layer: Tesseract reads it on the import, the
+        # ISBN is in the book, the stub's catalogs don't know it
+        FLOW = f"{ALT}/Flow"
+        machine.succeed(f"mkdir -p {FLOW} && cp ${../spec/fixtures/metadata/scan.pdf} '{FLOW}/Herbert - Der Wuestenplanet.pdf' && "
+                        f"cp ${../spec/fixtures/metadata/scan.djvu} '{FLOW}/Herbert - Dune Messias.djvu' && chmod -R u+w {FLOW}")
+        # a MOBI through calibre's tools; a text with the same fill would be a duplicate
+        machine.succeed(f"printf 'A Quiet Book\\n\\nby Jane Roe\\n\\nCopyright 2001. ISBN 0-201-91465-4\\n' > /tmp/quiet.txt && "
+                        f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/quiet.txt '{FLOW}/Roe - A Quiet Book.mobi' --title 'A Quiet Book' --authors 'Jane Roe' >/dev/null")
+        status, run = api("POST", "/api/import", {"path": "Flow", "dryRun": False})
+        assert status == 202, (status, run)
+        j = wait_job(run["jobId"], 300)
+        assert j["status"] == "done" and j["errors"] == [], j
+        units = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"]
+        assert len(units) == 3 and all(u["status"] == "imported" for u in units), units
+        sql = lambda q: machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"{q}\"").strip()
+        assert sql("select count(*) from ocr_pages") == "1", sql("select key from ocr_pages")
+        assert "Herbert" in sql("select front from ocr_pages limit 1")
+        levels = {u["bookId"]: sql(f"select level || ' ' || confidence from metadata_decisions where book_id = {u['bookId']}") for u in units}
+        mobi = next(u["bookId"] for u in units if u["files"][0]["path"].endswith(".mobi"))
+        assert levels[mobi] == "2 90", levels
+        # the whole library as a dry run, the report has its bands
+        status, plan = api("POST", "/api/import/repair", {"library": True})
+        assert status == 202 and plan["dryRun"] is True, (status, plan)
+        assert wait_job(plan["job"]["id"], 300)["status"] == "done"
+        report = api("GET", "/api/import/quality")[1]
+        assert sum(report["bands"].values()) == report["total"] and report["bands"]["none"] < report["total"], report
+        # a sample check of a band is kept
+        status, sample = api("GET", "/api/import/quality/sample?band=review")
+        assert status == 200 and sample["band"] == "review", (status, sample)
+        status, s = api("POST", "/api/import/quality/sample", {"band": "bulk", "checked": 30, "correct": 29})
+        assert status == 201, (status, s)
+        assert api("GET", "/api/import/quality")[1]["samples"][0]["correct"] == 29
+        # calibre finds a book by its ISBN in both forms: the same ISBN on two books
+        machine.succeed(f"{DB} set_metadata {mobi} -f identifiers:isbn:9780201914658")
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/books?q=identifiers:%22=isbn:=9780201914658%22' | grep -q '\"id\":{mobi}'", timeout=30)
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")

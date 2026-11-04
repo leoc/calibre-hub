@@ -4,6 +4,7 @@ require "json"
 require "./alert"
 require "./meta_rules"
 require "./meta_sources"
+require "./meta_flow"
 require "./calibre"
 require "./backlog_pause"
 require "./covers"
@@ -31,12 +32,54 @@ module CalibreHub
       getter at : Time
       @[JSON::Field(key: "revertedAt", emit_null: true)]
       getter reverted_at : Time?
+      # the level of the rule flow that decided (Meta::Flow), nil: not the flow
+      @[JSON::Field(emit_null: true)]
+      getter level : Int32?
 
-      def initialize(@id, @book_id, @field, @old, @new, @source, @job_id, @at, @reverted_at)
+      def initialize(@id, @book_id, @field, @old, @new, @source, @job_id, @at, @reverted_at, @level = nil)
       end
     end
 
-    COLUMNS = "id, book_id, field, old, new, source, job_id, at, reverted_at"
+    # What the rule flow (Meta::Flow) decided about a book: how sure, on
+    # which level, from where, so a band can be checked again. status:
+    # planned (a proposal), written (nothing left to do or written), rejected
+    struct Decided
+      include JSON::Serializable
+
+      @[JSON::Field(key: "bookId")]
+      getter book_id : Int64
+      getter level : Int32
+      getter confidence : Int32
+      @[JSON::Field(key: "titleConfidence")]
+      getter title_confidence : Int32
+      @[JSON::Field(key: "authorsConfidence")]
+      getter authors_confidence : Int32
+      getter source : String
+      @[JSON::Field(emit_null: true)]
+      getter isbn : String?
+      @[JSON::Field(key: "isbnSource", emit_null: true)]
+      getter isbn_source : String?
+      getter status : String
+      getter notes : Array(Meta::Flow::Note)
+      getter at : Time
+
+      def initialize(@book_id, @level, @confidence, @title_confidence, @authors_confidence, @source, @isbn, @isbn_source,
+                     @status, @notes, @at)
+      end
+
+      # the metadata run doesn't contradict this (Metadata#run)
+      def binding? : Bool
+        level == Meta::Flow::LEVEL_ISBN && status == "written"
+      end
+    end
+
+    # A sample check of a band: of `checked` books `correct` were right
+    record Sample, band : String, checked : Int32, correct : Int32, at : Time do
+      include JSON::Serializable
+    end
+
+    COLUMNS  = "id, book_id, field, old, new, source, job_id, at, reverted_at, level"
+    DECISION = "book_id, level, confidence, title_confidence, authors_confidence, source, isbn, isbn_source, status, notes, at"
     # a book checked this recently isn't part of "incomplete" again
     RECHECK = 30.days
 
@@ -65,12 +108,42 @@ module CalibreHub
           job_id text
         )
         SQL
+      columns = [] of String
+      @db.query_each("pragma table_info(metadata_changes)") { |rs| rs.read(Int32); columns << rs.read(String); rs.read(String, Int32, String?, Int32) }
+      @db.exec "alter table metadata_changes add column level integer" unless columns.includes?("level")
+      @db.exec <<-SQL
+        create table if not exists metadata_decisions (
+          book_id integer primary key,
+          level integer not null,
+          confidence integer not null,
+          title_confidence integer not null,
+          authors_confidence integer not null,
+          source text not null,
+          isbn text,
+          isbn_source text,
+          status text not null,
+          notes text not null default '[]',
+          at integer not null,
+          job_id text
+        )
+        SQL
+      @db.exec <<-SQL
+        create table if not exists metadata_samples (
+          id integer primary key autoincrement,
+          band text not null,
+          checked integer not null,
+          correct integer not null,
+          at integer not null
+        )
+        SQL
+      # what Tesseract read of a file, by the file's key (Meta::Ocr.key)
+      @db.exec "create table if not exists ocr_pages (key text primary key, front text not null, back text not null, at integer not null)"
     end
 
-    def add(book_id : Int64, field : String, old : JSON::Any, new : JSON::Any, source : String, job_id : String?) : Entry
+    def add(book_id : Int64, field : String, old : JSON::Any, new : JSON::Any, source : String, job_id : String?, level : Int32? = nil) : Entry
       at = Time.utc
-      @db.exec "insert into metadata_changes (book_id, field, old, new, source, job_id, at) values (?, ?, ?, ?, ?, ?, ?)",
-        book_id, field, old.to_json, new.to_json, source, job_id, at.to_unix
+      @db.exec "insert into metadata_changes (book_id, field, old, new, source, job_id, at, level) values (?, ?, ?, ?, ?, ?, ?, ?)",
+        book_id, field, old.to_json, new.to_json, source, job_id, at.to_unix, level
       id = @db.scalar("select last_insert_rowid()").as(Int64)
       self[id]?.not_nil!
     end
@@ -121,6 +194,78 @@ module CalibreHub
       set
     end
 
+    # the active changes of a source (and level): to take back what one
+    # source or level did, also in the books' other fields' way
+    def from_source(source : String, level : Int32? = nil) : Array(Int64)
+      sql = "select id from metadata_changes where source = ? and reverted_at is null"
+      args = [source] of DB::Any
+      level.try { |l| sql += " and level = ?"; args << l }
+      ids = [] of Int64
+      @db.query_each(sql, args: args) { |rs| ids << rs.read(Int64) }
+      ids
+    end
+
+    def decide(book_id : Int64, d : Meta::Flow::Decision, status : String, job_id : String? = nil)
+      @db.exec "insert or replace into metadata_decisions (book_id, level, confidence, title_confidence, authors_confidence, source, isbn, isbn_source, status, notes, at, job_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        book_id, d.level, d.confidence, d.title, d.authors, d.source, d.isbn, d.isbn_source, status, d.notes.to_json, Time.utc.to_unix, job_id
+    end
+
+    def decided(book_id : Int64) : Decided?
+      @db.query_one?("select #{DECISION} from metadata_decisions where book_id = ?", book_id) { |rs| read_decided(rs) }
+    end
+
+    def decisions : Hash(Int64, Decided)
+      all = {} of Int64 => Decided
+      @db.query_each("select #{DECISION} from metadata_decisions") { |rs| d = read_decided(rs); all[d.book_id] = d }
+      all
+    end
+
+    def decided_status(book_id : Int64, status : String)
+      @db.exec "update metadata_decisions set status = ? where book_id = ?", status, book_id
+    end
+
+    # an ISBN written outside the flow (the metadata run)
+    def isbn_source(book_id : Int64, isbn : String, source : String)
+      @db.exec "update metadata_decisions set isbn = ?, isbn_source = ? where book_id = ?", isbn, source, book_id
+    end
+
+    # per book the source of the last ISBN in the change log
+    def logged_isbn_sources : Hash(Int64, String)
+      all = {} of Int64 => String
+      @db.query_each("select book_id, source from metadata_changes where field = 'isbn' and reverted_at is null order by id") do |rs|
+        id, source = rs.read(Int64, String)
+        all[id] = source
+      end
+      all
+    end
+
+    def add_sample(band : String, checked : Int32, correct : Int32) : Sample
+      at = Time.utc
+      @db.exec "insert into metadata_samples (band, checked, correct, at) values (?, ?, ?, ?)", band, checked, correct, at.to_unix
+      Sample.new(band, checked, correct, Time.unix(at.to_unix))
+    end
+
+    # the last check of each band
+    def samples : Array(Sample)
+      list = [] of Sample
+      @db.query_each("select band, checked, correct, max(at), max(id) from metadata_samples group by band order by band") do |rs|
+        band, checked, correct, at, _ = rs.read(String, Int32, Int32, Int64, Int64)
+        list << Sample.new(band, checked, correct, Time.unix(at))
+      end
+      list
+    end
+
+    def ocr_cache : Meta::Ocr::Cache
+      get = ->(key : String) do
+        @db.query_one?("select front, back from ocr_pages where key = ?", key, as: {String, String})
+      end
+      put = ->(key : String, front : String, back : String) do
+        @db.exec "insert or replace into ocr_pages (key, front, back, at) values (?, ?, ?, ?)", key, front, back, Time.utc.to_unix
+        nil
+      end
+      Meta::Ocr::Cache.new(get, put)
+    end
+
     def status(book_id : Int64) : String?
       @db.query_one?("select status from metadata_books where book_id = ?", book_id, as: String)
     end
@@ -137,8 +282,13 @@ module CalibreHub
     end
 
     private def read(rs) : Entry
-      id, book_id, field, old, new, source, job_id, at, reverted = rs.read(Int64, Int64, String, String, String, String, String?, Int64, Int64?)
-      Entry.new(id, book_id, field, JSON.parse(old), JSON.parse(new), source, job_id, Time.unix(at), reverted.try { |r| Time.unix(r) })
+      id, book_id, field, old, new, source, job_id, at, reverted, level = rs.read(Int64, Int64, String, String, String, String, String?, Int64, Int64?, Int32?)
+      Entry.new(id, book_id, field, JSON.parse(old), JSON.parse(new), source, job_id, Time.unix(at), reverted.try { |r| Time.unix(r) }, level)
+    end
+
+    private def read_decided(rs) : Decided
+      id, level, confidence, title, authors, source, isbn, isbn_source, status, notes, at = rs.read(Int64, Int32, Int32, Int32, Int32, String, String?, String?, String, String, Int64)
+      Decided.new(id, level, confidence, title, authors, source, isbn, isbn_source, status, Array(Meta::Flow::Note).from_json(notes), Time.unix(at))
     end
   end
 
@@ -194,6 +344,8 @@ module CalibreHub
     getter sources : Array(String)
     # HH:MM of the nightly run, for the status
     getter nightly : String?
+    # an ISBN conflict the run found goes to the review (ImportRepair#flag)
+    property review : Proc(Int64, Meta::Flow::Note, Nil)?
 
     def initialize(@calibre : Calibre, @writer : Writer, @log : MetaLog, @sources : Array(String),
                    @openlibrary : Meta::OpenLibrary?, @dnb : Meta::Dnb?, @http : Meta::Http,
@@ -210,13 +362,18 @@ module CalibreHub
       @ollama.try(&.model)
     end
 
-    # Downloads EPUB (else PDF) through calibre-server and reads it
-    def file_info(book : Book) : Meta::FileMeta::Info?
+    # the formats a metadata run or the edit form reads: quick ones, and
+    # no OCR. The rule flow reads every format (flow).
+    QUICK_FORMATS = %w(EPUB PDF DJVU DJV)
+
+    # Downloads the book's first format we read through calibre-server and
+    # reads it. flow: for the rule flow (Meta::Flow), every format, with OCR.
+    def file_info(book : Book, flow = false) : Meta::FileMeta::Info?
       return nil unless @sources.includes?("file")
       if r = @read_file
         return r.call(book)
       end
-      fmt = %w(EPUB PDF).find { |f| book.formats.includes?(f) } || return nil
+      fmt = (flow ? Meta::FileMeta::FORMATS : QUICK_FORMATS).find { |f| book.formats.includes?(f) } || return nil
       dir = File.tempname("meta")
       Dir.mkdir(dir)
       begin
@@ -227,10 +384,45 @@ module CalibreHub
             IO.copy(r.body_io, io)
           end
         end
-        Meta::FileMeta.read(path, fmt)
+        flow ? read_flow(path, fmt) : Meta::FileMeta.read(path, fmt)
       ensure
         FileUtils.rm_rf(dir)
       end
+    end
+
+    # A file on disk for the rule flow, with OCR when it has no text layer
+    def read_flow(path : String, format : String) : Meta::FileMeta::Info?
+      return nil unless @sources.includes?("file")
+      info = Meta::FileMeta.read(path, format) || return nil
+      Meta::FileMeta.with_ocr(info, path, @log.ocr_cache)
+    end
+
+    # What the catalogs have under an ISBN; a source that fails counts as
+    # not knowing it
+    def by_isbn(isbn : String) : Array(Meta::Candidate)
+      all = [] of Meta::Candidate
+      providers.each do |_, p|
+        begin
+          all.concat p.by_isbn(isbn)
+        rescue ex
+          STDERR.puts "metadata: #{ex.message}"
+        end
+      end
+      all
+    end
+
+    def isbn_lookup : Meta::Flow::Lookup
+      ->(isbn : String) { by_isbn(isbn) }
+    end
+
+    # The books with this ISBN (as ISBN-13 or ISBN-10)
+    def isbn_owners(isbn : String) : Array(Int64)
+      forms = [isbn, Meta::Isbn.to10(isbn)].compact
+      @calibre.search(forms.map { |i| %(identifiers:"=isbn:=#{i}") }.join(" or "), "id", true, 0, 100).ids
+    end
+
+    def owners : Meta::Flow::Owners
+      ->(isbn : String) { isbn_owners(isbn) }
     end
 
     # The rules' readings, the model's first when the rules can't decide
@@ -368,6 +560,7 @@ module CalibreHub
           reason
         end
       end
+      words = info.try(&.words)
       all = [] of Meta::Candidate
       errors = false
       ask = ->(block : Proc(Array(Meta::Candidate))) do
@@ -383,7 +576,7 @@ module CalibreHub
         isbns.each { |isbn| providers.each { |_, p| ask.call(-> { p.by_isbn(isbn) }) } }
       end
       all = check.call(all)
-      ranked = Meta::Score.rank(all, guesses, languages, trusted)
+      ranked = Meta::Score.rank(all, guesses, languages, trusted, words)
       unless ranked.any?(&.sure)
         searches = q ? [Meta::Guess.new(q, [] of String)] : guesses.first(2)
         searches.each do |g|
@@ -394,7 +587,7 @@ module CalibreHub
         end
         seen = Set(String).new
         all = check.call(all.select { |c| c.url.nil? || seen.add?("#{c.source} #{c.url}") })
-        ranked = Meta::Score.rank(all, q ? searches + guesses : guesses, languages, trusted)
+        ranked = Meta::Score.rank(all, q ? searches + guesses : guesses, languages, trusted, words)
       end
       {ranked, errors}
     end
@@ -447,9 +640,28 @@ module CalibreHub
       candidates, errors = lookup(book, gs, info)
       complete(candidates, book)
       changes = Meta::Merge.plan(book, gs.first?, info.try(&.record), candidates, @calibre.has_cover?(id))
+      changes = respecting(book, changes)
       entries = apply(book, changes, job_id)
+      entries.find { |e| e.field == "isbn" }.try { |e| e.new.as_s?.try { |i| @log.isbn_source(id, i, e.source) } }
       @log.set_status(id, errors ? "retry" : "done", job_id)
       entries
+    end
+
+    # What the rule flow decided stays: an ISBN in the book whose record fits
+    # its text (level 1) isn't contradicted by a later run, and an ISBN on
+    # another book isn't written, it goes to the review
+    private def respecting(book : Book, changes : Array(Meta::Change)) : Array(Meta::Change)
+      if @log.decided(book.id).try(&.binding?)
+        changes = changes.reject { |c| c.field.in?("title", "authors", "authorSort", "isbn") }
+      end
+      if (c = changes.find { |x| x.field == "isbn" }) && (isbn = c.new.as_s?.try { |i| Meta::Isbn.normalize(i) })
+        others = isbn_owners(isbn) - [book.id]
+        unless others.empty?
+          @review.try &.call(book.id, Meta::Flow::Note.new("duplicateIsbn", isbn, others))
+          changes = changes.reject { |x| x.field == "isbn" }
+        end
+      end
+      changes
     end
 
     # A standard: its fields by the rules (Meta::Norms), no online source.

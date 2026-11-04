@@ -826,15 +826,17 @@ module CalibreHub
     post "/api/metadata/changes/revert" do |env|
       write_errors(env) do
         body = json_body(env, required: true)
-        unless body.has_key?("bookIds") || body.has_key?("changeIds")
-          raise Edit::Invalid.new("bookIds", "bookIds or changeIds expected")
+        unless body.has_key?("bookIds") || body.has_key?("changeIds") || body.has_key?("source")
+          raise Edit::Invalid.new("bookIds", "bookIds, changeIds or source expected")
         end
         list = ->(key : String) do
           (body[key]?.try { |v| v.as_a? || raise Edit::Invalid.new(key, "list of ids expected") } || [] of JSON::Any).map do |v|
             v.as_i64? || raise Edit::Invalid.new(key, "list of ids expected")
           end
         end
-        ids = (list.call("changeIds") + m.revert_books(list.call("bookIds").uniq)).uniq
+        # source (and level): all a source or a level of the rule flow did
+        by_source = body["source"]?.try(&.as_s?).try { |x| m.log.from_source(x, body["level"]?.try(&.as_i?)) } || [] of Int64
+        ids = (list.call("changeIds") + m.revert_books(list.call("bookIds").uniq) + by_source).uniq
         reverted = [] of MetaLog::Entry
         errors = [] of NamedTuple(changeId: Int64, bookId: Int64?, error: String)
         # newest first, so a field changed twice ends at its first value

@@ -544,6 +544,11 @@ module CalibreHub
       end
 
       # {book, how} for a book calibre just added from a file, other than itself
+      # the books the index has with this ISBN
+      def isbn_books(isbn : String) : Array(Int64)
+        @isbn[isbn]?.try(&.dup) || [] of Int64
+      end
+
       def match_book(b : Book) : {Int64, String}?
         match_item(Dedup::Item.new(b))
       end

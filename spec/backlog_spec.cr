@@ -802,10 +802,17 @@ describe CalibreHub::ImportRepair do
       # authors by hand: they stay, calibre's title goes; a calibre folder's book is left alone
       fields.call(205).should eq ["title", "publisher", "pubdate"]
       entries.has_key?(206_i64).should be_false
-      # unclear and undecided: the tag for a review, a subtitle is no author
-      fields.call(207).should eq ["title", "authors", "authorSort", "tags"]
+      # unclear and undecided: below the threshold nothing but the tag, the
+      # reading is a suggestion for the review
+      fields.call(207).should eq ["tags", "candidate"]
       entries[207_i64]["decided"].should eq "unsure"
-      entries[207_i64]["changes"].as_a.last["new"].should eq JSON.parse(%(["auto-unsicher"]))
+      entries[207_i64]["confidence"].should eq 30
+      entries[207_i64]["band"].should eq "unsure"
+      entries[207_i64]["changes"].as_a.first["new"].should eq JSON.parse(%(["auto-unsicher"]))
+      # a surname and a title: reviewed; the sources between two names
+      entries[201_i64]["confidence"].should eq 70
+      entries[201_i64]["level"].should eq 3
+      entries[208_i64]["confidence"].should eq 70
       entries[208_i64]["decided"].should eq "hardcover"
       fields.call(208).should eq ["title", "authors", "authorSort"]
       asked.map { |n| File.basename(n) }.sort.should eq ["Herbert - Dune.pdf", "Wine Tasting - A Professional Handbook.pdf"]
@@ -825,12 +832,16 @@ describe CalibreHub::ImportRepair do
       all = repair.accept(nil)
       job = wait_job(repair, all["job"]["id"].as_s)
       job.errors.map(&.[:bookId]).should eq [203_i64]
+      # below the threshold only one by one
+      fake.books[207_i64]["tags"].as_a.should be_empty
+      one = repair.accept([207_i64])
+      wait_job(repair, one["job"]["id"].as_s).errors.should be_empty
       fake.books[202_i64]["authors"].should eq ["Duffy"]
       fake.books[203_i64]["title"].should eq "100767"
       fake.books[204_i64]["authors"].should eq ["Jungnickel"]
       fake.books[205_i64]["title"].should eq "Brass"
       fake.books[207_i64]["tags"].should eq ["auto-unsicher", "auto-metadaten"]
-      fake.books[207_i64]["title"].should eq "Wine Tasting: A Professional Handbook"
+      fake.books[207_i64]["title"].should eq "Wine Tasting"
       fake.books[208_i64]["authors"].should eq ["Herbert"]
       fake.books[208_i64]["title"].should eq "Dune"
       fake.books[201_i64]["tags"].should eq ["auto-metadaten"]
@@ -852,7 +863,7 @@ describe CalibreHub::ImportRepair do
       fake.books[201_i64]["title"].should eq "Carr"
       tag = log.list(207_i64).find! { |e| e.field == "tags" }
       metadata.revert(tag.id)
-      fake.books[207_i64]["tags"].should eq ["auto-metadaten"]
+      fake.books[207_i64]["tags"].as_a.should be_empty
     end
   end
 
@@ -895,13 +906,14 @@ describe CalibreHub::ImportRepair do
       entries[402_i64]["file"].should eq ""
       entries[402_i64]["decided"].should eq "unsure"
       fields = entries[402_i64]["changes"].as_a.map(&.["field"].as_s)
-      fields.should eq ["authors", "authorSort", "candidate", "tags"]
+      fields.should eq ["candidate", "tags"]
+      entries[402_i64]["confidence"].should eq 50
       # the person's title stays
       entries[404_i64]["changes"].as_a.none? { |c| c["field"] == "title" }.should be_true
 
-      all = repair.accept(nil)
+      all = repair.accept(entries.keys)
       wait_job(repair, all["job"]["id"].as_s).errors.should be_empty
-      fake.books[402_i64]["authors"].should eq ["Unknown"]
+      fake.books[402_i64]["authors"].should eq ["How To Make Money"]
       fake.books[402_i64]["tags"].as_a.map(&.as_s).should contain "auto-unsicher"
 
       report = repair.quality({} of String => JSON::Any)
@@ -913,6 +925,108 @@ describe CalibreHub::ImportRepair do
       run["books"][0]["id"].should eq 401
       repair.quality({"minId" => JSON::Any.new(405_i64)})["suspect"].should eq 0
     end
+  end
+
+  it "plans the whole library, keeps what was accepted or rejected and offers the bulk band (#8528)" do
+    tmpdir do |root|
+      fake = FakeCalibre.new
+      fake.add(501, "Hacker's Delight", ["Unknown"], ["PDF"])
+      fake.add(502, "The Art of UNIX Programming", ["Eric S. Raymond"], ["PDF"])
+      fake.add(503, "Zwischen Ich und Du", ["Angelika Krebs"], ["EPUB"], "9783518730898")
+      fake.add(504, "Rejected", ["Unknown"], ["PDF"])
+      fake.add(505, "Copy of Hacker's Delight", ["Henry S. Warren"], ["PDF"], "9780201914658")
+      db = state_db
+      db.exec "create table if not exists meta (key text primary key, value text)"
+      CalibreHub::ImportJobs.migrate(db)
+      calibre = fake.calibre
+      writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
+      log = CalibreHub::MetaLog.new(db)
+      repair = CalibreHub::ImportRepair.new(db, calibre, writer, log)
+      warren = CalibreHub::Meta::Record.new(title: "Hacker's Delight", authors: ["Henry S. Warren"], isbn: "9780201914658")
+      repair.reader = ->(b : CalibreHub::Book) do
+        text = b.id.in?(501, 505) ? "Hacker's Delight\nHenry S. Warren\nCopyright 2003\nISBN 0-201-91465-4\n" : ""
+        CalibreHub::Meta::FileMeta::Info.new(CalibreHub::Meta::Record.new, [] of String, nil, text, "", "PDF").as(CalibreHub::Meta::FileMeta::Info?)
+      end
+      repair.by_isbn = ->(isbn : String) do
+        isbn == "9780201914658" ? [CalibreHub::Meta::Candidate.new("hardcover", warren, by_isbn: isbn)] : [] of CalibreHub::Meta::Candidate
+      end
+      repair.owners = ->(isbn : String) { isbn == "9780201914658" ? [505_i64] : [] of Int64 }
+
+      planned = repair.submit_repair({"library" => JSON::Any.new(true)}, true)
+      planned["books"].should eq 5
+      wait_job(repair, planned["job"]["id"].as_s).errors.should be_empty
+      entries = repair.review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
+      # the same ISBN as another book: reviewed, not written
+      entries[501_i64]["level"].should eq 1
+      entries[501_i64]["confidence"].should eq 89
+      entries[501_i64]["band"].should eq "review"
+      entries[501_i64]["notes"][0]["kind"].should eq "duplicateIsbn"
+      entries[501_i64]["changes"].as_a.map(&.["field"].as_s).should eq ["authors", "authorSort"]
+      # nothing to change is no proposal, the decision is kept all the same
+      entries.has_key?(502_i64).should be_false
+      log.decided(502_i64).not_nil!.level.should eq 2
+      log.decided(502_i64).not_nil!.status.should eq "written"
+
+      repair.reject([504_i64]).should eq 1
+      log.decided(504_i64).not_nil!.status.should eq "rejected"
+
+      # only bulk goes as a band, nothing below it
+      accepted = repair.accept(nil, "bulk")
+      accepted["books"].should eq entries.values.count { |e| e["band"] == "bulk" }
+      expect_raises(CalibreHub::Edit::Invalid) { repair.accept(nil, "review") }
+      wait_job(repair, accepted["job"]["id"].as_s)
+
+      one = repair.accept([501_i64])
+      wait_job(repair, one["job"]["id"].as_s).errors.should be_empty
+      changes = log.list(501_i64)
+      changes.map(&.source).uniq.should eq ["hardcover"]
+      changes.map(&.level).uniq.should eq [1]
+      log.from_source("hardcover", 1).size.should eq changes.size
+      log.decided(501_i64).not_nil!.binding?.should be_true
+
+      # again: neither touched nor proposed anew
+      again = repair.submit_repair({"library" => JSON::Any.new(true)}, true)
+      wait_job(repair, again["job"]["id"].as_s)
+      repair.review["entries"].as_a.none? { |e| e["bookId"] == 501 }.should be_true
+
+      report = repair.quality({} of String => JSON::Any)
+      report["bands"].as_h.values.sum(&.as_i).should eq 5
+      report["levels"]["1"].as_i.should be >= 1
+      report["isbn"]["with"].should eq 2
+      report["isbn"]["sources"].as_h.keys.should contain "calibre"
+      report["conflicts"]["notedCount"].as_i.should be >= 1
+
+      expect_raises(CalibreHub::Edit::Invalid) { repair.add_sample("bulk", 30, 31) }
+      repair.add_sample("bulk", 30, 29)
+      repair.add_sample("bulk", 30, 30)
+      samples = repair.quality({} of String => JSON::Any)["samples"].as_a
+      samples.map { |s| {s["band"], s["correct"]} }.should eq [{"bulk", 30}]
+      repair.sample("unsure")["band"].should eq "unsure"
+    end
+  end
+
+  it "reads the proposals of an older plan" do
+    p = CalibreHub::ImportRepair::Proposed.from_json(%({"field": "title", "old": "a", "new": "b"}))
+    p.source.should eq "rules"
+  end
+
+  it "tells edits by hand from what the import and the cleanup wrote (#8528)" do
+    entry = ->(field : String, new : String, reverted : Bool) do
+      CalibreHub::MetaLog::Entry.new(1_i64, 1_i64, field, JSON::Any.new("old"), JSON::Any.new(new), "rules", nil, Time.utc, reverted ? Time.utc : nil)
+    end
+    changed = ->(field : String, new : String) { JSON.parse({changes: {field => ["old", new]}}.to_json) }
+    hand = ->(at : Int64, log : Array(CalibreHub::MetaLog::Entry)) do
+      CalibreHub::ImportRepair.hand_fields(100_i64, [{at, changed.call("title", "New")}], log)
+    end
+    # the import's own set-fields right after adding
+    hand.call(110_i64, [] of CalibreHub::MetaLog::Entry).should be_empty
+    hand.call(100_000_i64, [] of CalibreHub::MetaLog::Entry).should eq Set{"title"}
+    # the cleanup's
+    hand.call(100_000_i64, [entry.call("title", "New", false)]).should be_empty
+    # other fields are nobody's concern
+    CalibreHub::ImportRepair.hand_fields(100_i64, [{100_000_i64, changed.call("rating", "5")}], [] of CalibreHub::MetaLog::Entry).should be_empty
+    isbn = JSON.parse({changes: {identifiers: [{isbn: "1"}, {isbn: "2"}]}}.to_json)
+    CalibreHub::ImportRepair.hand_fields(nil, [{100_000_i64, isbn}], [] of CalibreHub::MetaLog::Entry).should eq Set{"isbn"}
   end
 
   it "plans and applies at once, then queues a metadata run for the repaired books" do
@@ -934,6 +1048,11 @@ describe CalibreHub::ImportRepair do
       repair.metadata = metadata_jobs
       applied = repair.submit_repair({"since" => JSON::Any.new(Time.unix(50).to_rfc3339)}, false)
       wait_job(repair, applied["job"]["id"].as_s).status.should eq "done"
+      # a clear name is reviewed: only the bulk band is applied without a look
+      fake.books[301_i64]["authors"].should eq ["Advanced Engineering Mathematics (1998)"]
+      repair.review["entries"].as_a.map(&.["bookId"].as_i64).should eq [301_i64]
+      accepted = repair.accept([301_i64])
+      wait_job(repair, accepted["job"]["id"].as_s).status.should eq "done"
       fake.books[301_i64]["authors"].should eq ["Duffy"]
       run, _ = metadata_jobs.last.not_nil!
       run.ids.should eq [301_i64]
