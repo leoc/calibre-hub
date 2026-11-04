@@ -356,6 +356,8 @@ module CalibreHub
                         "was", "wie", "über", "guide", "handbuch", "einführung", "introduction"}
 
       ARTICLES = Set{"der", "die", "das", "the", "a", "an", "ein", "eine", "le", "la", "les", "el", "il"}
+      # stay in capitals when a shouted title is written normally
+      ACRONYMS = Set{"unix", "dna", "rna", "sql", "html", "xml", "tcp", "ip", "http", "ibm", "gnu", "usa", "aids", "hiv", "pc", "cd", "dvd", "nasa", "pcr", "mri"}
 
       def self.unknown_author?(name : String) : Bool
         # a download site as author ("libgen.lc", "z-lib.org")
@@ -402,7 +404,7 @@ module CalibreHub
         return s if s.split(' ').count { |w| w.chars.any?(&.letter?) } < 2
         words = s.downcase.split(' ')
         words.map_with_index do |w, i|
-          if w.matches?(ROMAN) && i > 0
+          if w.matches?(ROMAN) && i > 0 || ACRONYMS.includes?(w.strip(",.:;"))
             w.upcase
           elsif i > 0 && SMALL.includes?(w)
             w

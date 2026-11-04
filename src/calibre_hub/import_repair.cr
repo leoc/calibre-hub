@@ -325,7 +325,18 @@ module CalibreHub
     end
 
     private def imported_proc(book : Book, path : String?, baseline : JSON::Any?, log : Array(MetaLog::Entry), hand : Set(String)) : Proc(String, JSON::Any?)
-      ->(field : String) { hand.includes?(field) ? nil : ImportRepair.imported_value(book, path, field, baseline, log) }
+      ->(field : String) { hand.includes?(field) ? nil : ImportRepair.automatic_value(book, path, field, baseline, log) }
+    end
+
+    # imported_value, or the value now when no hand and no catalog wrote it:
+    # what the import itself wrote after adding the book ("Vol 17" made
+    # "Grzimek's …: Vol 17") is in neither the baseline nor the change log.
+    # The caller left out the fields edited by hand. No baseline: no way to
+    # tell, the value stays nobody's to change.
+    def self.automatic_value(book : Book, path : String?, field : String, baseline : JSON::Any?, log : Array(MetaLog::Entry)) : JSON::Any?
+      value = imported_value(book, path, field, baseline, log)
+      return value if value || baseline.nil?
+      log.all? { |e| e.field != field || AUTO.includes?(e.source) } ? Meta::Merge.value(book, field) : nil
     end
 
     # The fields of the book that were edited by hand: the event log has a

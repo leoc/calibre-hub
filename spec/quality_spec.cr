@@ -429,6 +429,15 @@ describe Meta::Quality do
       {book("Logic in Computer Science 2nd ed", ["M. Huth"]), ["leftoverTitle"]},
       {book("haskell-beats-C", ["Simon Peyton Jones"]), ["fileNameTitle"]},
       {book("Dune", ["Unknown"], tags: ["auto-unsicher"]), ["unknownAuthor", "unsure"]},
+      {book("Grzimek's animal life encyclopedia.: Vol 17", ["Cumulative Index"]), ["notAPerson"]},
+      # no catalog names this
+      {book("Grzimek's student animal life resource.", ["Amphibians"], isbn: "9780787691493"), ["notAPerson"]},
+      {book("Vol 09", ["Birds 2"], tags: ["auto-unsicher"]), ["notAPerson", "titleSaysNothing", "unsure"]},
+      {book(%q(C:\Program Files\eMule\Incoming\Yoshida K. -  Functional analysis (Springer, 1980)(256s).djvu), ["Kosaku Yosida"], isbn: "9783540102106"), ["pathTitle"]},
+      {book("McEvoy", ["Molecular Basis of Medical Cell Biology (Lange, 1998)"], tags: ["auto-unsicher"]), ["swappedPair", "unsure"]},
+      {book("Hamill", ["Biomechanical Basis of Human Movement"]), ["swappedPair"]},
+      {book("Print PROBLEMS AND SOLUTIONS IN MATHEMATICS (547 pages)", ["Ta-Tsien"], isbn: "9789810234799"), ["leftoverTitle"]},
+      {book("MOLECULAR BASIS OF HUMAN NUTRITION", ["Tom Sanders"], isbn: "9780470846803"), ["leftoverTitle"]},
       {book("The Art of UNIX Programming", ["Eric S. Raymond"]), [] of String},
       # a catalog's choice
       {book("Spanish Visual Dictionary For Dummies", ["Dummies"], isbn: "9781118000000"), [] of String},
@@ -438,6 +447,51 @@ describe Meta::Quality do
     }.each do |b, reasons|
       Meta::Quality.reasons(b).should eq reasons
     end
+  end
+
+  it "leaves good titles and people alone" do
+    {
+      {"Dune", ["Frank Herbert"]}, {"Anderson", ["Poul Anderson"]}, {"Emma", ["Jane Austen"]},
+      {"UNIX", ["Eric S. Raymond"]}, {"C++", ["Bjarne Stroustrup"]}, {"SQL", ["C. J. Date"]},
+      {"TCP/IP Illustrated", ["W. Richard Stevens"]}, {"Input/Output in C", ["Ta-Tsien"]},
+      {"Print Culture and the Modern World", ["Elizabeth Eisenstein"]}, {"Print Reading for Construction", ["Walter C. Brown"]},
+      {"The Index of Forbidden Books", ["Francis S. Betten"]}, {"Index", ["Ta-Tsien"]},
+      {"The Sixties (1960s)", ["Arthur Marwick"]}, {"Windows Internals (Developer Reference)", ["Mark Russinovich"]},
+      {"C: A Reference Manual", ["Samuel P. Harbison"]}, {"Volume Rendering", ["Ta-Tsien"]},
+      {"Molecular Gastronomy", ["Hervé This"]},
+      {"Introductory Biostatistics", ["Le"]}, {"The Dispossessed", ["Ursula K. le Guin"]},
+    }.each do |title, authors|
+      Meta::Quality.reasons(book(title, authors)).should eq [] of String
+      Meta::Quality.reasons(book(title, authors, isbn: "9780201914658")).should eq [] of String
+    end
+    # a word of a title in a name a catalog vouches for, a body, not a subject
+    {"Haskell Brooks Curry", "Man Young Rhee", "Art Sobczak", "Hildegard of Bingen", "World Health Organization"}.each do |a|
+      Meta::Quality.reasons(book("Foundations of Mathematical Logic", [a], isbn: "9780201914658")).should eq [] of String
+    end
+  end
+
+  it "writes a shouted title normally, its acronyms in capitals" do
+    FileName.clean_title("UNIX NETWORK PROGRAMMING").should eq "UNIX Network Programming"
+    FileName.clean_title("UNDERSTANDING DNA").should eq "Understanding DNA"
+    FileName.clean_title("UNIX").should eq "UNIX"
+    FileName.clean_title("C++").should eq "C++"
+  end
+
+  it "reads a name with what a list left on it" do
+    g = FileName.parse("Yoshida K. -  Functional analysis (Springer, 1980)(256s).djvu").not_nil!
+    {g.title, g.authors, g.publisher, g.year}.should eq({"Functional analysis", ["K. Yoshida"], "Springer", 1980})
+    FileName.parse("The GALE Encyclopedia of Science, Vol1(857s).pdf").not_nil!.title.should eq "The GALE Encyclopedia of Science, Vol1"
+    FileName.parse("History of Rock (1960s).pdf").not_nil!.title.should eq "History of Rock (1960s)"
+  end
+
+  it "takes a volume's subject for no author, a person after a volume stays" do
+    g = FileName.parse("Vol 17 - Cumulative Index.pdf").not_nil!
+    {g.title, g.authors}.should eq({"Vol 17: Cumulative Index", [] of String})
+    g = FileName.parse("Vol 03 - Insects.djvu").not_nil!
+    {g.title, g.authors}.should eq({"Vol 03: Insects", [] of String})
+    FileName.parse("Vol 3 - Donald E. Knuth.pdf").not_nil!.authors.should eq ["Donald E. Knuth"]
+    FileName.parse("Grzimek's SALR - Amphibians.pdf").not_nil!.authors.should be_empty
+    FileName.parse("Le - Introductory Biostatistics (Wiley, 2003).pdf").not_nil!.authors.should eq ["Le"]
   end
 end
 

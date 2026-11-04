@@ -98,10 +98,12 @@ module CalibreHub
         decision.try { |d| finish(input, d) }
       end
 
-      # the file name's reading, nil when it has none or says nothing
+      # the file name's reading, nil when it has none or says nothing; a
+      # title that is a path has a name too
       private def self.reading(input : Input) : Guess?
-        name = input.name || return nil
-        g = FileName.parse(name, input.hint) || return nil
+        g = input.name.try { |n| FileName.parse(n, input.hint) }
+        return g if g && !FileName.bad_title?(g.title)
+        g = FileName.path_name(input.book.title).try { |n| FileName.parse(n) } || return nil
         FileName.bad_title?(g.title) ? nil : g
       end
 
@@ -153,7 +155,8 @@ module CalibreHub
         [reading.try(&.title), book.title].compact.uniq.select do |t|
           words = Text.tokens(t)
           !FileName.bad_title?(t) && !Quality.file_name?(t) && FileName.side_score(t) < 2 &&
-            !FileName.known_publisher?(t) && !(words.size == 1 && names.includes?(words.first))
+            !FileName.known_publisher?(t) && !(words.size == 1 && names.includes?(words.first)) &&
+            !FileName.swapped?(t, book.authors, reading)
         end
       end
 
@@ -217,7 +220,10 @@ module CalibreHub
                 when :subtitle    then "#{Text.main_title(record_title)}: #{owns.first}"
                 else                   record_title
                 end
-        authors, known = authors_for(book, reading, c.fields, title, words)
+        authors, known, stranger = authors_for(book, reading, c.fields, title, words)
+        # "Cumulative Index", and no record or name has anybody
+        nobody = authors.empty? && !Clean.unknown_authors?(book.authors) && book.authors.all? { |x| FileName.no_person?(x) }
+        authors = [FileName::UNKNOWN] if nobody
         # "Buss - 3D Computer Graphics": the author in front of a title in order
         parts = book.title.split(/\s+[-–]\s+/)
         named = parts.size >= 2 && authors.any? { |x| People.tokens(x).last? == Text.key(parts.first) }
@@ -228,6 +234,8 @@ module CalibreHub
         t = fit.title && verdict == :agrees ? Confidence::ISBN_BOTH : Confidence::ISBN_ONE
         a = fit.authors ? Confidence::ISBN_BOTH : Confidence::ISBN_ONE
         a = {a, Confidence::ISBN_OTHER_PEOPLE}.min unless known
+        a = {a, Confidence::ISBN_ONE}.min if stranger
+        a = Confidence::UNCLEAR if nobody
         case verdict
         when :confirmed then t = a = Confidence::ISBN_CONFIRMED
         when :against   then t = a = Confidence::ISBN_AGAINST
@@ -252,8 +260,9 @@ module CalibreHub
       # The authors after a record: its persons in the book's text when any
       # is ("Cambridge India" isn't), merged with the book's and its name's
       # (People.merge). The book's own count only for this title: a file with
-      # another book's metadata has that book's authors.
-      private def self.authors_for(book : Book, reading : Guess?, r : Record, title : String, words : Words) : {Array(String), Bool}
+      # another book's metadata has that book's authors. {the authors, did the
+      # record know any of the book's, did somebody go as a stranger}
+      private def self.authors_for(book : Book, reading : Guess?, r : Record, title : String, words : Words) : {Array(String), Bool, Bool}
         people = CrossCheck.people(r)
         here = people.select { |a| words.person?(a) }
         people = here unless here.empty?
@@ -267,7 +276,19 @@ module CalibreHub
           name = name.select { |a| (own + people).any? { |t| People.same?(a, t) } }
         end
         named = (own + name).reject { |a| People.tokens(a).size < 2 && People.tokens(a).all? { |w| title_words.includes?(w) } }
-        People.merge(named, people, words)
+        strangers = named.select { |a| stranger?(a, name + people, words) }
+        merged, known = People.merge(named - strangers, people, words)
+        {merged, known, !strangers.empty?}
+      end
+
+      # Somebody a file's metadata name whom the book doesn't: "R. Tunç
+      # Mısırlıoğlu" next to Kosaku Yosida, who scanned it. The book's own
+      # text says so, the record never removes a person: its pages must show
+      # somebody else, none of this one's names.
+      private def self.stranger?(author : String, others : Array(String), words : Words) : Bool
+        return false if words.size < MIN_WORDS || others.any? { |o| People.same?(author, o) }
+        return false unless others.any? { |o| words.person?(o) }
+        People.tokens(author).none? { |w| w.size >= 3 && words.has?(w) }
       end
 
       # what a shop adds to a title: "…, with CDROM", "(with CD-ROM)"
@@ -286,7 +307,7 @@ module CalibreHub
       # what the book itself says it is called, besides a catalog: its name,
       # else a title that says something
       private def self.own_title(book : Book, reading : Guess?) : String?
-        reading.try(&.title) || (book.title unless FileName.leftover_title?(book.title))
+        reading.try(&.title) || (book.title unless FileName.leftover_title?(book))
       end
 
       # Of two forms of a title the book's, when the catalog's has nothing
@@ -324,7 +345,7 @@ module CalibreHub
       # "Ethernet: The Definitive Guide". A title that is in order stays,
       # whoever has a plainer version.
       private def self.worse_form?(old : String, new : String) : Bool
-        return false if FileName.leftover_title?(old)
+        return false if FileName.leftover_title?(old) || FileName.shouted?(old)
         content = ->(t : String) { Text.tokens(t).reject { |w| w.size < 3 || Clean::SMALL.includes?(w) }.sort }
         return false unless content.call(old) == content.call(new)
         form = ->(t : String) { Text.tokens(t).size + (t.includes?(':') ? 1 : 0) - (sentence?(t) ? 1 : 0) }
@@ -355,7 +376,7 @@ module CalibreHub
 
       # the file's title as a title: no junk, no list code in front
       private def self.meta_title(title : String?) : String?
-        t = title.try { |x| x.gsub(/[\s\x{A0}]+/, " ").strip.sub(FileName::CODE_PREFIX, "") }.presence || return nil
+        t = title.try { |x| FileName.strip_rests(x.gsub(/[\s\x{A0}]+/, " ").strip.sub(FileName::CODE_PREFIX, "")) }.presence || return nil
         return nil if FileName.leftover_title?(t.sub(/\s*\(\d.*\z/, "")) || Clean.junk?(t) || Clean.broken_case?(t)
         FileName.clean_title(t).presence
       end
@@ -373,8 +394,13 @@ module CalibreHub
           title = nil unless title && fits?(title, words, input.name)
           authors = authors.select { |a| person_fits?(a, words, input.name) }
         end
+        # a CHM's "Hamill": the name's author, its surname in the file too
+        title = nil if title && reading.try(&.authors.any? { |a| Text.key(a) == Text.key(title.not_nil!) })
+        title = nil if title && FileName.swapped?(title, authors, reading)
+        # a CHM's title as its author
+        authors = authors.reject { |a| Text.key(a) == Text.key(title.not_nil!) } if title
         if title.nil?
-          return nil if input.name || FileName.leftover_title?(book) || FileName.weak_authors?(book)
+          return nil if input.name || FileName.leftover_title?(book) || FileName.weak_authors?(book) || FileName.swapped?(book.title, book.authors)
           return Decision.new([] of Change, "calibre", LEVEL_META, "calibre", Confidence::META_NOTHING, Confidence::META_NOTHING,
             own_isbn(book), own_isbn(book) ? SOURCE_CALIBRE : nil)
         end
@@ -513,7 +539,10 @@ module CalibreHub
         title = changes.find { |c| c.field == "title" }.try(&.new.as_s?) || book.title
         authors = changes.find { |c| c.field == "authors" }.try(&.new.as_a?.try(&.map(&.as_s))) || book.authors
         t, a = name_values(book, how, seen, reading, title, authors)
-        if (w = words) && w.size >= MIN_WORDS && !Fit.title?(title, w) && !authors.any? { |x| w.person?(x) }
+        # what the name contradicts is the pair the wrong way round, nothing
+        # the text could prefer: an OCR's "McEvoy" stays no title
+        swapped = FileName.swapped?(book.title, book.authors, reading)
+        if !swapped && (w = words) && w.size >= MIN_WORDS && !Fit.title?(title, w) && !authors.any? { |x| w.person?(x) }
           t -= Confidence::TEXT_AGAINST_NAME
           a -= Confidence::TEXT_AGAINST_NAME
         end

@@ -639,6 +639,130 @@ describe Meta::Flow do
   end
 end
 
+describe "the first portion of the rule flow (#8528)" do
+  filler = "der Text eines Buches ohne einen Namen darin " * 15
+  people = ["R. Tunç Mısırlıoğlu", "Kosaku Yosida"]
+  yosida_name = "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf"
+  yosida_isbn = "9783540102106"
+  yosida = Meta::Record.new(title: "Functional Analysis (Grundlehren der mathematischen Wissenschaften)", authors: ["Kosaku Yosida"])
+  path = %q(C:\Program Files\eMule\Incoming\Yoshida K. -  Functional analysis (Springer, 1980)(256s).djvu)
+
+  it "#1848: a path is no title, nor is who the file names beside the book" do
+    i = input(book(path, people, isbn: yosida_isbn), yosida_name, "Functional Analysis\nKosaku Yosida\nSpringer\n#{filler}")
+    i.by_isbn = catalog({yosida_isbn => yosida})
+    d = Flow.decide(i).not_nil!
+    changed(d)["title"].should eq "Functional Analysis"
+    changed(d)["authors"].as_a.map(&.as_s).should eq ["Kosaku Yosida"]
+    d.band.should_not eq "unsure"
+  end
+
+  it "#1848: a path is read like a name where the book has none" do
+    d = Flow.decide(input(book(path, people), nil, ""))
+    changed(d)["title"].should eq "Functional analysis"
+    changed(d)["authors"].as_a.map(&.as_s).should eq ["K. Yoshida"]
+  end
+
+  it "takes a stranger out by the book's text, never by the record alone" do
+    run = ->(text : String) do
+      i = input(book("Functional Analysis", people, isbn: yosida_isbn), yosida_name, text)
+      i.by_isbn = catalog({yosida_isbn => yosida})
+      Flow.decide(i).not_nil!
+    end
+    gone = run.call("Functional Analysis\nKosaku Yosida\n#{filler}")
+    changed(gone)["authors"].as_a.map(&.as_s).should eq ["Kosaku Yosida"]
+    # not by itself in the bulk
+    gone.authors.should eq Confidence::ISBN_ONE
+    # the book names him
+    kept = run.call("Functional Analysis\nKosaku Yosida\nÇeviren R. Tunç Mısırlıoğlu\n#{filler}")
+    kept.changes.none? { |c| c.field == "authors" }.should be_true
+    # pages that show nobody prove nothing
+    blind = run.call("Functional Analysis\n#{filler}")
+    blind.changes.find { |c| c.field == "authors" }.try(&.new.as_a.map(&.as_s)).should_not eq ["Kosaku Yosida"]
+  end
+
+  it "#1921: a print dialog's rests and capitals go, the name and the record agree" do
+    isbn = "9789810234799"
+    b = book("Print PROBLEMS AND SOLUTIONS IN MATHEMATICS (547 pages)", ["Ta-Tsien"], isbn: isbn)
+    i = input(b, "Ta-Tsien - Problems and Solutions In Mathematics (World Scientific, 1999).pdf", "PROBLEMS AND SOLUTIONS IN MATHEMATICS\n#{filler}")
+    i.by_isbn = catalog({isbn => Meta::Record.new(title: "Problems and solutions in mathematics", authors: ["Ji-Xiu Chen", "Daqian Li"])})
+    d = Flow.decide(i).not_nil!
+    changed(d)["title"].should eq "Problems and Solutions In Mathematics"
+    # the record knows nobody of the book: its person stays
+    changed(d).has_key?("authors").should be_false
+  end
+
+  it "takes a shouted title in the record's or the name's form" do
+    d = Flow.decide(input(book("MOLECULAR BASIS OF HUMAN NUTRITION", ["Tom Sanders"]), "Molecular Basis of Human Nutrition - T. Sanders, P. Emery (2003) WW.pdf"))
+    changed(d)["title"].should eq "Molecular Basis of Human Nutrition"
+    i = input(book("MOLECULAR BASIS OF HUMAN NUTRITION", ["Tom Sanders"], isbn: DUNE), nil, "Molecular Basis of Human Nutrition\nTom Sanders\n#{filler}")
+    i.by_isbn = catalog({DUNE => Meta::Record.new(title: "Molecular basis of human nutrition", authors: ["Tom Sanders"])})
+    changed(Flow.decide(i))["title"].should eq "Molecular basis of human nutrition"
+    # a title in order stays
+    i = input(book("UNIX", ["Eric S. Raymond"], isbn: DUNE), nil, "UNIX\nEric S. Raymond\n#{filler}")
+    i.by_isbn = catalog({DUNE => Meta::Record.new(title: "UNIX", authors: ["Eric S. Raymond"])})
+    changed(Flow.decide(i)).has_key?("title").should be_false
+  end
+
+  it "#2065: \"Cumulative Index\" is nobody, whatever a record says of the title" do
+    i = input(book("Grzimek's animal life encyclopedia.: Vol 17", ["Cumulative Index"]), "Vol 17 - Cumulative Index.pdf",
+      "Grzimek's animal life encyclopedia\nISBN 978-3-453-31717-8\n#{filler}")
+    i.by_isbn = catalog({DUNE => Meta::Record.new(title: "Grzimek's animal life encyclopedia.", authors: [] of String)})
+    d = Flow.decide(i).not_nil!
+    d.band.should eq "unsure"
+    changed(d).has_key?("authors").should be_false
+    changed(d)["tags"].should eq JSON.parse(%(["auto-unsicher"]))
+    changed(d)["candidate"]["authors"].should eq JSON.parse(%(["Unknown"]))
+  end
+
+  it "#2057: \"Vol 09\" by \"Birds 2\" says nothing, the suggestion has both as a title" do
+    d = Flow.decide(input(book("Vol 09", ["Birds 2"]), "Vol 09 - Birds 2.djvu")).not_nil!
+    d.band.should eq "unsure"
+    changed(d)["candidate"]["title"].should eq "Vol 09: Birds 2"
+    changed(d)["candidate"]["authors"].should eq JSON.parse(%(["Unknown"]))
+    changed(d)["tags"].should eq JSON.parse(%(["auto-unsicher"]))
+    changed(d).has_key?("title").should be_false
+  end
+
+  {
+    {2227, "McEvoy", ["Molecular Basis of Medical Cell Biology (Lange, 1998)"], "McEvoy - Molecular Basis of Medical Cell Biology (Lange, 1998).djvu",
+     "Molecular Basis of Medical Cell Biology", ["McEvoy"]},
+    {2146, "Anderson", ["Microorganisms", "Bioterrorism (Springer, 2006)"], "Anderson - Microorganisms and Bioterrorism (Springer, 2006).pdf",
+     "Microorganisms and Bioterrorism", ["Anderson"]},
+    {1946, "Becker", ["Computational Biochemistry", "Biophysics"], "Becker - Computational Biochemistry and Biophysics.pdf",
+     "Computational Biochemistry and Biophysics", ["Becker"]},
+  }.each do |id, title, authors, name, new_title, new_authors|
+    it "##{id}: turns a swapped pair round, also against a text OCR can't read" do
+      {"", filler}.each do |text|
+        d = Flow.decide(input(book(title, authors), name, text)).not_nil!
+        changed(d)["title"].should eq new_title
+        changed(d)["authors"].as_a.map(&.as_s).should eq new_authors
+        d.band.should eq "review"
+      end
+      # a book without a name: the pair alone shows it
+      d = Flow.decide(input(book(title, authors), nil, "")).not_nil!
+      changed(d)["title"].should eq new_title
+      changed(d)["authors"].as_a.map(&.as_s).should eq new_authors
+    end
+  end
+
+  it "keeps hands off a swapped pair someone edited" do
+    i = input(book("McEvoy", ["Molecular Basis of Medical Cell Biology (Lange, 1998)"]), "McEvoy - Molecular Basis of Medical Cell Biology (Lange, 1998).djvu")
+    i.hand = Set{"title"}
+    d = Flow.decide(i).not_nil!
+    changed(d).has_key?("title").should be_false
+  end
+
+  it "#1966, #2254: a CHM's surname is no title, its title no author" do
+    swapped = Meta::Record.new(title: "Hamill", authors: ["Biomechanical Basis of Human Movement"])
+    d = Flow.decide(input(book("Hamill", ["Biomechanical Basis of Human Movement"]), "Hamill - Biomechanical Basis of Human Movement 3e (Lippincott, 2008).chm", "", swapped, "CHM"))
+    changed(d)["title"].should eq "Biomechanical Basis of Human Movement"
+    changed(d)["authors"].as_a.map(&.as_s).should eq ["Hamill"]
+    twice = Meta::Record.new(title: "Fundamental Immunology", authors: ["Fundamental Immunology"])
+    d = Flow.decide(input(book("Fundamental Immunology", ["Fundamental Immunology"]), "Paul - Fundamental Immunology 6e (Lippincott, 2008).chm", "", twice, "CHM"))
+    changed(d)["authors"].as_a.map(&.as_s).should eq ["Paul"]
+  end
+end
+
 describe Meta::FileMeta do
   fixtures = File.join(__DIR__, "fixtures", "metadata")
 

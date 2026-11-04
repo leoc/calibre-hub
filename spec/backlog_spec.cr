@@ -928,6 +928,58 @@ describe CalibreHub::ImportRepair do
     end
   end
 
+  it "plans the books of the first portion: what the import wrote is automatic, a hand's stays (#8528)" do
+    tmpdir do |root|
+      vol = File.join(root, "Vol 17 - Cumulative Index.pdf")
+      mcevoy = File.join(root, "McEvoy - Molecular Basis of Medical Cell Biology (Lange, 1998).djvu")
+      yosida = File.join(root, "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf")
+      print = File.join(root, "Ta-Tsien - Problems and Solutions In Mathematics (World Scientific, 1999).pdf")
+      edited = File.join(root, "Vol 09 - Birds 2.pdf")
+      [vol, mcevoy, yosida, print, edited].each { |p| write(p, pdf) }
+      fake = FakeCalibre.new
+      fake.add(601, "Grzimek's animal life encyclopedia.: Vol 17", ["Cumulative Index"], ["PDF"])
+      fake.add(602, "McEvoy", ["Molecular Basis of Medical Cell Biology (Lange, 1998)"], ["DJVU"])
+      fake.add(603, %q(C:\Program Files\eMule\Incoming\Yoshida K. -  Functional analysis (Springer, 1980)(256s).djvu), ["R. Tunç Mısırlıoğlu", "Kosaku Yosida"], ["PDF"], "9783540102106")
+      fake.add(604, "Print PROBLEMS AND SOLUTIONS IN MATHEMATICS (547 pages)", ["Ta-Tsien"], ["PDF"], "9789810234799")
+      fake.add(605, "Mein Titel", ["Meine Autorin"], ["PDF"])
+      db = state_db
+      db.exec "create table if not exists meta (key text primary key, value text)"
+      CalibreHub::ImportJobs.migrate(db)
+      {vol => 601, mcevoy => 602, yosida => 603, print => 604, edited => 605}.each do |p, id|
+        db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', ?, 'r1', 100)", p, id
+      end
+      # calibre's reading was added, the import's set-fields followed at once
+      db.exec "insert into events (type, book_id, payload, created_at) values ('added', 601, ?, 100)",
+        {type: "added", bookId: 601, book: {title: "Vol 17", authors: ["Cumulative Index"]}}.to_json
+      db.exec "insert into events (type, book_id, payload, created_at) values ('changed', 601, ?, 101)",
+        {type: "changed", bookId: 601, changes: {title: ["Vol 17", "Grzimek's animal life encyclopedia.: Vol 17"]}}.to_json
+      {602, 603, 604}.each do |id|
+        title = fake.books[id.to_i64]["title"].as_s
+        authors = fake.books[id.to_i64]["authors"]
+        db.exec "insert into events (type, book_id, payload, created_at) values ('added', ?, ?, 100)", id,
+          {type: "added", bookId: id, book: {title: title, authors: authors}}.to_json
+      end
+      # a day later somebody named it
+      db.exec "insert into events (type, book_id, payload, created_at) values ('added', 605, ?, 100)",
+        {type: "added", bookId: 605, book: {title: "Vol 09", authors: ["Birds 2"]}}.to_json
+      db.exec "insert into events (type, book_id, payload, created_at) values ('changed', 605, ?, 100000)",
+        {type: "changed", bookId: 605, changes: {title: ["Vol 09", "Mein Titel"], authors: [["Birds 2"], ["Meine Autorin"]]}}.to_json
+      calibre = fake.calibre
+      repair = CalibreHub::ImportRepair.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), CalibreHub::MetaLog.new(db))
+
+      planned = repair.submit_repair({} of String => JSON::Any, true)
+      wait_job(repair, planned["job"]["id"].as_s).errors.should be_empty
+      entries = repair.review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
+      fields = ->(id : Int64) { entries[id]["changes"].as_a.to_h { |c| {c["field"].as_s, c["new"]} } }
+      entries.keys.sort.should eq [601_i64, 602_i64, 603_i64, 604_i64]
+      fields.call(601_i64)["tags"].as_a.map(&.as_s).should contain "auto-unsicher"
+      fields.call(602_i64)["title"].should eq "Molecular Basis of Medical Cell Biology"
+      fields.call(602_i64)["authors"].should eq JSON.parse(%(["McEvoy"]))
+      fields.call(603_i64)["title"].should eq "Functional Analysis"
+      fields.call(604_i64)["title"].should eq "Problems and Solutions In Mathematics"
+    end
+  end
+
   it "plans the whole library, keeps what was accepted or rejected and offers the bulk band (#8528)" do
     tmpdir do |root|
       fake = FakeCalibre.new

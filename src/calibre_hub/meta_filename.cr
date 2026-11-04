@@ -119,7 +119,11 @@ module CalibreHub
                         "water", "dark", "darkness", "light", "shadow", "shadows", "blood", "city",
                         "road", "sea", "island", "approach", "approaches", "paradigms", "foundation", "foundations",
                         "concepts", "perspective", "perspectives", "overview", "evolution", "implementation",
-                        "economics", "drugs", "manual", "review", "tutorial", "handbooks"}
+                        "economics", "drugs", "manual", "review", "tutorial", "handbooks", "fundamental",
+                        "index", "indices", "cumulative", "contents", "appendix", "supplement", "glossary", "problem",
+                        "biochemistry", "biophysics", "genetics", "genomics", "computational", "molecular", "cellular", "clinical",
+                        "animals", "birds", "fishes", "insects", "spiders", "mammals", "reptiles", "amphibians", "protostomes",
+                        "corals", "jellyfishes", "sponges", "mollusks", "crustaceans", "worms", "plants", "bacteria", "viruses"}
       # common first names (folded), the strongest sign of a person
       FIRST_NAMES = Set{
         "aaron", "adam", "adrian", "alan", "albert", "alex", "alexander", "alfred", "ali", "alice", "alison", "allan",
@@ -169,7 +173,7 @@ module CalibreHub
         "mabel", "nora", "pearl", "rosa", "stella", "vera", "viola", "orson", "isaac", "ray", "poul", "gordon",
         "arthur", "kurt", "kim", "iain", "connie", "lois", "octavia", "ursula", "frederik", "frederic", "hal",
         "alfred", "cordwainer", "theodore", "clifford", "fritz", "ward", "dean", "piers", "terry", "terence",
-        "sigmund", "maxwell", "chet", "timothy", "lawrence", "karren", "hermann", "thomas", "friedrich",
+        "sigmund", "maxwell", "chet", "timothy", "lawrence", "karren", "hermann", "thomas", "friedrich", "herve",
       }
       # publishers that are surnames as well: alone, in a folder of "Author -
       # Title" names, they are the author
@@ -230,15 +234,24 @@ module CalibreHub
       BAD_TITLE = /\A(?:test|click here to log on|untitled(?: document)?|unbenannt|title|titel|unknown|document|dokument|vorlage|cover|book\d*|doc\d*|new document|new page \d+|djvu document|e-?book\s*pdf|microsoft word.*|chap(?:ter)?\s*\d+(?:\s+\d+\.\.\d+)?|chap\d+.*|ch\d+.*|app\d+|rev\d+|\p{L}?\d+\s+\d+\.\.\d+|pii:.*|\S+\.(?:dvi|docx?|indd|qxd|tex|ps|rtf|html?|pdf|p65|pm\d|fm|wpd|txt))\z/i
       FRAME_FILE = /\.(?:qxd|indd|dvi|p65)\b|\.(?:eps|vp|fm|key|tiff?)\z|\bfm\s+(?:frame|r\d)\b|\bfrontmatter\b|\bsup\s+tm\b|\bopener\z/i
 
+      # nothing but a volume: "Vol 09", "Band 2", "Part IV"
+      VOLUME_ONLY = /\A(?:vol(?:ume)?|bd|band|teil|part|tome?)\.?\s*(?:\d{1,3}|[ivx]{1,4})\z/i
+      # what ends the name of a book's file
+      BOOK_FILE = /\.(?:pdf|djvu?|epub|mobi|azw\d?|chm|lit|prc|fb2|docx?|rtf|txt|ps|dvi|cbz|cbr)\s*\z/i
+      # a drive, a share, folders from the root
+      PATH_ROOT = /\A(?:[A-Za-z]:[\\\/]|\\\\|\/[^\/\s]+\/)/
+      # the pages of a download list: "(547 pages)", "(256s)", not "(1960s)"
+      PAGES = /\s*[\(\[]\s*(?:\d{2,4}\s*(?:pages?|pp?|seiten|str)\.?|(?!(?:1[5-9]|20)\d0s)\d{3,4}s)\s*[\)\]]/i
+
       # the code of a collection in front of a title
       CODE_PREFIX = /\A\p{Lu}{2,5}\d{2,3}\s*[-–:]\s/
 
       def self.bad_title?(t : String) : Bool
         s = t.strip
-        # "1984", "2001"
-        return false if s.matches?(/\A\d{1,4}\z/)
-        return true if s.count(&.letter?) < 3
-        return true if s.matches?(BAD_TITLE)
+        # "1984", "2001", "C++"
+        return false if s.matches?(/\A(?:\d{1,4}|C\+\+|[CF]#)\z/i)
+        return true if s.count(&.letter?) < 3 || path_title?(s)
+        return true if s.matches?(BAD_TITLE) || s.matches?(VOLUME_ONLY)
         return true if s.matches?(/\A(?:file|https?):\//i) || s.matches?(FRAME_FILE)
         # "CBEAll", "MMMonth": no word, no acronym
         return true if s.matches?(/\A\p{Lu}{3,}\p{Ll}+\z/)
@@ -246,12 +259,44 @@ module CalibreHub
         s.count(&.ascii_number?) > s.count(&.letter?)
       end
 
+      # The title is a path or a file's name, as a PDF or a DjVu may carry it:
+      # "C:\\Program Files\\eMule\\Incoming\\Yoshida K. - Functional analysis
+      # (Springer, 1980)(256s).djvu". "TCP/IP Illustrated" and "Input/Output"
+      # are titles.
+      def self.path_title?(t : String) : Bool
+        s = t.strip
+        s.matches?(BOOK_FILE) || s.matches?(PATH_ROOT)
+      end
+
+      # the file's name in such a title, to read like a name
+      def self.path_name(t : String) : String?
+        return nil unless path_title?(t)
+        t.strip.split(/[\\\/]/).last.strip.presence
+      end
+
+      # A title without what a download list or a print dialog left on it:
+      # "Print PROBLEMS AND SOLUTIONS IN MATHEMATICS (547 pages)", "Trigonometry
+      # WW". "Print Culture" and "The Sixties (1960s)" stay.
+      def self.strip_rests(t : String) : String
+        s = squeeze(t.gsub(PAGES, " ")).sub(/\s+(?:WW|HQ)\z/, "")
+        m = s.match(/\APrint\s+(.+)\z/)
+        m && (shouted?(m[1]) || t.matches?(PAGES)) ? m[1] : s
+      end
+
+      # all caps in several words; one is an acronym ("UNIX", "GAMP 5")
+      def self.shouted?(t : String) : Bool
+        Clean.broken_case?(t) && t.chars.find(&.letter?).try(&.uppercase?) == true &&
+          t.split(' ').count { |w| w.count(&.letter?) >= 2 } >= 2
+      end
+
       # A title that is what an import left, not what the book is called:
       # one that says nothing, a list number, a publisher or a person in
-      # front, a ripper, an edition or a release in it. The name decides.
+      # front, a ripper, an edition or a release in it, a rest (strip_rests).
+      # The name decides.
       def self.leftover_title?(t : String) : Bool
         return true if bad_title?(t)
         s = t.strip
+        return true if strip_rests(s) != squeeze(s)
         return true if s.matches?(Clean::RIPPER) || s.matches?(/\bripped\s+by\b/i)
         # "HIT04 - So Long, and Thanks for All the Fish": a collection's code
         return true if s.matches?(CODE_PREFIX)
@@ -273,16 +318,18 @@ module CalibreHub
         Text.tokens(s).any? { |w| TITLE_NOUNS.includes?(w) || Clean::TITLE_WORDS.includes?(w) }
       end
 
-      # the title again with its edition: a book without an ISBN (a catalog's
-      # title may name the edition)
+      # the title again in capitals, which a name or a catalog writes better
+      # (not of a file's title: that one is cleaned), or with its edition: a
+      # book without an ISBN (a catalog's title may name the edition)
       def self.leftover_title?(book : Book) : Bool
-        return true if leftover_title?(book.title)
+        return true if leftover_title?(book.title) || shouted?(book.title)
         book.identifiers["isbn"]?.nil? && book.title.matches?(/\s\d{1,2}(?:st|nd|rd|th)\s+edition\b/i)
       end
 
       # who a tool or a typesetter put into this library's files as author
       FILE_OWNERS = Set{"administrator", "besitzer", "jasmine fradique", "danny", "owner", "user", "scankromsator",
-                        "team ling", "unation", "various", "c h beck", "cliffsnotes", "hq"}
+                        "team ling", "unation", "various", "c h beck", "cliffsnotes", "hq", "team yyepg", "giac",
+                        "fmusick", "sschalles", "valued gateway client"}
 
       # Not a person: a tool or owner of the file, a publisher, an edition,
       # a title or a subtitle
@@ -296,7 +343,7 @@ module CalibreHub
 
       # An organisation or event, not a person: "Symposium on Mathematical
       # Modelling", "Electronic Publishing", "McKinsey & Co", "Compliance"
-      ORGANIZATION = /\b(?:professor|symposium|conference|congress|workshop|seminar|meeting|proceedings|institute?|institut|university|universit[aä]t|college|society|gesellschaft|association|committee|commission|council|board|foundation|stiftung|corporation|incorporated|company|ministry|department|agency|academy|akademie|laboratory|laboratories|compliance|co|corp)\b\.?/i
+      ORGANIZATION = /\b(?:professor|symposium|conference|congress|workshop|seminar|meeting|proceedings|institute?|institut|university|universit[aä]t|college|society|gesellschaft|association|committee|commission|council|organi[sz]ation|board|foundation|stiftung|corporation|incorporated|company|ministry|department|agency|academy|akademie|laboratory|laboratories|compliance|co|corp)\b\.?/i
 
       def self.organization?(s : String) : Bool
         s.matches?(ORGANIZATION) || publisher_name?(s)
@@ -309,15 +356,57 @@ module CalibreHub
         a.sub(/\s*\/\/.*\z/, "").sub(/\Aauthor:\s*/i, "").sub(/\s+\d.*\z/, "").gsub(/\s*\([^()]*\)\s*/, " ").strip
       end
 
+      # small words inside a title, not inside a name of four words or more
+      # ("Hildegard of Bingen" has three)
+      INNER_WORDS = Set{"of", "for", "in", "on", "to", "with", "from", "the"}
+
       # a title or subtitle in the authors: a person has a first name or
       # initials, or at most a word of a title among others
       def self.title_like?(s : String) : Bool
         words = s.split(/\s+/).reject(&.empty?)
         folded = words.map { |w| Text.fold(w).strip(",.") }
         return false if words.any? { |w| w.matches?(INITIAL) } || FIRST_NAMES.includes?(folded.first?)
-        return true if article?(s) || words.size > 6 || s.matches?(/[!?:]/)
-        titles = folded.count { |w| TITLE_NOUNS.includes?(w) || Clean::TITLE_WORDS.includes?(w) }
+        return true if article?(s) && words.size >= 2 || words.size > 6 || s.matches?(/[!?:]/)
+        return true if words.size >= 4 && folded[1..-2].any? { |w| INNER_WORDS.includes?(w) }
+        titles = folded.count { |w| title_word?(w) }
         titles >= 1 && titles * 3 >= words.size
+      end
+
+      # Nobody at all, whoever put it there: "Cumulative Index", "Birds 2",
+      # "Vol. 1". A catalog may name an organisation, not this, and "Haskell
+      # Brooks Curry" and "Art Sobczak" have a word of a title only.
+      def self.no_person?(a : String) : Bool
+        s = a.strip
+        return true if s.matches?(/[\d()\[\]]/)
+        return false if organization?(s) || !title_like?(s)
+        words = Text.tokens(s)
+        words.size >= 4 || title_word?(words.last) && words.count { |w| title_word?(w) } * 2 >= words.size
+      end
+
+      # Title and authors the wrong way round: "McEvoy" by "Molecular Basis of
+      # Medical Cell Biology (Lange, 1998)", "Becker" by "Computational
+      # Biochemistry" and "Biophysics", as calibre reads "Author - Title". A
+      # one word title stays: "Dune" by a person. reading: the file name's,
+      # which shows it for any title, else the authors must look like one.
+      def self.swapped?(title : String, authors : Array(String), reading : Guess? = nil) : Bool
+        return false if title.strip.includes?(' ') || Clean.unknown_authors?(authors) || side_score(title) < 1
+        joined = authors.join(" and ")
+        if r = reading
+          return true if r.authors.any? { |a| Text.key(a) == Text.key(title) } && same_book?(joined, r.title)
+        end
+        return true if joined.matches?(PUBLISHER_YEAR)
+        t = names_text(joined)
+        Text.tokens(t).size >= 4 && title_like?(t)
+      end
+
+      # what a name's author side says when it is the book's subject: "Cumulative
+      # Index", "Birds 2", "Microbiology". "Le" and "le Guin, Ursula K" are people.
+      private def self.subject?(a : String) : Bool
+        title_like?(clean_author(a)) && side_score(a) < 1 && Text.tokens(a).none? { |w| FIRST_NAMES.includes?(w) }
+      end
+
+      private def self.title_word?(w : String) : Bool
+        TITLE_NOUNS.includes?(w) || Clean::TITLE_WORDS.includes?(w) || w.matches?(/\p{L}{3}(?:ology|ography)\z/)
       end
 
       # a publisher, not a person: "Pearson", "Glencoe/McGraw-Hill", "Gale Group"
@@ -417,6 +506,9 @@ module CalibreHub
         sf, sl = side_score(parts.first), side_score(parts.last)
         # "13 - Peopleware - Productive Projects and Teams"
         return make.call(nil).try { |g| {[g], NAME} } if numbered && sf < 2 && sl < 2
+        # "Vol 17 - Cumulative Index", "Vol 03 - Insects": a volume of a work
+        # the folder names, whose subject is nobody
+        return make.call(nil).try { |g| {[g], NAME} } if parts.first.matches?(VOLUME_ONLY) && sl < 2
         # "Encyclopedia of Mathematics - Gale Group (Vol.1 Ab-Cy)": a publisher
         # is nobody
         if publisher_name?(names_text(parts.last))
@@ -505,7 +597,7 @@ module CalibreHub
           series, index = series_index(m[2])
         end
         return nil if title.empty?
-        authors = authors.map { |a| Clean.fix_name_case(a) }.reject { |a| a.empty? || Clean.unknown_author?(a) }.uniq { |a| Text.key(a) }
+        authors = authors.map { |a| Clean.fix_name_case(a) }.reject { |a| a.empty? || Clean.unknown_author?(a) || subject?(a) }.uniq { |a| Text.key(a) }
         Guess.new(title, authors, series.try(&.strip), series ? index : nil, year, "rules", publisher, year.try(&.to_s))
       end
 
@@ -571,6 +663,7 @@ module CalibreHub
             s = m[2]
           end
         end
+        s = s.gsub(PAGES, "")
         8.times do
           before = s
           s = s.sub(TAIL_JUNK, "").sub(Clean::RIPPER, "").sub(NOTE, "").strip
@@ -674,7 +767,7 @@ module CalibreHub
       end
 
       private def self.finish_title(t : String) : String
-        t = t.gsub(MARK, ":")
+        t = strip_rests(t.gsub(MARK, ":"))
         t = t.gsub(/(?<=\p{L})- (?=\p{Lu})/, ": ").gsub(/(?<=\p{Ll})-(?=(?:The|A|An|Der|Die|Das)\s)/, ": ")
         t = t.gsub(EDITION, "").sub(EDITION_WORD, "")
         t = Clean.strip_junk(t)
@@ -731,7 +824,7 @@ module CalibreHub
         score = 0
         score += 2 if tokens.size >= 2 && initials.any?
         score += 2 if folded.any? { |w| FIRST_NAMES.includes?(w) } && tokens.size >= 2 || (tokens.size == 1 && several && FIRST_NAMES.includes?(folded.first))
-        titles = folded.each_with_index.count { |w, i| !initials[i] && (TITLE_NOUNS.includes?(w) || Clean::TITLE_WORDS.includes?(w)) }
+        titles = folded.each_with_index.count { |w, i| !initials[i] && title_word?(w) }
         score -= 2 * titles
         if tokens.size == 1
           w = tokens.first
@@ -822,9 +915,10 @@ module CalibreHub
         !book.identifiers["isbn"]?.nil?
       end
 
-      # no author worth keeping, or one that isn't a person
+      # no author worth keeping, or one that isn't a person; a catalog vouches
+      # for the authors of a book with an ISBN, unless they are nobody at all
       def self.weak_authors?(book : Book) : Bool
-        return true if Clean.unknown_authors?(book.authors)
+        return true if Clean.unknown_authors?(book.authors) || book.authors.all? { |a| no_person?(a) }
         !checked?(book) && book.authors.any? { |a| bad_author?(a) || Text.key(a) == Text.key(book.title) }
       end
 
@@ -920,6 +1014,7 @@ module CalibreHub
         guess = gs.first
         # the file's title as its author: "Understanding Bluetooth" by the same
         n = n.copy_with(authors_left: true) if n.authors_open && book.authors.any? { |a| Text.key(a) == Text.key(guess.title) }
+        n = n.copy_with(title_left: n.title_open, authors_left: n.authors_open) if swapped?(book.title, book.authors, guess)
         if how == UNCLEAR
           if plan(book, guess, n, imported, source).none? { |c| NAME_FIELDS.includes?(c.field) }
             # title and authors stay anyway: nothing to decide
@@ -949,14 +1044,25 @@ module CalibreHub
         authors_left = authors_open && weak_authors?(book)
         return nil unless title_left || authors_left
         guess = Guess.new(book.title, [] of String)
-        unless bad_title?(book.title)
+        if (file = path_name(book.title)) && (read = readings(file))
+          # what the title is good for: the name of the file in the path
+          guess = read[0].first
+          title_left = title_open
+          authors_left ||= authors_open && !guess.authors.empty?
+        elsif !bad_title?(book.title)
           gs, how = readings("#{book.title}.pdf") || {[guess], NAME}
           guess = (how == UNCLEAR ? gs.find(&.authors.empty?) : nil) || gs.first
           # the title has the author in it, or has the shape of a file's name
           title_left ||= title_open && authors_left && !book.title.includes?(':')
         end
-        # "Chet Holmes" by "The Ultimate Sales Machine", the wrong way round
-        if authors_left && !Clean.unknown_authors?(book.authors) && side_score(book.title) >= 1 && title_like?(book.authors.first)
+        # "Chet Holmes" by "The Ultimate Sales Machine", "McEvoy" by "Molecular
+        # Basis … (Lange, 1998)": the wrong way round
+        if swapped?(book.title, book.authors)
+          read = readings("#{book.title} - #{book.authors.join(" and ")}.pdf").try(&.[0].find { |g| !g.authors.empty? })
+          guess = read || Guess.new(finish_title(join_title(book.authors)), split_authors(book.title))
+          title_left = title_open
+          authors_left = authors_open
+        elsif authors_left && !Clean.unknown_authors?(book.authors) && side_score(book.title) >= 1 && title_like?(book.authors.first)
           guess = Guess.new(finish_title(join_title(book.authors)), split_authors(book.title))
           title_left = title_open
         end
