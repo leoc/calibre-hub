@@ -220,7 +220,7 @@ module CalibreHub
                 when :subtitle    then "#{Text.main_title(record_title)}: #{owns.first}"
                 else                   record_title
                 end
-        authors, known, stranger = authors_for(book, reading, c.fields, title, words)
+        authors, known = authors_for(book, reading, c.fields, title, words)
         # "Cumulative Index", and no record or name has anybody
         nobody = authors.empty? && !Clean.unknown_authors?(book.authors) && book.authors.all? { |x| FileName.no_person?(x) }
         authors = [FileName::UNKNOWN] if nobody
@@ -234,7 +234,6 @@ module CalibreHub
         t = fit.title && verdict == :agrees ? Confidence::ISBN_BOTH : Confidence::ISBN_ONE
         a = fit.authors ? Confidence::ISBN_BOTH : Confidence::ISBN_ONE
         a = {a, Confidence::ISBN_OTHER_PEOPLE}.min unless known
-        a = {a, Confidence::ISBN_ONE}.min if stranger
         a = Confidence::UNCLEAR if nobody
         case verdict
         when :confirmed then t = a = Confidence::ISBN_CONFIRMED
@@ -261,8 +260,8 @@ module CalibreHub
       # is ("Cambridge India" isn't), merged with the book's and its name's
       # (People.merge). The book's own count only for this title: a file with
       # another book's metadata has that book's authors. {the authors, did the
-      # record know any of the book's, did somebody go as a stranger}
-      private def self.authors_for(book : Book, reading : Guess?, r : Record, title : String, words : Words) : {Array(String), Bool, Bool}
+      # record know any of the book's}
+      private def self.authors_for(book : Book, reading : Guess?, r : Record, title : String, words : Words) : {Array(String), Bool}
         people = CrossCheck.people(r)
         here = people.select { |a| words.person?(a) }
         people = here unless here.empty?
@@ -276,19 +275,7 @@ module CalibreHub
           name = name.select { |a| (own + people).any? { |t| People.same?(a, t) } }
         end
         named = (own + name).reject { |a| People.tokens(a).size < 2 && People.tokens(a).all? { |w| title_words.includes?(w) } }
-        strangers = named.select { |a| stranger?(a, name + people, words) }
-        merged, known = People.merge(named - strangers, people, words)
-        {merged, known, !strangers.empty?}
-      end
-
-      # Somebody a file's metadata name whom the book doesn't: "R. Tunç
-      # Mısırlıoğlu" next to Kosaku Yosida, who scanned it. The book's own
-      # text says so, the record never removes a person: its pages must show
-      # somebody else, none of this one's names.
-      private def self.stranger?(author : String, others : Array(String), words : Words) : Bool
-        return false if words.size < MIN_WORDS || others.any? { |o| People.same?(author, o) }
-        return false unless others.any? { |o| words.person?(o) }
-        People.tokens(author).none? { |w| w.size >= 3 && words.has?(w) }
+        People.merge(named, people, words)
       end
 
       # what a shop adds to a title: "…, with CDROM", "(with CD-ROM)"
@@ -389,11 +376,17 @@ module CalibreHub
         title = meta_title(record.try(&.title))
         listed = (record.try(&.authors) || [] of String).flat_map { |a| a.matches?(/\s(?:and|und)\s/) ? FileName.split_authors(a) : [a] }
         authors = Clean.authors(listed.map { |a| FileName.clean_author(a) }).reject { |a| FileName.bad_author?(a) }
+        # "Wesner - Trigonometry …": the file's title is its name, author first
+        head = input.name.try(&.split(" - ").first?)
+        title = title.try(&.lchop("#{head} - ")) if head && reading.try(&.authors.any?)
         trusted = input.info.try(&.format) == "EPUB"
         unless trusted
           title = nil unless title && fits?(title, words, input.name)
           authors = authors.select { |a| person_fits?(a, words, input.name) }
         end
+        # fewer of the same people say nothing against the rest of them
+        kept = book.authors.reject { |a| FileName.bad_author?(a) }
+        authors = kept if !authors.empty? && authors.all? { |a| kept.any? { |b| People.same?(a, b) } }
         # a CHM's "Hamill": the name's author, its surname in the file too
         title = nil if title && reading.try(&.authors.any? { |a| Text.key(a) == Text.key(title.not_nil!) })
         title = nil if title && FileName.swapped?(title, authors, reading)

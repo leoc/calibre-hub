@@ -662,22 +662,19 @@ describe "the first portion of the rule flow (#8528)" do
     changed(d)["authors"].as_a.map(&.as_s).should eq ["K. Yoshida"]
   end
 
-  it "takes a stranger out by the book's text, never by the record alone" do
-    run = ->(text : String) do
-      i = input(book("Functional Analysis", people, isbn: yosida_isbn), yosida_name, text)
-      i.by_isbn = catalog({yosida_isbn => yosida})
-      Flow.decide(i).not_nil!
-    end
-    gone = run.call("Functional Analysis\nKosaku Yosida\n#{filler}")
-    changed(gone)["authors"].as_a.map(&.as_s).should eq ["Kosaku Yosida"]
-    # not by itself in the bulk
-    gone.authors.should eq Confidence::ISBN_ONE
-    # the book names him
-    kept = run.call("Functional Analysis\nKosaku Yosida\nÇeviren R. Tunç Mısırlıoğlu\n#{filler}")
-    kept.changes.none? { |c| c.field == "authors" }.should be_true
-    # pages that show nobody prove nothing
-    blind = run.call("Functional Analysis\n#{filler}")
-    blind.changes.find { |c| c.field == "authors" }.try(&.new.as_a.map(&.as_s)).should_not eq ["Kosaku Yosida"]
+  it "#1400, #1608: a record with fewer people removes nobody, whatever the text shows" do
+    b = book("Programming Clojure", ["Alex Miller", "Aaron Bedra", "Stuart Halloway"], isbn: yosida_isbn)
+    i = input(b, "Programming Clojure, 2nd edition.pdf", "Programming Clojure\nAaron Bedra\nStuart Halloway\n#{filler}")
+    i.by_isbn = catalog({yosida_isbn => Meta::Record.new(title: "Programming Clojure", authors: ["Stuart Halloway", "Aaron Bedra"])})
+    Flow.decide(i).not_nil!.changes.none? { |c| c.field == "authors" }.should be_true
+  end
+
+  it "#1939, #2578: a file's title with the name's author in front loses him, nobody else goes" do
+    pdf = Meta::Record.new(title: "Klug - Concepts of Genetics 8e", authors: ["Klug"])
+    b = book("Concepts of Genetics 8e", ["Klug", "Cummings", "Spencer"])
+    d = Flow.decide(input(b, "Klug - Concepts of Genetics 8e [OCR] (Pearson, 2006).pdf", "Concepts of Genetics\nKlug\n#{filler}", record: pdf)).not_nil!
+    changed(d)["title"]?.try(&.as_s.includes?("Klug")).should_not be_true
+    d.changes.none? { |c| c.field == "authors" }.should be_true
   end
 
   it "#1921: a print dialog's rests and capitals go, the name and the record agree" do
