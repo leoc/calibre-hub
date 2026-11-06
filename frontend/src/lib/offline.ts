@@ -111,8 +111,26 @@ export async function clearOffline() {
   if (offlineSupported()) await caches.delete(BOOKS_CACHE).catch(() => false)
 }
 
+export type LoadProgress = (received: number, total: number | null) => void
+
+// A response's body, saying how far it got. total: what Content-Length says.
+export async function readBody(res: Response, onProgress: LoadProgress): Promise<Blob> {
+  const reader = res.body?.getReader()
+  if (!reader) return res.blob()
+  const total = Number(res.headers.get("Content-Length")) || null
+  const chunks: BlobPart[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return new Blob(chunks)
+    chunks.push(value)
+    received += value.length
+    onProgress(received, total)
+  }
+}
+
 // The book's file: from the offline store when it is there, else the hub
-export async function loadBookFile(id: number, format: string, signal?: AbortSignal): Promise<Blob> {
+export async function loadBookFile(id: number, format: string, signal?: AbortSignal, onProgress?: LoadProgress): Promise<Blob> {
   const url = downloadUrl(id, format)
   if (offlineSupported() && getOfflineBook(id)) {
     const hit = await caches.match(url, { cacheName: BOOKS_CACHE }).catch(() => undefined)
@@ -120,7 +138,7 @@ export async function loadBookFile(id: number, format: string, signal?: AbortSig
   }
   const res = await fetch(url, { credentials: "same-origin", signal })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.blob()
+  return onProgress ? readBody(res, onProgress) : res.blob()
 }
 
 // Keeps an offline book's data as fresh as what the hub last said

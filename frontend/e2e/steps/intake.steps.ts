@@ -329,6 +329,14 @@ Then("the hub was asked for the file {string}", async ({ page }, file: string) =
   await expect.poll(() => page.evaluate(() => (window as unknown as { __intakeReads: string[] }).__intakeReads.at(-1))).toBe(file)
 })
 
+Then("the reader says {string}", async ({ page }, text: string) => {
+  await expect(reader(page).getByText(text)).toBeVisible()
+})
+
+Then("the reader doesn't say {string}", async ({ page }, text: string) => {
+  await expect(reader(page).getByText(text)).toHaveCount(0)
+})
+
 Then("no reader is open", async ({ page }) => {
   await expect(reader(page)).toHaveCount(0)
 })

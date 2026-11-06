@@ -77,10 +77,10 @@ const NO_POSITION: StartPoint = { mine: null, elsewhere: null }
 
 // A file's first pages without a book behind it (the Eingang): the reader
 // with its paging and settings, nothing about the reading is kept
-export function FilePeek({ title, name, format, load, onClose }: { title: string; name: string; format: string; load: (signal: AbortSignal) => Promise<Blob>; onClose: () => void }) {
+export function FilePeek({ title, name, format, load, loading, note, onClose }: { title: string; name: string; format: string; load: (signal: AbortSignal) => Promise<Blob>; loading?: string; note?: string; onClose: () => void }) {
   const settingsReady = useReaderSettingsReady()
   if (!settingsReady) return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
-  return <Reader title={title} name={name} load={load} format={format} start={NO_POSITION} onBack={onClose} />
+  return <Reader title={title} name={name} load={load} format={format} start={NO_POSITION} loading={loading} note={note} onBack={onClose} />
 }
 
 // no answer, or a hub that can't answer now
@@ -114,8 +114,9 @@ interface Location {
 
 const SAVE_DELAY = 1500
 
-// book: what the position is saved for; without one nothing is
-function Reader({ book, title, name, load, format, start, onBack }: { book?: Book; title: string; name: string; load: (signal: AbortSignal) => Promise<Blob>; format: string; start: StartPoint; onBack: () => void }) {
+// book: what the position is saved for; without one nothing is. loading: how
+// far the file is; note: what is to be known about what is shown
+function Reader({ book, title, name, load, format, start, loading, note, onBack }: { book?: Book; title: string; name: string; load: (signal: AbortSignal) => Promise<Blob>; format: string; start: StartPoint; loading?: string; note?: string; onBack: () => void }) {
   const { eink } = useTheme()
   const queryClient = useQueryClient()
   const host = useRef<HTMLDivElement>(null)
@@ -322,7 +323,7 @@ function Reader({ book, title, name, load, format, start, onBack }: { book?: Boo
       <main className="relative min-h-0 flex-1">
         {/* clicks in the book's pages come from its iframes (load event); these are the margins */}
         <div ref={host} className="absolute inset-0" onClick={(e) => tap.current(e.clientX)} />
-        {status === "loading" && <p className="absolute inset-0 flex items-center justify-center text-muted-foreground eink:text-black">{t("reader.loading")}</p>}
+        {status === "loading" && <p className="absolute inset-0 flex items-center justify-center text-muted-foreground eink:text-black">{loading ?? t("reader.loading")}</p>}
         {status === "failed" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background p-4 text-center">
             <p role="alert" className="font-medium">{t("reader.failed")}</p>
@@ -353,6 +354,7 @@ function Reader({ book, title, name, load, format, start, onBack }: { book?: Boo
           </div>
           <p className="mt-1 flex gap-2 text-xs text-muted-foreground eink:text-sm eink:text-black">
             <span className="shrink-0 tabular-nums" data-percent>{pct} %</span>
+            {note && <span className="shrink-0">· {note}</span>}
             {loc.chapter && <span className="truncate">· {loc.chapter}</span>}
           </p>
         </div>

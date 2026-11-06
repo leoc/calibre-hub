@@ -1,5 +1,6 @@
 import type { Book, ProgressEntry } from "./api"
 import { looksLikeEink } from "./theme"
+import { t } from "@/i18n"
 
 // Formats foliate-js opens, in the order the reader prefers them
 export const READER_FORMATS = ["EPUB", "KEPUB", "AZW3", "MOBI", "AZW", "FB2", "CBZ", "PDF"] as const
@@ -18,6 +19,12 @@ export function readerFormat(book: Pick<Book, "formats">, wanted?: string | null
 export const fileName = (id: number, format: string) => {
   const f = format.toLowerCase()
   return `book-${id}.${f === "kepub" ? "epub" : f}`
+}
+
+// whole MB, so the line changes as often as it says something new
+export function loadingText(received: number, total: number | null): string {
+  const mb = Math.floor(received / 1_000_000)
+  return total ? t("reader.loading.of", { received: mb, total: Math.ceil(total / 1_000_000) }) : t("reader.loading.mb", { received: mb })
 }
 
 // 0.634 -> 63; never 100 before the last page

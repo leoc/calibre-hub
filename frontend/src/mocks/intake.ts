@@ -54,7 +54,7 @@ const SEEDS: Seed[] = [
     ],
   },
   { path: "Robbins - Basic Pathology 8e.chm", title: "Basic Pathology", authors: ["Robbins"], confidence: 70, level: 3, decided: "name" },
-  { path: "Mathematics of the Discrete Fourier Transform.pdf", title: "Mathematics of the Discrete Fourier Transform", authors: ["Julius Smith"], confidence: 50, level: 3, decided: "openlibrary" },
+  { path: "Mathematics of the Discrete Fourier Transform.djvu", title: "Mathematics of the Discrete Fourier Transform", authors: ["Julius Smith"], confidence: 50, level: 3, decided: "openlibrary" },
   { path: "1380293052863.pdf", title: "1380293052863", authors: ["Unknown"], confidence: 10, level: 3, decided: "unsure" },
   {
     path: "Calculus/Stewart Calculus Concepts and Contexts 2nd Edition.pdf",
@@ -326,9 +326,15 @@ export const intakeHandlers = [
     return HttpResponse.json({ books, job: { id: "recheck", status: "running", done: 0, total: books, errors: [] } }, { status: 202 })
   }),
   http.get("/api/intake/:id/file", async ({ params, request }) => {
-    reads.push(`${params.id}/${new URL(request.url).searchParams.get("format")}`)
+    const query = new URL(request.url).searchParams
+    const format = query.get("format")
+    reads.push(`${params.id}/${format}${query.get("first") ? "/first" : ""}`)
     const data = await (await fetch(pdfUrl)).arrayBuffer()
-    return new HttpResponse(data, { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": "attachment" } })
+    // a DjVu and the large file of the list come as their first pages
+    const excerpt = format === "DJVU" || ENTRIES.find((x) => x.id === Number(params.id))?.cover
+    return new HttpResponse(data, {
+      headers: { "Content-Type": "application/octet-stream", "Content-Disposition": "attachment", "Content-Length": String(data.byteLength), ...(excerpt && { "X-Hub-Excerpt-Pages": "30" }) },
+    })
   }),
   http.get("/api/intake/:id/cover", () => new HttpResponse(COVER, { headers: { "Content-Type": "image/svg+xml" } })),
   http.get("/api/intake/:id", ({ params }) => {

@@ -290,7 +290,8 @@ Feature: Eingang
     Then the drawer has a button "Reinlesen o"
     When I press "o"
     Then the file opens in the reader over the drawer
-    And the hub was asked for the file "1/PDF"
+    And the hub was asked for the file "1/PDF/first"
+    And the reader says "Erste 30 Seiten"
     When I press "a"
     And I press "d"
     And I press "j"
@@ -321,11 +322,29 @@ Feature: Eingang
     Then the reader has turned a page
 
   @wide
-  Scenario: DjVu and CHM can't be read in, one muted line says so
+  Scenario: A DjVu is read in as a PDF of its first pages
+    When I open the Eingang
+    And I open the row "Mathematics of the Discrete Fourier Transform"
+    Then the drawer has a button "Reinlesen o"
+    When I press "o"
+    Then the file opens in the reader over the drawer
+    And the hub was asked for the file "5/DJVU/first"
+    And the reader says "Erste 30 Seiten"
+
+  @wide
+  Scenario: What came whole isn't called an excerpt
+    When I open the Eingang
+    And I open the row "Birds"
+    And I press "o"
+    Then the file opens in the reader over the drawer
+    And the reader doesn't say "Erste 30 Seiten"
+
+  @wide
+  Scenario: CHM can't be read in, one muted line says so
     When I open the Eingang
     And I open the row "Basic Pathology"
     Then the drawer offers no reading in
-    And the drawer shows "Reinlesen geht bei DjVu und CHM nicht"
+    And the drawer shows "Reinlesen geht bei CHM nicht"
     When I press "o"
     Then no reader is open
     And the drawer's header reads "Robbins - Basic Pathology 8e.chm"

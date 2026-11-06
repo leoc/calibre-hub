@@ -81,10 +81,15 @@ export function leftText(left: IntakeLeft | undefined): string | null {
 }
 
 // the entry's format for the reader, null when it has none
-export const readableFormat = (e: IntakeEntry) => readerFormat({ formats: e.files.map((f) => f.format) })
+// no reader for these: the hub makes a PDF of their first pages
+export const isDjvu = (format: string) => format === "DJVU" || format === "DJV"
 
-// the formats the line about reading in names
-export const unreadable = (e: IntakeEntry) => readableFormat(e) === null && e.files.some((f) => ["DJVU", "DJV", "CHM"].includes(f.format))
+// what reading in asks for; a library's book opens its own file, a DjVu as it is
+export const readableFormat = (e: IntakeEntry) =>
+  readerFormat({ formats: e.files.map((f) => f.format) }) ?? (isLibrary(e) ? null : (e.files.find((f) => isDjvu(f.format))?.format ?? null))
+
+// the format the line about reading in names
+export const unreadable = (e: IntakeEntry) => readableFormat(e) === null && e.files.some((f) => f.format === "CHM")
 
 // why a decision came back; the hub's reason for a field changed since the plan
 export function errorText(e: IntakeEntry): string | null {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyEve
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { BookIcon, Check, Trash2, X } from "lucide-react"
-import { ApiError, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeProgress } from "@/lib/api"
+import { ApiError, EXCERPT_HEADER, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeProgress } from "@/lib/api"
 import {
   acceptable,
   analysedShare,
@@ -18,7 +18,7 @@ import {
   intakeFilter,
   intakeListQuery,
   intakeStatusQuery,
-  isLibrary,
+  isDjvu, isLibrary,
   leftText,
   noteTexts,
   readableFormat,
@@ -29,9 +29,9 @@ import {
   unreadable,
   type IntakeBand,
 } from "@/lib/intake"
-import { loadBookFile } from "@/lib/offline"
+import { loadBookFile, readBody, type LoadProgress } from "@/lib/offline"
 import { importRepairQuery } from "@/lib/queries"
-import { fileName } from "@/lib/reader"
+import { fileName, loadingText } from "@/lib/reader"
 import { errorText } from "@/lib/run-action"
 import { toast } from "@/lib/toast"
 import { formatNumber, t } from "@/i18n"
@@ -562,19 +562,25 @@ const ButtonKey = ({ children }: { children: ReactNode }) => <KeyChip className=
 
 // The file's first pages over the drawer: Esc, the reader's back button and
 // the phone's come back to the entry. A book of the library opens its own file.
+// A large file comes as its first pages (Intake#peek), a DjVu as a PDF of them.
 function Peek({ entry: e, format, onClose }: { entry: IntakeEntry; format: string; onClose: () => void }) {
   const title = entryTitle(e)
+  const [loading, setLoading] = useState<string>()
+  const [excerpt, setExcerpt] = useState(0)
+  const shown = isDjvu(format) ? "PDF" : format
   const load = async (signal: AbortSignal) => {
-    if (isLibrary(e) && e.bookId !== null) return loadBookFile(e.bookId, format, signal)
+    const progress: LoadProgress = (received, total) => setLoading(loadingText(received, total))
+    if (isLibrary(e) && e.bookId !== null) return loadBookFile(e.bookId, format, signal, progress)
     const res = await fetch(intakeFileUrl(e.id, format), { credentials: "same-origin", signal })
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-    return res.blob()
+    setExcerpt(Number(res.headers.get(EXCERPT_HEADER)) || 0)
+    return readBody(res, progress)
   }
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogScreen aria-describedby={undefined}>
         <DialogTitle className="sr-only">{title}</DialogTitle>
-        <FilePeek title={title} name={fileName(e.id, format)} format={format} load={load} onClose={onClose} />
+        <FilePeek title={title} name={fileName(e.id, shown)} format={shown} load={load} loading={loading} note={excerpt ? t("reader.excerpt", { pages: excerpt }) : undefined} onClose={onClose} />
       </DialogScreen>
     </Dialog>
   )

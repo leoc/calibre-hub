@@ -196,10 +196,16 @@ describe("reading in", () => {
     expect(readableFormat(files("PDF", "EPUB"))).toBe("EPUB")
     expect(readableFormat(files("CHM"))).toBeNull()
   })
-  it("has a line only for DjVu and CHM", () => {
-    expect(unreadable(files("DJVU"))).toBe(true)
+  it("reads a DjVu when there is nothing better, not a library's", () => {
+    expect(readableFormat(files("DJVU"))).toBe("DJVU")
+    expect(readableFormat(files("CHM", "DJV"))).toBe("DJV")
+    expect(readableFormat(files("DJVU", "PDF"))).toBe("PDF")
+    expect(readableFormat({ ...files("DJVU"), kind: "library" })).toBeNull()
+  })
+  it("has a line only for CHM", () => {
     expect(unreadable(files("CHM"))).toBe(true)
-    expect(unreadable(files("DJVU", "PDF"))).toBe(false)
+    expect(unreadable(files("DJVU"))).toBe(false)
+    expect(unreadable(files("CHM", "DJVU"))).toBe(false)
     expect(unreadable(files("RTF"))).toBe(false)
   })
 })

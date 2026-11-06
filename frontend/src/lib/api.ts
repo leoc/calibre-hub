@@ -904,7 +904,10 @@ export const DEFAULT_CONFIG: HubConfig = { categoryColumn: "kategorie", classify
 export const coverUrl = (id: number, thumb = true, version?: string) =>
   `/api/books/${id}/cover${thumb ? "?size=thumb" : ""}${version ? `${thumb ? "&" : "?"}v=${encodeURIComponent(version)}` : ""}`
 
-export const intakeFileUrl = (id: number, format: string) => `/api/intake/${id}/file?format=${format}`
+// first=1: a look is enough, the hub may send only the first pages
+export const intakeFileUrl = (id: number, format: string) => `/api/intake/${id}/file?format=${format}&first=1`
+// how many pages the hub sent when that isn't the whole book
+export const EXCERPT_HEADER = "X-Hub-Excerpt-Pages"
 export const downloadUrl = (id: number, format: string) => `/api/books/${id}/download/${format.toLowerCase()}`
 
 export function categoryOf(book: Book, column: string | null): string | null {
