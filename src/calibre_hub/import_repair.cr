@@ -116,10 +116,16 @@ module CalibreHub
       result = {} of Int64 => String
       by_book.each do |id, paths|
         # a calibre folder's books came from its metadata.opf
-        next if paths.any? { |p| File.exists?(File.join(File.dirname(p), Backlog::OPF)) }
+        next if paths.any? { |p| calibre_folder?(File.dirname(p)) }
         result[id] = paths.min_by { |p| Backlog::FORMATS.index(File.extname(p).lchop('.').upcase) || Backlog::FORMATS.size }
       end
       result
+    end
+
+    # moved out of the backlog, its name "Title (12)" still shows it
+    private def calibre_folder?(dir : String) : Bool
+      return File.exists?(File.join(dir, Backlog::OPF)) if Dir.exists?(dir)
+      File.basename(dir).matches?(/\s\(\d+\)\z/)
     end
 
     # Queues a plan of the books (not those accepted or rejected before):
