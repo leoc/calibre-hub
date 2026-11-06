@@ -20,6 +20,9 @@ module CalibreHub
     # calibre-server embeds the metadata into these when it serves them
     SERVED = %w(EPUB AZW3 MOBI PDF)
 
+    # what same_content? reads at a time
+    COMPARE_CHUNK = 1 << 20
+
     # KOReader's partial MD5 (util.partialMD5, the document id KOSync uses):
     # 1 KiB at 256 B, 1 KiB, 4 KiB, ... 1 GiB, until the file ends
     def self.partial_md5(path : String) : String
@@ -42,6 +45,31 @@ module CalibreHub
         end
         d.hexfinal
       end
+    end
+
+    # Two files with the same bytes, read to the end. No checksum, so no
+    # collision; one file under two names is no copy; what can't be read
+    # counts as different.
+    def self.same_content?(a : String, b : String) : Bool
+      return false if File.same?(a, b)
+      File.open(a) do |x|
+        File.open(b) do |y|
+          return false unless x.size == y.size
+          one = Bytes.new(COMPARE_CHUNK)
+          other = Bytes.new(COMPARE_CHUNK)
+          loop do
+            n = x.read(one)
+            return true if n == 0
+            y.read_fully(other[0, n])
+            return false unless one[0, n] == other[0, n]
+            # file reads block the process: let the API in
+            Fiber.yield
+          end
+        end
+      end
+    rescue ex : File::Error | IO::Error
+      STDERR.puts "comparing #{a} failed: #{ex.message}"
+      false
     end
 
     # Downloads a format through calibre-server
@@ -456,7 +484,7 @@ module CalibreHub
     get "/api/convert/status" do
       last = convert.last.try do |job, started|
         JSON.parse(job.to_json).as_h.merge({"startedAt" => JSON::Any.new(started.to_rfc3339),
-                                            "target" => job.changes["target"]? || JSON::Any.new(nil)})
+                                            "target"    => job.changes["target"]? || JSON::Any.new(nil)})
       end
       {enabled: convert.enabled, target: convert.target, ignore: convert.ignore, targets: ConvertJobs::TARGETS,
        running: convert.running?, lastRun: last}.to_json

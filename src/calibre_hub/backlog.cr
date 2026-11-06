@@ -394,7 +394,8 @@ module CalibreHub
     # files and checksums of books removed since (calibre's trash
     # included) are left out, they are no duplicates.
     class Index
-      record Entry, book : Int64, path : String?
+      # library: a file of the library, not one a run brought along
+      record Entry, book : Int64, path : String?, library : Bool = false
 
       # Dedup.similarity: 1 is the same title after normalization
       TITLE_SIMILARITY = 1.0
@@ -423,7 +424,7 @@ module CalibreHub
         library_files.each do |book, format, path, size|
           next unless @ids.includes?(book)
           (@formats[book] ||= Set(String).new) << format.upcase
-          (@by_size[size] ||= [] of Entry) << Entry.new(book, path)
+          (@by_size[size] ||= [] of Entry) << Entry.new(book, path, true)
         end
         checksums.each do |book, md5, size|
           # file_checksums keeps the rows of books removed since
@@ -514,6 +515,34 @@ module CalibreHub
           return e.book if (p = e.path) && md5(p) == sum
         end
         nil
+      end
+
+      # The library's book that has every file of the unit, compared byte for
+      # byte. Size and partial MD5 only say a file may be the same, and a file
+      # the hub rewrote since (metadata embedded) is another file: such a
+      # match stays a question for a person.
+      def exact(u : Unit) : Int64?
+        books = nil.as(Set(Int64)?)
+        u.files.each do |f|
+          found = identical(f)
+          books = books ? books & found : found
+          return nil if books.empty?
+        end
+        books.try(&.first?)
+      end
+
+      private def identical(f : BookFile) : Set(Int64)
+        found = Set(Int64).new
+        @by_size[f.size]?.try &.each do |e|
+          next unless e.library && !found.includes?(e.book)
+          found << e.book if (p = e.path) && BookFiles.same_content?(f.path, p)
+        end
+        found
+      end
+
+      # the title of a book of the library
+      def title(id : Int64) : String?
+        @items[id]?.try(&.book.title)
       end
 
       # {book, how}: another book with an ISBN of the item, or with its
@@ -675,7 +704,7 @@ module CalibreHub
         selected: {books: chosen.size, toAdd: chosen.count(&.action.==("add")),
                    toAddFormats: chosen.count(&.action.==("addFormats")), duplicates: chosen.count(&.action.==("duplicate"))},
         deferred: units.size - chosen.size,
-        skipped:         {total: skipped.size, byReason: by_reason.to_a.sort_by { |_, n| -n }.to_h,
+        skipped:  {total: skipped.size, byReason: by_reason.to_a.sort_by { |_, n| -n }.to_h,
                   byType: by_type.to_a.sort_by { |_, n| -n }.to_h, byFolder: folders},
       }.to_json)
     end

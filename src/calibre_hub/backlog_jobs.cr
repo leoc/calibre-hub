@@ -27,6 +27,11 @@ module CalibreHub
     # the events of its kind past its cursor it hasn't looked at yet
     record FollowupHook, name : String, cursor : String, events : String, jobs : String? = nil, queue : String? = nil
 
+    # A decision of the Eingang in place of the rule flow: the values to
+    # write (empty: as in the file), the flow's decision they come from, and
+    # that the book is wanted although it looks like one the library has
+    record Chosen, values : Hash(String, JSON::Any), decision : Meta::Flow::Decision?, force : Bool = false
+
     getter roots : Array(String)
     # the hooks that are on (main.cr)
     property followup = [] of FollowupHook
@@ -430,7 +435,7 @@ module CalibreHub
       save(run_id, id, unit)
     end
 
-    private def index_for(run_id : String) : Backlog::Index
+    def index_for(run_id : String) : Backlog::Index
       if (ix = @index) && @index_run == run_id
         return ix
       end
@@ -444,11 +449,20 @@ module CalibreHub
       now = Time.utc.to_unix
       @db.exec "update import_units set status = ?, action = ?, unit = ? where run_id = ? and idx = ?", unit.status, unit.action, unit.to_json, run_id, idx
       @db.exec "update import_runs set finished_at = ? where id = ?", now, run_id
-      return if unit.status == "failed"
+      handled(unit, run_id) unless unit.status == "failed"
+    end
+
+    # no other run takes these files again
+    def handled(unit : Backlog::Unit, run_id : String)
+      now = Time.utc.to_unix
       unit.files.each do |f|
         @db.exec "insert or replace into import_files (path, size, mtime, status, book_id, run_id, at) values (?, ?, ?, ?, ?, ?, ?)",
           f.path, f.size, f.mtime, unit.status, unit.book_id, run_id, now
       end
+    end
+
+    def writer : Writer
+      @writer
     end
 
     # calibre-server failed on one book (e.g. calibre's NoSuchBook, an
@@ -492,6 +506,20 @@ module CalibreHub
       end
     end
 
+    # A unit as decided in the Eingang; a book that turned out to be in the
+    # library comes back with the status duplicate, nothing added
+    def import(unit : Backlog::Unit, ix : Backlog::Index, chosen : Chosen)
+      Backlog.plan(unit, ix)
+      case unit.action
+      when "addFormats"
+        add_formats(unit.book_id.not_nil!, unit, ix)
+      when "duplicate"
+        chosen.force ? add(unit, ix, chosen) : (unit.status = "duplicate")
+      else
+        add(unit, ix, chosen)
+      end
+    end
+
     private def add_formats(id : Int64, unit : Backlog::Unit, ix : Backlog::Index)
       added = [] of Backlog::BookFile
       notes = [] of String
@@ -512,12 +540,13 @@ module CalibreHub
       @writer.written([id]) unless added.empty?
     end
 
-    private def add(unit : Backlog::Unit, ix : Backlog::Index)
+    private def add(unit : Backlog::Unit, ix : Backlog::Index, chosen : Chosen? = nil)
       primary = unit.primary
       opf = unit.meta
+      force = chosen.try(&.force) || false
       # a calibre folder was checked against the library already; a plain
       # file gets calibre's title/author check too
-      result = with_retry(book: true) { @calibre.add_book(primary.path, File.basename(primary.path), duplicates: !opf.nil?) }
+      result = with_retry(book: true) { @calibre.add_book(primary.path, File.basename(primary.path), duplicates: !opf.nil? || force) }
       id = result.book_id
       unless id
         existing = @writer.duplicate_books(result.duplicates).first?
@@ -536,6 +565,13 @@ module CalibreHub
       begin
         if opf
           @calibre.set_fields(id, opf.changes)
+          if chosen
+            decided = chosen.decision
+            unit.decided = decided.try(&.how)
+            b = @calibre.book(id)
+            changes = b ? ImportJobs.chosen_fields(b, chosen) : {} of String => JSON::Any
+            @calibre.set_fields(id, changes) unless changes.empty?
+          end
           unit.cover.try { |c| cover(id, c) }
         else
           # tags embedded in the file are dropped, like in the inbox; title,
@@ -543,15 +579,21 @@ module CalibreHub
           # calibre has only its own reading of it ("Title - Author")
           fields = {"tags" => JSON.parse("[]")}
           if b = @calibre.book(id)
-            decision = decide(b, primary, hint(unit.dir), ix)
-            named, how = ImportJobs.name_fields(b, decision)
-            fields.merge!(named)
-            unit.decided = how
-            decided = decision
+            if chosen
+              fields.merge!(ImportJobs.chosen_fields(b, chosen))
+              decided = chosen.decision
+              unit.decided = decided.try(&.how)
+            else
+              decision = decide(b, primary, hint(unit.dir), ix)
+              named, how = ImportJobs.name_fields(b, decision)
+              fields.merge!(named)
+              unit.decided = how
+              decided = decision
+            end
           end
           @calibre.set_fields(id, fields)
           book = @calibre.book(id)
-          if book && (hit = ix.match_book(book))
+          if !force && book && (hit = ix.match_book(book))
             @calibre.remove([id], permanent: true)
             merge(unit, hit[0], hit[1], ix)
             return
@@ -585,7 +627,7 @@ module CalibreHub
       unit.status = "imported"
       unit.detail = notes.join("; ").presence
       @writer.written([id])
-      decided.try { |d| record_decision(id, primary.path, d) }
+      decided.try { |d| record_decision(id, primary.path, d, chosen ? MetaLog::ACCEPTED : "written") }
     end
 
     # What the rule flow (Meta::Flow) makes of a book calibre just added
@@ -617,10 +659,21 @@ module CalibreHub
       {fields, decision.how}
     end
 
+    # What the Eingang's decision writes: its values and the flow's tags
+    def self.chosen_fields(book : Book, chosen : Chosen) : Hash(String, JSON::Any)
+      fields = {} of String => JSON::Any
+      tags = chosen.decision.try(&.changes.find { |c| c.field == "tags" })
+      fields["tags"] = tags.new if tags && tags.new.as_a.size > 0
+      fields.merge!(Edit.changes(Meta::Merge.patch(book, chosen.values), book, nil)) unless chosen.values.empty?
+      fields
+    end
+
     # the decision in the state DB, a conflict to the review
-    private def record_decision(id : Int64, path : String, d : Meta::Flow::Decision)
-      @decisions.try &.decide(id, d, "written")
-      @review.try &.call(id, path, d) unless d.notes.empty?
+    private def record_decision(id : Int64, path : String, d : Meta::Flow::Decision, status = "written")
+      @decisions.try &.decide(id, d, status)
+      return if d.notes.empty?
+      @review.try &.call(id, path, d)
+      @decisions.try &.decided_status(id, status)
     end
 
     # reads a file for the rule flow (Metadata#read_flow), catalogs by ISBN

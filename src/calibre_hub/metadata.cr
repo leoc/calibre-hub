@@ -41,9 +41,14 @@ module CalibreHub
       end
     end
 
+    # a person took it in the Eingang: the metadata run keeps title, authors
+    # and ISBN
+    ACCEPTED = "accepted"
+
     # What the rule flow (Meta::Flow) decided about a book: how sure, on
     # which level, from where, so a band can be checked again. status:
-    # planned (a proposal), written (nothing left to do or written), rejected
+    # planned (a proposal), written (nothing left to do or written), rejected,
+    # accepted
     struct Decided
       include JSON::Serializable
 
@@ -70,7 +75,7 @@ module CalibreHub
 
       # the metadata run doesn't contradict this (Metadata#run)
       def binding? : Bool
-        level == Meta::Flow::LEVEL_ISBN && status == "written"
+        status == ACCEPTED || level == Meta::Flow::LEVEL_ISBN && status == "written"
       end
     end
 
