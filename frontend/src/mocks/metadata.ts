@@ -1,6 +1,7 @@
 import { http, HttpResponse } from "msw"
 import type { Book, ImportRepairEntry, ImportRun, Job, MetadataCandidate, MetadataChange, MetadataField, MetadataSource, MetadataStatus, MetadataTarget } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
+import { proposalBoard } from "./intake"
 
 // Metadata cleanup of the mock hub: a few changed books from the start (a
 // messy file name, an unknown author, an author spelling, a reverted
@@ -159,6 +160,13 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
       at: "2026-11-03T12:00:00Z", ...sure(30, "unsure", 3, "rules"), changes: [{ field: "tags", old: [], new: ["auto-unsicher"] }] },
   ]
   const repairCounts = { applied: 0, rejected: 0, failed: 0 }
+  // the Eingang's filter shows these, one list with two doors
+  proposalBoard.entries = () => repair
+  proposalBoard.books = books
+  proposalBoard.decide = (ids, how) => {
+    repair = repair.filter((e) => !ids.includes(e.bookId))
+    repairCounts[how] += ids.length
+  }
   const samples: { band: string; checked: number; correct: number; at: string }[] = []
   let repairJob: Job | null = null
 

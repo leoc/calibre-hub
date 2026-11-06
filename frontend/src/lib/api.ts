@@ -250,13 +250,15 @@ export interface ImportCleanup {
 export type ConfidenceBand = "bulk" | "review" | "unsure"
 
 // the Eingang: new files of the import roots, analysed, not in the library
-export type IntakeKind = "all" | "new" | "duplicates" | "skipped"
+export type IntakeKind = "all" | "new" | "duplicates" | "skipped" | "library"
 
-export type IntakeDecision = "accept" | "file" | "skip" | "unskip" | "trash"
+export type IntakeDecision = "accept" | "file" | "skip" | "unskip" | "trash" | "reject"
 export interface IntakeFilter {
   band?: string
   duplicates?: boolean
   skipped?: boolean
+  // the proposals for books of the library, instead of the files
+  library?: boolean
 }
 
 export interface IntakeProgress {
@@ -281,12 +283,14 @@ export interface IntakeProposal {
 }
 
 export interface IntakeEntry {
+  // a book of the library: minus its book id
   id: number
   path: string
+  // a book of the library without a file an import read: empty
   name: string
   // below its root, null in the root
   folder: string | null
-  kind: "file" | "calibre"
+  kind: "file" | "calibre" | "library"
   files: { path: string; format: string; size: number }[]
   status: "analysed" | "failed"
   detail: string | null
@@ -300,7 +304,7 @@ export interface IntakeEntry {
   decided: string | null
   isbnSource: string | null
   notes: RepairNote[]
-  action: "add" | "addFormats" | "duplicate"
+  action: "add" | "addFormats" | "duplicate" | "update"
   bookId: number | null
   match: string | null
   sameAs: string | null
@@ -311,20 +315,43 @@ export interface IntakeEntry {
   skipped: boolean
   // why the last decision came back
   error: string | null
-  // the library's book it looks like
+  // the library's book it looks like; a library entry's title now
   bookTitle: string | null
+  // a library entry with nothing to write: a conflict's note, a candidate
+  unchanged?: boolean
 }
 
 export interface IntakeCandidate {
   source: string
   confidence: number
-  fields: { title?: string | null; authors?: string[] | null }
+  fields: {
+    title?: string | null
+    authors?: string[] | null
+    publisher?: string | null
+    pubdate?: string | null
+    series?: string | null
+    seriesIndex?: number | null
+    isbn?: string | null
+    languages?: string[] | null
+    coverUrl?: string | null
+  }
   url: string | null
 }
 
 export interface IntakeDetail extends IntakeEntry {
   changes: { field: string; old: unknown; new: unknown; source: string }[]
   candidates: IntakeCandidate[]
+  // a library entry: the tag of unsure books
+  unsureTag?: string
+}
+
+// what a bulk leaves in the list
+export interface IntakeLeft {
+  duplicates: number
+  failed: number
+  skipped: number
+  // library entries with nothing to write
+  unchanged: number
 }
 
 // without import roots only {enabled: false}
@@ -336,6 +363,7 @@ export interface IntakeList {
   // what „Alle N übernehmen“ takes of the filter, how many of them unsure
   takeable?: number
   unsure?: number
+  left?: IntakeLeft
   skipped?: number
   // the newest entry: a bulk decision stops there
   last?: number
@@ -345,6 +373,8 @@ export interface IntakeList {
   // the next page is behind this path
   next?: string | null
   entries?: IntakeEntry[]
+  // the library filter: the recheck under way, waiting: for the analysis
+  recheck?: { done: number; total: number; waiting: boolean } | null
 }
 
 // a conflict for the review: the same ISBN on other books, or another ISBN
@@ -601,6 +631,7 @@ export const api = {
     if (p.band) q.set("band", p.band)
     if (p.duplicates !== undefined) q.set("duplicates", String(p.duplicates))
     if (p.skipped) q.set("skipped", "true")
+    if (p.library) q.set("library", "true")
     if (p.after) q.set("after", p.after)
     return request<IntakeList>(`/api/intake?${q}`)
   },
@@ -753,10 +784,14 @@ export const write = {
     decision: IntakeDecision
     target: { ids: number[] } | { query: IntakeFilter; last: number; expect: number }
     candidate?: number
+    // a filter's accept: the candidates chosen so far, by entry
+    picks?: Record<number, number>
     title?: string
     authors?: string[]
   }) => request<{ jobId?: string | null; total: number }>("/api/intake/decide", { method: "POST", ...json(body) }),
   intakeThreshold: (value: number | null) => request<{ threshold: number | null }>("/api/intake/threshold", { method: "POST", ...json({ value }) }),
+  // the books no plan got to, behind the analysis
+  recheckLibrary: () => request<{ books: number }>("/api/import/repair/recheck", { method: "POST", ...json({}) }),
   // a backlog import run of a folder: a dry run or the import itself
   startImport: (path: string, dryRun: boolean, limit: number) =>
     request<ImportRun>("/api/import", { method: "POST", ...json({ path, dryRun, limit }) }),
@@ -869,6 +904,7 @@ export const DEFAULT_CONFIG: HubConfig = { categoryColumn: "kategorie", classify
 export const coverUrl = (id: number, thumb = true, version?: string) =>
   `/api/books/${id}/cover${thumb ? "?size=thumb" : ""}${version ? `${thumb ? "&" : "?"}v=${encodeURIComponent(version)}` : ""}`
 
+export const intakeFileUrl = (id: number, format: string) => `/api/intake/${id}/file?format=${format}`
 export const downloadUrl = (id: number, format: string) => `/api/books/${id}/download/${format.toLowerCase()}`
 
 export function categoryOf(book: Book, column: string | null): string | null {

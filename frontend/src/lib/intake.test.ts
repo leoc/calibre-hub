@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { analysedShare, authorsText, badgeText, candidateSource, intakeFilter, noteTexts, reasonText, ringLabel, takeable, uniqueEntries } from "./intake"
+import { acceptable, analysedShare, asChosen, authorsText, badgeText, candidateDiff, candidateSource, entryName, errorText, intakeFilter, leftText, noteTexts, readableFormat, reasonText, ringLabel, takeable, uniqueEntries, unreadable } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -135,4 +135,79 @@ it("keeps an entry once over a moved page boundary", () => {
   const a = entry({ id: 1 }) as IntakeEntry
   const b = entry({ id: 2 }) as IntakeEntry
   expect(uniqueEntries([{ entries: [a, b] }, { entries: [b] }]).map((e) => e.id)).toEqual([1, 2])
+})
+
+describe("leftText", () => {
+  const left = { duplicates: 0, failed: 0, skipped: 0, unchanged: 0 }
+  it("says nothing when the bulk takes everything", () => {
+    expect(leftText(left)).toBeNull()
+    expect(leftText(undefined)).toBeNull()
+  })
+  it("names what stays", () => {
+    expect(leftText({ ...left, duplicates: 59 })).toBe("59 mögliche Dubletten bleiben in der Liste")
+    expect(leftText({ ...left, duplicates: 1 })).toBe("1 mögliche Dublette bleibt in der Liste")
+    expect(leftText({ duplicates: 2, failed: 1, skipped: 3, unchanged: 0 })).toBe("2 mögliche Dubletten, 1 fehlgeschlagen und 3 übersprungen bleiben in der Liste")
+  })
+})
+
+describe("candidateDiff", () => {
+  const proposal = { title: "A", authors: ["B"], publisher: "P", pubdate: "1999-01-01", series: null, seriesIndex: null, isbn: "978-3-16-148410-0", languages: [] }
+  const candidate = (fields: object) => ({ source: "dnb", confidence: 50, fields, url: null })
+  it("is empty for the same book", () => {
+    expect(candidateDiff(candidate({ title: "A", authors: ["B"], publisher: "P", pubdate: "1999", isbn: "9783161484100" }), proposal)).toEqual([])
+  })
+  it("names what would change and what would be missing", () => {
+    expect(candidateDiff(candidate({ title: "C", authors: ["D"], pubdate: "2000" }), proposal)).toEqual(["Titel C", "Autoren D", "ohne Verlag", "Erscheinungsdatum 2000", "ohne ISBN"])
+  })
+  it("keeps the proposal's authors where the candidate has none", () => {
+    expect(candidateDiff(candidate({ title: "A", publisher: "P", pubdate: "1999", isbn: "9783161484100" }), proposal)).toEqual([])
+  })
+})
+
+describe("a library entry", () => {
+  const library = entry({ kind: "library", action: "update", name: "", bookId: 7, bookTitle: "Alt", confidence: 80, band: "review", proposal: { title: "Neu", authors: ["X"], publisher: null, pubdate: null, series: null, seriesIndex: null, isbn: null, languages: [] } })
+  it("is called by the book where there is no file", () => {
+    expect(entryName(library)).toBe("Alt")
+    expect(entryName({ ...library, name: "a.pdf" })).toBe("a.pdf")
+  })
+  it("is tagged as such and reads no note of a duplicate", () => {
+    expect(badgeText(library)).toBe("80 % · Bibliothek")
+    expect(badgeText({ ...library, confidence: null, band: null })).toBe("Bibliothek")
+    expect(noteTexts(library)).toEqual([])
+  })
+  it("can't be accepted failed or with nothing to write", () => {
+    expect(acceptable(library)).toBe(true)
+    expect(acceptable({ ...library, status: "failed" })).toBe(false)
+    expect(acceptable({ ...library, unchanged: true })).toBe(false)
+    expect(takeable({ ...library, unchanged: true }, "library")).toBe(false)
+  })
+  it("says in German which field changed", () => {
+    expect(errorText({ ...library, error: "title changed since the plan" })).toBe("Titel wurde seit dem Vorschlag geändert. Bitte ablehnen oder Bestand neu prüfen.")
+    expect(errorText({ ...library, error: "calibre down" })).toBe("calibre down")
+  })
+  it("is its own filter", () => {
+    expect(intakeFilter("all", "library")).toEqual({ band: undefined, duplicates: undefined, skipped: undefined, library: true })
+  })
+})
+
+describe("reading in", () => {
+  const files = (...formats: string[]) => entry({ files: formats.map((format) => ({ path: "", format, size: 1 })) })
+  it("takes the reader's first format", () => {
+    expect(readableFormat(files("PDF", "EPUB"))).toBe("EPUB")
+    expect(readableFormat(files("CHM"))).toBeNull()
+  })
+  it("has a line only for DjVu and CHM", () => {
+    expect(unreadable(files("DJVU"))).toBe(true)
+    expect(unreadable(files("CHM"))).toBe(true)
+    expect(unreadable(files("DJVU", "PDF"))).toBe(false)
+    expect(unreadable(files("RTF"))).toBe(false)
+  })
+})
+
+describe("asChosen", () => {
+  it("is as sure as the candidate", () => {
+    const c = { source: "name", confidence: 40, fields: {}, url: null }
+    expect(badgeText(asChosen(entry({}), c), false)).toBe("40 % · Unsicher")
+    expect(asChosen(entry({}))).toEqual(entry({}))
+  })
 })

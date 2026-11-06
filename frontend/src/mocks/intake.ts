@@ -1,5 +1,6 @@
 import { http, HttpResponse } from "msw"
-import type { ConfidenceBand, IntakeCandidate, IntakeDetail, IntakeEntry } from "@/lib/api"
+import type { Book, ConfidenceBand, ImportRepairEntry, IntakeCandidate, IntakeDetail, IntakeEntry } from "@/lib/api"
+import pdfUrl from "./fixtures/sample.pdf?url"
 
 // The Eingang of the mock hub: a dozen files like the live backlog, then
 // enough scans that the list needs a second page. The analysis stands at one
@@ -14,7 +15,7 @@ interface Seed {
   confidence: number
   level: 1 | 2 | 3 | null
   decided?: string
-  candidates?: [string, string[], number, string][]
+  candidates?: [string, string[], number, string, IntakeCandidate["fields"]?][]
   action?: "add" | "addFormats" | "duplicate"
   bookId?: number
   bookTitle?: string
@@ -34,8 +35,8 @@ const SEEDS: Seed[] = [
     decided: "openlibrary",
     cover: true,
     candidates: [
-      ["Functional Analysis", ["Kosaku Yosida"], 98, "openlibrary"],
-      ["Functional Analysis", ["K. Yoshida"], 80, "name"],
+      ["Functional Analysis", ["Kosaku Yosida"], 98, "openlibrary", { coverUrl: "/api/intake/1/cover?v=1" }],
+      ["Functional Analysis", ["K. Yoshida"], 80, "name", { publisher: "Springer" }],
     ],
   },
   { path: "Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf", title: "Stem Cells: From Bench to Bedside", authors: ["Ariff Bongso", "Eng Hin Lee"], confidence: 90, level: 2, decided: "file" },
@@ -77,10 +78,10 @@ function entry(seed: Seed, id: number): IntakeDetail {
   const name = parts.pop() as string
   const failed = seed.failed !== undefined
   const format = (name.split(".").pop() as string).toUpperCase()
-  const candidates: IntakeCandidate[] = (seed.candidates ?? (failed ? [] : [[seed.title, seed.authors, seed.confidence, seed.level === 3 ? "name" : "file"]])).map(([title, authors, confidence, source]) => ({
+  const candidates: IntakeCandidate[] = (seed.candidates ?? (failed ? [] : [[seed.title, seed.authors, seed.confidence, seed.level === 3 ? "name" : "file"]])).map(([title, authors, confidence, source, extra]) => ({
     source,
     confidence,
-    fields: { title, authors },
+    fields: { title, authors, ...extra },
     url: null,
   }))
   return {
@@ -131,11 +132,87 @@ const IDS = ENTRIES.map((e) => e.id)
 const LAST = Math.max(...IDS)
 
 // what the mock hub was asked, for the scenarios (window.__intake)
-const asked: { decision: string; ids: number[]; title?: string; authors?: string[]; query?: unknown; expect?: number }[] = []
+const asked: { decision: string; ids: number[]; candidate?: number; picks?: unknown; title?: string; authors?: string[]; query?: unknown; expect?: number }[] = []
+// the files read in, for the scenarios (window.__intakeReads)
+const reads: string[] = []
 let threshold: number | null = null
 // a job still running: the entry comes back with an error at the next look
 let waiting: { entry: IntakeDetail; error: string } | null = null
-if (typeof window !== "undefined") (window as unknown as { __intake: unknown }).__intake = asked
+if (typeof window !== "undefined") Object.assign(window, { __intake: asked, __intakeReads: reads })
+
+// The Prüfliste's proposals (mocks/metadata.ts): the Eingang's filter is the
+// same list. A proposal without a confidence is taken as it is.
+export const proposalBoard = {
+  entries: (): ImportRepairEntry[] => [],
+  books: [] as Book[],
+  decide: (_ids: number[], _how: "applied" | "rejected") => {},
+}
+const skippedBooks = new Set<number>()
+// the book the accept job found changed: it stays, failed, and says why
+const failedBooks = new Map<number, string>()
+// the file of the one whose title was edited since the plan
+const CHANGED = "Wine Tasting"
+let rechecked = false
+
+function libraryEntry(r: ImportRepairEntry): IntakeDetail {
+  const book = proposalBoard.books.find((b) => b.id === r.bookId)
+  const change = (field: string) => r.changes.find((c) => c.field === field)?.new
+  const error = failedBooks.get(r.bookId) ?? null
+  return {
+    id: -r.bookId,
+    path: r.file,
+    name: r.file.split("/").pop() ?? "",
+    folder: null,
+    kind: "library",
+    files: (book?.formats ?? []).map((format) => ({ path: "", format, size: 0 })),
+    status: error ? "failed" : "analysed",
+    detail: null,
+    proposal: { title: (change("title") as string) ?? book?.title ?? "", authors: (change("authors") as string[]) ?? book?.authors ?? [], publisher: null, pubdate: null, series: null, seriesIndex: null, isbn: null, languages: [] },
+    confidence: r.confidence,
+    band: r.band,
+    titleConfidence: r.titleConfidence,
+    authorsConfidence: r.authorsConfidence,
+    level: r.level,
+    source: r.source,
+    decided: r.decided,
+    isbnSource: null,
+    notes: r.notes,
+    action: "update",
+    bookId: r.bookId,
+    match: null,
+    sameAs: null,
+    addFormats: [],
+    cover: null,
+    analysedAt: r.at,
+    skipped: skippedBooks.has(r.bookId),
+    error,
+    bookTitle: book?.title ?? null,
+    changes: r.changes.map((c) => ({ ...c, source: "rules" })),
+    candidates: [],
+    unsureTag: "auto-unsicher",
+  }
+}
+
+const library = () => proposalBoard.entries().map(libraryEntry)
+const libraryTakeable = (list: IntakeDetail[]) => list.filter((e) => e.status === "analysed" && !e.skipped)
+
+function libraryList(q: URLSearchParams) {
+  const all = library()
+  const list = all.filter((e) => !q.get("band") || e.band === q.get("band"))
+  const take = libraryTakeable(list)
+  const count = (b: string) => all.filter((e) => e.band === b).length
+  return {
+    total: list.length,
+    counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: 0 },
+    takeable: take.length,
+    unsure: take.filter((e) => e.band === "unsure").length,
+    left: { duplicates: 0, failed: list.filter((e) => e.status === "failed").length, skipped: list.filter((e) => e.status === "analysed" && e.skipped).length, unchanged: 0 },
+    last: Math.max(0, ...all.map((e) => e.bookId ?? 0)),
+    pending: 0,
+    next: null,
+    entries: list,
+  }
+}
 
 const inFilter = (q: { band?: string | null; duplicates?: string | boolean | null; skipped?: string | boolean | null }) => {
   const dup = q.duplicates === null || q.duplicates === undefined ? null : String(q.duplicates) === "true"
@@ -170,6 +247,13 @@ export const intakeHandlers = [
     const analysed = ENTRIES.filter((e) => e.status === "analysed").length
     const count = (b: string) => kind.filter((e) => (e.band ?? "none") === b).length
     const take = takeable(list, q.get("skipped") === "true")
+    const skippedFilter = q.get("skipped") === "true"
+    const left = {
+      duplicates: list.filter((e) => e.status === "analysed" && e.action === "duplicate").length,
+      failed: list.filter((e) => e.status !== "analysed").length,
+      skipped: skippedFilter ? 0 : list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && e.skipped).length,
+      unchanged: 0,
+    }
     const mode = typeof localStorage === "undefined" ? null : localStorage.getItem("hub.mock.intake")
     return HttpResponse.json({
       enabled: true,
@@ -178,27 +262,45 @@ export const intakeHandlers = [
       counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: count("none") },
       takeable: take.length,
       unsure: take.filter((e) => e.band === "unsure").length,
+      left,
       skipped: ENTRIES.filter((e) => e.skipped).length,
       last: LAST,
       pending,
       threshold,
       next: rest.length > limit ? page[page.length - 1].path : null,
       entries: page,
+      ...(q.get("library") === "true" ? libraryList(q) : {}),
     })
   }),
   http.post("/api/intake/decide", async ({ request }) => {
     const body = (await request.json()) as {
       decision: string
       target: { ids?: number[]; query?: { band?: string; duplicates?: boolean; skipped?: boolean }; expect?: number }
+      candidate?: number
+      picks?: unknown
       title?: string
       authors?: string[]
     }
     const { decision, target } = body
-    const ids = target.ids ?? takeable(inFilter(target.query ?? {}), target.query?.skipped === true).map((e) => e.id)
+    const libraryIds = target.query && "library" in target.query ? libraryTakeable(library()).map((e) => e.id) : null
+    const ids = target.ids ?? libraryIds ?? takeable(inFilter(target.query ?? {}), target.query?.skipped === true).map((e) => e.id)
     if (target.expect !== undefined && target.expect !== ids.length) {
       return HttpResponse.json({ error: "the query matches another number", field: "target", expected: target.expect, found: ids.length }, { status: 409 })
     }
-    asked.push({ decision, ids, title: body.title, authors: body.authors, query: target.query, expect: target.expect })
+    asked.push({ decision, ids, candidate: body.candidate, picks: body.picks, title: body.title, authors: body.authors, query: target.query, expect: target.expect })
+    if (ids.some((id) => id < 0)) {
+      const books = ids.map((id) => -id)
+      if (decision === "skip" || decision === "unskip") books.forEach((b) => (decision === "skip" ? skippedBooks.add(b) : skippedBooks.delete(b)))
+      else if (decision === "reject") {
+        books.forEach((b) => failedBooks.delete(b))
+        proposalBoard.decide(books, "rejected")
+      } else {
+        const changed = proposalBoard.entries().filter((r) => books.includes(r.bookId) && r.file.includes(CHANGED)).map((r) => r.bookId)
+        changed.forEach((b) => failedBooks.set(b, "title changed since the plan"))
+        proposalBoard.decide(books.filter((b) => !changed.includes(b)), "applied")
+      }
+      return HttpResponse.json({ jobId: decision === "accept" ? "repair-apply" : null, total: ids.length }, { status: decision === "accept" ? 202 : 200 })
+    }
     if (decision === "skip" || decision === "unskip") {
       for (const e of ENTRIES) if (ids.includes(e.id)) e.skipped = decision === "skip"
       return HttpResponse.json({ total: ids.length })
@@ -212,9 +314,20 @@ export const intakeHandlers = [
     threshold = ((await request.json()) as { value: number | null }).value
     return HttpResponse.json({ threshold })
   }),
+  // once: what is left to plan
+  http.post("/api/import/repair/recheck", () => {
+    const books = rechecked ? 0 : 2
+    rechecked = true
+    return HttpResponse.json({ books, job: { id: "recheck", status: "running", done: 0, total: books, errors: [] } }, { status: 202 })
+  }),
+  http.get("/api/intake/:id/file", async ({ params, request }) => {
+    reads.push(`${params.id}/${new URL(request.url).searchParams.get("format")}`)
+    const data = await (await fetch(pdfUrl)).arrayBuffer()
+    return new HttpResponse(data, { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": "attachment" } })
+  }),
   http.get("/api/intake/:id/cover", () => new HttpResponse(COVER, { headers: { "Content-Type": "image/svg+xml" } })),
   http.get("/api/intake/:id", ({ params }) => {
-    const e = ENTRIES.find((x) => x.id === Number(params.id))
+    const e = [...ENTRIES, ...library()].find((x) => x.id === Number(params.id))
     return e ? HttpResponse.json(e) : HttpResponse.json({ error: "not found" }, { status: 404 })
   }),
 ]

@@ -76,7 +76,11 @@ export function ImportRepair() {
       ids?.forEach((id) => next.delete(id))
       return next
     })
-  const refresh = () => qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
+  // the Eingang's filter shows the same proposals
+  const refresh = () => {
+    for (const queryKey of [["intake-list"], ["intake-status"]]) void qc.invalidateQueries({ queryKey })
+    return qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
+  }
   const plan = useMutation({ mutationFn: (library: boolean) => write.planImportRepair(library), onSettled: refresh })
   const accept = useMutation({
     mutationFn: (ids?: number[]) => write.acceptImportRepair(ids),
@@ -303,7 +307,7 @@ function RepairItem(props: {
 }
 
 // who decided, how sure and old → new: in the list and in the drawer
-function RepairProposal({ entry: e, title, unsureTag }: { entry: ImportRepairEntry; title: string; unsureTag: string }) {
+export function RepairProposal({ entry: e, title, unsureTag }: { entry: Pick<ImportRepairEntry, "file" | "decided" | "confidence" | "level" | "notes" | "changes">; title: string; unsureTag: string }) {
   const name = e.file.split("/").pop() ?? e.file
   const changes = e.changes.filter((c) => c.field !== "candidate")
   const candidate = e.changes.find((c) => c.field === "candidate")?.new as { title?: string; authors: string[]; source: string } | undefined

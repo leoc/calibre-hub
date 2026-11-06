@@ -580,6 +580,16 @@ describe "hub import" do
     end
   end
 
+  it "starts a recheck of the books no plan got to" do
+    with_stub do |s|
+      s.on("POST", "/api/import/repair/recheck", {books: 12, job: {id: "j1", status: "running", done: 0, total: 12, errors: [] of String}})
+      code, stdo, _ = cli(s, "import", "repair", "recheck", "--run", "abc")
+      code.should eq(0)
+      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"run":"abc"})))
+      stdo.should contain("recheck: 12 books, job j1")
+    end
+  end
+
   it "reports the quality of a portion" do
     with_stub do |s|
       s.on("GET", "/api/import/quality", {total: 200, suspect: 12, reasons: {unknownAuthor: 10, unsure: 0}, runs: [] of String,

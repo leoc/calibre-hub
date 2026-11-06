@@ -64,7 +64,7 @@ Then("a row has no checkbox", async ({ page }) => {
   await expect(list(page).getByRole("checkbox")).toHaveCount(0)
 })
 
-type Asked = { decision: string; ids: number[]; title?: string; authors?: string[] }
+type Asked = { decision: string; ids: number[]; candidate?: number; picks?: Record<string, number>; title?: string; authors?: string[] }
 const asked = (page: Page) => page.evaluate(() => (window as unknown as { __intake: Asked[] }).__intake)
 const askedTo = async (page: Page, decision: string) => (await asked(page)).filter((a) => a.decision === decision).flatMap((a) => a.ids).length
 
@@ -144,10 +144,14 @@ Then("the row {string} can't be accepted", async ({ page }, title: string) => {
 })
 
 Then("the drawer has the buttons {string}, {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string, d: string) => {
-  const names = await drawer(page).locator("button:has(kbd)").allInnerTexts()
+  const names = await drawer(page).locator("[data-exits] button").allInnerTexts()
   expect(names.map((n) => n.replace(/\s+/g, " ").trim())).toEqual([a, b, c, d])
 })
 
+Then("the drawer has the buttons {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string) => {
+  const names = await drawer(page).locator("[data-exits] button").allInnerTexts()
+  expect(names.map((n) => n.replace(/\s+/g, " ").trim())).toEqual([a, b, c])
+})
 
 Then("the button {string} is outlined in red", async ({ page }, name: string) => {
   const button = drawer(page).getByRole("button", { name, exact: true })
@@ -179,6 +183,23 @@ Given("the analysis is {string}", async ({ page }, state: string) => {
 
 Then("the page says {string}", async ({ page }, text: string) => {
   await expect(page.getByRole("main").getByText(text, { exact: true })).toBeVisible()
+})
+
+Then("the drawer's top shows {string}", async ({ page }, text: string) => {
+  await expect(drawer(page).getByText(text, { exact: true }).first()).toBeVisible()
+})
+
+Then("the page has no line about what stays", async ({ page }) => {
+  await expect(page.getByRole("main").getByText(/in der Liste$/)).toHaveCount(0)
+})
+
+Then("the drawer has a button {string}", async ({ page }, text: string) => {
+  await expect(drawer(page).getByRole("button", { name: text, exact: true })).toBeVisible()
+})
+
+Then("the title field reads {string} and the authors {string}", async ({ page }, title: string, authors: string) => {
+  await expect(drawer(page).getByLabel("Titel", { exact: true })).toHaveValue(title)
+  await expect(drawer(page).getByText(authors, { exact: true }).last()).toBeVisible()
 })
 
 Then("the page says nothing about the analysis", async ({ page }) => {
@@ -248,6 +269,117 @@ Then("the candidates are {string} from {string} at {string} and {string} from {s
   for (const [i, parts] of [[t1, s1, c1], [t2, s2, c2]].entries()) {
     for (const part of parts) await expect(candidates(page).nth(i)).toContainText(part)
   }
+})
+
+Then("candidate {int} is chosen", async ({ page }, n: number) => {
+  await expect(candidates(page).nth(n - 1).getByRole("button")).toHaveAttribute("aria-pressed", "true")
+  await expect(drawer(page).getByRole("button", { pressed: true })).toHaveCount(1)
+})
+
+Then("no candidate is chosen", async ({ page }) => {
+  await expect(drawer(page).getByRole("button", { pressed: true })).toHaveCount(0)
+})
+
+When("I choose candidate {int} by touch", async ({ page }, n: number) => {
+  await candidates(page).nth(n - 1).getByRole("button").click()
+})
+
+Then("candidate {int} says {string}", async ({ page }, n: number, text: string) => {
+  await expect(candidates(page).nth(n - 1).getByText(text, { exact: true })).toBeVisible()
+})
+
+Then("candidate {int} shows a cover", async ({ page }, n: number) => {
+  await expect(candidates(page).nth(n - 1).locator("img")).toBeVisible()
+})
+
+Then("candidate {int} shows no cover", async ({ page }, n: number) => {
+  await expect(candidates(page).nth(n - 1).locator("img")).toHaveCount(0)
+})
+
+Then("the hub was asked to accept candidate {int} of the row", async ({ page }, n: number) => {
+  await expect.poll(async () => (await asked(page)).at(-1)).toMatchObject({ decision: "accept", candidate: n - 1 })
+})
+
+Then("the bulk carries the chosen candidate {int}", async ({ page }, n: number) => {
+  await expect.poll(async () => Object.values((await asked(page)).at(-1)?.picks ?? {})).toEqual([n - 1])
+})
+
+const reader = (page: Page) => page.locator("[data-reader]")
+
+Then("the file opens in the reader over the drawer", async ({ page }) => {
+  await expect(page.locator('[data-reader="ready"]')).toBeVisible({ timeout: 15_000 })
+})
+
+Then("the hub was asked for the file {string}", async ({ page }, file: string) => {
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __intakeReads: string[] }).__intakeReads.at(-1))).toBe(file)
+})
+
+Then("no reader is open", async ({ page }) => {
+  await expect(reader(page)).toHaveCount(0)
+})
+
+Then("the reader has turned a page", async ({ page }) => {
+  await expect.poll(async () => Number(await reader(page).getByRole("progressbar", { name: "Lesefortschritt" }).getAttribute("aria-valuenow"))).toBeGreaterThan(0)
+})
+
+Then("the reader is back on the first page", async ({ page }) => {
+  await expect.poll(async () => Number(await reader(page).getByRole("progressbar", { name: "Lesefortschritt" }).getAttribute("aria-valuenow"))).toBeLessThan(50)
+})
+
+const progress = new WeakMap<Page, string[]>()
+
+Given("I watch what is saved about reading", async ({ page }) => {
+  const seen: string[] = []
+  progress.set(page, seen)
+  page.on("request", (r) => {
+    if (r.method() !== "GET" && r.url().includes("/progress")) seen.push(r.url())
+  })
+})
+
+Then("nothing was saved about reading", async ({ page }) => {
+  await page.waitForTimeout(1800)
+  expect(progress.get(page)).toEqual([])
+})
+
+Then("the drawer offers no reading in", async ({ page }) => {
+  await expect(drawer(page).getByRole("button", { name: /^Reinlesen/ })).toHaveCount(0)
+})
+
+When("I tap the cover in the drawer", async ({ page }) => {
+  await drawer(page).getByRole("button", { name: "Reinlesen", exact: true }).first().click()
+})
+
+Then("the row {string} has no trash", async ({ page }, title: string) => {
+  await expect(row(page, title).getByRole("button", { name: "Papierkorb" })).toHaveCount(0)
+  await expect(row(page, title).getByRole("button", { name: "Ablehnen", exact: true })).toBeVisible()
+})
+
+Then("the first line of the row {string} is {string}", async ({ page }, title: string, first: string) => {
+  await expect(row(page, title).locator("[data-row-text] button").first()).toHaveText(first)
+})
+
+Then("the drawer changes {string} from {string} to {string}", async ({ page }, field: string, from: string, to: string) => {
+  const line = drawer(page).locator("dd").filter({ has: page.getByText(to, { exact: true }) })
+  await expect(drawer(page).locator("dt").filter({ hasText: field })).toBeVisible()
+  await expect(line).toContainText(from)
+  await expect(line).toContainText("→")
+})
+
+Then("the page has no button {string}", async ({ page }, name: string) => {
+  await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0)
+})
+
+When("I go to the import page", async ({ page }) => {
+  await page.evaluate(() => {
+    history.pushState({}, "", "/import")
+    dispatchEvent(new PopStateEvent("popstate"))
+  })
+  await expect(page.getByRole("heading", { name: "Reparatur" })).toBeVisible()
+})
+
+Then("the review has no proposal for {string}", async ({ page }, text: string) => {
+  await expect(page.getByRole("list", { name: "Reparatur" })).toBeVisible()
+  await expect(page.getByRole("list", { name: "Reparatur" }).getByText(text)).toHaveCount(0)
 })
 
 Then("each candidate has its digit", async ({ page }) => {

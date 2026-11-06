@@ -232,6 +232,150 @@ Feature: Eingang
     When I open the Eingang
     Then the row "Functional Analysis" shows no ring and a dot in rgb(21, 128, 61)
 
+  @wide
+  Scenario: Candidates are chosen by digit, the header follows, nothing is decided
+    When I open the Eingang
+    And I open the row "Functional Analysis"
+    Then no candidate is chosen
+    And candidate 1 shows a cover
+    And candidate 1 says "Wie der Vorschlag"
+    And candidate 2 shows no cover
+    And candidate 2 says "Anders als der Vorschlag: Autoren K. Yoshida · Verlag Springer"
+    When I press "2"
+    Then candidate 2 is chosen
+    And the drawer's top shows "K. Yoshida"
+    And the drawer shows "80 % · Prüfen" and "Kandidat: Dateiname"
+    And the hub wasn't asked anything
+    When I press "2"
+    Then no candidate is chosen
+    And the drawer shows "98 % · Sicher" and "ISBN im Buch, Katalog passt"
+    When I press "9"
+    Then no candidate is chosen
+    When I press "2"
+    And I press "a"
+    Then the hub was asked to accept candidate 2 of the row
+
+  @wide
+  Scenario: A choice stays with the entry: in the row, in editing, in a bulk
+    When I open the Eingang
+    And I open the row "Functional Analysis"
+    And I press "2"
+    And I press "e"
+    Then the title field reads "Functional Analysis" and the authors "K. Yoshida"
+    When I press "Escape"
+    Then the row of "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf" shows "80 % · Prüfen", then "Functional Analysis" and "K. Yoshida"
+    When I choose "Sicher ab 90 (2)" in "Sicherheit"
+    And I press the button "Alle 2 übernehmen"
+    Then the bulk carries the chosen candidate 2
+
+  Scenario: Candidates are chosen by touch too
+    When I open the Eingang
+    And I open the row "Functional Analysis"
+    And I choose candidate 2 by touch
+    Then candidate 2 is chosen
+    And the hub wasn't asked anything
+
+  @wide
+  Scenario: Reading in with o, turning with h and l, Esc back to the entry
+    Given I watch what is saved about reading
+    When I open the Eingang
+    And I open the row "Functional Analysis"
+    Then the drawer has a button "Reinlesen o"
+    When I press "o"
+    Then the file opens in the reader over the drawer
+    And the hub was asked for the file "1/PDF"
+    When I press "a"
+    And I press "d"
+    And I press "j"
+    Then the hub wasn't asked anything
+    When I press "l"
+    Then the reader has turned a page
+    When I press "h"
+    Then the reader is back on the first page
+    When I press "Escape"
+    Then no reader is open
+    And the drawer's header reads "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf"
+    And nothing was saved about reading
+
+  Scenario: Tapping the cover reads in too
+    When I open the Eingang
+    And I open the row "Functional Analysis"
+    And I tap the cover in the drawer
+    Then the file opens in the reader over the drawer
+
+  Scenario: On E-Ink reading in turns pages by tap, as the reader does
+    Given I open the library
+    And E-Ink mode is on
+    When I open the Eingang
+    And I open the row "Functional Analysis"
+    And I tap the cover in the drawer
+    Then the file opens in the reader over the drawer
+    When I tap the right third of the page
+    Then the reader has turned a page
+
+  @wide
+  Scenario: DjVu and CHM can't be read in, one muted line says so
+    When I open the Eingang
+    And I open the row "Basic Pathology"
+    Then the drawer offers no reading in
+    And the drawer shows "Reinlesen geht bei DjVu und CHM nicht"
+    When I press "o"
+    Then no reader is open
+    And the drawer's header reads "Robbins - Basic Pathology 8e.chm"
+
+  Scenario: The bulk says what it leaves in the list
+    When I open the Eingang
+    And I choose "Sicher ab 90 (2)" in "Sicherheit"
+    Then the page has no line about what stays
+    When I choose "Alle (159)" in "Sicherheit"
+    Then the page says "2 mögliche Dubletten und 1 fehlgeschlagen bleiben in der Liste"
+    When I choose "Mögliche Dubletten" in "Art"
+    Then the page says "2 mögliche Dubletten bleiben in der Liste"
+
+  Scenario: The library's books have their proposals in the same list
+    When I open the Eingang
+    Then the page has no button "Bestand neu prüfen"
+    When I choose "Schon in der Bibliothek" in "Art"
+    Then the list has 3 rows
+    And the row "Formulas and Theorems in Pure Mathematics" has no trash
+    And the first line of the row "Formulas and Theorems in Pure Mathematics" is "Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu"
+    And the button "Bestand neu prüfen" is enabled
+    When I press the button "Bestand neu prüfen"
+    Then the button "Bestand neu prüfen" is enabled
+
+  @wide
+  Scenario: A library entry's drawer: old to new, three exits, no file exits by key
+    When I open the Eingang
+    And I choose "Schon in der Bibliothek" in "Art"
+    And I open the row "Formulas and Theorems in Pure Mathematics"
+    Then the drawer has the buttons "Übernehmen a", "Überspringen j" and "Ablehnen x"
+    And the drawer changes "Verlag" from "–" to "Chelsea"
+    When I press "d"
+    And I press "f"
+    Then the hub wasn't asked anything
+    When I press "x"
+    Then the hub was asked to "reject" 1 entry
+    When I press "Escape"
+    Then the list has 2 rows
+
+  @wide
+  Scenario: A decision here is gone from the Prüfliste, a failed one says why
+    When I open the Eingang
+    And I choose "Schon in der Bibliothek" in "Art"
+    And I press "Übernehmen" on the row "Dune"
+    Then the row "Dune" is gone
+    And the hub was asked to "accept" 1 entry
+    When I go to the import page
+    Then the review has no proposal for "Herbert - Dune.mobi"
+
+  Scenario: An accept that finds a field changed comes back and says why
+    When I open the Eingang
+    And I choose "Schon in der Bibliothek" in "Art"
+    And I press "Übernehmen" on the row "Wine Tasting - A Professional Handbook.pdf"
+    Then the row "Wine Tasting - A Professional Handbook.pdf" says "Das hat nicht geklappt: Titel wurde seit dem Vorschlag geändert. Bitte ablehnen oder Bestand neu prüfen."
+    And the row "Wine Tasting - A Professional Handbook.pdf" can't be accepted
+    And the page says "1 fehlgeschlagen bleibt in der Liste"
+
   Scenario: A reader has no Eingang
     Given I am logged in as "lea"
     Then there is no link "Eingang"

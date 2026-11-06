@@ -1,25 +1,37 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyEvent, type MouseEvent, type ReactNode } from "react"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { BookIcon, Check, Trash2 } from "lucide-react"
-import { ApiError, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeProgress } from "@/lib/api"
+import { BookIcon, Check, Trash2, X } from "lucide-react"
+import { ApiError, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeProgress } from "@/lib/api"
 import {
+  acceptable,
   analysedShare,
+  asChosen,
   authorsText,
   badgeText,
+  candidateDiff,
   candidateSource,
+  entryName,
   entryTitle,
+  errorText as entryError,
   intakeEntryQuery,
   intakeFilter,
   intakeListQuery,
   intakeStatusQuery,
+  isLibrary,
+  leftText,
   noteTexts,
+  readableFormat,
   reasonText,
   ringLabel,
   takeable,
   uniqueEntries,
+  unreadable,
   type IntakeBand,
 } from "@/lib/intake"
+import { loadBookFile } from "@/lib/offline"
+import { importRepairQuery } from "@/lib/queries"
+import { fileName } from "@/lib/reader"
 import { errorText } from "@/lib/run-action"
 import { toast } from "@/lib/toast"
 import { formatNumber, t } from "@/i18n"
@@ -28,10 +40,12 @@ import { isTyping } from "@/components/keyboard"
 import { ErrorMessage } from "@/components/error-view"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogScreen, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { ChipsInput } from "@/components/ui/suggest"
+import { RepairProposal } from "@/components/import-repair"
+import { FilePeek } from "@/routes/reader"
 
 const muted = "text-muted-foreground eink:text-black"
 const select = "min-h-9 rounded-md border bg-background px-2 text-sm eink:min-h-12 eink:border-2 touch:min-h-11"
@@ -43,6 +57,9 @@ const linkSize = "inline-flex items-center eink:min-h-12 touch:min-h-11"
 // what a decision says beyond itself: one entry's edited title and authors
 type Edited = { title?: string; authors?: string[] }
 
+// a candidate chosen for an entry, not decided yet
+type Chosen = { index: number; candidate: IntakeCandidate }
+
 // The Eingang: what the analysis found in the backlog, before anything is in
 // the library. Every entry leaves by a decision: at once in the list, in a
 // queue on the hub. The list stays where it is while the analysis works; only
@@ -53,6 +70,8 @@ export function IntakePage() {
   const [kind, setKind] = useState<IntakeKind>("all")
   const [open, setOpen] = useState<number | null>(null)
   const [asking, setAsking] = useState(false)
+  // per entry, until it is decided: the list shows it too
+  const [picks, setPicks] = useState<Map<number, Chosen>>(new Map())
   // decided, gone from the list; with the error it had, a new one brings it back
   const [decided, setDecided] = useState<Map<number, string | null>>(new Map())
   const { data: status, error, refetch: retry, dataUpdatedAt } = useQuery(intakeStatusQuery(band, kind))
@@ -62,11 +81,12 @@ export function IntakePage() {
   const entries = useMemo(() => loaded.filter((e) => !decided.has(e.id) || (e.error != null && e.error !== decided.get(e.id))), [loaded, decided])
   const done = status?.progress?.done
   const pending = status?.pending
+  const checked = status?.recheck?.done
   // everything loaded: new files join in; else the next page brings them
   useEffect(() => {
     if (done !== undefined && !hasNextPage) void refetch()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the analysis moved on
-  }, [done])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the analysis or the recheck moved on
+  }, [done, checked])
   // the queue is through: what failed is back
   const waited = useRef(false)
   useEffect(() => {
@@ -108,17 +128,21 @@ export function IntakePage() {
     })
   const failed = (err: unknown) => toast.show(t("intake.failed", { error: errorText(err) }))
   const decide = useMutation({
-    mutationFn: (v: { entry: IntakeEntry; decision: IntakeDecision } & Edited) =>
-      write.intakeDecide({ decision: v.decision, target: { ids: [v.entry.id] }, title: v.title, authors: v.authors }),
+    mutationFn: (v: { entry: IntakeEntry; decision: IntakeDecision; candidate?: number } & Edited) =>
+      write.intakeDecide({ decision: v.decision, target: { ids: [v.entry.id] }, candidate: v.candidate, title: v.title, authors: v.authors }),
     onError: (err, v) => {
       undecide([v.entry.id])
       failed(err)
     },
-    onSettled: queued,
+    onSettled: (_, __, v) => {
+      // the Prüfliste shows the same proposals
+      if (isLibrary(v.entry)) void qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
+      return queued()
+    },
   })
   const bulk = useMutation({
     mutationFn: (v: { expect: number; last: number; gone: IntakeEntry[] }) =>
-      write.intakeDecide({ decision: "accept", target: { query: intakeFilter(band, kind), last: v.last, expect: v.expect } }),
+      write.intakeDecide({ decision: "accept", target: { query: intakeFilter(band, kind), last: v.last, expect: v.expect }, picks: chosen() }),
     onError: (err, v) => {
       undecide(v.gone.map((e) => e.id))
       if (err instanceof ApiError && err.status === 409) toast.show(t("intake.changed"))
@@ -127,9 +151,23 @@ export function IntakePage() {
     // the rows behind the loaded ones take their place at once
     onSettled: () => {
       void refetch()
+      if (kind === "library") void qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
       return queued()
     },
   })
+  // what a filter's accept has to know: no choice gets lost in it
+  const chosen = () => {
+    if (kind === "library" || picks.size === 0) return undefined
+    return Object.fromEntries([...picks].map(([id, p]) => [id, p.index]))
+  }
+  // the digit again takes the choice back
+  const pick = (e: IntakeEntry, index: number, candidate: IntakeCandidate) =>
+    setPicks((m) => {
+      const next = new Map(m)
+      if (next.get(e.id)?.index === index) next.delete(e.id)
+      else next.set(e.id, { index, candidate })
+      return next
+    })
   // a skipped entry stays, the row only says so
   const mark = (id: number, skipped: boolean) =>
     qc.setQueriesData<InfiniteData<IntakeList>>({ queryKey: ["intake-list"] }, (old) =>
@@ -140,7 +178,7 @@ export function IntakePage() {
   const decideOne = (e: IntakeEntry, decision: IntakeDecision, edited: Edited = {}) => {
     if (open === e.id) setOpen(after(e))
     leave([e])
-    decide.mutate({ entry: e, decision, ...edited })
+    decide.mutate({ entry: e, decision, candidate: decision === "accept" ? picks.get(e.id)?.index : undefined, ...edited })
   }
   const skip = (e: IntakeEntry) => {
     setOpen(after(e))
@@ -196,12 +234,16 @@ export function IntakePage() {
                 <option value="all">{t("intake.kind.all")}</option>
                 <option value="new">{t("intake.kind.new")}</option>
                 <option value="duplicates">{t("intake.kind.duplicates")}</option>
+                <option value="library">{t("intake.kind.library")}</option>
                 {(!!status.skipped || kind === "skipped") && <option value="skipped">{t("intake.kind.skipped", { count: formatNumber(status.skipped ?? 0) })}</option>}
               </select>
             </label>
-            <Button className="ml-auto" disabled={n === 0 || bulk.isPending} onClick={() => (unsure > 0 ? setAsking(true) : acceptAll())}>
-              {t("intake.acceptAll", { count: formatNumber(n) })}
-            </Button>
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+              {leftText(status.left) && <span className={muted}>{leftText(status.left)}</span>}
+              <Button disabled={n === 0 || bulk.isPending} onClick={() => (unsure > 0 ? setAsking(true) : acceptAll())}>
+                {t("intake.acceptAll", { count: formatNumber(n) })}
+              </Button>
+            </div>
           </div>
           {list.error ? (
             <ErrorMessage error={list.error} onRetry={() => refetch()} />
@@ -217,9 +259,10 @@ export function IntakePage() {
                   entry={e}
                   same={e.sameAs ? entries.find((x) => x.path === e.sameAs)?.id : undefined}
                   current={e.id === open}
+                  pick={picks.get(e.id)}
                   onOpen={setOpen}
                   onAccept={() => decideOne(e, "accept")}
-                  onTrash={() => decideOne(e, "trash")}
+                  onDrop={() => decideOne(e, isLibrary(e) ? "reject" : "trash")}
                 />
               ))}
             </ul>
@@ -232,9 +275,14 @@ export function IntakePage() {
               </Button>
             </div>
           )}
-          <AutoAccept value={status.threshold ?? null} onChanged={refresh} />
+          <div className="flex flex-wrap gap-2">
+            {kind === "library" && <Recheck state={status.recheck ?? null} onChanged={refresh} />}
+            <AutoAccept value={status.threshold ?? null} onChanged={refresh} />
+          </div>
           <IntakeSheet
             entry={current}
+            pick={current && picks.get(current.id)}
+            onPick={pick}
             onClose={() => setOpen(null)}
             onBack={() => setOpen(entries[index - 1]?.id ?? open)}
             onDecide={decideOne}
@@ -256,6 +304,26 @@ export function IntakePage() {
         </>
       )}
     </div>
+  )
+}
+
+// Plans the books no plan got to; it goes on by itself behind the analysis
+function Recheck({ state, onChanged }: { state: IntakeList["recheck"] | null; onChanged: () => void }) {
+  const start = useMutation({
+    mutationFn: write.recheckLibrary,
+    onSuccess: (r) => {
+      if (r.books === 0) toast.show(t("intake.recheck.none"))
+    },
+    onError: (err) => toast.show(t("intake.failed", { error: errorText(err) })),
+    onSettled: onChanged,
+  })
+  const label = !state
+    ? t("intake.recheck")
+    : t(state.waiting ? "intake.recheck.waiting" : "intake.recheck.running", { done: formatNumber(state.done), total: formatNumber(state.total) })
+  return (
+    <Button variant="ghost" size="sm" className={muted} disabled={!!state || start.isPending} onClick={() => start.mutate()}>
+      {label}
+    </Button>
   )
 }
 
@@ -369,7 +437,7 @@ function ConfidenceRing({ entry: e }: { entry: IntakeEntry }) {
 
 // the book the file looks like, or the other file in the Eingang
 function DuplicateLine({ entry: e, same, onOpen }: { entry: IntakeEntry; same?: number; onOpen: (id: number) => void }) {
-  if (e.action === "add") return null
+  if (e.action === "add" || isLibrary(e)) return null
   if (e.sameAs) {
     const text = t("intake.row.same", { name: e.sameAs.split("/").pop() ?? e.sameAs })
     return same === undefined ? (
@@ -391,8 +459,14 @@ function DuplicateLine({ entry: e, same, onOpen }: { entry: IntakeEntry; same?: 
   )
 }
 
-function IntakeRow(props: { entry: IntakeEntry; same?: number; current: boolean; onOpen: (id: number) => void; onAccept: () => void; onTrash: () => void }) {
-  const { entry: e, current, onOpen: openEntry } = props
+function IntakeRow(props: { entry: IntakeEntry; same?: number; current: boolean; pick?: Chosen; onOpen: (id: number) => void; onAccept: () => void; onDrop: () => void }) {
+  const { current, pick, onOpen: openEntry } = props
+  // how sure it is, as the choice has it; the rest is the entry's
+  const e = asChosen(props.entry, pick?.candidate)
+  const library = isLibrary(e)
+  const title = pick?.candidate.fields.title ?? e.proposal?.title
+  const authors = pick?.candidate.fields.authors?.length ? pick.candidate.fields.authors : e.proposal?.authors
+  const drop = library ? t("intake.reject") : t("intake.trash")
   const onOpen = () => openEntry(e.id)
   // the whole row opens the drawer, except its controls and selecting text
   const open = (ev: MouseEvent<HTMLLIElement>) => {
@@ -418,7 +492,7 @@ function IntakeRow(props: { entry: IntakeEntry; same?: number; current: boolean;
       <div className="min-w-0 flex-1 space-y-0.5" data-row-text>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <button type="button" className="min-h-9 min-w-0 text-left font-medium [overflow-wrap:anywhere] hover:underline eink:min-h-12 touch:min-h-11" onClick={onOpen}>
-            {e.name}
+            {entryName(e)}
           </button>
           <ConfidenceRing entry={e} />
           <Badge variant="secondary" className={e.band ? "hidden sm:inline-flex eink:inline-flex" : undefined}>
@@ -427,17 +501,18 @@ function IntakeRow(props: { entry: IntakeEntry; same?: number; current: boolean;
           </Badge>
           {e.skipped && <Badge variant="outline">{t("intake.tag.skipped")}</Badge>}
         </div>
-        {e.proposal && <div className="break-words">{e.proposal.title}</div>}
-        {e.proposal && <div className={cn("break-words", muted)}>{authorsText(e.proposal.authors)}</div>}
+        {e.proposal && <div className="break-words">{title}</div>}
+        {e.proposal && <div className={cn("break-words", muted)}>{authorsText(authors)}</div>}
         <DuplicateLine entry={e} same={props.same} onOpen={openEntry} />
-        {e.error && <div className="break-words text-destructive">{t("intake.failed", { error: e.error })}</div>}
+        {e.error && <div className="break-words text-destructive">{t("intake.failed", { error: entryError(e) ?? e.error })}</div>}
       </div>
       <div className="flex shrink-0 gap-1 self-start">
-        <Button variant="ghost" size="icon" className={cn("text-foreground", icon)} aria-label={t("intake.accept")} title={t("intake.accept")} disabled={!e.proposal} onClick={props.onAccept}>
+        <Button variant="ghost" size="icon" className={cn("text-foreground", icon)} aria-label={t("intake.accept")} title={t("intake.accept")} disabled={library ? !acceptable(e) : !e.proposal} onClick={props.onAccept}>
           <Check className="size-5" strokeWidth={2.5} />
         </Button>
-        <Button variant="ghost" size="icon" className={cn("text-destructive hover:text-destructive", icon)} aria-label={t("intake.trash")} title={t("intake.trash")} onClick={props.onTrash}>
-          <Trash2 className="size-5" />
+        {/* a book of the library is never thrown away from here */}
+        <Button variant="ghost" size="icon" className={cn(!library && "text-destructive hover:text-destructive", icon)} aria-label={drop} title={drop} onClick={props.onDrop}>
+          {library ? <X className="size-5" /> : <Trash2 className="size-5" />}
         </Button>
       </div>
     </li>
@@ -449,19 +524,35 @@ function KeyChip({ children, className }: { children: ReactNode; className?: str
   return <kbd className={cn("rounded-sm border border-current px-1 font-sans text-xs font-medium opacity-70", className)}>{children}</kbd>
 }
 
-function CandidateItem({ candidate: c, digit }: { candidate: IntakeCandidate; digit: number }) {
+// One thing found about the file, to choose by click or digit; only choosing,
+// the exits below decide
+function CandidateItem(props: { candidate: IntakeCandidate; digit: number; proposal: IntakeEntry["proposal"]; chosen: boolean; onPick: () => void }) {
+  const { candidate: c, digit, chosen } = props
+  const diff = candidateDiff(c, props.proposal)
   return (
-    <li className="flex min-h-11 items-center gap-3 rounded-md border px-3 py-2 eink:min-h-14 eink:border-2">
-      {digit <= 9 && <KeyChip className="hidden shrink-0 md:inline touch:hidden eink:hidden">{digit}</KeyChip>}
-      <div className="min-w-0">
-        <div className="font-medium break-words">{c.fields.title}</div>
-        <div className="break-words">{authorsText(c.fields.authors)}</div>
-      </div>
-      <div className={cn("ml-auto shrink-0 text-right", muted)}>
-        {t("intake.percent", { value: c.confidence })}
-        <br />
-        {candidateSource(c.source)}
-      </div>
+    <li>
+      <button
+        type="button"
+        aria-pressed={chosen}
+        onClick={props.onPick}
+        className={cn(
+          "flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-accent eink:min-h-14 eink:hover:bg-transparent",
+          chosen ? "border-2 border-foreground eink:border-4 eink:border-black" : "border eink:border-2",
+        )}
+      >
+        {digit <= 9 && <KeyChip className="hidden shrink-0 md:inline touch:hidden eink:hidden">{digit}</KeyChip>}
+        {c.fields.coverUrl && <EntryCover key={c.fields.coverUrl} src={c.fields.coverUrl} compact className="w-10 shrink-0" />}
+        <span className="block min-w-0">
+          <span className="block font-medium break-words">{c.fields.title}</span>
+          <span className="block break-words">{authorsText(c.fields.authors)}</span>
+          <span className={cn("block break-words", muted)}>{diff.length ? t("intake.diff.text", { list: diff.join(" · ") }) : t("intake.diff.same")}</span>
+        </span>
+        <span className={cn("ml-auto shrink-0 text-right", muted)}>
+          {t("intake.percent", { value: c.confidence })}
+          <br />
+          {candidateSource(c.source)}
+        </span>
+      </button>
     </li>
   )
 }
@@ -469,30 +560,64 @@ function CandidateItem({ candidate: c, digit }: { candidate: IntakeCandidate; di
 // a key on a button of the drawer
 const ButtonKey = ({ children }: { children: ReactNode }) => <KeyChip className="touch:hidden eink:hidden">{children}</KeyChip>
 
+// The file's first pages over the drawer: Esc, the reader's back button and
+// the phone's come back to the entry. A book of the library opens its own file.
+function Peek({ entry: e, format, onClose }: { entry: IntakeEntry; format: string; onClose: () => void }) {
+  const title = entryTitle(e)
+  const load = async (signal: AbortSignal) => {
+    if (isLibrary(e) && e.bookId !== null) return loadBookFile(e.bookId, format, signal)
+    const res = await fetch(intakeFileUrl(e.id, format), { credentials: "same-origin", signal })
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+    return res.blob()
+  }
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogScreen aria-describedby={undefined}>
+        <DialogTitle className="sr-only">{title}</DialogTitle>
+        <FilePeek title={title} name={fileName(e.id, format)} format={format} load={load} onClose={onClose} />
+      </DialogScreen>
+    </Dialog>
+  )
+}
+
 // The file above everything found about it, the list visible beside it, its
-// four exits below. Keys as in the review's drawer.
+// four exits below; a book of the library old → new and three exits, nothing
+// that touches its files. Keys as in the review's drawer.
 function IntakeSheet(props: {
   entry?: IntakeEntry
+  pick?: Chosen
+  onPick: (e: IntakeEntry, index: number, candidate: IntakeCandidate) => void
   onClose: () => void
   onBack: () => void
   onDecide: (e: IntakeEntry, decision: IntakeDecision, edited?: Edited) => void
   onSkip: (e: IntakeEntry) => void
   onUnskip: (e: IntakeEntry) => void
 }) {
-  const { entry: e, onBack, onDecide, onSkip } = props
+  const { entry: e, pick, onBack, onDecide, onSkip } = props
   const id = e?.id
+  const library = e !== undefined && isLibrary(e)
+  const format = e ? readableFormat(e) : null
+  const [peeking, setPeeking] = useState<number | null>(null)
   const { data: detail } = useQuery({ ...intakeEntryQuery(id ?? 0), enabled: id !== undefined })
+  const shown = detail?.id === id ? detail : undefined
   // title and authors as edited for this entry
   const [edit, setEdit] = useState<{ id: number; title: string; authors: string[] } | null>(null)
   const edited = edit && edit.id === id ? edit : null
   const accept = () => {
-    if (!e?.proposal) return
+    if (!e?.proposal || (library && !acceptable(e))) return
     const title = edited?.title.trim()
     if (edited && (!title || edited.authors.length === 0)) return
     onDecide(e, "accept", edited ? { title, authors: edited.authors } : {})
   }
   const startEdit = () => {
-    if (e?.proposal && !edited) setEdit({ id: e.id, title: e.proposal.title, authors: e.proposal.authors })
+    if (e?.proposal && !edited && !library) setEdit({ id: e.id, ...chosenValues(e.proposal, pick) })
+  }
+  const choose = (index: number) => {
+    const c = shown?.candidates[index]
+    if (!e || !c) return
+    props.onPick(e, index, c)
+    // the form follows the choice; taking it back goes to the proposal
+    if (edited && e.proposal) setEdit({ id: e.id, ...chosenValues(e.proposal, pick?.index === index ? undefined : { index, candidate: c }) })
   }
   // no list of what it uses: the keys always mean what the buttons say now
   useEffect(() => {
@@ -505,17 +630,21 @@ function IntakeSheet(props: {
       if (ev.key === "j") onSkip(e)
       else if (ev.key === "k") onBack()
       else if (ev.key === "e") startEdit()
+      else if (ev.key === "o") {
+        if (format) setPeeking(e.id)
+      }
+      else if (/^[1-9]$/.test(ev.key) && !ev.repeat) choose(Number(ev.key) - 1)
       else if (ev.key === "a" && !ev.repeat) accept()
-      else if (ev.key === "f" && !ev.repeat) onDecide(e, "file")
-      else if (ev.key === "d" && !ev.repeat) onDecide(e, "trash")
+      else if (ev.key === "f" && !ev.repeat && !library) onDecide(e, "file")
+      else if (ev.key === "d" && !ev.repeat && !library) onDecide(e, "trash")
+      else if (ev.key === "x" && !ev.repeat && library) onDecide(e, "reject")
       else return
       ev.preventDefault()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   })
-  const shown = detail?.id === id ? detail : undefined
-  const reason = e && reasonText(e)
+  const reason = e && (pick ? t("intake.why.candidate", { source: candidateSource(pick.candidate.source) }) : reasonText(e))
   const enter = (ev: ReactKeyEvent) => {
     if (ev.key === "Enter") accept()
   }
@@ -526,21 +655,34 @@ function IntakeSheet(props: {
         className="sm:max-w-2xl"
         overlayClassName="bg-transparent"
         aria-describedby={undefined}
-        header={<SheetTitle className="truncate text-base font-semibold">{e?.name ?? t("intake.title")}</SheetTitle>}
+        header={<SheetTitle className="truncate text-base font-semibold">{e ? entryName(e) : t("intake.title")}</SheetTitle>}
       >
         {e && (
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-4 text-sm">
             <div className="flex gap-4">
-              <EntryCover key={e.cover} src={e.cover} className="w-32 shrink-0" />
+              {format ? (
+                <button type="button" aria-label={t("intake.read")} className="w-32 shrink-0 self-start" onClick={() => setPeeking(e.id)}>
+                  <EntryCover key={e.cover} src={e.cover} />
+                </button>
+              ) : (
+                <EntryCover key={e.cover} src={e.cover} className="w-32 shrink-0" />
+              )}
               <div className="min-w-0 space-y-1">
-                <div className="text-xl font-semibold break-words">{entryTitle(e)}</div>
-                {e.proposal && <div>{authorsText(e.proposal.authors)}</div>}
+                <div className="text-xl font-semibold break-words">{pick?.candidate.fields.title ?? entryTitle(e)}</div>
+                {e.proposal && <div>{authorsText(pick?.candidate.fields.authors?.length ? pick.candidate.fields.authors : e.proposal.authors)}</div>}
                 {e.folder && <div className={cn("break-words", muted)}>{e.folder}</div>}
                 <div className="flex flex-wrap gap-1">
-                  <Badge variant="secondary">{badgeText(e, false)}</Badge>
+                  <Badge variant="secondary">{badgeText(asChosen(e, pick?.candidate), false)}</Badge>
                   {e.skipped && <Badge variant="outline">{t("intake.tag.skipped")}</Badge>}
                 </div>
                 {reason && <div className={cn("break-words", muted)}>{reason}</div>}
+                {format ? (
+                  <Button variant="outline" size="sm" onClick={() => setPeeking(e.id)}>
+                    {t("intake.read")} <ButtonKey>o</ButtonKey>
+                  </Button>
+                ) : (
+                  unreadable(e) && <div className={muted}>{t("intake.read.no")}</div>
+                )}
               </div>
             </div>
             {edited && (
@@ -557,9 +699,10 @@ function IntakeSheet(props: {
             )}
             {e.error && (
               <p role="alert" className="rounded-md border border-destructive px-3 py-2 text-destructive eink:border-2">
-                {t("intake.failed", { error: e.error })}
+                {t("intake.failed", { error: entryError(e) ?? e.error })}
               </p>
             )}
+            {library && shown && <LibraryProposal entry={e} detail={shown} />}
             {shown &&
               noteTexts(shown).map((note) => (
                 <p key={note} className="rounded-md border px-3 py-2 eink:border-2">
@@ -571,29 +714,33 @@ function IntakeSheet(props: {
                 {t("intake.open")}
               </Link>
             )}
-            <section aria-labelledby="intake-candidates" className="space-y-2">
-              <h2 id="intake-candidates" className="text-lg font-semibold">
-                {t("intake.candidates")}
-              </h2>
-              {!shown ? (
-                <p className={muted}>{t("loading")}</p>
-              ) : shown.candidates.length === 0 ? (
-                <p className={muted}>{t("intake.noCandidates")}</p>
-              ) : (
-                <ol className="space-y-2" aria-label={t("intake.candidates")}>
-                  {shown.candidates.map((c, i) => (
-                    <CandidateItem key={i} candidate={c} digit={i + 1} />
-                  ))}
-                </ol>
-              )}
-            </section>
-            <div className="flex flex-wrap gap-2">
-              <Button disabled={!e.proposal} onClick={accept}>
+            {!library && (
+              <section aria-labelledby="intake-candidates" className="space-y-2">
+                <h2 id="intake-candidates" className="text-lg font-semibold">
+                  {t("intake.candidates")}
+                </h2>
+                {!shown ? (
+                  <p className={muted}>{t("loading")}</p>
+                ) : shown.candidates.length === 0 ? (
+                  <p className={muted}>{t("intake.noCandidates")}</p>
+                ) : (
+                  <ol className="space-y-2" aria-label={t("intake.candidates")}>
+                    {shown.candidates.map((c, i) => (
+                      <CandidateItem key={i} candidate={c} digit={i + 1} proposal={e.proposal} chosen={pick?.index === i} onPick={() => choose(i)} />
+                    ))}
+                  </ol>
+                )}
+              </section>
+            )}
+            <div className="flex flex-wrap gap-2" data-exits>
+              <Button disabled={library ? !acceptable(e) : !e.proposal} onClick={accept}>
                 {t("intake.accept")} <ButtonKey>a</ButtonKey>
               </Button>
-              <Button variant="outline" onClick={() => onDecide(e, "file")}>
-                {t("intake.asFile")} <ButtonKey>f</ButtonKey>
-              </Button>
+              {!library && (
+                <Button variant="outline" onClick={() => onDecide(e, "file")}>
+                  {t("intake.asFile")} <ButtonKey>f</ButtonKey>
+                </Button>
+              )}
               {e.skipped ? (
                 <Button variant="outline" onClick={() => props.onUnskip(e)}>
                   {t("intake.unskip")}
@@ -603,16 +750,34 @@ function IntakeSheet(props: {
                   {t("intake.skip")} <ButtonKey>j</ButtonKey>
                 </Button>
               )}
-              <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive eink:hover:bg-transparent" onClick={() => onDecide(e, "trash")}>
-                {t("intake.trash")} <ButtonKey>d</ButtonKey>
-              </Button>
+              {library ? (
+                <Button variant="outline" onClick={() => onDecide(e, "reject")}>
+                  {t("intake.reject")} <ButtonKey>x</ButtonKey>
+                </Button>
+              ) : (
+                <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive eink:hover:bg-transparent" onClick={() => onDecide(e, "trash")}>
+                  {t("intake.trash")} <ButtonKey>d</ButtonKey>
+                </Button>
+              )}
             </div>
             <p className={cn("hidden md:block touch:hidden eink:hidden", muted)}>
-              <KeyChip>k</KeyChip> {t("intake.key.back")} · <KeyChip>e</KeyChip> {t("intake.key.edit")} · <KeyChip>Esc</KeyChip> {t("intake.key.close")}
+              <KeyChip>k</KeyChip> {t("intake.key.back")} · {!library && <><KeyChip>e</KeyChip> {t("intake.key.edit")} · </>}<KeyChip>Esc</KeyChip> {t("intake.key.close")}
             </p>
+            {peeking === e.id && format && <Peek entry={e} format={format} onClose={() => setPeeking(null)} />}
           </div>
         )}
       </SheetContent>
     </Sheet>
   )
+}
+
+// what the edit form starts from
+function chosenValues(p: NonNullable<IntakeEntry["proposal"]>, pick?: Chosen) {
+  const f = pick?.candidate.fields
+  return { title: f?.title ?? p.title, authors: f?.authors?.length ? f.authors : p.authors }
+}
+
+// old → new as in the Prüfliste
+function LibraryProposal({ entry: e, detail }: { entry: IntakeEntry; detail: IntakeDetail }) {
+  return <RepairProposal entry={{ ...e, file: e.path, changes: detail.changes }} title={e.bookTitle ?? entryName(e)} unsureTag={detail.unsureTag ?? ""} />
 }
