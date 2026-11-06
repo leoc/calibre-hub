@@ -115,6 +115,22 @@ test("E-Ink: the import page", async ({ page }) => {
   expect(await smallTargets(page)).toEqual([])
 })
 
+test("E-Ink: the Eingang and its drawer", async ({ page }) => {
+  await page.goto("/eingang")
+  const list = page.getByRole("list", { name: "Eingang", exact: true })
+  await expect(list.getByRole("listitem").first()).toBeVisible()
+  const bar = page.getByRole("progressbar", { name: "Analyse" })
+  await expect(bar).toHaveCSS("border-top-color", "rgb(0, 0, 0)")
+  await expect(bar.locator("div")).toHaveCSS("background-color", "rgb(0, 0, 0)")
+  await expect(bar.locator("div")).toHaveCSS("transition-duration", "0s")
+  expect(await smallTargets(page)).toEqual([])
+  await page.locator("[data-entry]").filter({ hasText: "Functional Analysis" }).getByRole("button").first().click()
+  await expect(page.getByRole("list", { name: "Kandidaten" }).getByRole("listitem").first()).toBeVisible()
+  expect(await smallTargets(page, "[role=dialog]")).toEqual([])
+  await expect(page.getByRole("dialog").locator("kbd:visible")).toHaveCount(0)
+  await expect(page.locator("[data-entry][aria-current]")).toHaveCSS("outline-style", "solid")
+})
+
 test("E-Ink: the next portion on the import page", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("hub.mock.import", "reviewed"))
   await page.goto("/import")

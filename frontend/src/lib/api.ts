@@ -249,6 +249,81 @@ export interface ImportCleanup {
 // How sure a decision is: bulk from 90, review from 60, unsure below
 export type ConfidenceBand = "bulk" | "review" | "unsure"
 
+// the Eingang: new files of the import roots, analysed, not in the library
+export type IntakeKind = "all" | "new" | "duplicates"
+
+export interface IntakeProgress {
+  state: "idle" | "scanning" | "analysing" | "paused" | "off"
+  // of the whole list, whatever the filters: every book in the Eingang,
+  // those looked at, those with a proposal
+  total: number
+  done: number
+  analysed: number
+  current: string | null
+}
+
+export interface IntakeProposal {
+  title: string
+  authors: string[]
+  publisher: string | null
+  pubdate: string | null
+  series: string | null
+  seriesIndex: number | null
+  isbn: string | null
+  languages: string[]
+}
+
+export interface IntakeEntry {
+  id: number
+  path: string
+  name: string
+  // below its root, null in the root
+  folder: string | null
+  kind: "file" | "calibre"
+  files: { path: string; format: string; size: number }[]
+  status: "analysed" | "failed"
+  detail: string | null
+  proposal: IntakeProposal | null
+  confidence: number | null
+  band: ConfidenceBand | null
+  titleConfidence: number | null
+  authorsConfidence: number | null
+  level: 1 | 2 | 3 | null
+  source: string | null
+  decided: string | null
+  isbnSource: string | null
+  notes: RepairNote[]
+  action: "add" | "addFormats" | "duplicate"
+  bookId: number | null
+  match: string | null
+  sameAs: string | null
+  addFormats: string[]
+  cover: string | null
+  analysedAt: string
+}
+
+export interface IntakeCandidate {
+  source: string
+  confidence: number
+  fields: { title?: string | null; authors?: string[] | null }
+  url: string | null
+}
+
+export interface IntakeDetail extends IntakeEntry {
+  changes: { field: string; old: unknown; new: unknown; source: string }[]
+  candidates: IntakeCandidate[]
+  bookTitle: string | null
+}
+
+// without import roots only {enabled: false}
+export interface IntakeList {
+  enabled: boolean
+  progress?: IntakeProgress
+  total?: number
+  counts?: { bulk: number; review: number; unsure: number; none: number }
+  entries?: IntakeEntry[]
+}
+
 // a conflict for the review: the same ISBN on other books, or another ISBN
 // in the book than the one it has
 export interface RepairNote {
@@ -498,6 +573,13 @@ export const api = {
   metadataStatus: () => request<MetadataStatus>("/api/metadata/status"),
   importStatus: () => request<ImportStatus>("/api/import"),
   importRepair: () => request<ImportRepairReview>("/api/import/repair"),
+  intake: (p: { band?: string; duplicates?: boolean; offset: number; limit: number }) => {
+    const q = new URLSearchParams({ offset: String(p.offset), limit: String(p.limit) })
+    if (p.band) q.set("band", p.band)
+    if (p.duplicates !== undefined) q.set("duplicates", String(p.duplicates))
+    return request<IntakeList>(`/api/intake?${q}`)
+  },
+  intakeEntry: (id: number) => request<IntakeDetail>(`/api/intake/${id}`),
   importQuality: () => request<ImportQuality>("/api/import/quality"),
   importSample: (band: ConfidenceBand) => request<ImportSampleBooks>(`/api/import/quality/sample?band=${band}`),
   metadataChanges: (query: MetadataChangesQuery = {}) =>

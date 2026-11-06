@@ -1,3 +1,4 @@
+import { intakeHandlers } from "./intake"
 import { http, HttpResponse } from "msw"
 import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Session, Suggestion, SuggestionStatus, TrashEntry } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
@@ -506,4 +507,4 @@ const privateTagMocks = privateTagHandlers(books, () => session.user, resolveTar
 
 const duplicates = duplicateHandlers({ books, touch, moveToTrash, restoreFromTrash, withLists, delay })
 
-export const handlers = [...listMocks, ...privateTagMocks, ...progressHandlers, ...readerSettingsHandlers, ...writeHandlers, ...metadata, ...duplicates, ...readHandlers]
+export const handlers = [...listMocks, ...privateTagMocks, ...progressHandlers, ...readerSettingsHandlers, ...writeHandlers, ...metadata, ...duplicates, ...intakeHandlers, ...readHandlers]
