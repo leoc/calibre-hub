@@ -156,6 +156,15 @@ export function readerKey(e: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" 
   return null
 }
 
+// A look into a file from the Eingang: its keys, h and l whatever the mode.
+// j and k stay out, they mean the list there.
+export function peekKey(e: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "metaKey" | "altKey">): ReaderAction | null {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null
+  if (e.key === "h") return "prev"
+  if (e.key === "l") return "next"
+  return readerKey(e, false)
+}
+
 // E-Ink tap zones: left third back, right third on, the middle the toolbar
 export const tapZone = (x: number, width: number): "prev" | "next" | "menu" => (x < width / 3 ? "prev" : x > (width * 2) / 3 ? "next" : "menu")
 

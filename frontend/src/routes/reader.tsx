@@ -13,6 +13,7 @@ import {
   fileName,
   getDeviceId,
   getDeviceName,
+  peekKey,
   percent,
   positionOf,
   readerFormat,
@@ -67,7 +68,19 @@ export function ReaderPage() {
   const format = stored && (!wanted || wanted.toUpperCase() === stored.format) ? stored.format : readerFormat(data, wanted)
   if (!format) return <Centered><p role="alert">{t("reader.noFormat")}</p><BackButton onClick={back} /></Centered>
   const start = startPoint(withQueued(devices, queuedProgress(id)), getDeviceId())
-  return <Reader key={`${id}-${format}`} book={data} format={format} start={start} onBack={back} />
+  const name = fileName(id, format)
+  const load = (signal: AbortSignal) => loadBookFile(id, format, signal)
+  return <Reader key={`${id}-${format}`} book={data} title={data.title} name={name} load={load} format={format} start={start} onBack={back} />
+}
+
+const NO_POSITION: StartPoint = { mine: null, elsewhere: null }
+
+// A file's first pages without a book behind it (the Eingang): the reader
+// with its paging and settings, nothing about the reading is kept
+export function FilePeek({ title, name, format, load, onClose }: { title: string; name: string; format: string; load: (signal: AbortSignal) => Promise<Blob>; onClose: () => void }) {
+  const settingsReady = useReaderSettingsReady()
+  if (!settingsReady) return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
+  return <Reader title={title} name={name} load={load} format={format} start={NO_POSITION} onBack={onClose} />
 }
 
 // no answer, or a hub that can't answer now
@@ -101,7 +114,8 @@ interface Location {
 
 const SAVE_DELAY = 1500
 
-function Reader({ book, format, start, onBack }: { book: Book; format: string; start: StartPoint; onBack: () => void }) {
+// book: what the position is saved for; without one nothing is
+function Reader({ book, title, name, load, format, start, onBack }: { book?: Book; title: string; name: string; load: (signal: AbortSignal) => Promise<Blob>; format: string; start: StartPoint; onBack: () => void }) {
   const { eink } = useTheme()
   const queryClient = useQueryClient()
   const host = useRef<HTMLDivElement>(null)
@@ -129,7 +143,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
     (closing = false) => {
       clearTimeout(timer.current)
       const p = pending.current
-      if (!p) return
+      if (!p || !book) return
       pending.current = null
       saved.current = p.position
       // queued first; offline it waits there for the next contact
@@ -137,7 +151,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
         if (entry) void queryClient.invalidateQueries({ queryKey: ["progress"] })
       })
     },
-    [book.id, queryClient],
+    [book, queryClient],
   )
 
   const onRelocate = useRef<(d: RelocateDetail, ready: boolean) => void>(() => {})
@@ -148,7 +162,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
       // fixed layout (PDF, comics): page n of N, so the last page is 100 %
       const fraction = view?.isFixedLayout && d.section ? Math.min(1, (section + 1) / d.section.total) : d.fraction
       setLoc({ fraction, chapter: d.tocItem?.label?.trim() || null })
-      if (!ready) return
+      if (!ready || !book) return
       const position = positionOf(format, d.cfi, section)
       if (position === saved.current) return
       pending.current = { format: format.toLowerCase(), position, fraction: Math.max(0, Math.min(1, fraction)), device: getDeviceId(), deviceName: getDeviceName() }
@@ -178,7 +192,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
       if (overlayOpen || e.defaultPrevented) return
       const target = e.target as HTMLElement | null
       if (target?.closest?.("input, textarea, select, [contenteditable=true]")) return
-      const a = readerKey(e, keyboard.get().mode === "vim")
+      const a = book ? readerKey(e, keyboard.get().mode === "vim") : peekKey(e)
       if (!a) return
       // Space on a focused button presses it; the reader's buttons don't need it
       e.preventDefault()
@@ -224,7 +238,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
     ;(async () => {
       try {
         await import("foliate-js/view.js")
-        const file = new File([await loadBookFile(book.id, format, abort.signal)], fileName(book.id, format))
+        const file = new File([await load(abort.signal)], name)
         if (gone) return
         view = document.createElement("foliate-view") as FoliateView
         view.className = "block h-full w-full"
@@ -271,7 +285,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
     }
     // settings change through their own effects below; the view opens once
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [book.id, format])
+  }, [name, format])
 
   useApplyReaderSettings(viewRef, host, status === "ready" && !fixed, settings)
 
@@ -292,10 +306,10 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
             <ArrowLeft className="size-5" />
           </Button>
           <div className="min-w-0 flex-1 px-1">
-            <h1 className="truncate text-sm font-semibold eink:text-base">{book.title}</h1>
+            <h1 className="truncate text-sm font-semibold eink:text-base">{title}</h1>
             {loc.chapter && <p className="truncate text-xs text-muted-foreground eink:text-sm eink:text-black">{loc.chapter}</p>}
           </div>
-          <OfflineBadge className="mx-1" />
+          {book && <OfflineBadge className="mx-1" />}
           <Button variant="ghost" size="icon" onClick={() => setTocOpen(true)} aria-label={t("reader.toc")} disabled={status !== "ready"}>
             <List className="size-5" />
           </Button>
@@ -375,7 +389,7 @@ function Reader({ book, format, start, onBack }: { book: Book; format: string; s
         update={updateSettings}
         eink={eink}
         extra={
-          offlineSupported() && (
+          book && offlineSupported() && (
             <section className="space-y-2">
               <h2 className="text-sm font-medium">{t("offline.section")}</h2>
               <OfflineButton book={book} format={format} />

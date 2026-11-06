@@ -72,4 +72,16 @@ function DialogContent({
   )
 }
 
-export { Dialog, DialogTrigger, DialogClose, DialogContent, DialogTitle, DialogDescription, BackToClose }
+// The whole screen, for what has its own bar with a way back: the reader
+function DialogScreen({ children, ...props }: React.ComponentProps<typeof DialogPrimitive.Content>) {
+  return (
+    <DialogPrimitive.Portal>
+      <DialogPrimitive.Content className="fixed inset-0 z-50 bg-background outline-none" {...props}>
+        <BackToClose />
+        {children}
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Portal>
+  )
+}
+
+export { Dialog, DialogTrigger, DialogClose, DialogContent, DialogScreen, DialogTitle, DialogDescription, BackToClose }

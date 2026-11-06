@@ -1,5 +1,5 @@
 import type { ProgressEntry } from "./api"
-import { deviceLabel, percent, positionOf, readerFormat, readerKey, startPoint, tapZone, targetOf } from "./reader"
+import { deviceLabel, peekKey, percent, positionOf, readerFormat, readerKey, startPoint, tapZone, targetOf } from "./reader"
 
 const entry = (device: string, fraction: number, at: string, extra: Partial<ProgressEntry> = {}): ProgressEntry => ({
   bookId: 1,
@@ -75,5 +75,17 @@ describe("reader", () => {
     expect(tapZone(10, 900)).toBe("prev")
     expect(tapZone(450, 900)).toBe("menu")
     expect(tapZone(890, 900)).toBe("next")
+  })
+})
+
+describe("peekKey", () => {
+  const key = (k: string, extra = {}) => peekKey({ key: k, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, ...extra })
+  it("turns with h and l whatever the mode, leaves j and k to the list", () => {
+    expect([key("h"), key("l"), key("j"), key("k")]).toEqual(["prev", "next", null, null])
+  })
+  it("keeps the reader's other keys and leaves modifiers alone", () => {
+    expect(key("Escape")).toBe("back")
+    expect(key("ArrowRight")).toBe("next")
+    expect(key("l", { ctrlKey: true })).toBeNull()
   })
 })
