@@ -64,17 +64,22 @@ module CalibreHub
       BACK_BYTES  = 16 * 1024
       # calibre starts slowly and takes a CHM apart
       CONVERT_TIMEOUT = 3.minutes
+      # what the Eingang's analysis runs its tools at (nice:)
+      NICENESS = 15
+      # a page small enough for a row of the Eingang
+      COVER_DPI = 50
 
       # nil when the file can't be read; the online sources still run.
       # Crystal's zip reader rejects entries with an invalid DOS timestamp
-      # (seen in the wild), which calibre and readers don't mind.
-      def self.read(path : String, format : String) : Info?
+      # (seen in the wild), which calibre and readers don't mind. nice: the
+      # tools run at low priority.
+      def self.read(path : String, format : String, nice = false) : Info?
         case format.upcase
         when "EPUB"                       then epub(path)
-        when "PDF"                        then pdf(path)
-        when "DJVU", "DJV"                then djvu(path)
-        when "MOBI", "AZW3", "AZW", "PRC" then calibre(path, "MOBI")
-        when "CHM"                        then calibre(path, "CHM")
+        when "PDF"                        then pdf(path, nice)
+        when "DJVU", "DJV"                then djvu(path, nice)
+        when "MOBI", "AZW3", "AZW", "PRC" then calibre(path, "MOBI", nice)
+        when "CHM"                        then calibre(path, "CHM", nice)
         end
       rescue ex : ArgumentError | Compress::Zip::Error | XML::Error | IO::Error
         Log.warn { "metadata: can't read #{File.basename(path)}: #{ex.message}" }
@@ -163,21 +168,21 @@ module CalibreHub
         HTML.unescape(html.gsub(/<(script|style)\b.*?<\/\1>/im, " ").gsub(/<[^>]*>/, " ")).gsub(/\s+/, " ")
       end
 
-      def self.pdf(path : String) : Info?
-        info = run("pdfinfo", ["-enc", "UTF-8", path]) || return nil
+      def self.pdf(path : String, nice = false) : Info?
+        info = run("pdfinfo", ["-enc", "UTF-8", path], nice: nice) || return nil
         pages = info[/^Pages:\s*(\d+)/m, 1]?.try(&.to_i?) || 0
-        front = cut(run("pdftotext", ["-l", FRONT_PAGES.to_s, "-enc", "UTF-8", path, "-"]) || "")
+        front = cut(run("pdftotext", ["-l", FRONT_PAGES.to_s, "-enc", "UTF-8", path, "-"], nice: nice) || "")
         from = {pages - BACK_PAGES + 1, FRONT_PAGES + 1}.max
-        back = pages > FRONT_PAGES ? cut(run("pdftotext", ["-f", from.to_s, "-enc", "UTF-8", path, "-"]) || "") : ""
+        back = pages > FRONT_PAGES ? cut(run("pdftotext", ["-f", from.to_s, "-enc", "UTF-8", path, "-"], nice: nice) || "") : ""
         Info.new(pdf_info(info), Isbn.found(front, back).map(&.isbn), front.split('\f', 2).first.presence, front, back, "PDF")
       end
 
-      def self.djvu(path : String) : Info?
-        pages = run("djvused", ["-e", "n", path]).try(&.strip.to_i?) || return nil
-        front = cut(run("djvutxt", ["--page=1-#{{FRONT_PAGES, pages}.min}", path]) || "")
+      def self.djvu(path : String, nice = false) : Info?
+        pages = run("djvused", ["-e", "n", path], nice: nice).try(&.strip.to_i?) || return nil
+        front = cut(run("djvutxt", ["--page=1-#{{FRONT_PAGES, pages}.min}", path], nice: nice) || "")
         from = {pages - BACK_PAGES + 1, FRONT_PAGES + 1}.max
-        back = pages > FRONT_PAGES ? cut(run("djvutxt", ["--page=#{from}-#{pages}", path]) || "") : ""
-        meta = run("djvused", ["-e", "print-meta", path]) || ""
+        back = pages > FRONT_PAGES ? cut(run("djvutxt", ["--page=#{from}-#{pages}", path], nice: nice) || "") : ""
+        meta = run("djvused", ["-e", "print-meta", path], nice: nice) || ""
         Info.new(djvu_meta(meta), Isbn.found(front, back).map(&.isbn), nil, front, back, "DJVU")
       end
 
@@ -194,22 +199,52 @@ module CalibreHub
       # A format calibre reads: its metadata as OPF (ebook-meta), its text
       # through ebook-convert. A file calibre can't convert still has its
       # metadata.
-      def self.calibre(path : String, format : String) : Info?
+      def self.calibre(path : String, format : String, nice = false) : Info?
         dir = File.tempname("book")
         Dir.mkdir(dir)
         begin
-          opf_path = File.join(dir, "book.opf")
-          run("ebook-meta", [path, "--to-opf=#{opf_path}"], CONVERT_TIMEOUT) || return nil
-          record = opf(File.read(opf_path).scrub)
+          record = ebook_meta(path, dir, nice) || return nil
           txt = File.join(dir, "book.txt")
           front = back = ""
-          if run("ebook-convert", [path, txt, "--txt-output-formatting=plain"], CONVERT_TIMEOUT) && File.exists?(txt)
+          if run("ebook-convert", [path, txt, "--txt-output-formatting=plain"], CONVERT_TIMEOUT, nice) && File.exists?(txt)
             front, back = ends(txt)
           end
           Info.new(record, Isbn.found(front, back).map(&.isbn), nil, front, back, format)
         ensure
           FileUtils.rm_rf(dir)
         end
+      end
+
+      # What calibre reads from a format this module has no reader for, its
+      # metadata only (FB2, DOCX, RTF, ...); nil when it can't
+      def self.metadata(path : String, format : String, nice = false) : Info?
+        dir = File.tempname("book")
+        Dir.mkdir(dir)
+        begin
+          ebook_meta(path, dir, nice).try { |record| Info.new(record, [] of String, format: format) }
+        ensure
+          FileUtils.rm_rf(dir)
+        end
+      rescue ex : XML::Error | IO::Error
+        Log.warn { "metadata: can't read #{File.basename(path)}: #{ex.message}" }
+        nil
+      end
+
+      private def self.ebook_meta(path : String, dir : String, nice : Bool) : Record?
+        opf_path = File.join(dir, "book.opf")
+        run("ebook-meta", [path, "--to-opf=#{opf_path}"], CONVERT_TIMEOUT, nice) || return nil
+        opf(File.read(opf_path).scrub)
+      end
+
+      # The file's cover as an image at `target`, without touching the file: a
+      # PDF's first page, small, else what calibre finds. false: there is none
+      def self.cover(path : String, format : String, target : String, nice = false) : Bool
+        if format.upcase == "PDF"
+          run("pdftoppm", ["-jpeg", "-r", COVER_DPI.to_s, "-singlefile", "-f", "1", "-l", "1", path, target.rchop(".jpg")], nice: nice)
+        else
+          run("ebook-meta", [path, "--get-cover=#{target}"], CONVERT_TIMEOUT, nice)
+        end
+        File.exists?(target) && File.size(target) > 0
       end
 
       # the start and the end of a text file
@@ -249,8 +284,9 @@ module CalibreHub
         Record.new(title: title, authors: author.try { |a| Clean.split_authors(a) })
       end
 
-      private def self.run(cmd : String, args : Array(String), timeout = TOOL_TIMEOUT) : String?
+      private def self.run(cmd : String, args : Array(String), timeout = TOOL_TIMEOUT, nice = false) : String?
         output = IO::Memory.new
+        cmd, args = "nice", ["-n", NICENESS.to_s, cmd] + args if nice
         status = Command.run(cmd, args, timeout, output: output)
         # broken PDFs can still yield invalid UTF-8, which regexes reject
         status.success? ? output.to_s.scrub : nil

@@ -510,7 +510,7 @@ module CalibreHub
       end
 
       # the value of a name's authors
-      private def self.name_value(authors : Array(String)) : Int32
+      def self.name_value(authors : Array(String)) : Int32
         authors.all? { |a| Text.tokens(a).size < 2 } ? Confidence::NAME_SURNAME : Confidence::NAME_FULL
       end
 

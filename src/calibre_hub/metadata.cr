@@ -341,6 +341,9 @@ module CalibreHub
 
     alias FileReader = Proc(Book, Meta::FileMeta::Info?)
 
+    # candidates a title search keeps
+    SEARCH_HITS = 10
+
     getter log : MetaLog
     getter sources : Array(String)
     # HH:MM of the nightly run, for the status
@@ -416,10 +419,11 @@ module CalibreHub
       own ? info.copy_with(record: Meta::Record.new(isbn: r.isbn)) : info
     end
 
-    # A file on disk for the rule flow, with OCR when it has no text layer
-    def read_flow(path : String, format : String) : Meta::FileMeta::Info?
+    # A file on disk for the rule flow, with OCR when it has no text layer.
+    # nice: its tools run at low priority (the Eingang's analysis).
+    def read_flow(path : String, format : String, nice = false) : Meta::FileMeta::Info?
       return nil unless @sources.includes?("file")
-      info = Meta::FileMeta.read(path, format) || return nil
+      info = Meta::FileMeta.read(path, format, nice) || return nil
       Meta::FileMeta.with_ocr(info, path, @log.ocr_cache)
     end
 
@@ -616,6 +620,13 @@ module CalibreHub
         ranked = Meta::Score.rank(all, q ? searches + guesses : guesses, languages, trusted, words)
       end
       {ranked, errors}
+    end
+
+    # What the catalogs have under a title and author: the Eingang's
+    # candidates for a file no ISBN found anything for
+    def search(book : Book, guess : Meta::Guess) : Array(Meta::Candidate)
+      return [] of Meta::Candidate if providers.empty?
+      lookup(book, [guess], nil)[0].first(SEARCH_HITS)
     end
 
     # Descriptions, languages, series of the accepted Open Library candidates

@@ -637,7 +637,7 @@ module CalibreHub
 
     # How the folder's book files are named (Meta::FileName.orientation),
     # for names that could be read either way
-    private def hint(dir : String) : Symbol?
+    def hint(dir : String) : Symbol?
       @hints.clear if @hints.size > 500
       return @hints[dir] if @hints.has_key?(dir)
       names = begin
