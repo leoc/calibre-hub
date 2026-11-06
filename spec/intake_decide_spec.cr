@@ -674,3 +674,425 @@ describe "exact duplicates" do
     end
   end
 end
+
+private def repair_of(fake : FakeCalibre, db : DB::Database) : CalibreHub::ImportRepair
+  calibre = fake.calibre
+  CalibreHub::ImportRepair.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), CalibreHub::MetaLog.new(db))
+end
+
+private def proposal_row(db : DB::Database, id : Int64, changes : String, confidence = 80, status = "pending", file = "")
+  db.exec "insert into import_repairs (book_id, file, decided, changes, status, at, confidence, level, source, notes) values (?, ?, 'name', ?, ?, 100, ?, 3, 'rules', '[]')",
+    id, file, changes, status, confidence
+end
+
+private def title_change(old : String, new : String) : String
+  [{field: "title", old: old, new: new, source: "rules"}].to_json
+end
+
+private def repair_settled(repair : CalibreHub::ImportRepair)
+  500.times do
+    return unless repair.running?
+    sleep 10.milliseconds
+  end
+  raise "repair still running"
+end
+
+private def recheck_done(recheck : CalibreHub::RepairRecheck)
+  500.times do
+    return unless recheck.running?
+    sleep 10.milliseconds
+  end
+  raise "recheck still running"
+end
+
+private def library_entries(intake : Intake, band = nil) : Array(JSON::Any)
+  intake.library_list(band)["entries"].as_a
+end
+
+private def imported(db : DB::Database, path : String, id : Int64, run = "r")
+  db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', ?, ?, 100)", path, id, run
+end
+
+describe "a chosen candidate" do
+  it "writes what the candidate says, however low its confidence, and nothing of the proposal's book" do
+    tmpdir do |_, root|
+      write(File.join(root, "a.pdf"), pdf("a"))
+      intake, fake, db, imports = setup(root)
+      log = CalibreHub::MetaLog.new(db)
+      imports.decisions = log
+      intake.run_once
+      a = id_of(intake, "a.pdf")
+      proposal = Intake::Proposal.new("Falsches Buch", ["Falsche Autorin"], "Falscher Verlag", "1999", "Falsche Reihe", 1.0, "9780000000002", ["eng"])
+      db.exec "update intake_entries set proposal = ?, level = 1, confidence = 20, title_confidence = 20, authors_confidence = 20, " \
+              "changes = ?, notes = ? where id = ?", proposal.to_json,
+        [{field: "tags", old: [] of String, new: ["auto-unsicher"], source: "rules"}].to_json,
+        [{kind: "isbnConflict", isbn: "9780000000002", books: [] of Int64}].to_json, a
+      db.exec "delete from intake_candidates where entry_id = ?", a
+      db.exec "insert into intake_candidates (entry_id, idx, source, confidence, fields) values (?, 0, 'name', 10, ?)",
+        a, Meta::Record.new(title: "Richtiges Buch", authors: ["Richtige Autorin"]).to_json
+      wait(intake, decide(intake, [a], "accept", candidate: 0)).errors.should be_empty
+      id = fake.books.keys.max
+      fake.books[id]["title"].should eq "Richtiges Buch"
+      fake.books[id]["authors"].as_a.map(&.as_s).should eq ["Richtige Autorin"]
+      fake.books[id]["publisher"]?.try(&.raw).should be_nil
+      fake.books[id]["tags"].as_a.should be_empty
+      decided = log.decided(id).not_nil!
+      {decided.title_confidence, decided.authors_confidence, decided.source}.should eq({100, 100, "name"})
+      decided.binding?.should be_true
+      decided.isbn.should be_nil
+      decided.notes.should be_empty
+    end
+  end
+
+  it "keeps the proposal's title and authors where the candidate has none" do
+    p = Intake::Proposal.new("Titel", ["Autorin"], "Verlag", nil, nil, nil, nil, [] of String)
+    v = Intake.candidate_values(p, Meta::Record.new(publisher: "Anderer"))
+    {v["title"], v["authors"][0], v["publisher"]}.should eq({"Titel", "Autorin", "Anderer"})
+  end
+
+  it "survives accepting the whole filter" do
+    tmpdir do |_, root|
+      write(File.join(root, "a.pdf"), pdf("a"))
+      write(File.join(root, "b.pdf"), pdf("b"))
+      intake, fake, db, _ = setup(root)
+      intake.run_once
+      a = id_of(intake, "a.pdf")
+      db.exec "delete from intake_candidates where entry_id = ?", a
+      db.exec "insert into intake_candidates (entry_id, idx, source, confidence, fields) values (?, 0, 'dnb', 40, ?)",
+        a, Meta::Record.new(title: "Gewählt", authors: ["Kat Alog"]).to_json
+      list = intake.list
+      body = JSON.parse({decision: "accept", picks: {a.to_s => 0},
+                         target: {query: {} of String => String, last: list["last"], expect: list["takeable"]}}.to_json).as_h
+      wait(intake, intake.decide(body)[1]).errors.should be_empty
+      fake.books.values.map(&.["title"].as_s).should contain "Gewählt"
+      bad = JSON.parse({decision: "file", picks: {a.to_s => 0}, target: {ids: [a]}}.to_json).as_h
+      expect_raises(CalibreHub::Edit::Invalid) { intake.decide(bad) }
+    end
+  end
+end
+
+describe "what a bulk leaves in the list" do
+  it "adds up with the filter" do
+    tmpdir do |_, root|
+      %w(a b c d).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
+      intake, _, db, _ = setup(root)
+      intake.run_once
+      db.exec "update intake_entries set action = 'duplicate' where id = ?", id_of(intake, "a.pdf")
+      db.exec "update intake_entries set status = 'failed', proposal = null where id = ?", id_of(intake, "b.pdf")
+      db.exec "update intake_entries set skipped = 1 where id = ?", id_of(intake, "c.pdf")
+      list = intake.list
+      {list["left"]["duplicates"], list["left"]["failed"], list["left"]["skipped"]}.should eq({1, 1, 1})
+      list["takeable"].should eq 1
+      intake.list(skipped: true)["left"]["skipped"].should eq 0
+    end
+  end
+end
+
+describe "reading in" do
+  it "hands out only the entry's file, unchanged, inside a root" do
+    tmpdir do |dir, root|
+      write(File.join(root, "a.pdf"), pdf("a"))
+      write(File.join(root, "b.djvu"), "AT&TFORM" + "." * 4000)
+      write(File.join(root, "c.pdf"), pdf("c"))
+      write(File.join(root, "d.pdf"), pdf("d"))
+      write(File.join(dir, "secret.pdf"), pdf("secret"))
+      intake, _, db, _ = setup(root)
+      intake.run_once
+      a, b, c, d = id_of(intake, "a.pdf"), id_of(intake, "b.djvu"), id_of(intake, "c.pdf"), id_of(intake, "d.pdf")
+      intake.readable(a).not_nil!.path.should eq File.join(root, "a.pdf")
+      intake.readable(a, "pdf").not_nil!.format.should eq "PDF"
+      intake.readable(a, "EPUB").should be_nil
+      intake.readable(b).should be_nil
+      intake.readable(b, "DJVU").should be_nil
+      intake.readable(-a).should be_nil
+      intake.readable(99_999_i64).should be_nil
+      # changed since the analysis
+      File.write(File.join(root, "c.pdf"), "other")
+      intake.readable(c).should be_nil
+      # a link that leads out of the root
+      info = File.info(File.join(root, "d.pdf"))
+      File.delete(File.join(root, "d.pdf"))
+      File.symlink(File.join(dir, "secret.pdf"), File.join(root, "d.pdf"))
+      db.exec "update intake_entries set files = ? where id = ?",
+        [{path: File.join(root, "d.pdf"), format: "PDF", size: File.size(File.join(dir, "secret.pdf")), mtime: File.info(File.join(dir, "secret.pdf")).modification_time.to_unix}].to_json, d
+      info.size.should be > 0
+      intake.readable(d).should be_nil
+      # gone
+      File.delete(File.join(root, "a.pdf"))
+      intake.readable(a).should be_nil
+    end
+  end
+end
+
+describe "the filter Schon in der Bibliothek" do
+  it "shows the proposals as entries, by the book's title where there is no file" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(7, "Alt", ["Jemand"])
+      fake.add(8, "Auch alt", ["Niemand"])
+      intake, _, db, _ = setup(root, fake)
+      intake.repair = repair_of(fake, db)
+      proposal_row(db, 7, title_change("Alt", "Neu"), file: "/backlog/F/alt.pdf")
+      proposal_row(db, 8, title_change("Auch alt", "Auch neu"), 40)
+      list = intake.library_list
+      list["total"].should eq 2
+      list["takeable"].should eq 2
+      list["unsure"].should eq 1
+      e = list["entries"][0]
+      {e["id"], e["name"], e["kind"], e["bookId"], e["bookTitle"]}.should eq({-7, "alt.pdf", "library", 7, "Alt"})
+      e["proposal"]["title"].should eq "Neu"
+      e["proposal"]["authors"][0].should eq "Jemand"
+      list["entries"][1]["name"].should eq ""
+      list["counts"]["unsure"].should eq 1
+      library_entries(intake, "unsure").map(&.["bookId"].as_i).should eq [8]
+      # pages by book id
+      page = intake.library_list(limit: 1)
+      page["next"].should eq "7"
+      intake.library_list(after: page["next"].as_s)["entries"].as_a.map(&.["bookId"].as_i).should eq [8]
+      # the file list stays what it was
+      intake.list["total"].should eq 0
+      d = intake.detail(-7).not_nil!
+      d["changes"][0]["new"].should eq "Neu"
+      d["candidates"].as_a.should be_empty
+    end
+  end
+
+  it "accepts through the repair, once, and the Prüfliste no longer has it" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(7, "Alt", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 7, title_change("Alt", "Neu"))
+      r = decide(intake, [-7_i64], "accept")
+      r["total"].should eq 1
+      library_entries(intake).should be_empty
+      repair_settled(repair)
+      fake.books[7_i64]["title"].should eq "Neu"
+      repair.review["entries"].as_a.should be_empty
+      # accepted a second time, from the other door
+      fake.books[7_i64]["title"] = JSON::Any.new("Hand")
+      repair.accept([7_i64])["books"].should eq 0
+      decide(intake, [-7_i64], "accept")["total"].should eq 0
+      repair_settled(repair)
+      fake.books[7_i64]["title"].should eq "Hand"
+    end
+  end
+
+  it "a decision in the Prüfliste takes it out of the filter" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(7, "Alt", ["Jemand"])
+      fake.add(8, "Alt", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 7, title_change("Alt", "Neu"))
+      proposal_row(db, 8, title_change("Alt", "Neu"))
+      repair.accept([7_i64])
+      repair.reject([8_i64])
+      library_entries(intake).should be_empty
+      repair_settled(repair)
+      library_entries(intake).should be_empty
+    end
+  end
+
+  it "shows why an accept failed: a field changed, and rejecting still goes" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(7, "Von Hand", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 7, title_change("Alt", "Neu"))
+      decide(intake, [-7_i64], "accept")
+      repair_settled(repair)
+      fake.books[7_i64]["title"].should eq "Von Hand"
+      e = library_entries(intake).first
+      e["status"].should eq "failed"
+      e["error"].should eq "title changed since the plan"
+      list = intake.library_list
+      list["takeable"].should eq 0
+      list["left"]["failed"].should eq 1
+      list["pending"].should eq 0
+      decide(intake, [-7_i64], "accept")["total"].should eq 0
+      intake.decide(JSON.parse({decision: "reject", target: {ids: [-7]}}.to_json).as_h)[1]["total"].should eq 1
+      library_entries(intake).should be_empty
+    end
+  end
+
+  it "comes back with the reason when the write fails" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      # no such book any more
+      proposal_row(db, 9, title_change("Alt", "Neu"))
+      decide(intake, [-9_i64], "accept")
+      repair_settled(repair)
+      e = library_entries(intake).first
+      e["status"].should eq "analysed"
+      e["error"].as_s.should_not be_empty
+      e["bookTitle"].raw.should be_nil
+    end
+  end
+
+  it "has no way to the trash or as in the file, and no mix with files" do
+    tmpdir do |_, root|
+      write(File.join(root, "a.pdf"), pdf("a"))
+      fake = FakeCalibre.new
+      fake.add(7, "Alt", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      intake.repair = repair_of(fake, db)
+      intake.run_once
+      proposal_row(db, 7, title_change("Alt", "Neu"))
+      expect_raises(CalibreHub::Edit::Invalid, /library book/) { decide(intake, [-7_i64], "trash") }
+      expect_raises(CalibreHub::Edit::Invalid, /library book/) { decide(intake, [-7_i64], "file") }
+      expect_raises(CalibreHub::Edit::Invalid, /library book/) { decide(intake, [-7_i64], "accept", title: "x") }
+      expect_raises(CalibreHub::Edit::Invalid, /mix/) { decide(intake, [-7_i64, id_of(intake, "a.pdf")], "accept") }
+      expect_raises(CalibreHub::Edit::Invalid, /library/) { decide(intake, [id_of(intake, "a.pdf")], "reject") }
+      library_entries(intake).size.should eq 1
+    end
+  end
+
+  it "skips, and a bulk leaves out what is skipped, failed or has nothing to write" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      (1_i64..5_i64).each { |i| fake.add(i, "Alt", ["Jemand"]) }
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 1, title_change("Alt", "Neu"))
+      proposal_row(db, 2, title_change("Alt", "Neu"))
+      proposal_row(db, 3, title_change("Alt", "Neu"), status: "failed")
+      proposal_row(db, 4, [{field: "candidate", old: nil, new: {title: "X", authors: ["Y"], source: "rules"}, source: "rules"}].to_json)
+      proposal_row(db, 5, "[]")
+      decide(intake, [-2_i64], "skip")
+      list = intake.library_list
+      list["entries"][1]["skipped"].should eq true
+      list["takeable"].should eq 1
+      {list["left"]["skipped"], list["left"]["failed"], list["left"]["unchanged"]}.should eq({1, 1, 2})
+      list["total"].as_i.should eq list["takeable"].as_i + 4
+      stale = JSON.parse({decision: "accept", target: {query: {library: true}, last: list["last"], expect: 5}}.to_json).as_h
+      expect_raises(CalibreHub::Jobs::CountMismatch) { intake.decide(stale) }
+      body = JSON.parse({decision: "accept", target: {query: {library: true}, last: list["last"], expect: 1}}.to_json).as_h
+      intake.decide(body)[1]["total"].should eq 1
+      repair_settled(repair)
+      fake.books[1_i64]["title"].should eq "Neu"
+      fake.books[2_i64]["title"].should eq "Alt"
+      decide(intake, [-2_i64], "unskip")
+      intake.library_list["takeable"].should eq 1
+    end
+  end
+end
+
+describe CalibreHub::RepairRecheck do
+  it "plans the applied books and the last run again, protects hand edits, drops what changes nothing" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(1, "Frank Herbert", ["Dune"])          # accepted before today's rules
+      fake.add(2, "Hand", ["Ursula Le Guin"])         # title and authors by hand since
+      fake.add(3, "Dune", ["Frank Herbert"])          # right already
+      fake.add(4, "Isaac Asimov", ["Foundation"])     # of the last run, never planned
+      fake.add(5, "Ray Bradbury", ["Fahrenheit 451"]) # rejected
+      fake.add(6, "Stanislaw Lem", ["Solaris"])       # open
+      fake.add(7, "Philip Dick", ["Ubik"])            # an older run
+      fake.add(8, "Arkady Strugatsky", ["Picknick"])  # taken in the Eingang
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      recheck = CalibreHub::RepairRecheck.new(db, fake.calibre, CalibreHub::Writer.new(fake.calibre, nil, nil, "kategorie"), repair, 0.seconds, 5.milliseconds)
+      imported(db, "/gone/Frank Herbert - Dune.pdf", 1)
+      imported(db, "/gone/Ursula Le Guin - Earthsea.pdf", 2)
+      imported(db, "/gone/Frank Herbert - Dune2.pdf", 3)
+      imported(db, "/gone/Ray Bradbury - Fahrenheit 451.pdf", 5)
+      imported(db, "/gone/Stanislaw Lem - Solaris.pdf", 6)
+      imported(db, "/gone/Philip Dick - Ubik.pdf", 7, "older")
+      db.exec "update import_files set at = 50 where run_id = 'older'"
+      imported(db, "/gone/Isaac Asimov - Foundation.pdf", 4, "last")
+      imported(db, "/gone/Arkady Strugatsky - Picknick.pdf", 8, Intake::RUN)
+      db.exec "update import_files set at = 200 where run_id = 'last'"
+      db.exec "update import_files set at = 300 where run_id = ?", Intake::RUN
+      [1_i64, 2_i64, 3_i64].each { |i| proposal_row(db, i, "[]", status: "applied") }
+      proposal_row(db, 5, title_change("x", "y"), status: "rejected")
+      proposal_row(db, 6, title_change("Stanislaw Lem", "Solaris"), file: "/gone/Stanislaw Lem - Solaris.pdf")
+      proposal_row(db, 8, "[]", status: "applied")
+      log = CalibreHub::MetaLog.new(db)
+      log.decide(8, Meta::Flow::Decision.new([] of Meta::Change, "dnb", 3, "dnb", 100, 100), CalibreHub::MetaLog::ACCEPTED)
+      changed = {changes: {"title" => ["Earthsea", "Hand"], "authors" => [["Earthsea"], ["Ursula Le Guin"]]}}.to_json
+      db.exec "insert into events (type, book_id, payload, created_at) values ('added', 2, ?, 100)", {book: {title: "Ursula Le Guin", authors: ["Earthsea"]}}.to_json
+      db.exec "insert into events (type, book_id, payload, created_at) values ('changed', 2, ?, 100000)", changed
+      {1, 3, 4}.each { |i| db.exec "insert into events (type, book_id, payload, created_at) values ('added', ?, ?, 100)", i, {book: JSON.parse(fake.books[i.to_i64].to_json)}.to_json }
+
+      job = recheck.queue
+      job.ids.should eq [1_i64, 2_i64, 3_i64, 4_i64]
+      recheck_done(recheck)
+      recheck[job.id]?.not_nil!.errors.should be_empty
+      open = repair.proposals("pending").to_h { |p| {p.book_id, p} }
+      open.keys.sort!.should eq [1_i64, 4_i64, 6_i64]
+      open[1_i64].changes.map(&.field).should contain "title"
+      open[1_i64].file.should eq "/gone/Frank Herbert - Dune.pdf"
+      # the rows no plan changed are as they were
+      repair.proposals("status = 'applied'", [] of DB::Any).map(&.book_id).sort!.should eq [2_i64, 3_i64, 8_i64]
+      # the same book isn't checked twice
+      recheck.queue.total.should eq 0
+      library_entries(intake).map(&.["bookId"].as_i).should contain 4
+    end
+  end
+
+  it "takes a run by name and a calibre folder's book by its folder's name" do
+    tmpdir do |_, root|
+      dir = File.join(root, "Allies (177)")
+      write(File.join(dir, "Allies - Christie Golden.mobi"), "x")
+      fake = FakeCalibre.new
+      fake.add(1, "Christie Golden", ["Allies"], ["MOBI"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      recheck = CalibreHub::RepairRecheck.new(db, fake.calibre, CalibreHub::Writer.new(fake.calibre, nil, nil, "kategorie"), repair, 0.seconds, 5.milliseconds)
+      imported(db, File.join(dir, "Allies - Christie Golden.mobi"), 1, "portion")
+      db.exec "insert into events (type, book_id, payload, created_at) values ('added', 1, ?, 100)", {book: JSON.parse(fake.books[1_i64].to_json)}.to_json
+      # no metadata.opf any more, the folder's name still says it
+      repair.files({} of String => JSON::Any).should be_empty
+      repair.files({} of String => JSON::Any, folders: true)[1_i64].should end_with ".mobi"
+      recheck.queue("other").total.should eq 0
+      recheck_done(recheck)
+      recheck.queue("portion").total.should eq 1
+      recheck_done(recheck)
+      p = repair.proposals("pending").first
+      p.changes.find! { |c| c.field == "title" }.new.should eq "Allies"
+      p.changes.find! { |c| c.field == "authors" }.new[0].should eq "Christie Golden"
+      intake.list["total"].should eq 0
+    end
+  end
+
+  it "stands still while the analysis works, and the analysis doesn't wait for it" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(1, "Frank Herbert", ["Dune"])
+      intake, _, db, imports = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      recheck = CalibreHub::RepairRecheck.new(db, fake.calibre, CalibreHub::Writer.new(fake.calibre, nil, nil, "kategorie"), repair, 0.seconds, 5.milliseconds)
+      intake.recheck = recheck
+      busy = true
+      recheck.busy = -> { busy }
+      imported(db, "/gone/Frank Herbert - Dune.pdf", 1)
+      proposal_row(db, 1, "[]", status: "applied")
+      recheck.queue
+      sleep 30.milliseconds
+      recheck.waiting?.should be_true
+      intake.library_list["recheck"]["waiting"].should eq true
+      # the queue the analysis waits for is another one
+      repair.running?.should be_false
+      imports.running?.should be_false
+      db.query_one("select count(*) from import_rechecks", as: Int64).should eq 0
+      busy = false
+      recheck_done(recheck)
+      recheck.waiting?.should be_false
+      intake.library_list["recheck"].raw.should be_nil
+      db.query_one("select count(*) from import_rechecks", as: Int64).should eq 1
+    end
+  end
+end

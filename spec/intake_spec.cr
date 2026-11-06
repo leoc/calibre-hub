@@ -503,5 +503,6 @@ describe CalibreHub::AuthHandler do
   it "keeps the Eingang for admins" do
     CalibreHub::AuthHandler.reader_may?(HTTP::Request.new("GET", "/api/intake")).should be_false
     CalibreHub::AuthHandler.reader_may?(HTTP::Request.new("GET", "/api/intake/1/cover")).should be_false
+    CalibreHub::AuthHandler.reader_may?(HTTP::Request.new("GET", "/api/intake/1/file")).should be_false
   end
 end

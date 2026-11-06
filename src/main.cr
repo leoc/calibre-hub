@@ -507,6 +507,7 @@ module CalibreHub
       m.library = config.library
       repair.try do |r|
         r.reader = ->(b : Book, path : String?) { m.flow_info(b, path) }
+        r.quiet_reader = ->(b : Book, path : String?) { m.flow_info(b, path, nice: true) }
         r.by_isbn = m.isbn_lookup
         r.owners = m.owners
         m.review = ->(id : Int64, note : Meta::Flow::Note) { r.flag(id, note); nil }
@@ -525,6 +526,7 @@ module CalibreHub
     intake = imports.try do |i|
       x = Intake.new(db, calibre, i, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"))
       x.busy = -> { i.running? || (repair.try(&.running?) || false) }
+      x.repair = repair
       metadata_jobs.try(&.metadata).try do |m|
         x.reader = ->(path : String, format : String) { m.read_flow(path, format, nice: true) }
         x.by_isbn = m.isbn_lookup
@@ -535,6 +537,10 @@ module CalibreHub
       x.start
       x
     end
+    # the library's books no plan got to, behind the analysis
+    recheck = repair.try { |r| RepairRecheck.new(db, calibre, writer, r) }
+    recheck.try &.busy = -> { intake.try(&.working?) || imports.try(&.running?) || false }
+    intake.try &.recheck = recheck
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members
@@ -544,12 +550,12 @@ module CalibreHub
     # the metadata cleanup edits no category, but its {query} targets filter by it
     metadata_jobs.try &.category_column = config.category_column
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), intake.try(&.decisions), cleanup, repair].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), intake.try(&.decisions), cleanup, repair, recheck].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
     epub_fix_routes(epub_fix)
     import_routes(imports, cleanup)
-    import_repair_routes(repair)
+    import_repair_routes(repair, recheck)
     intake_routes(intake)
 
     Kemal.config.host_binding = config.host

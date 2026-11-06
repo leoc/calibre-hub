@@ -3,6 +3,7 @@ require "json"
 require "kemal"
 require "./backlog"
 require "./backlog_jobs"
+require "./import_repair"
 require "./meta_flow"
 require "./sanitizer"
 
@@ -411,18 +412,19 @@ module CalibreHub
       end
     end
 
-    # What the entry's decision writes. accept: the proposal, a candidate's
-    # fields over it, title and authors as edited over those; file: nothing.
-    # A book marked as a duplicate was taken knowing that.
+    # What the entry's decision writes. accept: the proposal, or what a
+    # chosen candidate says; title and authors as edited over those; file:
+    # nothing. A book marked as a duplicate was taken knowing that.
     def chosen(e : Entry, changes : Hash(String, JSON::Any)) : ImportJobs::Chosen
       force = e.action == "duplicate"
       decision = flow_decision(e)
       return ImportJobs::Chosen.new({} of String => JSON::Any, as_in_file, force) if changes["decision"] == "file"
       p = e.proposal || raise Edit::Invalid.new("decision", "no proposal")
       values = Intake.values(p)
-      if i = changes["candidate"]?.try(&.as_i?)
-        Intake.overlay(values, (candidates(e.id)[i]? || raise Edit::Invalid.new("candidate", "no such candidate")).fields)
-        decision = decision.try(&.copy_with(changes: [] of Meta::Change))
+      if i = changes["candidate"]?.try(&.as_i?) || changes["picks"]?.try(&.[e.id.to_s]?).try(&.as_i?)
+        c = candidates(e.id)[i]? || raise Edit::Invalid.new("candidate", "no such candidate")
+        values = Intake.candidate_values(p, c.fields)
+        decision = Intake.picked(decision || as_in_file, c)
       end
       title = changes["title"]?.try(&.as_s?)
       authors = changes["authors"]?.try(&.as_a?)
@@ -448,6 +450,23 @@ module CalibreHub
     private def as_in_file : Meta::Flow::Decision
       kept = Meta::Confidence::KEPT
       Meta::Flow::Decision.new([] of Meta::Change, "file", Meta::Flow::LEVEL_META, "file", kept, kept)
+    end
+
+    # A candidate is chosen because the proposal is another book: nothing of
+    # that book stays but a title and authors the candidate doesn't have.
+    def self.candidate_values(p : Proposal, r : Meta::Record) : Hash(String, JSON::Any)
+      v = {"title" => JSON::Any.new(p.title), "authors" => JSON.parse(p.authors.to_json)}
+      overlay(v, r)
+      v
+    end
+
+    # Arthur's choice: as sure as his hand whatever the rules thought of it,
+    # with no tag and no note about the proposal's ISBN
+    def self.picked(d : Meta::Flow::Decision, c : Candidate) : Meta::Flow::Decision
+      hand = Meta::Confidence::HAND
+      d.copy_with(changes: [] of Meta::Change, how: c.source, source: c.source, title: hand, authors: hand,
+        isbn: c.fields.isbn.try { |i| Meta::Isbn.normalize(i) }, isbn_source: c.fields.isbn ? c.source : nil,
+        notes: [] of Meta::Flow::Note)
     end
 
     def self.values(p : Proposal) : Hash(String, JSON::Any)
@@ -503,6 +522,11 @@ module CalibreHub
       @db.query_each("select id from intake_entries where decision is null and skipped = 0 and error is null and " \
                      "status = 'analysed' and action = 'add' and confidence >= ?", limit) { |rs| ids << rs.read(Int64) }
       decisions.queue(ids, {"decision" => JSON::Any.new("accept")}) unless ids.empty?
+    end
+
+    # the analysis is at it, so what can wait does (RepairRecheck)
+    def working? : Bool
+      @state.in?("scanning", "analysing")
     end
 
     # the entry's book counts for later ones, by a pseudo id like a dry run's
@@ -605,15 +629,7 @@ module CalibreHub
     # The book with the decision's changes; below the threshold what was
     # found as a suggestion, the confidence says how far to trust it
     def self.proposal(book : Book, d : Meta::Flow::Decision?, info : Meta::FileMeta::Info?) : Proposal
-      values = FIELDS.to_h { |f| {f, Meta::Merge.value(book, f)} }
-      d.try &.changes.each do |c|
-        if c.field == Meta::FileName::CANDIDATE
-          c.new["title"]?.try(&.as_s?).try { |t| values["title"] = JSON::Any.new(t) }
-          c.new["authors"]?.try { |a| values["authors"] = a unless a.as_a.empty? }
-        elsif values.has_key?(c.field)
-          values[c.field] = c.new
-        end
-      end
+      values = changed_values(book, d.try(&.changes) || [] of Meta::Change)
       unless d
         # a standard: the rules know its name, no flow decides it
         Meta::Norms.parse(book, info.try(&.cover)).try do |norm|
@@ -624,6 +640,23 @@ module CalibreHub
           values["pubdate"] = JSON::Any.new(r.pubdate)
         end
       end
+      from_values(values)
+    end
+
+    def self.changed_values(book : Book, changes : Array(Meta::Change)) : Hash(String, JSON::Any)
+      values = FIELDS.to_h { |f| {f, Meta::Merge.value(book, f)} }
+      changes.each do |c|
+        if c.field == Meta::FileName::CANDIDATE
+          c.new["title"]?.try(&.as_s?).try { |t| values["title"] = JSON::Any.new(t) }
+          c.new["authors"]?.try { |a| values["authors"] = a unless a.as_a.empty? }
+        elsif values.has_key?(c.field)
+          values[c.field] = c.new
+        end
+      end
+      values
+    end
+
+    def self.from_values(values : Hash(String, JSON::Any)) : Proposal
       Proposal.new(values["title"].as_s, values["authors"].as_a.map(&.as_s), values["publisher"].as_s?, values["pubdate"].as_s?,
         values["series"].as_s?, values["seriesIndex"].as_f?, values["isbn"].as_s?, values["languages"].as_a.map(&.as_s))
     end
@@ -839,6 +872,15 @@ module CalibreHub
       skipped ? sql : "#{sql} and skipped = 0"
     end
 
+    # What of a filter a bulk decision leaves in the list and why, so the
+    # button's number and the filter's add up
+    private def left_out(band : String?, duplicates : Bool?, skipped : Bool?)
+      clause = filter_sql(band, duplicates, skipped)
+      count = ->(extra : String) { @db.query_one("select count(*) from intake_entries where #{clause} and #{extra}", as: Int64) }
+      {duplicates: count.call("status = 'analysed' and action = 'duplicate'"), failed: count.call("status != 'analysed'"),
+       skipped: skipped ? 0_i64 : count.call("status = 'analysed' and action != 'duplicate' and skipped = 1"), unchanged: 0_i64}
+    end
+
     # The list for the page: a page of entries with the filter's total, how
     # many of that kind there are per band, and what a bulk decision takes.
     # band: by confidence; duplicates: only those that match a book, or
@@ -865,10 +907,20 @@ module CalibreHub
       JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? entries.last.path : nil,
                   takeable: @db.query_one("select count(*) from intake_entries where #{takeable}", as: Int64),
                   unsure: @db.query_one("select count(*) from intake_entries where #{takeable} and confidence < #{Meta::Confidence::REVIEW}", as: Int64),
-                  skipped: @db.query_one("select count(*) from intake_entries where decision is null and skipped = 1", as: Int64),
+                  left: left_out(band, duplicates, skipped), skipped: skipped_count,
                   last: @db.query_one("select coalesce(max(id), 0) from intake_entries", as: Int64),
-                  pending: @db.query_one("select count(*) from intake_entries where decision is not null", as: Int64),
+                  pending: pending_count,
                   threshold: threshold, entries: entries.map(&.to_api(@imports.roots))}.to_json)
+    end
+
+    private def skipped_count : Int64
+      @db.query_one("select count(*) from intake_entries where decision is null and skipped = 1", as: Int64)
+    end
+
+    # decided, waiting for their job; a library book's accept too
+    private def pending_count : Int64
+      @db.query_one("select count(*) from intake_entries where decision is not null", as: Int64) +
+        (@repair ? @db.query_one("select count(*) from import_repairs where decision is not null", as: Int64) : 0_i64)
     end
 
     # POST /api/intake/decide. decision: accept, file, trash go through the
@@ -876,11 +928,15 @@ module CalibreHub
     # accept all of a filter, {query: {band, duplicates, skipped}, last, expect}:
     # last (the list's) leaves out what the analysis added since, expect
     # (takeable) is the number meant. One entry's accept takes a candidate
-    # (index) and the edited title and authors.
+    # (index) and the edited title and authors, a filter's the candidates
+    # chosen so far (picks: {entry id: index}). Library books (negative ids,
+    # query {library: true}) have their own exits: decide_library.
     def decide(body : Hash(String, JSON::Any)) : {Int32, JSON::Any}
-      decision = body["decision"]?.try(&.as_s?) || raise Edit::Invalid.new("decision", "accept, file, skip, unskip or trash expected")
-      raise Edit::Invalid.new("decision", "accept, file, skip, unskip or trash expected") unless DECISIONS.includes?(decision)
+      decision = body["decision"]?.try(&.as_s?) || raise Edit::Invalid.new("decision", "accept, file, skip, unskip, trash or reject expected")
+      raise Edit::Invalid.new("decision", "accept, file, skip, unskip, trash or reject expected") unless DECISIONS.includes?(decision)
       target = body["target"]?.try(&.as_h?) || raise Edit::Invalid.new("target", "object expected")
+      return decide_library(body, decision, target) if library_target?(target)
+      raise Edit::Invalid.new("decision", "reject is for books of the library") if decision == "reject"
       ids = target["query"]? ? by_filter(target, decision) : by_ids(target)
       changes = chosen_changes(body, decision, ids)
       if decision.in?("skip", "unskip")
@@ -891,7 +947,7 @@ module CalibreHub
       {202, JSON.parse({jobId: job.try(&.id), total: ids.size}.to_json)}
     end
 
-    DECISIONS = %w(accept file skip unskip trash)
+    DECISIONS = %w(accept file skip unskip trash reject)
 
     # the ones still in the list
     private def by_ids(target : Hash(String, JSON::Any)) : Array(Int64)
@@ -925,6 +981,14 @@ module CalibreHub
         raise Edit::Invalid.new(k, "only for one entry's accept") unless decision == "accept" && ids.size <= 1
         changes[k] = v
       end
+      body["picks"]?.try do |picks|
+        raise Edit::Invalid.new("picks", "only for accepting a filter") unless decision == "accept" && body["target"]["query"]?
+        (picks.as_h? || raise Edit::Invalid.new("picks", "object expected")).each do |id, i|
+          next unless (entry = id.to_i64?) && ids.includes?(entry)
+          raise Edit::Invalid.new("picks", "no such candidate") unless i.as_i?.try { |n| candidates(entry)[n]? }
+        end
+        changes["picks"] = picks
+      end
       changes["candidate"]?.try do |c|
         i = c.as_i? || raise Edit::Invalid.new("candidate", "index expected")
         ids.first?.try { |id| raise Edit::Invalid.new("candidate", "no such candidate") unless candidates(id)[i]? }
@@ -955,6 +1019,7 @@ module CalibreHub
 
     # One entry for the drawer: what the analysis changed, everything found
     def detail(id : Int64) : JSON::Any?
+      return library_detail(-id) if id < 0
       e = self[id]? || return nil
       h = JSON.parse(e.to_api(@imports.roots).to_json).as_h
       h["changes"] = JSON.parse(e.changes.to_json)
@@ -976,6 +1041,9 @@ module CalibreHub
       next {enabled: false}.to_json unless intake
       write_errors(env) do
         q = env.params.query
+        if q["library"]? == "true"
+          next intake.library_list(q["band"]?.presence, q["limit"]?.try(&.to_i?) || 100, q["after"]?.presence).to_json
+        end
         duplicates = q["duplicates"]?.presence.try { |v| v == "true" }
         intake.list(q["band"]?.presence, duplicates, q["offset"]?.try(&.to_i?) || 0, q["limit"]?.try(&.to_i?) || 100,
           q["skipped"]? == "true" ? true : nil, q["after"]?.presence).to_json
@@ -1019,6 +1087,20 @@ module CalibreHub
       intake.try(&.detail(id)).try(&.to_json) || fail(env, 404, {error: "not found"})
     end
 
+    # the file itself, to read a few pages of it: only what the entry says is
+    # its file, nothing is kept about it. Data, never a page of the hub.
+    get "/api/intake/:id/file" do |env|
+      id = env.params.url["id"].to_i64? || next fail(env, 404, {error: "not found"})
+      file = intake.try(&.readable(id, env.params.query["format"]?.presence))
+      next fail(env, 404, {error: "not found"}) unless file
+      env.response.content_type = "application/octet-stream"
+      env.response.headers["Content-Disposition"] = "attachment"
+      env.response.headers["Cache-Control"] = "private, no-store"
+      env.response.content_length = file.size
+      File.open(file.path) { |io| IO.copy(io, env.response) }
+      nil
+    end
+
     get "/api/intake/:id/cover" do |env|
       id = env.params.url["id"].to_i64? || next fail(env, 404, {error: "not found"})
       path = intake.try(&.[id]?).try(&.cover)
@@ -1034,3 +1116,4 @@ module CalibreHub
 end
 
 require "./intake_decide"
+require "./intake_library"
