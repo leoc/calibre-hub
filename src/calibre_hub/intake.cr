@@ -365,7 +365,9 @@ module CalibreHub
     private def inbox_units(now : Time) : Array(Backlog::Unit)
       box = @inbox || return [] of Backlog::Unit
       known = Backlog::Known.new
-      all.each { |e| e.files.each { |f| known[f.path] = {f.size, f.mtime, "analysed", nil} } if e.origin == INBOX }
+      @db.query_each("select files from intake_entries where origin = ?", INBOX) do |rs|
+        Array(Backlog::BookFile).from_json(rs.read(String)).each { |f| known[f.path] = {f.size, f.mtime, "analysed", nil} }
+      end
       scanner = Backlog::Scanner.new([box.dir], known, underscored: true)
       scanner.run
       box.fail_broken(scanner.skipped, now)
