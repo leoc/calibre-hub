@@ -742,14 +742,15 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'Doppelt\\n\\nText\\n' > /tmp/d.txt")
         for fmt in ("epub", "azw3"):
             machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/d.txt /tmp/Doppelbuch.{fmt} --title Doppelbuch --authors 'Dora Doppel'")
-        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Doppelbuch.epub")
-        assert status == 201, (status, r)
+        r = upload("-F file=@/tmp/Doppelbuch.epub")
+        assert r["status"] == "imported", r
         keep = r["book"]["id"]
-        # calibre's own check refuses the copy; forced, the hub's detection names the first
-        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie")
-        assert status == 409, (status, r)
-        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie -F force=1")
-        assert status == 201 and [b["id"] for b in r["possibleDuplicates"]] == [keep], (status, r)
+        # the Eingang asks about the copy; forced, the hub's detection names the first
+        r = upload("-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie")
+        assert r["status"] == "duplicate" and [b["id"] for b in r["duplicates"]] == [keep], r
+        decide({"id": r["entryId"]}, "trash")
+        r = upload("-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie -F force=1")
+        assert r["status"] == "imported" and [b["id"] for b in r["possibleDuplicates"]] == [keep], r
         other = r["book"]["id"]
         # the copy is converted to EPUB too (convert.enable); wait for it, so nothing changes under the merge
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{other} | jq -e '.formats | sort == [\"AZW3\", \"EPUB\"]'", timeout=120)
@@ -828,8 +829,8 @@ pkgs.testers.runNixOSTest {
         assert status == 200 and st["enabled"] and st["model"] == "stub" and st["threshold"] == 0.85, st
         # the tree so far: Bulk, Roman, Roman.Krimi; Roman.SF from a book of
         # its own, added with its category, so it isn't classified
-        status, r = api("POST", "/api/books", extra=f"-F file=@{epub('Fern')} -F kategorie=Roman.SF")
-        assert status == 201, (status, r)
+        r = upload(f"-F file=@{epub('Fern')} -F kategorie=Roman.SF")
+        assert r["status"] == "imported", r
         machine.wait_for_unit("model-stub.service")
         # the upload without a category in "upload" was classified on its added event
         dup = book_by_title("Hochgeladen")["id"]

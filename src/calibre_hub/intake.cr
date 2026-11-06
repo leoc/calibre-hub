@@ -32,7 +32,7 @@ module CalibreHub
   # to prove itself like a PDF's, not what the book is called.
   #
   # POST /api/intake/analysis stops the analysis after the file at hand and
-  # starts it again (hub import analysis off|on), without a deploy and over a
+  # starts it again (hub eingang analysis off|on), without a deploy and over a
   # restart: the flag is in the state DB.
   class Intake
     # between two looks at the roots, after the hub started

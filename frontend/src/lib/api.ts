@@ -283,7 +283,6 @@ export interface IntakeLeft {
   unchanged: number
 }
 
-// without import roots only {enabled: false}
 export interface IntakeList {
   enabled: boolean
   progress?: IntakeProgress
