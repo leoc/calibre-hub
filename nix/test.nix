@@ -1145,6 +1145,10 @@ pkgs.testers.runNixOSTest {
                 machine.sleep(1)
             raise Exception(f"run {run_id} still scanning")
 
+        # the Eingang: nothing to start, it looks at the roots by itself
+        status, intake = api("GET", "/api/intake")
+        assert status == 200 and intake["enabled"] is True and intake["progress"]["state"] in ("idle", "scanning", "analysing", "paused"), intake
+        assert api("GET", "/api/intake/0")[0] == 404
         assert api("POST", "/api/import", {"path": "/srv/books"})[0] == 400
         assert api("POST", "/api/import", {"path": ALT, "limit": 0})[0] == 400
         # the scan runs in the run's job, the request returns at once
