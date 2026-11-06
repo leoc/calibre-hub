@@ -252,9 +252,9 @@ module CalibreHub
 
       # The first pages of a PDF or DjVu as a PDF at `target`, without touching
       # the file: how many pages the file has, nil when the tools can't. A PDF
-      # no longer than that stays as it is, nothing is at `target`. A slow
-      # PDF is one that shares a lot between its pages, each page gets its
-      # copy: not worth waiting for. A DjVu has no other way to be read.
+      # no longer than that stays as it is, nothing is at `target`.
+      # pdftocairo: pdfseparate gives each page its copy of what pages share,
+      # 236 MB out of 36. A DjVu has no other way to be read.
       def self.first_pages(path : String, format : String, target : String, count : Int32, nice = false) : Int32?
         if format.upcase == "PDF"
           pages = run("pdfinfo", ["-enc", "UTF-8", path], nice: nice).try(&.[/^Pages:\s*(\d+)/m, 1]?).try(&.to_i?) || return nil
@@ -267,12 +267,7 @@ module CalibreHub
       end
 
       private def self.pdf_pages(path : String, target : String, count : Int32, nice : Bool) : Bool
-        dir = "#{target}.pages"
-        Dir.mkdir(dir)
-        run("pdfseparate", ["-f", "1", "-l", count.to_s, path, File.join(dir, "%d.pdf")], PDF_PAGES_TIMEOUT, nice) || return false
-        !!run("pdfunite", (1..count).map { |i| File.join(dir, "#{i}.pdf") } + [target], PDF_PAGES_TIMEOUT, nice)
-      ensure
-        FileUtils.rm_rf(dir) if dir
+        !!run("pdftocairo", ["-pdf", "-f", "1", "-l", count.to_s, path, target], PDF_PAGES_TIMEOUT, nice)
       end
 
       # the start and the end of a text file
