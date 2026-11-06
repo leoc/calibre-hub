@@ -136,6 +136,7 @@ describe Intake do
       list.size.should eq 2
       dune = list.first
       dune["name"].should eq "Frank Herbert - Dune (Chilton, 1965).pdf"
+      dune["folder"].raw.should be_nil
       dune["proposal"]["title"].should eq "Dune"
       dune["proposal"]["authors"].should eq ["Frank Herbert"]
       dune["proposal"]["publisher"].should eq "Chilton"
@@ -208,6 +209,7 @@ describe Intake do
       intake.run_once
       swapped, kept = entries(intake)
       swapped["kind"].should eq "calibre"
+      swapped["folder"].should eq "calibre/Christie Golden/Allies (177)"
       swapped["proposal"]["title"].should eq "Allies"
       swapped["proposal"]["authors"].should eq ["Christie Golden"]
       # the OPF still gives what the name doesn't have
@@ -258,7 +260,9 @@ describe Intake do
       by_name["a/Ursula Le Guin - The Dispossessed.pdf"].first["action"].should eq "add"
       entries(intake, duplicates: true).size.should eq 2
       entries(intake, duplicates: false).size.should eq 1
-      intake.list["counts"]["duplicates"].should eq 2
+      # the counts are the kind's
+      intake.list(duplicates: true)["counts"].as_h.values.sum(&.as_i).should eq 2
+      intake.list["counts"].as_h.values.sum(&.as_i).should eq 3
     end
   end
 
@@ -331,6 +335,9 @@ describe Intake do
       failed["band"].raw.should be_nil
       ok["status"].should eq "analysed"
       intake.list["counts"]["none"].should eq 1
+      # a file that failed is in the Eingang, without a proposal
+      progress = intake.list(band: "bulk")["progress"]
+      {progress["total"], progress["analysed"]}.should eq({2, 1})
       entries(intake, band: "none").size.should eq 1
       # unchanged it isn't tried again
       intake.run_once.should eq 0
@@ -357,7 +364,28 @@ describe Intake do
       importing = false
       sleep 100.milliseconds
       seen.should eq [{"analysing", "Frank Herbert - Dune.pdf", 0_i64, 1_i64}]
-      intake.progress.should eq({state: "idle", done: 1_i64, total: 1_i64, current: nil})
+      intake.progress.should eq({state: "idle", done: 1_i64, total: 1_i64, analysed: 1_i64, current: nil})
+    end
+  end
+
+  it "can be switched off and on, also over a restart" do
+    tmpdir do |root|
+      write(File.join(root, "Frank Herbert - Dune.pdf"), pdf)
+      intake, fake, db, _ = setup(root)
+      intake.reader = ->(_p : String, _f : String) { info }
+      intake.analysis = false
+      intake.progress[:state].should eq "off"
+      again, _, _, _ = setup(root, fake, db)
+      again.off?.should be_true
+      again.reader = ->(_p : String, _f : String) { info }
+      spawn { again.run_once }
+      sleep 50.milliseconds
+      again.state.should eq "off"
+      entries(again).should be_empty
+      again.analysis = true
+      sleep 100.milliseconds
+      entries(again).size.should eq 1
+      again.progress[:state].should eq "idle"
     end
   end
 
@@ -413,9 +441,9 @@ private def reset_routes
   Kemal::RouteHandler::INSTANCE.cached_routes = Kemal::LRUCache(String, Radix::Result(Kemal::Route)).new(Kemal.config.max_route_cache_size)
 end
 
-private def call(path : String) : HTTP::Client::Response
+private def call(path : String, method = "GET", body : String? = nil) : HTTP::Client::Response
   io = IO::Memory.new
-  ctx = HTTP::Server::Context.new(HTTP::Request.new("GET", path), HTTP::Server::Response.new(io))
+  ctx = HTTP::Server::Context.new(HTTP::Request.new(method, path, body: body), HTTP::Server::Response.new(io))
   Kemal::RouteHandler::INSTANCE.call(ctx)
   ctx.response.close
   HTTP::Client::Response.from_io(IO::Memory.new(io.to_s))
@@ -446,6 +474,12 @@ describe "intake routes" do
       call("/api/intake/999").status_code.should eq 404
       call("/api/intake/999/cover").status_code.should eq 404
       call("/api/intake?band=nonsense").status_code.should eq 400
+
+      JSON.parse(call("/api/intake/analysis", "POST", %({"on":false})).body)["state"].should eq "off"
+      intake.off?.should be_true
+      call("/api/intake/analysis", "POST", %({"on":true})).status_code.should eq 200
+      intake.off?.should be_false
+      call("/api/intake/analysis", "POST", %({"on":"maybe"})).status_code.should eq 400
     end
   end
 

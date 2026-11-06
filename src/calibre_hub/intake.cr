@@ -22,6 +22,10 @@ module CalibreHub
   # the same, also over a restart; a file gone or handled by an import leaves
   # the list. A calibre folder's metadata.opf is the file's metadata that has
   # to prove itself like a PDF's, not what the book is called.
+  #
+  # POST /api/intake/analysis stops the analysis after the file at hand and
+  # starts it again (hub import analysis off|on), without a deploy and over a
+  # restart: the flag is in the state DB.
   class Intake
     # between two looks at the roots, after the hub started
     INTERVAL = 5.minutes
@@ -34,6 +38,8 @@ module CalibreHub
     WAIT = 30.seconds
     # entries per request at most
     MAX_LIMIT = 500
+    # meta: the analysis is switched off
+    OFF = "intake_off"
 
     # what a Book needs of the flow's fields, as the list shows them
     FIELDS = %w(title authors publisher pubdate series seriesIndex isbn languages)
@@ -82,8 +88,15 @@ module CalibreHub
         confidence.try { |c| Meta::Confidence.band(c) }
       end
 
-      def to_api
-        {id: id, path: path, name: File.basename(primary.path), kind: kind,
+      # the file's folder below its root, nil in the root
+      def folder(roots : Array(String)) : String?
+        dir = File.dirname(primary.path)
+        root = roots.select { |r| dir == r || dir.starts_with?(r.rstrip('/') + "/") }.max_by?(&.size)
+        root ? dir.lchop(root).lchop('/').presence : dir
+      end
+
+      def to_api(roots : Array(String))
+        {id: id, path: path, name: File.basename(primary.path), folder: folder(roots), kind: kind,
          files: files.map { |f| {path: f.path, format: f.format, size: f.size} },
          status: status, detail: detail, proposal: proposal, confidence: confidence, band: band,
          titleConfidence: title_confidence, authorsConfidence: authors_confidence, level: level, source: source,
@@ -112,12 +125,13 @@ module CalibreHub
       Meta::FileMeta.cover(path, format, target, nice: true)
     end
 
-    # idle, scanning, analysing, paused
+    # idle, scanning, analysing, paused, off
     getter state = "idle"
     # the file being analysed
     getter current : String? = nil
 
     def self.migrate(db : DB::Database)
+      db.exec "create table if not exists meta (key text primary key, value text)"
       db.exec <<-SQL
         create table if not exists intake_entries (
           id integer primary key autoincrement,
@@ -214,12 +228,25 @@ module CalibreHub
     # true when it waited: the library may have changed
     private def wait_idle : Bool
       waited = false
-      while @busy.call
+      while off? || @busy.call
         waited = true
-        @state = "paused"
+        @state = off? ? "off" : "paused"
         sleep @wait
       end
       waited
+    end
+
+    def off? : Bool
+      !@db.query_one?("select 1 from meta where key = ?", OFF, as: Int64).nil?
+    end
+
+    # on: the next file goes on, within WAIT; off: after the file at hand
+    def analysis=(on : Bool)
+      if on
+        @db.exec "delete from meta where key = ?", OFF
+      else
+        @db.exec "insert or replace into meta (key, value) values (?, '1')", OFF
+      end
     end
 
     # The library and the books the list would add already, so the same book
@@ -551,11 +578,14 @@ module CalibreHub
       list
     end
 
-    # Where the analysis is, for the one line above the list: done of total
-    # counts the whole list, so it goes on after a restart
+    # Where the analysis is, of the whole list whatever the filters, so it
+    # goes on after a restart. total: every book in the Eingang, analysed or
+    # not. done: the ones looked at, those that failed included. analysed:
+    # with a proposal.
     def progress
       done = @db.query_one("select count(*) from intake_entries", as: Int64)
-      {state: @state, done: done, total: done + @left, current: @current}
+      analysed = @db.query_one("select count(*) from intake_entries where status = 'analysed'", as: Int64)
+      {state: off? ? "off" : @state, done: done, total: done + @left, analysed: analysed, current: @current}
     end
 
     # bulk, review, unsure: Meta::Confidence's bands; none: failed files
@@ -571,30 +601,38 @@ module CalibreHub
     end
 
     # The list for the page: a page of entries with the filter's total, and
-    # how many there are per filter. band: by confidence; duplicates: only
-    # those that match a book, or (false) only the new ones.
+    # how many of that kind there are per band. band: by confidence;
+    # duplicates: only those that match a book, or (false) only the new ones.
     def list(band : String? = nil, duplicates : Bool? = nil, offset = 0, limit = 100) : JSON::Any
-      where = [band_sql(band)]
-      where << (duplicates ? "action != 'add'" : "action = 'add'") unless duplicates.nil?
-      clause = where.compact.join(" and ").presence.try { |w| " where #{w}" } || ""
+      kind = duplicates.nil? ? nil : (duplicates ? "action != 'add'" : "action = 'add'")
+      clause = [band_sql(band), kind].compact.join(" and ").presence.try { |w| " where #{w}" } || ""
       total = @db.query_one("select count(*) from intake_entries#{clause}", as: Int64)
       entries = [] of Entry
       @db.query_each("select #{COLUMNS} from intake_entries#{clause} order by #{ORDER} limit ? offset ?", limit.clamp(1, MAX_LIMIT), {offset, 0}.max) do |rs|
         entries << read_entry(rs)
       end
       counts = Hash(String, Int64).new(0_i64)
-      (Meta::Confidence::BANDS + ["none"]).each { |b| counts[b] = @db.query_one("select count(*) from intake_entries where #{band_sql(b)}", as: Int64) }
-      counts["duplicates"] = @db.query_one("select count(*) from intake_entries where action != 'add'", as: Int64)
-      JSON.parse({enabled: true, progress: progress, total: total, counts: counts, entries: entries.map(&.to_api)}.to_json)
+      (Meta::Confidence::BANDS + ["none"]).each do |b|
+        counts[b] = @db.query_one("select count(*) from intake_entries where #{[band_sql(b), kind].compact.join(" and ")}", as: Int64)
+      end
+      JSON.parse({enabled: true, progress: progress, total: total, counts: counts, entries: entries.map(&.to_api(@imports.roots))}.to_json)
     end
 
     # One entry for the drawer: what the analysis changed, everything found
     def detail(id : Int64) : JSON::Any?
       e = self[id]? || return nil
-      h = JSON.parse(e.to_api.to_json).as_h
+      h = JSON.parse(e.to_api(@imports.roots).to_json).as_h
       h["changes"] = JSON.parse(e.changes.to_json)
       h["candidates"] = JSON.parse(candidates(id).to_json)
+      h["bookTitle"] = JSON::Any.new(e.book_id.try { |b| book_title(b) })
       JSON::Any.new(h)
+    end
+
+    # the title of the library's book it looks like, for the note
+    private def book_title(id : Int64) : String?
+      @calibre.book(id).try(&.title)
+    rescue Calibre::Error
+      nil
     end
   end
 
@@ -605,6 +643,17 @@ module CalibreHub
         q = env.params.query
         duplicates = q["duplicates"]?.presence.try { |v| v == "true" }
         intake.list(q["band"]?.presence, duplicates, q["offset"]?.try(&.to_i?) || 0, q["limit"]?.try(&.to_i?) || 100).to_json
+      end
+    end
+
+    # {on: false} stops the analysis, {on: true} lets it go on
+    post "/api/intake/analysis" do |env|
+      write_errors(env) do
+        next fail(env, 404, {error: "backlog import is off"}) unless intake
+        on = json_body(env, required: true)["on"]?.try(&.as_bool?)
+        raise Edit::Invalid.new("on", "true or false expected") if on.nil?
+        intake.analysis = on
+        intake.progress.to_json
       end
     end
 

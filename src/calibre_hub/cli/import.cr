@@ -7,12 +7,13 @@ module CalibreHub
       private def import(args : Args)
         first = args.positional.first? || raise Usage.new("path, status, cleanup or undo expected", "import")
         case first
-        when "status"  then import_status
-        when "cleanup" then import_cleanup(args)
-        when "undo"    then import_undo(args)
-        when "repair"  then import_repair(args)
-        when "quality" then import_quality(args)
-        else                import_paths(args.positional, args)
+        when "status"   then import_status
+        when "cleanup"  then import_cleanup(args)
+        when "undo"     then import_undo(args)
+        when "repair"   then import_repair(args)
+        when "quality"  then import_quality(args)
+        when "analysis" then import_analysis(args)
+        else                 import_paths(args.positional, args)
         end
       end
 
@@ -235,6 +236,18 @@ module CalibreHub
         end
         rows = report["books"].as_a.map { |b| [b["id"].to_s, b["title"].as_s, b["authors"].as_a.join(", "), b["reasons"].as_a.join(", ")] }
         Output.table(@out, ["ID", "Title", "Authors", "Why"], rows) unless rows.empty?
+      end
+
+      # hub import analysis off|on: stops the Eingang's analysis or lets it go on
+      private def import_analysis(args : Args)
+        on = case args.positional[1]?
+             when "on"  then true
+             when "off" then false
+             else            raise Usage.new("on or off expected", "import")
+             end
+        result = client.post("/api/intake/analysis", {"on" => on})
+        return @out.puts result.to_json if @json
+        @out.puts "analysis: #{result["state"]}, #{result["done"]} of #{result["total"]}"
       end
 
       # hub import repair [--library] [--since TIME] [--min-id N] [--max-id N] [--apply]

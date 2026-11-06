@@ -569,6 +569,17 @@ describe "hub import" do
     end
   end
 
+  it "switches the intake analysis off and on" do
+    with_stub do |s|
+      s.on("POST", "/api/intake/analysis", {state: "off", done: 3, total: 3})
+      code, stdo, _ = cli(s, "import", "analysis", "off")
+      code.should eq(0)
+      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"on":false})))
+      stdo.should contain("analysis: off, 3 of 3")
+      cli(s, "import", "analysis", "maybe")[0].should eq(1)
+    end
+  end
+
   it "reports the quality of a portion" do
     with_stub do |s|
       s.on("GET", "/api/import/quality", {total: 200, suspect: 12, reasons: {unknownAuthor: 10, unsure: 0}, runs: [] of String,
