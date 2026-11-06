@@ -18,6 +18,7 @@ require "./calibre_hub/cli"
 require "./calibre_hub/hardcover_sync"
 require "./calibre_hub/backlog_jobs"
 require "./calibre_hub/import_repair"
+require "./calibre_hub/intake"
 
 module CalibreHub
   VERSION = "0.1.0"
@@ -520,6 +521,20 @@ module CalibreHub
       i.decisions = repair.try(&.log)
       i.review = repair.try { |r| ->(id : Int64, path : String, d : Meta::Flow::Decision) { r.flagged(id, path, d); nil } }
     end
+    # the Eingang: new files of the import roots, analysed in the background
+    intake = imports.try do |i|
+      x = Intake.new(db, calibre, i, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"))
+      x.busy = -> { i.running? || (repair.try(&.running?) || false) }
+      metadata_jobs.try(&.metadata).try do |m|
+        x.reader = ->(path : String, format : String) { m.read_flow(path, format, nice: true) }
+        x.by_isbn = m.isbn_lookup
+        x.decider = m.decider
+        x.checker = m.checker
+        x.search = ->(b : Book, g : Meta::Guess) { m.search(b, g) }
+      end
+      x.start
+      x
+    end
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members
@@ -535,6 +550,7 @@ module CalibreHub
     epub_fix_routes(epub_fix)
     import_routes(imports, cleanup)
     import_repair_routes(repair)
+    intake_routes(intake)
 
     Kemal.config.host_binding = config.host
     Kemal.config.env = "production"

@@ -241,7 +241,7 @@ module CalibreHub
     # duplicates, imports, metadata changes, suggestions, maintenance runs
     # and their jobs; cover and metadata searches, which ask other sites)
     ADMIN_READS = {
-      %r{\A/api/(trash|duplicates|import|metadata|suggestions|classify|epub-fix|convert|embed|jobs)(/|\z)},
+      %r{\A/api/(trash|duplicates|import|intake|metadata|suggestions|classify|epub-fix|convert|embed|jobs)(/|\z)},
       %r{\A/api/books/\d+/(cover/search|metadata/candidates)\z},
     }
 
