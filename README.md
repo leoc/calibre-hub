@@ -61,7 +61,8 @@ log in.
 | `POST /api/duplicates/merges/:id/undo` | undoes a merge: `{merge, books}` (the keeper and the books back from the trash, with new ids); 409 when undone already |
 | `POST /api/duplicates/ignore` `{bookIds}`, `POST /api/duplicates/ignore/remove` `{bookIds}` | marks every pair of the books as no duplicates (or not any more): `{ignored}` / `{removed}` |
 | `GET /api/categories` | `kategorie` tree with counts, `tags`, `authors`, `series`, `languages`, `privateTags` (the user's own) |
-| `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart; a new book the duplicate detection pairs with others gets `possibleDuplicates: [book]`) |
+| `PATCH /api/books/:id`, `POST /api/books` | edit (`lastModified` for conflict detection, 409), upload (multipart, admins): a new book goes to the Eingang, 202 `{upload: {id, name, status}}`; `addFormatTo` adds the file to that book at once, 200 `{book}`; 415 for what is no book format |
+| `GET /api/intake/uploads/:id` | what came of an upload: `status` checking (the analysis or a decision is at it), waiting (in the Eingang below the threshold: `entryId`, `confidence`, `threshold`), duplicate (in the Eingang, looks like a book: `entryId`, `duplicates`, `titles`), imported (`book`, `possibleDuplicates`), formatAdded (`book`), copy (the same file is in the library: `duplicates`), trashed, gone |
 | `POST /api/books/bulk` `{target, changes}` | `target`: `{ids: [...]}` or `{query: {...}, expect?, all?}` (filters as in `GET /api/books`: `q`, `kategorie`, `tag`, `ptag`, `author`, `series`, `list`, `listPath`, `listOwner`, `direct`; any other key is a 400, and so is a query without any filter unless `all: true`; with `expect` the number of books the query matches must be that one, else 409 `{expected, found}`; deleting by query requires `expect`; the same holds for every `{query}` target below); `changes`: `addTags`, `removeTags`, `kategorie`, `series`, `numberSeries` (with `series` and `ids` only: series index 1..n in the order of the ids), `authors`, `publisher`, `languages`, `rating`, `pubdate`, `pubYear` (the year, month and day stay); returns 202 `{jobId, total}` |
 | `POST /api/jobs/:id/undo` | puts back what a finished bulk field change overwrote (each book's own values, remembered per book while the job ran) as a new job, only where a field still has the value the job set (a field changed since stays and shows in the undo job's `errors` as "changed since, left as it is: <fields>"; tags go back as a difference, so tags added since stay); once per job, 409 for a running job, a delete or one undone already; returns 202 `{jobId, total}` |
 | `GET /api/jobs/:id` | `{id, status: running\|done\|failed, done, total, errors: [{bookId, error}], error?}`; jobs are kept in the state DB, a running job resumes after a restart, the last 50 finished ones stay; `error` when a job stopped early. Also finds classify runs |
@@ -87,23 +88,17 @@ log in.
 | `POST /api/epub-fix` `{dryRun?, target?}` | runs the EPUB fixer over every book with an EPUB, or `target` (`{ids}` or `{query}` as in bulk edits); `dryRun` defaults to `true` (only checks); returns 202 `{jobId, total, dryRun}`, progress in `GET /api/jobs/:id` |
 | `GET /api/epub-fix/status` | `{onImport, keepOriginal, running, lastRun}`; `lastRun` is the job with `dryRun`, `from` (library, selection, added), `booksWithFixes`, `booksWithProblems`, `booksFixed` and counts per fix and problem (`fixes`, `problems`) |
 | `GET /api/epub-fix/jobs/:id` | the same for one run plus `results`: `[{bookId, title, applied, fixes: [{code, file, detail}], problems: [...]}]` (books with something to report, at most 500) |
-| `GET /api/import` | backlog import: `{enabled, roots, running, scanning, hooksPaused, phase, backlog, followup, runs: [...], cleanups: [...]}` (the last 10 runs and cleanups); `phase`: scan, check, import, followup or null; `backlog`: `{imported, formatAdded, duplicates, open: {books, formats, duplicates, failed}, total, basis, etaSeconds}` (see Backlog import); `followup`: `{paused, total, queues: {metadata, classify, convert, embed}}`, the books those hooks still have to work off; only `{enabled: false, cleanups}` without `backlogImport.roots` |
-| `POST /api/import` `{path \| paths: [...], dryRun?, limit?}` | queues a run of the folders (absolute, or relative to the first root; must be in a root, 400) and returns at once: 202 with the run `{id, path, paths, dryRun, limit, status: "scanning", jobId, scan, summary: null}`; the job scans and plans (`scan: {files, units, planned}` while it runs), a dry run (default) ends `planned`, an import goes on with a unit per book (`GET /api/jobs/:id`); `limit`: at most that many books that add a book or formats, in scan order; 409 while another import runs |
-| `GET /api/import/runs/:id`, `GET /api/import/runs/:id/report` | a run (status: scanning, planned, running, done, failed, gone; `phase`: scan, check, import, else the status; `current`: the folder or book it is at; `startedAt`, `scannedAt`, `finishedAt`, `elapsedSeconds`; `filesPerSecond` while scanning, `booksPerMinute`; `etaSeconds` while checking and importing; `done`/`total`, `summary` once scanned, `results` per status: pending, imported, formatAdded, duplicate, failed, deferred; `failures`: the first 20 failed books `{path, detail}`); the report adds every book (`units`: files, plan, status, `bookId`, `match`, `detail`) and every skipped file (`skipped: [{path, reason}]`) |
-| `GET /api/intake[?band=&duplicates=&skipped=&library=&after=&offset=&limit=]` | the Eingang (admins; only `{enabled: false}` without `backlogImport.roots`): `{enabled, progress: {state, total, done, analysed, current}, total, counts: {bulk, review, unsure, none}, takeable, unsure, skipped, last, pending, threshold, next, entries: [...]}`; `counts` per band of the `duplicates` filter; `state`: idle, scanning, analysing, paused (an import or repair runs), off; `total`, `done`, `analysed` count the whole list whatever the filters: every book in the Eingang, those looked at, those with a proposal; `current` is the file at hand; `band`: bulk, review, unsure, none (a file that failed); `duplicates`: true only those that match a book, false only the new ones; `skipped=true` only the skipped ones; `limit` up to 500; the surest first, ties by path, failed files last; `after`: the page behind this place (`next` of the page before, a confidence and a path, null on the last), right also while entries leave and the analysis adds some. `takeable`: what accepting all of the filter takes (no failed files, no `action: duplicate`, nothing skipped unless that is the filter), `unsure` of them below 60; `left: {duplicates, failed, skipped, unchanged}`: what of the filter that leaves in the list; `skipped` of the whole list; `last`: the newest entry's id; `pending`: decided, waiting for their job (they left the list); `threshold`: see below. An entry: `{id, path, name, folder, kind, files: [{path, format, size}], status: analysed\|failed, detail, proposal: {title, authors, publisher, pubdate, series, seriesIndex, isbn, languages}, confidence, band, titleConfidence, authorsConfidence, level, source, decided, isbnSource, notes, action: add\|addFormats\|duplicate, bookId, match, sameAs, addFormats, cover, analysedAt, skipped, error, bookTitle}`; `error`: why the last decision came back; `bookTitle`: the book at `bookId`; `folder`: the file's folder below its root, null in the root; nothing of it is in the library yet. `library=true` shows the open proposals of the repair (`GET /api/import/repair` is the same list) as entries instead: `id` is minus the book id, `kind: library`, `action: update`, `name` the file an import read or empty, `bookTitle` the title now, `proposal` the book as it would be, `files` its formats, `unchanged` when there is nothing to write (a conflict's note, an unconfirmed candidate), `status: failed` and `error` when an accept found a field changed; ties by book id, the place in `after` is a confidence and a book id; adds `recheck: {done, total, waiting}` while a recheck runs |
+| `GET /api/intake[?band=&duplicates=&skipped=&origin=&library=&after=&offset=&limit=]` | the Eingang (admins): `{enabled, progress: {state, total, done, analysed, current}, total, counts: {bulk, review, unsure, none}, takeable, unsure, skipped, last, pending, thresholds, origins, next, entries: [...]}`; `counts` per band of the `duplicates` filter; `state`: idle, scanning, analysing, paused (a repair runs), off; `total`, `done`, `analysed` count the whole list whatever the filters: every book in the Eingang, those looked at, those with a proposal; `current` is the file at hand; `band`: bulk, review, unsure, none (a file that failed); `duplicates`: true only those that match a book, false only the new ones; `skipped=true` only the skipped ones; `origin`: backlog, inbox or upload; `limit` up to 500; the surest first, ties by path, failed files last; `after`: the page behind this place (`next` of the page before, a confidence and a path, null on the last), right also while entries leave and the analysis adds some. `takeable`: what accepting all of the filter takes (no failed files, no `action: duplicate`, nothing skipped unless that is the filter), `unsure` of them below 60; `left: {duplicates, failed, skipped, unchanged}`: what of the filter that leaves in the list; `skipped` of the whole list; `last`: the newest entry's id; `pending`: decided, waiting for their job (they left the list); `thresholds`: per source there is, see below; `origins`: how many of each source are in the list, whatever the filters. An entry: `{id, path, name, folder, kind, origin, files: [{path, format, size}], status: analysed\|failed, detail, proposal: {title, authors, publisher, pubdate, series, seriesIndex, isbn, languages}, confidence, band, titleConfidence, authorsConfidence, level, source, decided, isbnSource, notes, action: add\|addFormats\|duplicate, bookId, match, sameAs, addFormats, cover, analysedAt, skipped, error, bookTitle}`; `error`: why the last decision came back; `bookTitle`: the book at `bookId`; `folder`: the file's folder below its root, null in the root and for an upload; nothing of it is in the library yet. `library=true` shows the open proposals of the repair as entries instead: `id` is minus the book id, `kind: library`, `action: update`, `name` the file an import read or empty, `bookTitle` the title now, `proposal` the book as it would be, `files` its formats, `unchanged` when there is nothing to write (a conflict's note, an unconfirmed candidate), `status: failed` and `error` when an accept found a field changed; ties by book id, the place in `after` is a confidence and a book id; adds `recheck: {done, total, waiting}` while a recheck runs |
 | `GET /api/intake/:id` | one entry with what the analysis changed against the file and everything found: `changes: [{field, old, new, source}]`, `candidates: [{source, confidence, fields, url}]`, the surest first, and `bookTitle` of the book at `bookId`; a library entry (negative id): old → new in `changes`, no candidates, `unsureTag` |
-| `GET /api/intake/:id/file[?format=&first=1]` | the entry's file to read in (the reader's formats: EPUB, KEPUB, AZW3, MOBI, AZW, FB2, CBZ, PDF; without `format` the reader's first), as an attachment, read-only. 404 for anything else: no such file in the entry, a file changed since the analysis, a link out of the import roots. No reading position is kept. `first=1`: a look is enough. A PDF over 8 MB comes as its first 30 pages, a DjVu (DJVU, DJV, only with `first=1`) as a PDF of them, 422 when its tools can't; `X-Hub-Excerpt-Pages: 30` says when that isn't the whole book. Made once at low priority and kept in `intake-peeks/` next to the state DB while the entry is in the list. A PDF the tools can't split, or whose first pages aren't a third smaller than the file (pages that share much get a copy each), comes whole |
-| `POST /api/intake/analysis` `{on}` | stops the analysis after the file at hand, or lets it go on; kept over a restart (`hub import analysis off\|on`); returns the `progress` |
-| `POST /api/intake/decide` `{decision, target, candidate?, picks?, title?, authors?}` | `decision`: accept (the proposal), file (as in the file), trash, through a queue: 202 `{jobId, total}`, the job at `GET /api/jobs/:id` with entry ids as `bookId`; skip, unskip at once: 200 `{total}`. `target`: `{ids: [...]}`, or to accept all of a filter `{query: {band, duplicates, skipped}, last, expect}`: `last` leaves out what the analysis added since, `expect` is `takeable` as shown, 409 when it differs. An entry's accept takes `candidate` (index) and the edited `title` and `authors`, a filter's `picks: {entry id: index}`. A chosen candidate writes what it says, of the proposal at most title and authors it doesn't have, at the confidence of a hand edit, however low its own: Arthur chose it. Library entries (negative ids, `target: {query: {library: true, band}, last, expect}` with the newest book id as `last`) go through the repair: accept, skip, unskip and reject (at once, 200 `{total}`); file and trash are refused, files and library books don't mix. Accepted books go through the import's code and into `import_files`, `action: addFormats` adds the formats; a file that turns out to be in the library comes back as `action: duplicate`, accepting that adds it after all. Trash moves the files, a calibre folder as a whole, to `<root>-papierkorb` under their path in the root, never overwriting; the hub deletes nothing there. A failed entry is back in the list with its `error` |
-| `POST /api/intake/threshold` `{value}` | from this confidence on (60 to 100) entries are accepted after their analysis, those above it now too; null switches it off, the default. Only `action: add`, nothing skipped or with an `error`. Returns `{threshold}` |
-| `POST /api/import/repair/recheck` `{run?}` | plans the books no plan got to, once each: those accepted before (status applied), those whose accept failed, and the books of an import run (default: the last one, not the Eingang's). 202 `{books, job}`, the job at `GET /api/jobs/:id`; while one runs it is returned. Its own queue, low priority, standing still while the analysis or an import works; the analysis doesn't wait for it (`hub import repair recheck [--run ID]`). Hand edits stay; a plan that would write nothing leaves no entry, what was accepted stays accepted; nothing open or rejected and nothing taken in the Eingang is looked at. The proposals show in `GET /api/intake?library=true` and the Prüfliste |
+| `GET /api/intake/:id/file[?format=&first=1]` | the entry's file to read in (the reader's formats: EPUB, KEPUB, AZW3, MOBI, AZW, FB2, CBZ, PDF; without `format` the reader's first), as an attachment, read-only. 404 for anything else: no such file in the entry, a file changed since the analysis, a link out of its root. No reading position is kept. `first=1`: a look is enough. A PDF over 8 MB comes as its first 30 pages, a DjVu (DJVU, DJV, only with `first=1`) as a PDF of them, 422 when its tools can't; `X-Hub-Excerpt-Pages: 30` says when that isn't the whole book. Made once at low priority and kept in `intake-peeks/` next to the state DB while the entry is in the list. A PDF the tools can't split, or whose first pages aren't a third smaller than the file (pages that share much get a copy each), comes whole |
+| `POST /api/intake/analysis` `{on}` | stops the backlog's analysis after the file at hand, or lets it go on; the inbox and uploads don't stop; kept over a restart (`hub eingang analysis off\|on`); returns the `progress` |
+| `POST /api/intake/decide` `{decision, target, candidate?, picks?, title?, authors?, book?}` | `decision`: accept (the proposal), file (as in the file), format (one entry's files to the book `book`), trash, through a queue: 202 `{jobId, total}`, the job at `GET /api/jobs/:id` with entry ids as `bookId`; skip, unskip at once: 200 `{total}`. `target`: `{ids: [...]}`, or to accept all of a filter `{query: {band, duplicates, skipped, origin}, last, expect}`: `last` leaves out what the analysis added since, `expect` is `takeable` as shown, 409 when it differs. An entry's accept takes `candidate` (index) and the edited `title` and `authors`, a filter's `picks: {entry id: index}`. A chosen candidate writes what it says, of the proposal at most title and authors it doesn't have, at the confidence of a hand edit, however low its own: Arthur chose it. Library entries (negative ids, `target: {query: {library: true, band}, last, expect}` with the newest book id as `last`) go through the repair: accept, skip, unskip and reject (at once, 200 `{total}`); file and trash are refused, files and library books don't mix. Accepted books of the backlog go into `import_files` and their files stay, those of the inbox and uploads move to `_imported/<date>/`; `action: addFormats` adds the formats; a file that turns out to be in the library comes back as `action: duplicate`, accepting that adds it after all. Trash moves the files, a calibre folder as a whole, to `<root>-papierkorb` under their path in the root, never overwriting; the hub deletes nothing there. A failed entry is back in the list with its `error` |
+| `POST /api/intake/threshold` `{origin, value}` | from this confidence on (60 to 100) the source's entries are accepted after their analysis, those above it now too; null switches it off. Backlog: off by default; inbox and upload: 90. Only `action: add`, nothing skipped or with an `error`. Returns `{thresholds}` |
+| `POST /api/import/repair/recheck` `{run?}` | plans the books no plan got to, once each: those accepted before (status applied), those whose accept failed, and the books of an import run (default: the last one, not the Eingang's). 202 `{books, job}`, the job at `GET /api/jobs/:id`; while one runs it is returned. Its own queue, low priority, standing still while the analysis works; the analysis doesn't wait for it (`hub eingang recheck [--run ID]`). Hand edits stay; a plan that would write nothing leaves no entry, what was accepted stays accepted; nothing open or rejected and nothing taken in the Eingang is looked at. The proposals show in `GET /api/intake?library=true` |
 | `GET /api/intake/:id/cover` | the entry's picture (`cover` in the entry, 404 when it has none) |
-| `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see Backlog import); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
+| `POST /api/import/cleanup` `{since?, minId?, maxId?, dryRun?}` | takes back the folder category and tags the inbox set on the books it added (see The Eingang); dry run (default): `{total, entries}`, else 202 with the cleanup `{id, entries, job}` |
+| `GET /api/import/cleanups` | the last 10 cleanups |
 | `GET /api/import/cleanups/:id`, `POST /api/import/cleanups/:id/undo` `{dryRun?}` | a cleanup with its backup; undo puts category and tags back (dry run by default, else 202 with `undoJob`) |
-| `POST /api/import/repair` `{since?, minId?, maxId?, dryRun?}` | plans the repair of books imported from plain files (title, authors, publisher, year, series from their file names where the book is untouched since the import, see Backlog import): 202 `{dryRun, books, job}`; `dryRun: false` accepts every proposal right away |
-| `GET /api/import/repair` | the open proposals `{entries: [{bookId, file, decided, status, at, changes: [{field, old, new}]}], books, counts: {pending, applied, rejected, failed}, job, unsureTag}`; `file` is empty for a book without an import file; the change with the field `candidate` (`{title, authors, source}`) is what the catalogs suggest but couldn't confirm, shown and never applied |
-| `GET /api/import/quality` `?run=&since=&minId=&maxId=` | how many books of a portion look wrong: `{total, suspect, reasons: {unknownAuthor, notAPerson, publisherAuthor, titleSaysNothing, leftoverTitle, fileNameTitle, unsure}, runs: [{run, at, total, suspect}], books: [{id, title, authors, reasons}]}`; without a filter the library and its last five import runs |
-| `POST /api/import/repair/accept` `{bookIds \| all: true}`, `POST /api/import/repair/reject` `{bookIds \| all: true}` | accept (202 `{books, job}`, a job that applies them) or reject (`{rejected}`) proposals |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with the login user |
 | `/opds`, `/get/*` | calibre's OPDS feed for reader apps, HTTP Basic with any hub user |
 | `/opds/lists`, `/opds/lists/:id[?offset=]` | the reading lists as OPDS catalogs (Basic auth like `/opds`): a navigation feed of the lists the user sees, and per list an acquisition feed, most recently added first, 100 books per page (`next`/`previous` links); files and covers link to `/get/*` |
@@ -179,10 +174,12 @@ calibre's trash again, the cover goes, the filled fields are set back where
 nobody changed them since (tags and identifiers lose only what the merge
 added); what stays is listed in `errors`.
 
-Uploads (`POST /api/books`) answer with `possibleDuplicates`, the inbox
-logs `inbox: #42 looks like #7 (see Duplikate)`; both use the same
-detection. calibre's own exact check (title and author) still refuses a
-copy unless forced, the inbox still moves those to `_duplicates/`.
+An upload taken into the library says `possibleDuplicates` (`GET
+/api/intake/uploads/:id`), the inbox logs `inbox: #42 looks like #7 (see
+Duplikate)`; both use the same detection. What looks like a book of the
+library waits in the Eingang as a possible duplicate, an upload sent with
+`force` is a book of its own; a byte for byte copy from the inbox or an
+upload goes to `_duplicates/`.
 
 ## Reading in the browser
 
@@ -395,17 +392,52 @@ it matters once there is more than one user. Reader apps can add
 `https://<hub>/opds/lists` as a catalog of their own. The reader folder changes from category
 subfolders to `<target>/Leseliste/`.
 
-Inbox (`inbox.path`): files unchanged for `inbox.stableSeconds` are added
-through calibre-server; `A/B/x.epub` gets category `A.B` and tags `A`, `B`,
+Inbox (`inbox.path`): files unchanged for `inbox.stableSeconds` go through
+the Eingang (see there); `A/B/x.epub` gets category `A.B` and tags `A`, `B`,
 tags embedded in the file are dropped. Originals move to `_imported/<date>/`
-or `_duplicates/<date>/`, after 3 failures to `_failed/<date>/`. Folders the
-hub can't write are skipped.
+once taken, `_duplicates/<date>/` when they are byte for byte in the library,
+`_failed/<date>/` when they are no book of their format; the Eingang's trash
+is `<inbox>-papierkorb`, next to it. Folders the hub can't write are skipped.
 
-## Backlog import
+## The Eingang
 
-`backlogImport.roots` (empty: off): folders an old collection may be
-imported from, read-only. Unlike the inbox, folders never become categories
-or tags, and nothing is moved or deleted.
+The one way into the library: every new book file goes through this list
+first, with what the hub would write and how sure it is, whichever way it
+came (the source, `origin`):
+
+- **Backlog** (`backlogImport.roots`, empty: none): old collections. Folders
+  never become categories or tags, files stay where they are when taken.
+- **Inbox** (`inbox.path`): folders become category and tags, a file leaves
+  the folder when decided.
+- **Upload** (the web app, `hub upload`, `POST /api/books`; admins): waits in
+  `uploads/<id>/` next to the state DB, with the tags and category of the
+  form. `addFormatTo` is the one exception, it brings no new book and goes
+  straight to the book someone chose.
+
+Nothing is written before a decision, Arthur's or the source's threshold.
+Four ways out: the proposal, as in the file, skipped (stays in the list),
+the trash folder `<root>-papierkorb` next to the root, under the file's path
+in the root (for uploads `uploads-papierkorb`, next to `uploads`). The hub
+never deletes a book file: that folder is Arthur's to empty, and an upload
+taken into the library stays in `uploads/_imported/<date>/` like an inbox
+file. A byte for byte copy of a file of the library needs nobody: of the
+backlog it goes to the trash folder, of the inbox and uploads to their
+`_duplicates/<date>/`.
+
+Every source has its threshold, one button in the Eingang with a line per
+source: from that confidence on a new book goes to the library by itself,
+everything else waits. Inbox and Upload start on at 90, Backlog off. What
+looks like a book of the library, what was skipped or came back with an error
+always waits. So an EPUB called `k.epub`, whose name says nothing, waits at
+75: the upload tray and `hub upload` say so, with a link to the Eingang.
+
+The backlog is looked at every 5 minutes and analysed file by file; the
+inbox (every 30 s) and uploads (at once) have a fiber of their own, they
+don't wait for it, for a repair or for the analysis being switched off.
+The filter „Quelle“ and the source on the rows show only with more than one
+source in the list. `hub eingang` shows the same from the terminal.
+
+What the rules read from a file:
 
 - A folder with `metadata.opf` (an old calibre library, `Author/Title (12)/`)
   is one book: title, authors, series, tags, identifiers (without the old
@@ -414,7 +446,7 @@ or tags, and nothing is moved or deleted.
   format of that book.
 - Any other book file is a book with what calibre reads from it; files with
   the same name and another extension in one folder are formats of one
-  book. Tags embedded in the file are dropped, like in the inbox. Where
+  book. Tags embedded in the file are dropped. Where
   calibre has only its own reading of the file name ("Title - Author", the
   last " - " splits, "and" splits authors), the hub reads the name itself
   (`Meta::FileName`, `meta_filename.cr`): "Carr - Formulas and Theorems in
@@ -443,15 +475,16 @@ or tags, and nothing is moved or deleted.
   model (`metadata.useModel`: it must name the authors of one reading).
   Still unclear, title and authors stay as calibre read them and the book
   gets the tag `backlogImport.unsureTag` (default `auto-unsicher`) for a
-  manual review. The report names per book who decided (`decided`: name,
-  folder, file, hardcover, dnb, openlibrary, model, unsure).
+  manual review. An entry names who decided (`decided`: name, folder, file,
+  hardcover, dnb, openlibrary, model, unsure).
 - Book formats: EPUB, KEPUB, AZW3, AZW, MOBI, PRC, AZW4, FB2, FBZ, DOCX, ODT,
   RTF, PDF, DJVU, CHM, CBZ, CBR, CB7, LIT, PDB, TXT. Files below 2 KiB
   (TXT: 20 KiB) or without their format's signature (`%PDF`, `PK`,
   `BOOKMOBI`, ...) are skipped, as are hidden files, symlinks and the
-  inbox's `_imported`, `_duplicates`, `_failed` at the top of the folder.
-  Everything else stays where it is and is listed in the report with the
-  reason, counted by reason, type and top folder in the summary.
+  inbox's `_imported`, `_duplicates`, `_failed` at the top of the folder (in
+  the inbox any folder starting with `_`). Everything else stays where it
+  is. An upload takes every format calibre knows, the name is what the
+  analysis has then.
 - Duplicates are checked against the library before adding: the same file
   (size, then KOReader's partial MD5 and the first KiB; also files the hub
   rewrote since, by the checksum kept from before), the ISBN, or the same
@@ -462,72 +495,28 @@ or tags, and nothing is moved or deleted.
   the duplicates page, the title must be the same, not only alike.
   Files without an OPF are checked by file before adding and right after by
   what calibre read from them: calibre's own title/author check, then ISBN
-  and title/author (the new book is removed again). A duplicate is skipped,
-  or adds the formats the library's book lacks (`formatAdded`). Only books
-  in the library count: files and checksums of books removed since (also
-  those in calibre's trash) match nothing.
-- The state DB keeps every file a run handled (`import_files`: path, size,
-  mtime, book), so another run of the same folder skips them ("imported
-  before") and only takes new or changed files. A file whose book is no
-  longer in the library (it was imported, a duplicate of or a format added
-  to a book removed or trashed since) is planned again by the next run.
+  and title/author (the new book is removed again). A duplicate comes back
+  to the list, or adds the formats the library's book lacks (`formatAdded`).
+  Only books in the library count: files and checksums of books removed since
+  (also those in calibre's trash) match nothing.
+- The state DB keeps every backlog file taken (`import_files`: path, size,
+  mtime, book), so the Eingang doesn't offer it again, only new or changed
+  files. A file whose book is no longer in the library (it was imported, a
+  duplicate of or a format added to a book removed or trashed since) comes up
+  again in the next pass.
 
-A run is a job: the request returns at once, the job scans the folders and
-plans (a large backlog takes minutes; the API stays responsive, the run
-shows the files and books found so far, then the books checked), then the
-summary: books, formats, calibre folders, covers, to add, formats to add,
-duplicates by how they were found, skipped. A dry run ends there and runs
-in a queue of its own, beside an import. An import goes on with its books in
-the import queue, resumed after a restart (also during the scan); a failed
-book is listed and tried again by the next run. There is no stability wait
-per file, and while an import runs the metadata, classify, convert and
-embed hooks pause (`hooksPaused`), so calibre-server only adds books;
-afterwards they work off the new books' events as for any added book.
-calibre-server down: the job waits (20 x 15 s), then stops as failed. A
+While a decision is carried out the metadata, classify, convert and embed
+hooks pause, so calibre-server only adds books; afterwards they work off the
+new books' events as for any added book. calibre-server down: the decision
+waits (20 x 15 s), then stops and what it didn't get to is back in the list. A
 server error for one book (e.g. calibre's `NoSuchBook`) while calibre-server
-answers a plain search fails only that book, and the run goes on.
-
-Several folders can go into one run (`paths`), and `limit` imports a
-portion: the first N books in scan order (folders as given, then sorted)
-that add a book or formats; duplicates on the way go along, the rest is
-`deferred`. The next run with the same folders skips what was handled and
-takes the next N.
-
-The Import page starts the next portion of the first root without the CLI,
-in two steps: "Nächste Portion prüfen" is a dry run with the limit of the
-field (500 by default, 1 or more like `--limit`); its numbers come with the
-button "Portion starten (N Bücher)", which imports that limit. N counts the
-duplicates that go along; the import scans again, so the numbers can still
-move a little if the library changed. There is no start without a dry run of
-that limit as the newest run, and another limit asks for a new dry run. Both
-steps wait, with the reason next to the button, while an import or a scan
-runs, the followup still has books or a repair plan runs; open proposals
-don't hold a portion back. A dry run becomes the basis of the backlog's open
-numbers like any scanned run, which is why it waits for a running import:
-beside one, those numbers would stand still.
-
-Progress: the web app's Import page (sidebar, command palette, linked from
-the Metadaten page) and `hub import status` show the phase (scan, duplicate
-check, import, followup), the folder or book a run is at, its running
-time, rate and ETA (the import's rate counts only the books since the hub
-last started), the results so far with the failed books and why, and the
-runs with their cleanups. The whole backlog: books imported, formats
-added and duplicates of every import so far (the files they handled), and
-what the latest scanned run (its folders) still has open: books and
-formats to add, duplicates, failed books; its new books are the imported
-ones plus those to add. Followup: the books the metadata, classify,
-convert and embed hooks still have to work off (their running jobs or
-queue, and the events past their cursor; for convert and classify an upper
-bound, they skip books that need nothing). The page polls every 2 s while
-a run is going, every 10 s during the followup.
+answers a plain search fails only that book, which says so in the list.
 
 ```sh
-hub import . --limit 500            # the next portion of the first root: a dry run,
-hub import . --limit 500 --apply    # then the import
-hub import alt                      # dry run of <first root>/alt
-hub import /srv/media/ebooks/inbox --apply --report report.json
-hub import alt neu --limit 200 --apply   # the next 200 books of both
-hub import status                        # phase, backlog, followup, runs with rate and ETA
+hub eingang                 # what is in the list, by source, what goes by itself
+hub eingang analysis off    # the backlog's analysis stands still, the inbox and uploads go on
+hub eingang recheck         # plans the books no plan got to, behind the analysis
+hub import status           # the same as hub eingang, with the cleanups
 ```
 
 Cleanup of an inbox import (`POST /api/import/cleanup`, `hub import
@@ -592,22 +581,12 @@ log knows nor an import made right after adding the book. An ISBN is never
 replaced: another one in the book, or the same one on another book, goes to
 the review. A level 1 decision that is written binds the metadata run.
 
-Repair of imported books (`POST /api/import/repair`, `hub import repair`):
-for every book an import added from a plain file (`import_files`, the unit's
-primary format), optionally from `since` (when the file was imported) or
-with a book id from `minId` to `maxId`, the file name is read again as above.
-Every other book the quality report finds suspicious is planned too (an
-upload, the inbox, a calibre folder): its title is read like a file name.
-`library: true` (`hub import repair --library`, "Ganze Bibliothek prüfen" on
-the import page) plans every book of the library, a dry run unless asked
-otherwise; it reads each file and asks the catalogs for its ISBNs, so it
-runs for hours on a big library. A calibre folder is told by its name,
-"Title (12)", also when the backlog has moved on.
-
-A plan leaves out what was accepted or rejected. `POST /api/import/repair/recheck`
-(`hub import repair recheck`, "Bestand neu prüfen" in the Eingang) plans the
-accepted books and the last run's once more, at low priority behind the
-analysis, also calibre folders' books by their file name.
+Proposals for books of the library: `POST /api/import/repair/recheck` (`hub
+eingang recheck`, "Bestand neu prüfen" in the Eingang) plans the books no
+plan got to, those accepted before and the last import run's, at low priority
+behind the analysis, also calibre folders' books by their file name. A
+conflict the import or a metadata run finds is flagged the same way. They
+show in the Eingang's filter „Schon in der Bibliothek“.
 
 Title and authors are decided together. Where the book still has what an
 import left there (calibre's reading of the name, a title that says nothing,
@@ -629,41 +608,18 @@ unsure tag, and the review shows what the catalogs suggest (never applied).
 So does a file whose own title and author are another book than its name, a
 new title next to the file's own author, and a book nothing is known of. The
 metadata run follows the same rule for a book without an author, also on
-import, so new portions come in the same way. A catalog that fails or says
+import. A catalog that fails or says
 "too many requests" (the host then rests until its `Retry-After`) counts as
 not knowing; the run goes on.
- Every change goes to the metadata change log with source
-`rules` (revertible on the Metadaten page or with the revert API, the book
-gets `auto-metadaten`), and the repaired books get a metadata run (target
-ids). Unclear names are decided as on import (the file, the sources, the
-model, else the unsure tag), so the plan is a job. Its proposals (per
-book: the fields old and new, who decided) are reviewed on the import page
-("Reparatur": with confidence and level per proposal, filtered and sorted by
-them, accept single books, the selected ones or the bulk band, reject) or by
-the API (`band: "bulk"`, `all: true` is everything from 60), and kept in the
-state DB (`import_repairs`). Accepting applies a
-proposal only if the book still has the values the plan saw, else that book
-fails ("changed since the plan") and the next plan proposes it anew; books
-accepted or rejected are left out of later plans. `--apply` (`dryRun:
-false`) accepts what may be accepted in bulk right away, the rest waits.
-
-The quality report (`GET /api/import/quality`, `hub import quality`, the
-section "Qualität" on the import page) counts the suspicious books of the
-library, of the last import runs, or of one portion (`--run`, `--since`,
-`--min-id`, `--max-id`) and says why, by the rules above: `unknownAuthor`,
-`notAPerson`, `publisherAuthor`, `titleSaysNothing`, `leftoverTitle`,
-`fileNameTitle`, `unsure`. Authors of books with an ISBN count as checked,
-standards are left out. It also shows the distribution per band and level,
-the share of books with an ISBN per source (`text`, `ocr`, `opf`, a catalog,
-`calibre` for what was there), ISBN conflicts, and the sample checks: `GET
-/api/import/quality/sample?band=bulk` picks 30 books of a band, `POST` with
-`band`, `checked`, `correct` keeps the measured hit rate.
-
-```sh
-hub import repair --min-id 1153                    # plan, then list the proposals
-hub import repair --min-id 1153 --max-id 2000 --apply
-hub import repair --library                        # the whole library as a dry run
-```
+ Every change goes to the metadata change log with source `rules` (revertible
+on the Metadaten page or with the revert API, the book gets `auto-metadaten`),
+and the repaired books get a metadata run (target ids). Unclear names are
+decided as on import (the file, the sources, the model, else the unsure tag).
+The proposals (per book: the fields old and new, who decided) are kept in the
+state DB (`import_repairs`). Accepting applies a proposal only if the book
+still has the values the plan saw, else that book fails ("changed since the
+plan") and the next plan proposes it anew; books accepted or rejected are
+left out of later plans.
 
 ## Category suggestions (local model)
 
@@ -918,13 +874,12 @@ hub list create Urlaub --description 'Für den Strand' --sync --favorite --visib
 hub list add Leseliste 12 13
 hub list rm leseliste 12
 hub list delete Urlaub --yes
-hub upload *.epub --tag neu --kategorie Roman/Krimi
+hub upload *.epub --tag neu --kategorie Roman/Krimi   # through the Eingang, says what came of it
 hub upload dune.pdf --add-format-to 12
 hub bulk --query 'series:"=Dune"' --kategorie Roman.SF --yes
 hub bulk --ids 12,13 --add-tags a,b --remove-tags c --series Dune --number-series --yes
-hub import alt                           # backlog import: dry run, --apply imports, --limit N a portion
-hub import repair --min-id 1153          # the rule flow on plain-file imports: proposals, --apply accepts what is 90 or surer
-hub import quality --run 77ec37bda5d6d688  # how many books of a portion look wrong, and why
+hub eingang                              # what waits for a decision, by source
+hub eingang recheck                      # the rule flow on the library's books: proposals in the Eingang
 ```
 
 Every command has `--help` and `--json` (the API's JSON; on errors
@@ -1116,6 +1071,7 @@ Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
 | `CALIBRE_HUB_HANDLER_ATTEMPTS`, `_TIMEOUT` | `10`, `600` | |
 | `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
 | `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |
+| `CALIBRE_HUB_UPLOADS` | `uploads` next to the state DB | where uploads wait for the Eingang |
 | `CALIBRE_HUB_LIST_MIGRATE_TAG` | `leseliste` | books with this tag become the list "Leseliste" on the first start |
 | `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each, of the login user |
 | `CALIBRE_HUB_USERS` | none | further users, comma separated `name:role:passwordFile[:tokenFile\|tokenFile…]`, role `admin` or `reader` |

@@ -57,8 +57,13 @@ hub bulk --ids 7,3,9 --series Dune --number-series --yes --json   # 1, 2, 3 in i
 - `--rating` is 0-10 (half stars, 8 = 4 stars).
 - edit exit 3: the book changed meanwhile, nothing was written. Show it
   again and retry on top of the new state.
-- upload exit 3 with `"status": "duplicate"`: calibre already has the book
-  (`duplicates` lists them). Only use `--force` if Arthur wants a copy.
+- upload goes through the Eingang: `"status": "added"` is in the library,
+  `"waiting"` stays in the Eingang below the threshold for Arthur to decide
+  (hub.nor.sh/eingang), `"checking"` means the analysis wasn't through within
+  `--wait` (120 s). `hub eingang` shows what waits there.
+- upload exit 3 with `"status": "duplicate"` or `"copy"`: the library already
+  has the book (`duplicates` lists them), nothing was added. Only use `--force`
+  if Arthur wants a copy; `--add-format-to` goes straight to that book.
 - bulk without `--yes` refuses outside a terminal, so always pass it, after
   checking the count with `hub search ... --json` (`total`). Its JSON is
   the finished job: `{status, done, total, errors: [{bookId, error}]}`.

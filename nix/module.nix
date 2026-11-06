@@ -341,10 +341,9 @@ in
       default = [ ];
       example = [ "/srv/media/ebooks/inbox" ];
       description = ''
-        Folders an old collection may be imported from (POST /api/import,
-        `hub import`, the Eingang): folders never become categories or tags,
-        calibre library folders bring their metadata.opf and cover.jpg, files
-        that aren't books stay and are listed in the report. Empty: off.
+        Folders the Eingang reads an old collection from: folders never
+        become categories or tags, calibre library folders bring their
+        metadata.opf and cover.jpg, files that aren't books stay. Empty: none.
 
         What the Eingang throws away moves to `<root>-papierkorb` next to the
         root, under its path in the root: the hub's group needs write access
