@@ -35,6 +35,14 @@ module CalibreHub
   # the metadata change log (with its source and level), revertible there;
   # the repaired books get a metadata run. Every plan keeps per book how sure
   # it is (MetaLog#decide): the quality report shows the bands.
+  #
+  # The proposals are one list with two doors: the Prüfliste and the
+  # Eingang's filter „Schon in der Bibliothek“ (Intake#library_list) both read
+  # import_repairs, so a decision in one is gone from the other. A proposal
+  # waiting for its accept job is out of the Eingang (decision), a skipped
+  # one is not asked again there (skipped). An accept that fails stays and
+  # says why (detail); one that found a field changed is failed, only a new
+  # plan helps there.
   class ImportRepair < Jobs
     # automatic changes the repair builds on (not a person's edits)
     AUTO = Set{"rules", "model", "authors"}
@@ -57,12 +65,14 @@ module CalibreHub
     # a row of import_repairs
     record Proposal, book_id : Int64, file : String, decided : String?, changes : Array(Proposed), status : String,
       detail : String?, at : Int64, confidence : Int32?, level : Int32?, source : String?, title_confidence : Int32?,
-      authors_confidence : Int32?, notes : Array(Meta::Flow::Note)
+      authors_confidence : Int32?, notes : Array(Meta::Flow::Note), skipped : Bool
 
     getter log : MetaLog
 
     # the metadata runs after a repair (when the cleanup is on)
     property metadata : MetadataJobs?
+    # the same at low priority, for a recheck
+    property quiet_reader : Proc(Book, String?, Meta::FileMeta::Info?)?
     # decides unclear names (Metadata#decider)
     property decider : Meta::FileName::Decider?
     # asks the catalogs about readings without an author (Metadata#checker)
@@ -89,17 +99,21 @@ module CalibreHub
       columns = [] of String
       db.query_each("pragma table_info(import_repairs)") { |rs| rs.read(Int32); columns << rs.read(String); rs.read(String, Int32, String?, Int32) }
       {"confidence" => "integer", "level" => "integer", "source" => "text", "title_confidence" => "integer",
-       "authors_confidence" => "integer", "notes" => "text"}.each do |c, type|
+       "authors_confidence" => "integer", "notes" => "text", "skipped" => "integer not null default 0",
+       "decision" => "text"}.each do |c, type|
         db.exec "alter table import_repairs add column #{c} #{type}" unless columns.includes?(c)
       end
+      # the books a recheck looked at, whatever came of it
+      db.exec "create table if not exists import_rechecks (book_id integer primary key, at integer not null)"
       super(db, calibre, writer, nil, "import_repair_jobs")
       @hints = {} of String => Symbol?
     end
 
     # book id -> the file calibre read it from (the unit's primary format),
     # for books an import added from plain files. params: since (time the
-    # file was imported), minId, maxId
-    def files(params : Hash(String, JSON::Any)) : Hash(Int64, String)
+    # file was imported), minId, maxId. folders: also the books of calibre
+    # folders, which a plan leaves to their metadata.opf
+    def files(params : Hash(String, JSON::Any), folders = false) : Hash(Int64, String)
       since = params["since"]?.try(&.as_s?).try { |s| ImportCleanup.parse_time(s) }
       min = params["minId"]?.try { |v| v.as_i64? || raise Edit::Invalid.new("minId", "number expected") }
       max = params["maxId"]?.try { |v| v.as_i64? || raise Edit::Invalid.new("maxId", "number expected") }
@@ -116,16 +130,10 @@ module CalibreHub
       result = {} of Int64 => String
       by_book.each do |id, paths|
         # a calibre folder's books came from its metadata.opf
-        next if paths.any? { |p| calibre_folder?(File.dirname(p)) }
+        next if !folders && paths.any? { |p| Backlog.calibre_name?(File.dirname(p)) }
         result[id] = paths.min_by { |p| Backlog::FORMATS.index(File.extname(p).lchop('.').upcase) || Backlog::FORMATS.size }
       end
       result
-    end
-
-    # moved out of the backlog, its name "Title (12)" still shows it
-    private def calibre_folder?(dir : String) : Bool
-      return File.exists?(File.join(dir, Backlog::OPF)) if Dir.exists?(dir)
-      Backlog.calibre_name?(dir)
     end
 
     # Queues a plan of the books (not those accepted or rejected before):
@@ -260,22 +268,31 @@ module CalibreHub
                 open.select { |p| p.confidence.nil? || p.confidence.not_nil! >= Meta::Confidence::REVIEW }.map(&.book_id)
               end
       job = enqueue(books, {"mode" => JSON::Any.new("apply")})
+      books.each_slice(500) do |slice|
+        @db.exec "update import_repairs set decision = ?, detail = null where status = 'pending' and book_id in (#{slice.join(",")})", job.id
+      end
       JSON.parse({books: books.size, job: job}.to_json)
     end
 
-    # Rejects the proposals of these books (nil: all open ones); a later
-    # plan leaves them out
+    # the accept job ended without these: open again
+    def release
+      @db.exec "update import_repairs set decision = null where decision is not null and " \
+               "decision not in (select id from import_repair_jobs where status = 'running')"
+    end
+
+    # Rejects the proposals of these books (nil: all open ones), also one
+    # that failed; a later plan leaves them out
     def reject(ids : Array(Int64)?) : Int64
       now = Time.utc.to_unix
       list = ids || proposals("pending").map(&.book_id)
       list.sum(0_i64) do |id|
-        n = @db.exec("update import_repairs set status = 'rejected', at = ? where book_id = ? and status = 'pending'", now, id).rows_affected
+        n = @db.exec("update import_repairs set status = 'rejected', decision = null, at = ? where book_id = ? and status in ('pending', 'failed')", now, id).rows_affected
         @log.decided_status(id, "rejected") if n > 0
         n
       end
     end
 
-    PROPOSAL = "book_id, file, decided, changes, status, detail, at, confidence, level, source, title_confidence, authors_confidence, notes"
+    PROPOSAL = "book_id, file, decided, changes, status, detail, at, confidence, level, source, title_confidence, authors_confidence, notes, skipped"
 
     def proposals(status : String? = nil) : Array(Proposal)
       list = [] of Proposal
@@ -286,6 +303,18 @@ module CalibreHub
       list
     end
 
+    # by a condition on import_repairs, the book's order
+    def proposals(where : String, args : Array(DB::Any), limit = -1) : Array(Proposal)
+      list = [] of Proposal
+      @db.query_each("select #{PROPOSAL} from import_repairs where #{where} order by book_id limit #{limit}", args: args) { |rs| list << read_proposal(rs) }
+      list
+    end
+
+    # not asked again in the Eingang until taken back
+    def skip(ids : Array(Int64), on : Bool)
+      ids.each_slice(500) { |slice| @db.exec "update import_repairs set skipped = ? where book_id in (#{slice.join(",")})", on ? 1 : 0 }
+    end
+
     private def proposal(id : Int64, status : String) : Proposal?
       @db.query_one?("select #{PROPOSAL} from import_repairs where book_id = ? and status = ?", id, status) { |rs| read_proposal(rs) }
     end
@@ -293,8 +322,9 @@ module CalibreHub
     private def read_proposal(rs) : Proposal
       id, file, decided, changes, st, detail, at, confidence, level, source, title, authors, notes =
         rs.read(Int64, String, String?, String, String, String?, Int64, Int32?, Int32?, String?, Int32?, Int32?, String?)
+      skipped = rs.read(Int64)
       Proposal.new(id, file, decided, Array(Proposed).from_json(changes), st, detail, at, confidence, level, source, title, authors,
-        notes ? Array(Meta::Flow::Note).from_json(notes) : [] of Meta::Flow::Note)
+        notes ? Array(Meta::Flow::Note).from_json(notes) : [] of Meta::Flow::Note, skipped == 1)
     end
 
     # The open proposals with their books for the review, counts per status
@@ -316,12 +346,12 @@ module CalibreHub
     end
 
     # The rule flow on one book. path: the file an import read
-    def decide(book : Book, path : String?, baseline : JSON::Any?) : Meta::Flow::Decision?
+    def decide(book : Book, path : String?, baseline : JSON::Any?, reader = @reader) : Meta::Flow::Decision?
       hand = hand_fields(book.id)
       log = @log.active(book.id).reverse
       imported = imported_proc(book, path, baseline, log, hand)
       input = Meta::Flow::Input.new(book, imported, path.try { |p| File.basename(p) }, path.try { |p| hint(File.dirname(p)) })
-      input.info = @reader.try(&.call(book, path))
+      input.info = reader.try(&.call(book, path))
       input.by_isbn = @by_isbn
       input.decider = @decider
       input.checker = @checker
@@ -471,7 +501,9 @@ module CalibreHub
       found
     end
 
+    # a calibre folder, gone by now or not, says it by its name
     private def hint(dir : String) : Symbol?
+      return Meta::FileName::CALIBRE_NAME if Backlog.calibre_name?(dir)
       return @hints[dir] if @hints.has_key?(dir)
       names = begin
         Dir.children(dir).select { |n| Backlog::Scanner.format(n) }
@@ -501,7 +533,16 @@ module CalibreHub
           apply_book(id, job.id)
         end
       when "apply"
-        apply_book(id, job.id)
+        begin
+          apply_book(id, job.id)
+        rescue ex : Jobs::Abort
+          raise ex
+        rescue ex
+          # a proposal that stays pending says why it came back
+          @db.exec "update import_repairs set decision = null, detail = ? where book_id = ? and status = 'pending'",
+            ex.message || ex.class.name, id
+          raise ex
+        end
       end
     ensure
       if index == job.total - 1
@@ -528,6 +569,52 @@ module CalibreHub
         id, path, d.how, proposed.to_json, Time.utc.to_unix, d.confidence, d.level, d.source, d.title, d.authors, d.notes.to_json
     end
 
+    # The books a recheck has to look at, with the file an import read:
+    # those accepted before the rules of today (a plan leaves them out), those
+    # whose accept failed, and the books of an import run (the last one
+    # without a run), once each. Nothing that is open or was rejected, nothing
+    # Arthur took in the Eingang, no book gone from the library.
+    def recheck_list(run : String? = nil) : {Array(Int64), Hash(Int64, String)}
+      rows = {} of Int64 => String
+      @db.query_each("select book_id, status from import_repairs") { |rs| rows[rs.read(Int64)] = rs.read(String) }
+      ids = rows.select { |_, s| s.in?("applied", "failed") }.keys.to_set
+      (run || last_run).try { |r| ids.concat(run_books(r).reject { |id| rows.has_key?(id) }) }
+      @db.query_each("select book_id from import_rechecks") { |rs| ids.delete(rs.read(Int64)) }
+      known = @calibre.list("", Calibre::DETAIL_FIELDS).map(&.id).to_set
+      decided = @log.decisions
+      list = ids.select { |id| known.includes?(id) && decided[id]?.try(&.status) != MetaLog::ACCEPTED }.to_a.sort!
+      paths = files({} of String => JSON::Any, folders: true)
+      {list, paths.select { |id, _| ids.includes?(id) }}
+    end
+
+    # the newest run of the import proper, the Eingang's decisions aren't one
+    private def last_run : String?
+      @db.query_one?("select run_id from import_files where status = 'imported' and run_id != ? order by at desc limit 1", Intake::RUN, as: String)
+    end
+
+    # A book planned again. The flow is the plan's, so a field edited by hand
+    # stays and what a catalog wrote gives way to an ISBN only. A plan that
+    # would write nothing leaves everything as it was: no proposal, the book
+    # keeps its decision. Decided meanwhile: left alone.
+    def recheck(id : Int64, path : String?)
+      now = @db.query_one?("select status from import_repairs where book_id = ?", id, as: String)
+      unless now.in?("pending", "rejected") || @log.decided(id).try(&.status) == MetaLog::ACCEPTED
+        book = @calibre.book(id) || return
+        d = decide(book, path, baselines([id])[id]?, @quiet_reader || @reader)
+        replace(id, path || "", d) if d
+      end
+      @db.exec "insert or replace into import_rechecks (book_id, at) values (?, ?)", id, Time.utc.to_unix
+    end
+
+    private def replace(id : Int64, path : String, d : Meta::Flow::Decision)
+      changes = d.changes.reject { |c| c.field == Meta::FileName::CANDIDATE || Meta::Merge.same?(c.field, c.old, c.new) }
+      # a failed accept had nothing to say any more
+      @db.exec "delete from import_repairs where book_id = ? and status = 'failed'", id if changes.empty?
+      return if changes.empty?
+      @db.exec "delete from import_repairs where book_id = ?", id
+      store(id, path, d, nil)
+    end
+
     # A decision of the import with a conflict goes to the review
     def flagged(id : Int64, path : String, d : Meta::Flow::Decision)
       store(id, path, d.copy_with(changes: [] of Meta::Change), nil)
@@ -547,12 +634,14 @@ module CalibreHub
       book = @calibre.book(id) || raise Writer::NotFound.new
       changes = row.changes.reject { |c| c.field == Meta::FileName::CANDIDATE }
       if changed = changes.find { |c| !ImportRepair.same?(c.field, c.old, Meta::Merge.value(book, c.field)) }
-        @db.exec "update import_repairs set status = 'failed', detail = ?, at = ? where book_id = ?",
+        @db.exec "update import_repairs set status = 'failed', decision = null, detail = ?, at = ? where book_id = ?",
           "#{changed.field} changed since the plan", Time.utc.to_unix, id
+        # the next recheck plans it again
+        @db.exec "delete from import_rechecks where book_id = ?", id
         raise Exception.new("#{changed.field} changed since the plan, plan again")
       end
       write(book, changes.map { |c| Meta::Change.new(c.field, c.old, c.new, c.source) }, job_id, row.level) unless changes.empty?
-      @db.exec "update import_repairs set status = 'applied', at = ? where book_id = ?", Time.utc.to_unix, id
+      @db.exec "update import_repairs set status = 'applied', decision = null, at = ? where book_id = ?", Time.utc.to_unix, id
       @log.decided_status(id, "written")
     end
 
@@ -571,6 +660,45 @@ module CalibreHub
     end
   end
 
+  # Plans the books no plan got to (ImportRepair#recheck_list), in a queue of
+  # its own: a run of hours keeps the Prüfliste's and the Eingang's accepts
+  # from waiting, and the analysis, which waits for repairs, from waiting for
+  # this. It goes like the analysis, one book after the other with a pause and
+  # reading at low priority, and it gives way to it: while the analysis or an
+  # import works it stands still. Nothing here writes to a book.
+  class RepairRecheck < Jobs
+    PAUSE = 500.milliseconds
+    WAIT  = 30.seconds
+
+    # the analysis or an import works
+    property busy : Proc(Bool) = -> { false }
+
+    # standing still for the analysis
+    getter? waiting = false
+
+    def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @repair : ImportRepair, @pause = PAUSE, @wait = WAIT)
+      super(db, calibre, writer, nil, "import_recheck_jobs")
+    end
+
+    # the job that runs, or a new one for what is left to check
+    def queue(run : String? = nil) : Job
+      running = last.try(&.[0]).try { |j| j if j.status == "running" }
+      return running if running
+      ids, files = @repair.recheck_list(run)
+      enqueue(ids, {"files" => JSON.parse(files.transform_keys(&.to_s).to_json)})
+    end
+
+    protected def apply(job : Job, index : Int32, id : Int64, resumed : Bool)
+      while @busy.call
+        @waiting = true
+        sleep @wait
+      end
+      @waiting = false
+      @repair.recheck(id, job.changes["files"]?.try(&.[id.to_s]?).try(&.as_s?))
+      sleep @pause
+    end
+  end
+
   private def self.repair_ids(body : Hash(String, JSON::Any)) : Array(Int64)?
     return nil if body["all"]?.try(&.as_bool?) || body["band"]?
     list = body["bookIds"]?.try(&.as_a?) || raise Edit::Invalid.new("bookIds", "list of book ids or all: true expected")
@@ -579,7 +707,7 @@ module CalibreHub
 
   # The repair: POST plans (a job), GET lists the open proposals, accept
   # and reject them (bookIds or all)
-  def self.import_repair_routes(repair : ImportRepair?)
+  def self.import_repair_routes(repair : ImportRepair?, recheck : RepairRecheck? = nil)
     post "/api/import/repair" do |env|
       write_errors(env) do
         next fail(env, 404, {error: "backlog import is off"}) unless repair
@@ -588,6 +716,16 @@ module CalibreHub
         dry = true if dry.nil?
         env.response.status_code = 202
         repair.submit_repair(body, dry).to_json
+      end
+    end
+
+    # {run?}: the books no plan got to, see ImportRepair#recheck_list
+    post "/api/import/repair/recheck" do |env|
+      write_errors(env) do
+        next fail(env, 404, {error: "backlog import is off"}) unless recheck
+        job = recheck.queue(json_body(env)["run"]?.try(&.as_s?).presence)
+        env.response.status_code = 202
+        {books: job.total, job: job}.to_json
       end
     end
 

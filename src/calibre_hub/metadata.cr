@@ -406,13 +406,13 @@ module CalibreHub
     # files, so only the file an import read (path) says something of its
     # own. Otherwise the library's file, and metadata that are the book's
     # own again are no evidence, only the text and the pages are.
-    def flow_info(book : Book, path : String?) : Meta::FileMeta::Info?
+    def flow_info(book : Book, path : String?, nice = false) : Meta::FileMeta::Info?
       if path && File.exists?(path) && (fmt = File.extname(path).lchop('.').upcase) && Meta::FileMeta::FORMATS.includes?(fmt)
-        return read_flow(path, fmt)
+        return read_flow(path, fmt, nice)
       end
       files = BookFiles.library_files(@library, book.id)
       fmt = Meta::FileMeta::FORMATS.find { |f| files.has_key?(f) && File.exists?(files[f]) }
-      info = fmt ? read_flow(files[fmt], fmt) : file_info(book, flow: true)
+      info = fmt ? read_flow(files[fmt], fmt, nice) : file_info(book, flow: true)
       info.try { |i| Metadata.without_own(book, i) }
     end
 

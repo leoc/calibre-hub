@@ -251,7 +251,9 @@ module CalibreHub
       end
 
       # hub import repair [--library] [--since TIME] [--min-id N] [--max-id N] [--apply]
+      # hub import repair recheck [--run ID]
       private def import_repair(args : Args)
+        return import_recheck(args) if args.positional[1]? == "recheck"
         body = {} of String => JSON::Any
         args["since"]?.try { |s| body["since"] = JSON::Any.new(s) }
         args["min-id"]?.try { |v| body["minId"] = JSON::Any.new(Runner.id(v)) }
@@ -280,6 +282,16 @@ module CalibreHub
         end
         Output.table(@out, ["ID", "Field", "Now", "Proposed", "Decided by", "Sure", "Level", "File"], rows) unless rows.empty?
         @out.puts "#{review["entries"].as_a.size} books, #{rows.size} changes to review (import page; --apply accepts what is 90 or surer)"
+      end
+
+      # plans the books no plan got to; runs behind the analysis, so it isn't
+      # waited for
+      private def import_recheck(args : Args)
+        body = {} of String => JSON::Any
+        args["run"]?.try { |r| body["run"] = JSON::Any.new(r) }
+        result = client.post("/api/import/repair/recheck", body)
+        return @out.puts result.to_json if @json
+        @out.puts "recheck: #{result["books"]} books, job #{result["job"]["id"]} (proposals land in the Eingang under „Schon in der Bibliothek“)"
       end
 
       private def cleanup_entries(entries : Array(JSON::Any))
