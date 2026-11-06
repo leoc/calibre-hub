@@ -75,7 +75,10 @@ let
   handlersDir = pkgs.linkFarm "calibre-hub-handlers" (
     lib.mapAttrsToList (name: path: { inherit name path; }) handlers
   );
+  # a root's parent: the Eingang moves files to <root>-papierkorb next to the
+  # root, with one rename, which fails between two mounts of ReadWritePaths
   writable = lib.optional (cfg.inbox.path != null) (toString cfg.inbox.path)
+    ++ map (root: dirOf (toString root)) cfg.backlogImport.roots
     ++ lib.optional cfg.leseliste.enable (toString cfg.leseliste.target)
     ++ lib.optionals cfg.leseliste.enable (lib.mapAttrsToList (_: u: toString u.leseliste.target) ownTargets);
 
@@ -330,9 +333,14 @@ in
       example = [ "/srv/media/ebooks/inbox" ];
       description = ''
         Folders an old collection may be imported from (POST /api/import,
-        `hub import`), read-only: folders never become categories or tags,
+        `hub import`, the Eingang): folders never become categories or tags,
         calibre library folders bring their metadata.opf and cover.jpg, files
         that aren't books stay and are listed in the report. Empty: off.
+
+        What the Eingang throws away moves to `<root>-papierkorb` next to the
+        root, under its path in the root: the hub's group needs write access
+        to the root's parent and the root's folders, and the service may
+        write in the parent (the library stays read-only).
       '';
     };
 

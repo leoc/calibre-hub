@@ -255,6 +255,8 @@ pkgs.testers.runNixOSTest {
         ''}";
       };
       systemd.tmpfiles.rules = [
+        # the Eingang's trash folder goes next to the root
+        "d /srv/books 2775 root calibre-hub -"
         "d /srv/books/library 2775 calibre-server calibre-hub -"
         "d /srv/books/inbox 2775 root calibre-hub -"
         "d /srv/books/boox 2775 root calibre-hub -"
@@ -1330,6 +1332,53 @@ pkgs.testers.runNixOSTest {
         # calibre finds a book by its ISBN in both forms: the same ISBN on two books
         machine.succeed(f"{DB} set_metadata {mobi} -f identifiers:isbn:9780201914658")
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/books?q=identifiers:%22=isbn:=9780201914658%22' | grep -q '\"id\":{mobi}'", timeout=30)
+
+    with subtest("the Eingang decides (#8605)"):
+        IN = f"{ALT}/Eingang"
+        TRASH = f"{ALT}-papierkorb/Eingang"
+        machine.succeed(f"install -d -m 2775 -g calibre-hub '{IN}'")
+        put(f"{IN}/Ada Writer - Angenommen.pdf", pdf(b"s"))
+        put(f"{IN}/wegwerfen.pdf", pdf(b"t"))
+        # byte for byte a file of the library: nobody has to look at it
+        copy = machine.succeed("find /srv/books/library -name '*.pdf' | head -1").strip()
+        machine.succeed(f"cp '{copy}' '{IN}/kopie.pdf' && touch -d '1 hour ago' '{IN}'/*.pdf")
+        machine.wait_until_succeeds(f"test -f '{TRASH}/kopie.pdf'", timeout=600)
+        assert machine.succeed(f"cmp '{copy}' '{TRASH}/kopie.pdf' && test ! -e '{IN}/kopie.pdf' && echo ok").strip() == "ok"
+
+        def entry(name):
+            for _ in range(120):
+                listed = api("GET", "/api/intake?limit=500")[1]["entries"]
+                found = [e for e in listed if e["name"] == name]
+                if found:
+                    return found[0]
+                machine.sleep(5)
+            raise Exception(f"{name} is not in the Eingang")
+
+        # thrown away: out of the root, under its path, the hub's sandbox lets it
+        gone = entry("wegwerfen.pdf")
+        status, r = api("POST", "/api/intake/decide", {"target": {"ids": [gone["id"]]}, "decision": "trash"})
+        assert status == 202, (status, r)
+        j = wait_job(r["jobId"], 60)
+        assert j["status"] == "done" and j["errors"] == [], j
+        machine.succeed(f"test -f '{TRASH}/wegwerfen.pdf' && test ! -e '{IN}/wegwerfen.pdf'")
+
+        # accepted with an edited title: a book like any import's, the file stays
+        kept = entry("Ada Writer - Angenommen.pdf")
+        status, r = api("POST", "/api/intake/decide", {"target": {"ids": [kept["id"]]}, "decision": "accept", "title": "Von Hand", "authors": ["Ada Writer"]})
+        assert status == 202, (status, r)
+        j = wait_job(r["jobId"], 120)
+        assert j["status"] == "done" and j["errors"] == [], j
+        assert book_by_title("Von Hand")["authors"] == ["Ada Writer"]
+        machine.succeed(f"test -f '{IN}/Ada Writer - Angenommen.pdf'")
+        assert not [e for e in api("GET", "/api/intake?limit=500")[1]["entries"] if e["id"] == kept["id"]]
+        status, dry = api("POST", "/api/import", {"path": "Eingang"})
+        assert status == 202, (status, dry)
+        dry = wait_run(dry["id"])
+        assert dry["summary"]["books"] == 0 and dry["summary"]["alreadyImported"] == 1, dry["summary"]
+
+        # the threshold is off until someone sets it
+        assert api("GET", "/api/intake?limit=1")[1]["threshold"] is None
+        assert api("POST", "/api/intake/threshold", {"value": 59})[0] == 400
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
