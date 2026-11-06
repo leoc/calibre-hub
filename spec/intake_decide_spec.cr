@@ -1488,6 +1488,16 @@ describe "the sources of the Eingang" do
     end
   end
 
+  it "takes a short file somebody put in the inbox, the backlog's sizes are for its noise" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Agatha Christie - Kurz.txt"), "ein kurzer Text")
+      write(File.join(dir, "inbox/Frank Herbert - Klein.epub"), "PK" + "x" * 100)
+      intake, _, _, _ = sources(dir)
+      intake.run_fast.should eq 2
+      entries(intake).map(&.["name"].as_s).sort!.should eq ["Agatha Christie - Kurz.txt", "Frank Herbert - Klein.epub"]
+    end
+  end
+
   it "moves what is no book out of the inbox, with a word in the log" do
     tmpdir do |dir, _|
       write(File.join(dir, "inbox/Roman/kaputt.pdf"), "no pdf at all" * 400)

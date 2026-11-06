@@ -54,7 +54,7 @@ module CalibreHub
     # so nothing lies around without a word; other kinds of files stay
     def fail_broken(skipped : Array(Backlog::Skipped), now = Time.local)
       skipped.each do |s|
-        next unless s.reason.starts_with?("too small") || s.reason.starts_with?("broken")
+        next unless s.reason.starts_with?("broken")
         info = File.info?(s.path) || next
         next unless settled?(info.modification_time.to_unix, now) && movable?(s.path)
         move(s.path, FAILED, now)

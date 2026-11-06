@@ -368,7 +368,7 @@ module CalibreHub
       @db.query_each("select files from intake_entries where origin = ?", INBOX) do |rs|
         Array(Backlog::BookFile).from_json(rs.read(String)).each { |f| known[f.path] = {f.size, f.mtime, "analysed", nil} }
       end
-      scanner = Backlog::Scanner.new([box.dir], known, underscored: true)
+      scanner = Backlog::Scanner.new([box.dir], known, inbox: true)
       scanner.run
       box.fail_broken(scanner.skipped, now)
       scanner.units.select { |u| u.files.all? { |f| box.settled?(f.mtime, now) } && u.files.all? { |f| box.movable?(f.path) } }

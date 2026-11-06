@@ -482,9 +482,9 @@ What the rules read from a file:
   (TXT: 20 KiB) or without their format's signature (`%PDF`, `PK`,
   `BOOKMOBI`, ...) are skipped, as are hidden files, symlinks and the
   inbox's `_imported`, `_duplicates`, `_failed` at the top of the folder (in
-  the inbox any folder starting with `_`). Everything else stays where it
-  is. An upload takes every format calibre knows, the name is what the
-  analysis has then.
+  the inbox any folder starting with `_`, and a short file is a book there:
+  somebody put it in). Everything else stays where it is. An upload takes
+  every format calibre knows, the name is what the analysis has then.
 - Duplicates are checked against the library before adding: the same file
   (size, then KOReader's partial MD5 and the first KiB; also files the hub
   rewrote since, by the checksum kept from before), the ISBN, or the same

@@ -201,12 +201,13 @@ module CalibreHub
       property on_progress : Proc(Int32, Int32, Nil)?
       @entries = 0
 
-      # underscored: folders starting with "_" aren't books at any depth (the
-      # inbox's rule), else only INBOX_DIRS at the top
-      def initialize(@roots : Array(String), @known : Known = Known.new, @underscored = false)
+      # inbox: the inbox's rules. Somebody put these files there, so a short
+      # one is a book too, and folders starting with "_" aren't looked at, at
+      # any depth; else only INBOX_DIRS at the top
+      def initialize(@roots : Array(String), @known : Known = Known.new, @inbox = false)
       end
 
-      def initialize(root : String, @known : Known = Known.new, @underscored = false)
+      def initialize(root : String, @known : Known = Known.new, @inbox = false)
         @roots = [root]
       end
 
@@ -221,9 +222,9 @@ module CalibreHub
         FORMATS.includes?(ext) ? ext : nil
       end
 
-      # nil when the file looks like a book of its format
-      def self.problem(path : String, format : String, size : Int64) : String?
-        return "too small" if size < (format == "TXT" ? MIN_TEXT : MIN_SIZE)
+      # nil when the file looks like a book of its format; short: any size
+      def self.problem(path : String, format : String, size : Int64, short = false) : String?
+        return "too small" if !short && size < (format == "TXT" ? MIN_TEXT : MIN_SIZE)
         head = Bytes.new(1024)
         n = File.open(path) { |f| f.read(head) }
         head = head[0, n]
@@ -267,7 +268,7 @@ module CalibreHub
           elsif info.directory?
             if name.starts_with?('.')
               @skipped << Skipped.new(path + "/", "hidden folder")
-            elsif (top && INBOX_DIRS.includes?(name)) || (@underscored && name.starts_with?('_'))
+            elsif (top && INBOX_DIRS.includes?(name)) || (@inbox && name.starts_with?('_'))
               @skipped << Skipped.new(path + "/", "inbox folder")
             else
               walk(path)
@@ -354,7 +355,7 @@ module CalibreHub
           @already += 1
           return nil
         end
-        if problem = Scanner.problem(path, format, size)
+        if problem = Scanner.problem(path, format, size, @inbox)
           @skipped << Skipped.new(path, problem)
           return nil
         end
