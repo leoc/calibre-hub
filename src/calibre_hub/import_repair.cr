@@ -125,7 +125,7 @@ module CalibreHub
     # moved out of the backlog, its name "Title (12)" still shows it
     private def calibre_folder?(dir : String) : Bool
       return File.exists?(File.join(dir, Backlog::OPF)) if Dir.exists?(dir)
-      File.basename(dir).matches?(/\s\(\d+\)\z/)
+      Backlog.calibre_name?(dir)
     end
 
     # Queues a plan of the books (not those accepted or rejected before):

@@ -389,11 +389,14 @@ module CalibreHub
       # one word title stays: "Dune" by a person. reading: the file name's,
       # which shows it for any title, else the authors must look like one.
       def self.swapped?(title : String, authors : Array(String), reading : Guess? = nil) : Bool
-        return false if title.strip.includes?(' ') || Clean.unknown_authors?(authors) || side_score(title) < 1
+        return false if Clean.unknown_authors?(authors)
         joined = authors.join(" and ")
+        # the name has the same pair the other way round: "Christie Golden"
+        # by "Allies" from "Allies - Christie Golden.mobi"
         if r = reading
           return true if r.authors.any? { |a| Text.key(a) == Text.key(title) } && same_book?(joined, r.title)
         end
+        return false if title.strip.includes?(' ') || side_score(title) < 1
         return true if joined.matches?(PUBLISHER_YEAR)
         t = names_text(joined)
         Text.tokens(t).size >= 4 && title_like?(t)
@@ -456,6 +459,9 @@ module CalibreHub
       # or unclear (a tie without a folder, or no person on either side)
       NAME    = "name"
       FOLDER  = "folder"
+      # hint: calibre named the file, "Title - Author" whatever the sides
+      # look like ("Allies - Christie Golden")
+      CALIBRE_NAME = :calibre
       UNCLEAR = "unclear"
 
       # The readings of the file name, the one to take first, and how it
@@ -518,7 +524,9 @@ module CalibreHub
           parts[-1] = "#{parts.last} #{volume}" if volume
           return make_title(parts, series, index, paren_author, year, publisher)
         end
-        side, how = if sf == sl && sf >= 0 && hint
+        side, how = if hint == CALIBRE_NAME
+                      {:last, FOLDER}
+                    elsif sf == sl && sf >= 0 && hint
                       # a tie: as the folder's other files
                       {hint, FOLDER}
                     elsif sf == sl && sf >= 0

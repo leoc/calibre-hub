@@ -366,6 +366,11 @@ module CalibreHub
       end
     end
 
+    # a folder calibre named: "Title (12)"
+    def self.calibre_name?(dir : String) : Bool
+      File.basename(dir).matches?(/\s\(\d+\)\z/)
+    end
+
     # A book for Dedup's rules from what is known of it
     def self.book(id : Int64, title : String, authors : Array(String), series : String? = nil,
                   series_index : Float64? = nil, identifiers = {} of String => String, publisher : String? = nil) : Book
@@ -575,7 +580,12 @@ module CalibreHub
       u.same_as = nil
       u.add_formats = [] of String
       found = index.match(u) || return true
-      id, how = found
+      mark(u, found[0], found[1], index)
+      false
+    end
+
+    # The unit is the book `id`: only what the library's book lacks
+    def self.mark(u : Unit, id : Int64, how : String, index : Index)
       have = index.formats(id)
       missing = u.files.reject { |f| have.includes?(f.format) || index.same_file(f) }.map(&.format).uniq
       u.match = how
@@ -586,7 +596,6 @@ module CalibreHub
       end
       u.action = missing.empty? ? "duplicate" : "addFormats"
       u.add_formats = missing
-      false
     end
 
     # Plans a scan: books it would add count for later ones; yields the
