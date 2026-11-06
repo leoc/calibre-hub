@@ -763,6 +763,27 @@ end
 describe Meta::FileMeta do
   fixtures = File.join(__DIR__, "fixtures", "metadata")
 
+  it "#2499: a title with its file's extension gives way to the record's" do
+    isbn = "9780721696522"
+    i = input(book("Cecil Textbook of Medicine.pdb", ["Lee Goldman"], tags: ["auto-unsicher"]), "Cecil - Textbook of Medicine.pdf",
+      "Cecil Textbook of Medicine\nLee Goldman\nISBN #{isbn}")
+    i.by_isbn = catalog({isbn => Meta::Record.new(title: "Cecil Textbook of Medicine", authors: ["Lee Goldman"])})
+    changed(Flow.decide(i))["title"].as_s.should eq "Cecil Textbook of Medicine"
+  end
+
+  it "#2651: a record's shouted name is quiet, a short one stays" do
+    isbn = "9780072358971"
+    i = input(book("Human Physiology", ["The Mechanisms of Body Function"]), "Vander- Human Physiology - The Mechanisms of Body Function 8th Ed.pdf",
+      "Human Physiology\nISBN #{isbn}")
+    i.by_isbn = catalog({isbn => Meta::Record.new(title: "Human Physiology", authors: ["VANDER"])})
+    changed(Flow.decide(i))["authors"].as_a.map(&.as_s).should eq ["Vander"]
+  end
+
+  it "#2073: Open Library's names joined by ~ are several people" do
+    Meta::OpenLibrary.names(["Leslie A. Mertz~Neil Schlager~Jayne Weisblatt", "Ann Lee"]).should eq ["Leslie A. Mertz", "Neil Schlager", "Jayne Weisblatt", "Ann Lee"]
+    Meta::OpenLibrary.names([] of String).should be_nil
+  end
+
   it "reads a DjVu's annotations" do
     r = Meta::FileMeta.djvu_meta(%(Title\t"Geometry and Symmetry"\nAuthor\t"Paul B. Yale"\n))
     {r.title, r.authors}.should eq({"Geometry and Symmetry", ["Paul B. Yale"]})

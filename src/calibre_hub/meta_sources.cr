@@ -399,6 +399,12 @@ module CalibreHub
         c.fields.comments = OpenLibrary.description(work)
       end
 
+      # "Leslie A. Mertz~Neil Schlager~Jayne Weisblatt" is three people
+      def self.names(list : Array(String)) : Array(String)?
+        list = list.flat_map(&.split('~')).map(&.strip).reject(&.empty?)
+        list unless list.empty?
+      end
+
       def self.parse_books(body : String, isbn : String, base : String, covers : String) : Array(Candidate)
         JSON.parse(body).as_h.values.compact_map do |b|
           ids = b["identifiers"]?
@@ -407,7 +413,7 @@ module CalibreHub
           cover = b["cover"]?.try(&.["large"]?).try(&.as_s?).try { |u| cover_url(u, covers) }
           r = Record.new(
             title: b["title"]?.try(&.as_s?).try { |t| Text.main_title(t) },
-            authors: b["authors"]?.try(&.as_a.compact_map { |a| a["name"]?.try(&.as_s?) }).try { |l| l unless l.empty? },
+            authors: b["authors"]?.try(&.as_a.compact_map { |a| a["name"]?.try(&.as_s?) }).try { |l| names(l) },
             isbn: found,
             publisher: b["publishers"]?.try(&.as_a.first?).try(&.["name"]?).try(&.as_s?),
             pubdate: b["publish_date"]?.try(&.as_s?).try { |d| Dates.normalize(d) },
@@ -427,7 +433,7 @@ module CalibreHub
           r = Record.new(
             title: d["title"]?.try(&.as_s?).try { |t| Text.main_title(t) },
             subtitle: d["subtitle"]?.try(&.as_s?) || d["title"]?.try(&.as_s?).try { |t| Text.subtitle(t) },
-            authors: strings.call("author_name").try { |l| l unless l.empty? },
+            authors: names(strings.call("author_name")),
             # a work has many editions: their ISBN and publisher only when there is one
             isbn: isbns.size == 1 ? isbns.first : nil,
             publisher: publishers.size == 1 ? publishers.first : nil,

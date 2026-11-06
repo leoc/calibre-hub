@@ -275,7 +275,13 @@ module CalibreHub
           name = name.select { |a| (own + people).any? { |t| People.same?(a, t) } }
         end
         named = (own + name).reject { |a| People.tokens(a).size < 2 && People.tokens(a).all? { |w| title_words.includes?(w) } }
-        People.merge(named, people, words)
+        authors, known = People.merge(named, people, words)
+        {authors.map { |a| quiet(a) }, known}
+      end
+
+      # "VANDER": a record's shouted name, "NASA" is too short for one
+      private def self.quiet(name : String) : String
+        name.count(&.letter?) >= 5 && name == name.upcase ? Clean.fix_name_case(name.downcase) : name
       end
 
       # what a shop adds to a title: "…, with CDROM", "(with CD-ROM)"

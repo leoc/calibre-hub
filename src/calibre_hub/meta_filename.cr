@@ -237,7 +237,7 @@ module CalibreHub
       # nothing but a volume: "Vol 09", "Band 2", "Part IV"
       VOLUME_ONLY = /\A(?:vol(?:ume)?|bd|band|teil|part|tome?)\.?\s*(?:\d{1,3}|[ivx]{1,4})\z/i
       # what ends the name of a book's file
-      BOOK_FILE = /\.(?:pdf|djvu?|epub|mobi|azw\d?|chm|lit|prc|fb2|docx?|rtf|txt|ps|dvi|cbz|cbr)\s*\z/i
+      BOOK_FILE = /\.(?:pdf|djvu?|epub|mobi|azw\d?|chm|lit|prc|pdb|odt|fb2|docx?|rtf|txt|ps|dvi|cbz|cbr)\s*\z/i
       # a drive, a share, folders from the root
       PATH_ROOT = /\A(?:[A-Za-z]:[\\\/]|\\\\|\/[^\/\s]+\/)/
       # the pages of a download list: "(547 pages)", "(256s)", not "(1960s)"
