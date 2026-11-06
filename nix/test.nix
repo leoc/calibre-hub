@@ -834,7 +834,9 @@ pkgs.testers.runNixOSTest {
         messy = book_by_title("tolkien - der herr der ringe (z-lib.org)")["id"]
         # the added event starts a run: cleaned by the rules, completed by
         # the ISBN from the text through the stubbed sources
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{messy} | jq -e '.title == \"Der Herr der Ringe\"'", timeout=90)
+        # the rules write first, the catalogs after them, and the log last
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{messy} | jq -e '.title == \"Der Herr der Ringe\" and .publisher != null and .comments != null'", timeout=90)
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/metadata/changes?bookId={messy}' | jq -e '[.changes[].field] | contains([\"title\", \"authors\", \"isbn\", \"publisher\", \"comments\"])'", timeout=30)
         b = api("GET", f"/api/books/{messy}")[1]
         assert b["authors"] == ["J.R.R. Tolkien"], b
         assert b["identifiers"].get("isbn") == "9783608938289", b
