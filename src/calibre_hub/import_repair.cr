@@ -355,6 +355,9 @@ module CalibreHub
     end
 
     protected def apply(job : Job, index : Int32, id : Int64, resumed : Bool)
+      # a plan job from before the rollout resumes as nothing: nobody accepted
+      # what it finds pending
+      return unless job.changes["mode"]?.try(&.as_s?) == "apply"
       begin
         apply_book(id, job.id)
       rescue ex : Jobs::Abort

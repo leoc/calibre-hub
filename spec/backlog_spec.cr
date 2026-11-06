@@ -177,6 +177,13 @@ private def wait_job(jobs : CalibreHub::Jobs, id : String) : CalibreHub::Jobs::J
   raise "job #{id} still running"
 end
 
+# a plan job as the versions with a plan left it in the state DB
+private class OldPlan < CalibreHub::ImportRepair
+  def plan_job(ids : Array(Int64)) : Job
+    enqueue(ids, {"mode" => JSON::Any.new("plan")})
+  end
+end
+
 # planned as a recheck plans them: book -> the file an import read
 private def plan(repair : CalibreHub::ImportRepair, books : Hash(Int32, String?))
   books.each { |id, path| repair.recheck(id.to_i64, path) }
@@ -701,6 +708,22 @@ describe CalibreHub::ImportRepair do
       repair = CalibreHub::ImportRepair.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), CalibreHub::MetaLog.new(db))
       repair.recheck_list("r")[0].should be_empty
     end
+  end
+
+  it "applies nothing for a plan job that resumes after the update" do
+    fake = FakeCalibre.new
+    fake.add(1, "Carr", ["Formulas"], ["PDF"])
+    db = state_db
+    db.exec "create table if not exists meta (key text primary key, value text)"
+    CalibreHub::Importer.migrate(db)
+    calibre = fake.calibre
+    repair = OldPlan.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), CalibreHub::MetaLog.new(db))
+    db.exec "insert into import_repairs (book_id, file, changes, status, at) values (1, '', ?, 'pending', 1)",
+      [{field: "title", old: "Carr", new: "Neu"}].to_json
+    job = repair.plan_job([1_i64])
+    wait_job(repair, job.id).status.should eq "done"
+    fake.books[1_i64]["title"].should eq "Carr"
+    repair.proposals("pending").size.should eq 1
   end
 
   it "reads the proposals of an older plan" do
