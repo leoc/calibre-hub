@@ -1376,6 +1376,11 @@ pkgs.testers.runNixOSTest {
         dry = wait_run(dry["id"])
         assert dry["summary"]["books"] == 0 and dry["summary"]["alreadyImported"] == 1, dry["summary"]
 
+        # a root's parent is writable for the hub, the library in it isn't
+        pid = machine.succeed("systemctl show -p MainPID --value calibre-hub").strip()
+        machine.fail(f"nsenter -t {pid} -m touch /srv/books/library/from-the-hub")
+        machine.succeed(f"nsenter -t {pid} -m touch /srv/books/from-the-hub && rm /srv/books/from-the-hub")
+
         # the threshold is off until someone sets it
         assert api("GET", "/api/intake?limit=1")[1]["threshold"] is None
         assert api("POST", "/api/intake/threshold", {"value": 59})[0] == 400
