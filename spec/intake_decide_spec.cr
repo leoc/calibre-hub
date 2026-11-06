@@ -140,7 +140,7 @@ end
 private def setup(root : String, fake = FakeCalibre.new, shelf : String? = nil, db = state_db)
   calibre = fake.calibre
   writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
-  imports = CalibreHub::ImportJobs.new(db, calibre, writer, [root], shelf, retries: 0)
+  imports = CalibreHub::Importer.new(db, calibre, writer, [root], shelf, retries: 0)
   intake = Intake.new(db, calibre, imports, shelf, File.join(root, ".covers"), stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds)
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
   intake.reader = ->(path : String, _format : String) do
@@ -1125,7 +1125,7 @@ describe "the filter Schon in der Bibliothek" do
       library_entries(intake).should be_empty
       repair_settled(repair)
       fake.books[7_i64]["title"].should eq "Neu"
-      repair.review["entries"].as_a.should be_empty
+      repair.proposals("pending").should be_empty
       # accepted a second time, from the other door
       fake.books[7_i64]["title"] = JSON::Any.new("Hand")
       repair.accept([7_i64])["books"].should eq 0
@@ -1309,8 +1309,8 @@ describe CalibreHub::RepairRecheck do
       imported(db, File.join(dir, "Allies - Christie Golden.mobi"), 1, "portion")
       db.exec "insert into events (type, book_id, payload, created_at) values ('added', 1, ?, 100)", {book: JSON.parse(fake.books[1_i64].to_json)}.to_json
       # no metadata.opf any more, the folder's name still says it
-      repair.files({} of String => JSON::Any).should be_empty
-      repair.files({} of String => JSON::Any, folders: true)[1_i64].should end_with ".mobi"
+      repair.files.should be_empty
+      repair.files(folders: true)[1_i64].should end_with ".mobi"
       recheck.queue("other").total.should eq 0
       recheck_done(recheck)
       recheck.queue("portion").total.should eq 1
@@ -1341,7 +1341,6 @@ describe CalibreHub::RepairRecheck do
       intake.library_list["recheck"]["waiting"].should eq true
       # the queue the analysis waits for is another one
       repair.running?.should be_false
-      imports.running?.should be_false
       db.query_one("select count(*) from import_rechecks", as: Int64).should eq 0
       busy = false
       recheck_done(recheck)
@@ -1360,7 +1359,7 @@ private def sources(dir : String, fake = FakeCalibre.new, shelf : String? = nil,
   Dir.mkdir_p(root)
   Dir.mkdir_p(File.join(dir, "inbox"))
   Dir.mkdir_p(File.join(dir, "uploads"))
-  imports = CalibreHub::ImportJobs.new(db, calibre, writer, [root], shelf, retries: 0)
+  imports = CalibreHub::Importer.new(db, calibre, writer, [root], shelf, retries: 0)
   intake = Intake.new(db, calibre, imports, shelf, File.join(dir, ".covers"), stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds,
     inbox: CalibreHub::Inbox.new(File.join(dir, "inbox"), 0.seconds), uploads: CalibreHub::Inbox.new(File.join(dir, "uploads"), 0.seconds))
   intake.category_column = "kategorie"

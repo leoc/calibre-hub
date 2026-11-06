@@ -97,7 +97,7 @@ end
 private def setup(root : String, fake = ListOnlyCalibre.new, db = state_db, stable = 0.seconds)
   calibre = fake.calibre
   writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
-  imports = CalibreHub::ImportJobs.new(db, calibre, writer, [root], nil, retries: 0)
+  imports = CalibreHub::Importer.new(db, calibre, writer, [root], nil, retries: 0)
   intake = Intake.new(db, calibre, imports, nil, File.join(root, ".covers"), stable: stable, pause: 0.seconds, wait: 10.milliseconds)
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
   {intake, fake, db, imports}

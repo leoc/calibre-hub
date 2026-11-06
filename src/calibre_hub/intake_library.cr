@@ -4,8 +4,7 @@ module CalibreHub
   # The Eingang's filter „Schon in der Bibliothek“ and a look into a file.
   #
   # The proposals for books of the library stay where they are, in
-  # import_repairs, and the old Prüfliste goes on reading them: there is no
-  # second copy to accept twice. Here they look like entries, by the negative
+  # import_repairs. Here they look like entries, by the negative
   # book id so they can't be taken for a file, and go through ImportRepair's
   # accept and reject: hand edits stay out and apply_book refuses a field
   # changed since the plan. There is no trash and no „wie in der Datei“ for a
@@ -103,8 +102,8 @@ module CalibreHub
        skipped: p.skipped, error: p.detail, bookTitle: book.try(&.title), unchanged: unchanged}
     end
 
-    # One library entry for the drawer: old → new per field, as the Prüfliste
-    # shows them; a proposal decided meanwhile is gone
+    # One library entry for the drawer: old → new per field; a proposal
+    # decided meanwhile is gone
     def library_detail(id : Int64) : JSON::Any?
       repair = @repair || return nil
       p = repair.proposals(LIBRARY_OPEN + " and book_id = ?", [id] of DB::Any).first? || return nil

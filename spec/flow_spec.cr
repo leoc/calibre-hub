@@ -1,7 +1,6 @@
 require "spec"
 require "http/server"
 require "../src/calibre_hub/meta_flow"
-require "../src/calibre_hub/meta_quality"
 
 private alias Meta = CalibreHub::Meta
 private alias Confidence = CalibreHub::Meta::Confidence

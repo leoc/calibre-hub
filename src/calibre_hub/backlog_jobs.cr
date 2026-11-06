@@ -8,25 +8,12 @@ require "./writer"
 require "./api"
 
 module CalibreHub
-  # Backlog imports as jobs (one per run: the scan, then a unit per book)
-  # and their runs in the state DB: the scan with its plan (import_units),
-  # the summary and the skipped files (import_runs), and every file a run
-  # handled (import_files), so another run of the same folder skips them.
-  # A dry run is only the scan, in a queue of its own (ImportScans): it
-  # doesn't wait for an import and doesn't pause the hooks.
-  class ImportJobs < Jobs
-    KEEP_RUNS = 20
-    # units stored per transaction; the API gets the state DB in between
-    STORE_BATCH = 500
-
-    class Busy < Exception
-    end
-
-    # A hook that works off the imported books afterwards (paused while an
-    # import runs): the books in its running jobs or its queue table, and
-    # the events of its kind past its cursor it hasn't looked at yet
-    record FollowupHook, name : String, cursor : String, events : String, jobs : String? = nil, queue : String? = nil
-
+  # What gets a file of the Eingang into the library, one unit at a time, as a
+  # decision of Intake wants it, and every file of the backlog it handled
+  # (import_files), so the Eingang doesn't offer it again. The runs of earlier
+  # imports stay in the state DB (import_runs, import_units), nothing reads
+  # them any more.
+  class Importer
     # A decision of the Eingang in place of the rule flow: the values to
     # write (empty: as in the file), the flow's decision they come from, that
     # the book is wanted although it looks like one the library has, that it
@@ -37,69 +24,19 @@ module CalibreHub
       fresh : Bool = false, tags : Array(String) = [] of String, category : {String, String}? = nil
 
     getter roots : Array(String)
-    # the hooks that are on (main.cr)
-    property followup = [] of FollowupHook
+    getter writer : Writer
 
-    def initialize(db : DB::Database, calibre : Calibre, writer : Writer, roots : Array(String),
+    def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer, roots : Array(String),
                    @library : String?, @retries = 20, @retry_wait = 15.seconds)
       @roots = roots.map { |r| File.expand_path(r) }
-      ImportJobs.migrate(db)
-      super(db, calibre, writer, nil, "import_jobs")
+      Importer.migrate(@db)
       @index = nil.as(Backlog::Index?)
       @index_run = ""
-      @scans = nil.as(ImportScans?)
-      # run -> the book being imported, and when this process took the
-      # run up with how many were done then (the rate leaves out restarts)
-      @current = {} of String => String
-      @base = {} of String => {Time::Instant, Int32}
       # folder -> how its files are named (Meta::FileName.orientation)
       @hints = {} of String => Symbol?
-      @scans = ImportScans.new(db, calibre, writer, self)
-    end
-
-    # the dry runs' queue
-    def scans : ImportScans
-      @scans.not_nil!
     end
 
     def self.migrate(db : DB::Database)
-      db.exec <<-SQL
-        create table if not exists import_runs (
-          id text primary key,
-          path text not null,
-          dry_run integer not null,
-          job_id text,
-          created_at integer not null,
-          summary text not null,
-          skipped text not null
-        )
-        SQL
-      columns = [] of String
-      db.query_each("select name from pragma_table_info('import_runs')") { |rs| columns << rs.read(String) }
-      # every folder of the run (JSON), path is them joined
-      db.exec "alter table import_runs add column paths text" unless columns.includes?("paths")
-      db.exec "alter table import_runs add column limit_n integer" unless columns.includes?("limit_n")
-      # 0 until the job's scan stored units and summary (runs from before scanned at once)
-      db.exec "alter table import_runs add column scanned integer not null default 1" unless columns.includes?("scanned")
-      # the scan's progress: {files, units, planned}
-      db.exec "alter table import_runs add column scan text" unless columns.includes?("scan")
-      # unix times: the job began the scan, the scan ended, the last book was handled
-      %w(started_at scanned_at finished_at).each do |c|
-        db.exec "alter table import_runs add column #{c} integer" unless columns.includes?(c)
-      end
-      db.exec <<-SQL
-        create table if not exists import_units (
-          run_id text not null,
-          idx integer not null,
-          status text not null,
-          unit text not null,
-          primary key (run_id, idx)
-        )
-        SQL
-      units = [] of String
-      db.query_each("select name from pragma_table_info('import_units')") { |rs| units << rs.read(String) }
-      # the plan's action (add, addFormats, duplicate), for the backlog's open books
-      db.exec "alter table import_units add column action text" unless units.includes?("action")
       db.exec <<-SQL
         create table if not exists import_files (
           path text primary key,
@@ -111,23 +48,6 @@ module CalibreHub
           at integer not null
         )
         SQL
-    end
-
-    # The folder to import: absolute, or relative to the first root; it
-    # must be (in) a root
-    def resolve(path : String) : String
-      raise Edit::Invalid.new("path", "no import roots configured (backlogImport.roots)") if @roots.empty?
-      p = path.strip
-      raise Edit::Invalid.new("path", "path expected") if p.empty?
-      full = File.expand_path(p, @roots.first)
-      real = File.realpath(full) rescue raise Edit::Invalid.new("path", "#{full} does not exist")
-      raise Edit::Invalid.new("path", "#{full} is not a folder") unless File.directory?(real)
-      ok = @roots.any? do |r|
-        root = File.realpath(r) rescue next false
-        real == root || real.starts_with?(root.rstrip('/') + "/")
-      end
-      raise Edit::Invalid.new("path", "#{full} is not below an import root (#{@roots.join(", ")})") unless ok
-      real
     end
 
     # The files earlier runs handled; with an index, without those whose
@@ -143,302 +63,6 @@ module CalibreHub
       k
     end
 
-    # Queues a run of one or more folders and returns it right away: a dry
-    # run only scans and plans (status scanning, then planned), an import
-    # scans and then imports the units (scanning, running, done). limit:
-    # the first that many books that add a book or formats, in scan order.
-    def start(paths : Array(String), dry_run : Bool, limit : Int32? = nil) : JSON::Any
-      raise Edit::Invalid.new("path", "path expected") if paths.empty?
-      raise Edit::Invalid.new("limit", "1 or more expected") if limit && limit < 1
-      dirs = paths.map { |p| resolve(p) }.uniq
-      # a folder below another one of the run is scanned with that
-      dirs = dirs.reject { |d| dirs.any? { |o| o != d && d.starts_with?(o.rstrip('/') + "/") } }
-      raise Busy.new("an import is running") if !dry_run && running?
-      id = Random::Secure.hex(8)
-      @db.exec "insert into import_runs (id, path, paths, dry_run, limit_n, created_at, summary, skipped, scanned) values (?, ?, ?, ?, ?, ?, 'null', '[]', 0)",
-        id, dirs.join(", "), dirs.to_json, dry_run ? 1 : 0, limit.try(&.to_i64), Time.utc.to_unix
-      job = dry_run ? scans.queue(id) : enqueue([] of Int64, {"run" => JSON::Any.new(id)})
-      @db.exec "update import_runs set job_id = ? where id = ?", job.id, id
-      prune
-      run(id) || raise Writer::NotFound.new
-    end
-
-    def start(path : String, dry_run : Bool, limit : Int32? = nil) : JSON::Any
-      start([path], dry_run, limit)
-    end
-
-    # A run's scan, the first step of its job (table: the job's queue):
-    # walks the folders, plans every unit and stores units and summary; an
-    # import's job gets the units it imports. Done already when the hub
-    # restarted after it.
-    def scan(job : Job, table : String) : Job
-      run_id = job.changes["run"].as_s
-      row = @db.query_one?("select path, paths, dry_run, limit_n, scanned from import_runs where id = ?", run_id,
-        as: {String, String?, Int64, Int64?, Int64})
-      raise Jobs::Abort.new("run #{run_id} is gone") unless row
-      path, paths, dry, limit_n, scanned = row
-      return job if scanned == 1
-      dirs = paths.try { |p| Array(String).from_json(p) } || [path]
-      limit = limit_n.try(&.to_i32)
-      last = Time.instant
-      # phase: scan (walking the folders), check (against the library);
-      # since: when the phase began; path: the folder or book it is at
-      phase = "scan"
-      since = Time.utc.to_unix
-      progress = ->(files : Int32, units : Int32, planned : Int32, path : String?, force : Bool) do
-        now = Time.instant
-        if force || now - last >= 1.second
-          last = now
-          @db.exec "update import_runs set scan = ? where id = ?",
-            {files: files, units: units, planned: planned, phase: phase, since: since, path: path}.to_json, run_id
-        end
-        nil
-      end
-      # a scan begun again after a restart starts over
-      @db.exec "update import_runs set started_at = ? where id = ?", since, run_id
-      progress.call(0, 0, 0, nil, true)
-      index = with_retry { Backlog::Index.load(@calibre, @library, @db) }
-      scanner = Backlog::Scanner.new(dirs, known(index))
-      scanner.on_progress = ->(files : Int32, units : Int32) { progress.call(files, units, 0, scanner.current, false) }
-      scanner.run
-      units = scanner.units
-      phase = "check"
-      since = Time.utc.to_unix
-      progress.call(scanner.files, units.size, 0, nil, true)
-      Backlog.plan_all(units, index) { |n| progress.call(scanner.files, units.size, n, units[n - 1]?.try(&.name), false) }
-      progress.call(scanner.files, units.size, units.size, nil, true)
-      taken = Backlog.take(units, limit)
-      if limit
-        chosen = taken.to_set
-        units.each_with_index { |u, i| u.status = "deferred" unless chosen.includes?(i) }
-      end
-      summary = Backlog.summary(units, scanner.skipped, scanner.already, dirs, taken, limit)
-      @db.exec "delete from import_units where run_id = ?", run_id
-      units.each_slice(STORE_BATCH).with_index do |slice, n|
-        @db.transaction do |tx|
-          slice.each_with_index do |u, i|
-            tx.connection.exec "insert into import_units (run_id, idx, status, action, unit) values (?, ?, ?, ?, ?)",
-              run_id, n * STORE_BATCH + i, u.status, u.action, u.to_json
-          end
-        end
-        Fiber.yield
-      end
-      ids = dry == 1 ? [] of Int64 : taken.map(&.to_i64)
-      @db.transaction do |tx|
-        c = tx.connection
-        c.exec "update import_runs set summary = ?, skipped = ?, scanned = 1, scanned_at = ? where id = ?",
-          summary.to_json, scanner.skipped.to_json, Time.utc.to_unix, run_id
-        c.exec "update #{table} set ids = ? where id = ?", ids.to_json, job.id
-      end
-      Job.new(ids, job.changes, job.id)
-    end
-
-    def runs(limit = 10) : Array(JSON::Any)
-      ids = [] of String
-      @db.query_each("select id from import_runs order by created_at desc, rowid desc limit ?", limit) { |rs| ids << rs.read(String) }
-      ids.compact_map { |id| run(id) }
-    end
-
-    # failed books listed with a run
-    FAILURES = 20
-
-    # status: scanning (the job's scan), planned (a dry run's result),
-    # running, done, failed (the import job's), gone (the job was pruned).
-    # phase: scan (walking the folders), check (against the library),
-    # import, else the status; current: the folder or book it is at.
-    # Times, rates (files per second while scanning, books per minute) and
-    # the ETA (seconds, while checking and importing) come from the state
-    # DB and, for an import, from the books this process imported.
-    def run(id : String) : JSON::Any?
-      row = @db.query_one?("select path, paths, dry_run, job_id, created_at, summary, limit_n, scanned, scan, started_at, scanned_at, finished_at " \
-                           "from import_runs where id = ?", id,
-        as: {String, String?, Int64, String?, Int64, String, Int64?, Int64, String?, Int64?, Int64?, Int64?})
-      return nil unless row
-      path, paths, dry, job_id, created, summary, limit, scanned, scan, started, scanned_at, finished = row
-      results = Hash(String, Int64).new(0_i64)
-      @db.query_each("select status, count(*) from import_units where run_id = ? group by status", id) do |rs|
-        results[rs.read(String)] = rs.read(Int64)
-      end
-      job = job_id.try { |j| dry == 1 ? scans[j]? : self[j]? }
-      status = if scanned == 0
-                 case job.try(&.status)
-                 when nil       then "gone"
-                 when "running" then "scanning"
-                 else                "failed"
-                 end
-               elsif dry == 1
-                 "planned"
-               else
-                 job.try(&.status) || "gone"
-               end
-      progress = scan.try { |s| JSON.parse(s) }
-      done = dry == 1 ? nil : job.try(&.done)
-      total = dry == 1 ? results.values.sum : (job.try(&.total) || results.values.sum)
-      phase = case status
-              when "scanning" then progress.try(&.["phase"]?).try(&.as_s?) || "scan"
-              when "running"  then "import"
-              else                 status
-              end
-      current = case phase
-                when "scan", "check" then progress.try(&.["path"]?).try(&.as_s?)
-                when "import"        then @current[id]?
-                end
-      now = Time.utc.to_unix
-      live = {"scanning", "running"}.includes?(status)
-      ended = live ? now : (dry == 1 ? scanned_at : finished || scanned_at)
-      elapsed = started.try { |s| ended.try { |e| Math.max(e - s, 0_i64) } }
-      files_rate = nil.as(Float64?)
-      books_rate = nil.as(Float64?)
-      eta = nil.as(Int64?)
-      case phase
-      when "scan"
-        if p = progress
-          dt = now - (p["since"]?.try(&.as_i64?) || now)
-          files_rate = (p["files"].as_i64 / dt).round(1) if dt > 0
-        end
-      when "check"
-        if p = progress
-          dt = now - (p["since"]?.try(&.as_i64?) || now)
-          planned = p["planned"].as_i64
-          if dt > 0 && planned > 0
-            books_rate = (planned * 60 / dt).round(1)
-            eta = ((p["units"].as_i64 - planned) * dt / planned).to_i64
-          end
-        end
-      when "import"
-        if (base = @base[id]?) && (d = done)
-          dt = (Time.instant - base[0]).total_seconds
-          n = d - base[1]
-          if dt >= 1 && n > 0
-            books_rate = (n * 60 / dt).round(1)
-            eta = ((total - d) * dt / n).to_i64
-          end
-        end
-      when "done", "failed"
-        if (d = done) && d > 0 && (f = finished) && (sc = scanned_at) && f > sc
-          books_rate = (d * 60 / (f - sc)).round(1)
-        end
-      end
-      failures = [] of NamedTuple(path: String, detail: String?)
-      @db.query_each("select unit from import_units where run_id = ? and status = 'failed' order by idx limit ?", id, FAILURES) do |rs|
-        u = Backlog::Unit.from_json(rs.read(String))
-        failures << {path: u.name, detail: u.detail}
-      end
-      JSON.parse({
-        id: id, path: path, paths: paths.try { |p| JSON.parse(p) } || [path], dryRun: dry == 1, limit: limit,
-        createdAt: Time.unix(created).to_rfc3339, jobId: job_id, status: status, phase: phase, current: current,
-        startedAt: started.try { |t| Time.unix(t).to_rfc3339 }, scannedAt: scanned_at.try { |t| Time.unix(t).to_rfc3339 },
-        finishedAt: live ? nil : ended.try { |t| Time.unix(t).to_rfc3339 }, elapsedSeconds: elapsed,
-        filesPerSecond: files_rate, booksPerMinute: books_rate, etaSeconds: eta,
-        done: done, total: total,
-        error: job.try(&.error), scan: progress, summary: JSON.parse(summary), results: results, failures: failures,
-      }.to_json)
-    end
-
-    # The whole backlog, from the runs: books imported, formats added and
-    # duplicates found by every import so far (the files they handled), and
-    # what is still open by the latest scanned run (its folders): books to
-    # add, formats to add, duplicates and failed books not handled yet.
-    # rate: books per minute of the running import, for the ETA.
-    def backlog(rate : Float64? = nil) : JSON::Any
-      handled = Hash(String, Int64).new(0_i64)
-      # a unit's files share run, status and book
-      @db.query_each("select status, count(*) from (select distinct run_id, status, book_id from import_files) group by status") do |rs|
-        handled[rs.read(String)] = rs.read(Int64)
-      end
-      basis = @db.query_one?("select id, path, paths, created_at from import_runs where scanned = 1 order by created_at desc, rowid desc limit 1",
-        as: {String, String, String?, Int64})
-      open = Hash(String, Int64).new(0_i64)
-      failed = 0_i64
-      if basis
-        @db.query_each("select coalesce(action, json_extract(unit, '$.action')), status, count(*) from import_units " \
-                       "where run_id = ? and status in ('pending', 'deferred', 'failed') group by 1, 2", basis[0]) do |rs|
-          action, status, n = rs.read(String?, String, Int64)
-          open[action || "add"] += n
-          failed += n if status == "failed"
-        end
-      end
-      left = open.values.sum
-      JSON.parse({
-        imported: handled["imported"], formatAdded: handled["formatAdded"], duplicates: handled["duplicate"],
-        open: {books: open["add"], formats: open["addFormats"], duplicates: open["duplicate"], failed: failed},
-        # the new books of the backlog: imported and still to add
-        total: handled["imported"] + open["add"],
-        basis: basis.try { |b| {runId: b[0], paths: b[2].try { |p| JSON.parse(p) } || [b[1]], createdAt: Time.unix(b[3]).to_rfc3339} },
-        etaSeconds: rate && rate > 0 && left > 0 ? (left * 60 / rate).to_i64 : nil,
-      }.to_json)
-    end
-
-    # The hooks' work left after imports: books per hook, and whether they
-    # still wait for an import
-    def followup_status : JSON::Any
-      queues = {} of String => Int64
-      @followup.each do |h|
-        n = 0_i64
-        begin
-          if cursor = @db.query_one?("select value from meta where key = ?", h.cursor, as: String).try(&.to_i64?)
-            n += @db.query_one("select count(*) from events where id > ? and type = ?", cursor, h.events, as: Int64)
-          end
-          if table = h.jobs
-            rows = [] of {String, Int32}
-            @db.query_each("select ids, done from #{table} where status = 'running'") { |rs| rows << {rs.read(String), rs.read(Int32)} }
-            # the metadata jobs' author pass is the id 0
-            rows.each { |ids, done| n += (Array(Int64).from_json(ids)[done..]? || [] of Int64).count(&.> 0) }
-          end
-          h.queue.try { |q| n += @db.query_one("select count(*) from #{q}", as: Int64) }
-        rescue DB::Error | SQLite3::Exception
-        end
-        queues[h.name] = n
-      end
-      JSON.parse({paused: Backlog.paused?(@db), total: queues.values.sum, queues: queues}.to_json)
-    end
-
-    # Every unit with its plan and result, and the skipped files
-    def report(id : String) : JSON::Any?
-      r = run(id) || return nil
-      units = [] of JSON::Any
-      @db.query_each("select unit from import_units where run_id = ? order by idx", id) { |rs| units << JSON.parse(rs.read(String)) }
-      skipped = @db.query_one("select skipped from import_runs where id = ?", id, as: String)
-      JSON.parse({run: r, units: units, skipped: JSON.parse(skipped)}.to_json)
-    end
-
-    private def prune
-      old = [] of String
-      @db.query_each("select id from import_runs order by created_at desc, rowid desc limit -1 offset ?", KEEP_RUNS) { |rs| old << rs.read(String) }
-      old.each do |id|
-        @db.exec "delete from import_units where run_id = ?", id
-        @db.exec "delete from import_runs where id = ?", id
-      end
-    end
-
-    protected def prepare(job : Job) : Job
-      job = scan(job, @table)
-      @base[job.changes["run"].as_s] = {Time.instant, job.done}
-      job
-    end
-
-    # One unit of a run
-    protected def apply(job : Job, index : Int32, id : Int64, resumed : Bool)
-      run_id = job.changes["run"].as_s
-      json = @db.query_one?("select unit from import_units where run_id = ? and idx = ?", run_id, id, as: String) || return
-      unit = Backlog::Unit.from_json(json)
-      # handled just before the hub stopped
-      return unless unit.status == "pending"
-      @current[run_id] = unit.name
-      ix = index_for(run_id)
-      begin
-        import(unit, ix)
-      rescue ex : Jobs::Abort
-        raise ex
-      rescue ex
-        unit.status = "failed"
-        unit.detail = ex.message || ex.class.name
-        save(run_id, id, unit)
-        raise ex
-      end
-      save(run_id, id, unit)
-    end
-
     def index_for(run_id : String) : Backlog::Index
       if (ix = @index) && @index_run == run_id
         return ix
@@ -449,13 +73,6 @@ module CalibreHub
       ix
     end
 
-    private def save(run_id : String, idx : Int64, unit : Backlog::Unit)
-      now = Time.utc.to_unix
-      @db.exec "update import_units set status = ?, action = ?, unit = ? where run_id = ? and idx = ?", unit.status, unit.action, unit.to_json, run_id, idx
-      @db.exec "update import_runs set finished_at = ? where id = ?", now, run_id
-      handled(unit, run_id) unless unit.status == "failed"
-    end
-
     # no other run takes these files again
     def handled(unit : Backlog::Unit, run_id : String)
       now = Time.utc.to_unix
@@ -463,10 +80,6 @@ module CalibreHub
         @db.exec "insert or replace into import_files (path, size, mtime, status, book_id, run_id, at) values (?, ?, ?, ?, ?, ?, ?)",
           f.path, f.size, f.mtime, unit.status, unit.book_id, run_id, now
       end
-    end
-
-    def writer : Writer
-      @writer
     end
 
     # calibre-server failed on one book (e.g. calibre's NoSuchBook, an
@@ -496,18 +109,6 @@ module CalibreHub
       true
     rescue Calibre::Error
       false
-    end
-
-    def import(unit : Backlog::Unit, ix : Backlog::Index)
-      Backlog.plan(unit, ix)
-      case unit.action
-      when "duplicate"
-        unit.status = "duplicate"
-      when "addFormats"
-        add_formats(unit.book_id.not_nil!, unit, ix)
-      else
-        add(unit, ix)
-      end
     end
 
     # A unit as decided in the Eingang; a book that turned out to be in the
@@ -551,10 +152,10 @@ module CalibreHub
       @writer.written([id]) unless added.empty?
     end
 
-    private def add(unit : Backlog::Unit, ix : Backlog::Index, chosen : Chosen? = nil)
+    private def add(unit : Backlog::Unit, ix : Backlog::Index, chosen : Chosen)
       primary = unit.primary
       opf = unit.meta
-      force = chosen.try(&.force) || false
+      force = chosen.force
       # a calibre folder was checked against the library already; a plain
       # file gets calibre's title/author check too
       result = with_retry(book: true) { @calibre.add_book(primary.path, File.basename(primary.path), duplicates: !opf.nil? || force) }
@@ -572,36 +173,19 @@ module CalibreHub
       end
       notes = [] of String
       book = nil
-      decided = nil.as(Meta::Flow::Decision?)
+      decided = chosen.decision
+      unit.decided = decided.try(&.how)
       begin
         if opf
           @calibre.set_fields(id, opf.changes)
-          if chosen
-            decided = chosen.decision
-            unit.decided = decided.try(&.how)
-            b = @calibre.book(id)
-            changes = b ? ImportJobs.chosen_fields(b, chosen) : {} of String => JSON::Any
-            @calibre.set_fields(id, changes) unless changes.empty?
-          end
+          b = @calibre.book(id)
+          changes = b ? Importer.chosen_fields(b, chosen) : {} of String => JSON::Any
+          @calibre.set_fields(id, changes) unless changes.empty?
           unit.cover.try { |c| cover(id, c) }
         else
-          # tags embedded in the file are dropped, like in the inbox; title,
-          # authors, publisher, year and series from the file name where
-          # calibre has only its own reading of it ("Title - Author")
+          # tags embedded in the file are dropped: only the decision's
           fields = {"tags" => JSON.parse("[]")}
-          if b = @calibre.book(id)
-            if chosen
-              fields.merge!(ImportJobs.chosen_fields(b, chosen))
-              decided = chosen.decision
-              unit.decided = decided.try(&.how)
-            else
-              decision = decide(b, primary, hint(unit.dir), ix)
-              named, how = ImportJobs.name_fields(b, decision)
-              fields.merge!(named)
-              unit.decided = how
-              decided = decision
-            end
-          end
+          @calibre.book(id).try { |b| fields.merge!(Importer.chosen_fields(b, chosen)) }
           @calibre.set_fields(id, fields)
           book = @calibre.book(id)
           if !force && book && (hit = ix.match_book(book))
@@ -638,36 +222,7 @@ module CalibreHub
       unit.status = "imported"
       unit.detail = notes.join("; ").presence
       @writer.written([id])
-      decided.try { |d| record_decision(id, primary.path, d, chosen ? MetaLog::ACCEPTED : "written") }
-    end
-
-    # What the rule flow (Meta::Flow) makes of a book calibre just added
-    # from that file: the ISBN in its pages, its metadata, its name. An
-    # unclear name goes to the metadata sources and the model (main.cr).
-    private def decide(book : Book, primary, hint : Symbol?, ix : Backlog::Index) : Meta::Flow::Decision?
-      input = Meta::Flow::Input.new(book, ->(field : String) { Meta::Merge.value(book, field).as(JSON::Any?) },
-        File.basename(primary.path), hint)
-      input.info = @reader.try(&.call(primary.path, primary.format))
-      input.by_isbn = @by_isbn
-      input.decider = @decider
-      input.checker = @checker
-      input.owners = ->(isbn : String) { ix.isbn_books(isbn) }
-      Meta::Flow.decide(input)
-    end
-
-    # set-fields changes of a decision: what it may write. Below the
-    # threshold that is no title or author (Meta::Flow), the book is tagged.
-    # {set-fields changes, who decided}
-    def self.name_fields(book : Book, decision : Meta::Flow::Decision?) : {Hash(String, JSON::Any), String?}
-      return {({} of String => JSON::Any), nil} unless decision
-      fields = {} of String => JSON::Any
-      changes = decision.changes
-      # the tags are set anew on import (the file's are dropped)
-      tags = changes.find { |c| c.field == "tags" }
-      fields["tags"] = tags.new if tags && tags.new.as_a.size > 0
-      changes = changes.reject { |c| c.field == "tags" || c.field == Meta::FileName::CANDIDATE }
-      fields.merge!(Edit.changes(Meta::Merge.patch(book, changes.to_h { |c| {c.field, c.new} }), book, nil)) unless changes.empty?
-      {fields, decision.how}
+      decided.try { |d| record_decision(id, primary.path, d, MetaLog::ACCEPTED) }
     end
 
     # What the Eingang's decision writes: its values and the flow's tags
@@ -682,24 +237,16 @@ module CalibreHub
     end
 
     # the decision in the state DB, a conflict to the review
-    private def record_decision(id : Int64, path : String, d : Meta::Flow::Decision, status = "written")
+    private def record_decision(id : Int64, path : String, d : Meta::Flow::Decision, status : String)
       @decisions.try &.decide(id, d, status)
       return if d.notes.empty?
       @review.try &.call(id, path, d)
       @decisions.try &.decided_status(id, status)
     end
 
-    # reads a file for the rule flow (Metadata#read_flow), catalogs by ISBN
-    # (Metadata#isbn_lookup), a reading without an author (Metadata#checker),
     # where decisions are kept, what goes to the review (ImportRepair#flagged)
-    property reader : Proc(String, String, Meta::FileMeta::Info?)?
-    property by_isbn : Meta::Flow::Lookup?
-    property checker : Meta::FileName::Checker?
     property decisions : MetaLog?
     property review : Proc(Int64, String, Meta::Flow::Decision, Nil)?
-
-    # decides unclear file names (Metadata#decider), when the cleanup is on
-    property decider : Meta::FileName::Decider?
 
     # How the folder's book files are named (Meta::FileName.orientation),
     # for names that could be read either way
@@ -726,21 +273,6 @@ module CalibreHub
       data = File.open(path, &.getb_to_end)
       type = Covers.image_type(data)
       @calibre.set_cover(id, data, type.not_nil!) if type && {"jpeg", "png"}.includes?(type)
-    end
-  end
-
-  # The dry runs of the backlog import: only the scan (ImportJobs#scan)
-  class ImportScans < Jobs
-    def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @imports : ImportJobs)
-      super(db, calibre, writer, nil, "import_scan_jobs")
-    end
-
-    def queue(run_id : String) : Job
-      enqueue([] of Int64, {"run" => JSON::Any.new(run_id)})
-    end
-
-    protected def prepare(job : Job) : Job
-      @imports.scan(job, @table)
     end
   end
 
@@ -919,75 +451,15 @@ module CalibreHub
     end
   end
 
-  def self.import_routes(imports : ImportJobs?, cleanup : ImportCleanup?)
-    get "/api/import" do
-      cleanups = cleanup.try(&.cleanups) || [] of JSON::Any
-      next {enabled: false, cleanups: cleanups}.to_json unless imports
-      runs = imports.runs
-      running = imports.running?
-      scan = runs.find { |r| r["status"] == "scanning" }
-      importing = runs.find { |r| r["status"] == "running" }
-      followup = imports.followup_status
-      # where the backlog import is now: scan or check (the scan of an
-      # import, else of a dry run while nothing imports), import, followup
-      # (the hooks work off imported books), nil when idle
-      shown = runs.find { |r| r["status"] == "scanning" && !r["dryRun"].as_bool } || (importing ? nil : scan)
-      phase = if shown
-                shown["phase"].as_s
-              elsif running
-                "import"
-              elsif followup["total"].as_i64 > 0 && runs.any? { |r| !r["dryRun"].as_bool }
-                "followup"
-              end
-      rate = importing.try(&.["booksPerMinute"]?).try(&.as_f?)
-      {enabled: true, roots: imports.roots, running: running, hooksPaused: running,
-       scanning: !scan.nil?, phase: phase, backlog: imports.backlog(rate), followup: followup,
-       runs: runs, cleanups: cleanups}.to_json
-    end
-
-    post "/api/import" do |env|
-      write_errors(env) do
-        next fail(env, 404, {error: "backlog import is off"}) unless imports
-        body = json_body(env)
-        paths = [] of String
-        body["path"]?.try { |p| paths << (p.as_s? || raise Edit::Invalid.new("path", "string expected")) }
-        body["paths"]?.try do |list|
-          (list.as_a? || raise Edit::Invalid.new("paths", "list of strings expected")).each do |p|
-            paths << (p.as_s? || raise Edit::Invalid.new("paths", "list of strings expected"))
-          end
-        end
-        raise Edit::Invalid.new("path", "path or paths expected") if paths.empty?
-        limit = body["limit"]?.try do |l|
-          next nil if l.raw.nil?
-          n = l.as_i64? || raise Edit::Invalid.new("limit", "number expected")
-          raise Edit::Invalid.new("limit", "1 or more expected") if n < 1
-          n.clamp(1_i64, Int32::MAX.to_i64).to_i32
-        end
-        dry = body["dryRun"]?.try(&.as_bool?)
-        dry = true if dry.nil?
-        begin
-          run = imports.start(paths, dry, limit)
-          env.response.status_code = 202
-          run.to_json
-        rescue ex : ImportJobs::Busy
-          fail(env, 409, {error: ex.message})
-        end
-      end
-    end
-
-    get "/api/import/runs/:id" do |env|
-      run = imports.try(&.run(env.params.url["id"]))
-      run ? run.to_json : fail(env, 404, {error: "not found"})
-    end
-
-    get "/api/import/runs/:id/report" do |env|
-      report = imports.try(&.report(env.params.url["id"]))
-      report ? report.to_json : fail(env, 404, {error: "not found"})
+  def self.import_routes(cleanup : ImportCleanup?)
+    # the last cleanups, to undo one
+    get "/api/import/cleanups" do
+      (cleanup.try(&.cleanups) || [] of JSON::Any).to_json
     end
 
     post "/api/import/cleanup" do |env|
       write_errors(env) do
-        next fail(env, 404, {error: "backlog import is off"}) unless cleanup
+        next fail(env, 404, {error: "no category column"}) unless cleanup
         body = json_body(env)
         dry = body.delete("dryRun").try(&.as_bool?)
         dry = true if dry.nil?
@@ -1004,7 +476,7 @@ module CalibreHub
 
     post "/api/import/cleanups/:id/undo" do |env|
       write_errors(env) do
-        next fail(env, 404, {error: "backlog import is off"}) unless cleanup
+        next fail(env, 404, {error: "no category column"}) unless cleanup
         dry = json_body(env)["dryRun"]?.try(&.as_bool?)
         dry = true if dry.nil?
         result = cleanup.undo(env.params.url["id"], dry)

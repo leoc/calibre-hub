@@ -508,89 +508,25 @@ describe "hub eingang" do
 end
 
 describe "hub import" do
-  it "shows a dry run's summary and imports with --apply" do
-    summary = {books: 3, files: 4, formats: {PDF: 3, EPUB: 1}, calibreFolders: 1, plainFiles: 2, withCover: 1, toAdd: 2,
-               toAddFormats: 0, duplicates: {total: 1, isbn: 1}, alreadyImported: 0,
-               skipped: {total: 1, byReason: {"not a book format": 1}, byType: {mp3: 1}, byFolder: [{folder: ".", count: 1, types: {mp3: 1}}]}}
-    run = {id: "r1", path: "/srv/inbox/alt", dryRun: true, status: "planned", summary: summary, results: {pending: 3}}
+  it "says where the old ways went" do
     with_stub do |s|
-      s.on("POST", "/api/import", run)
-      code, stdo, _ = cli(s, "import", "alt")
-      code.should eq(0)
-      JSON.parse(s.requests.first.body).should eq(JSON.parse(%({"path":"alt","dryRun":true})))
-      stdo.should contain("3 books in 4 files (PDF 3, EPUB 1)")
-      stdo.should contain("duplicates: 1 (isbn 1)")
-      stdo.should contain("by type: mp3 1")
-      stdo.should contain("dry run, nothing imported")
-    end
-    with_stub do |s|
-      s.on("POST", "/api/import", run.merge({dryRun: false, status: "running", jobId: "j1", total: 3}), 202)
-      s.on("GET", "/api/jobs/j1", {id: "j1", status: "done", done: 3, total: 3, errors: [] of String})
-      s.on("GET", "/api/import/runs/r1", run.merge({dryRun: false, status: "done", results: {imported: 2, duplicate: 1}}))
-      code, stdo, _ = cli(s, "import", "/srv/inbox/alt", "--apply")
-      code.should eq(0)
-      JSON.parse(s.requests.first.body)["dryRun"].should eq(false)
-      stdo.should contain("done: 2 imported, 1 duplicate")
+      code, _, err = cli(s, "import", "alt")
+      code.should eq(1)
+      err.should contain("through the Eingang")
+      cli(s, "import", "repair")[0].should eq(1)
+      cli(s, "import", "quality")[0].should eq(1)
     end
   end
 
-  it "waits for the scan, with several paths and a limit" do
-    summary = {books: 5, files: 5, formats: {PDF: 5}, calibreFolders: 0, plainFiles: 5, withCover: 0, toAdd: 5,
-               toAddFormats: 0, duplicates: {total: 0}, alreadyImported: 0, limit: 2,
-               selected: {books: 2, toAdd: 2, toAddFormats: 0, duplicates: 0}, deferred: 3,
-               skipped: {total: 0, byReason: {} of String => Int32, byType: {} of String => Int32, byFolder: [] of String}}
-    scanning = {id: "r2", path: "/srv/a, /srv/b", paths: ["/srv/a", "/srv/b"], dryRun: true, status: "scanning",
-                scan: {files: 10, units: 3, planned: 0}, summary: nil, results: {} of String => Int32}
+  it "keeps the old names of hub eingang's" do
     with_stub do |s|
-      s.on("POST", "/api/import", scanning, 202)
-      s.on("GET", "/api/import/runs/r2", scanning)
-      s.on("GET", "/api/import/runs/r2", scanning.merge({status: "planned", scan: {files: 12, units: 5, planned: 5}, summary: summary, results: {pending: 2, deferred: 3}}))
-      code, stdo, _ = cli(s, "import", "a", "b", "--limit", "2")
-      code.should eq(0)
-      JSON.parse(s.requests.first.body).should eq(JSON.parse(%({"paths":["a","b"],"dryRun":true,"limit":2})))
-      s.requests.count { |r| r.resource == "/api/import/runs/r2" }.should eq(2)
-      stdo.should contain("scanned 12 files")
-      stdo.should contain("this run (--limit 2): 2 books: add 2, formats 0, duplicates 0; 3 left for later runs")
-      cli(s, "import", "a", "--limit", "0")[0].should eq(1)
-    end
-    with_stub do |s|
-      s.on("POST", "/api/import", scanning, 202)
-      s.on("GET", "/api/import/runs/r2", scanning.merge({status: "failed", error: "calibre-server unavailable"}))
-      code, _, err = cli(s, "import", "a", "b")
-      code.should eq(5)
-      err.should contain("calibre-server unavailable")
-    end
-    with_stub do |s|
-      s.on("GET", "/api/import", {enabled: true, roots: ["/srv"], running: false, scanning: true,
-                                  runs: [scanning.merge({createdAt: "2026-11-03T08:00:00Z"})], cleanups: [] of String})
+      s.on("GET", "/api/intake", {enabled: true, progress: {state: "idle", done: 1, total: 1, analysed: 1, current: nil},
+                                  origins: {inbox: 1}, thresholds: {inbox: 90}, pending: 0})
+      s.on("GET", "/api/import/cleanups", [{id: "c1", createdAt: "2026-11-03T08:00:00Z", total: 3, job: {status: "done"}, undoJob: nil}])
       code, stdo, _ = cli(s, "import", "status")
       code.should eq(0)
-      stdo.should contain("r2  2026-11-03T08:00:00Z  /srv/a, /srv/b  scanning 10 files")
-    end
-  end
-
-  it "shows phase, rates, ETA, the backlog's progress and the followup" do
-    running = {id: "r3", path: "/srv/alt", dryRun: false, status: "running", phase: "import", createdAt: "2026-11-03T08:00:00Z",
-               current: "/srv/alt/Autor/Buch (12)", elapsedSeconds: 3725, booksPerMinute: 21.5, etaSeconds: 250,
-               done: 260, total: 500, summary: {books: 500}, results: {imported: 250, duplicate: 8, failed: 2, pending: 240},
-               failures: [{path: "/srv/alt/kaputt.pdf", detail: "HTTP 500"}]}
-    with_stub do |s|
-      s.on("GET", "/api/import", {enabled: true, roots: ["/srv"], running: true, scanning: false, phase: "import",
-                                  backlog: {imported: 260, formatAdded: 3, duplicates: 40, total: 17500,
-                                            open: {books: 17240, formats: 12, duplicates: 300, failed: 2},
-                                            basis: {runId: "r3", paths: ["/srv/alt"], createdAt: "2026-11-03T08:00:00Z"}, etaSeconds: 48_000},
-                                  followup: {paused: true, total: 270, queues: {metadata: 260, embed: 10}},
-                                  runs: [running], cleanups: [] of String})
-      code, stdo, _ = cli(s, "import", "status")
-      code.should eq(0)
-      stdo.should contain("phase: import")
-      stdo.should contain("backlog: 260 of ~17500 new books imported (1.5 %), 3 with formats added, 40 duplicates, about 13h 20m left")
-      stdo.should contain("open: 17240 books, 12 with formats to add, 300 duplicates, 2 failed (by run r3: /srv/alt)")
-      stdo.should contain("followup: 270 books (metadata 260, embed 10), waiting for the import")
-      stdo.should contain("r3  2026-11-03T08:00:00Z  /srv/alt  running 260/500  500 books")
-      stdo.should contain("running 1h 02m, 21.5 books/min, about 4m 10s left")
-      stdo.should contain("at /srv/alt/Autor/Buch (12)")
-      stdo.should contain("failed: /srv/alt/kaputt.pdf: HTTP 500")
+      stdo.should contain("eingang: 1 books, 1 analysed, analysis idle")
+      stdo.should contain("cleanup c1  2026-11-03T08:00:00Z  3 books  done")
     end
   end
 
@@ -613,28 +549,6 @@ describe "hub import" do
     end
   end
 
-  it "plans and applies the repair of plain-file imports" do
-    entry = {bookId: 1827, file: "/srv/backlog/Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu",
-             decided: "name", status: "pending",
-             changes: [{field: "title", old: "Carr", new: "Formulas and Theorems in Pure Mathematics"}]}
-    with_stub do |s|
-      s.on("POST", "/api/import/repair", {dryRun: true, books: 1, job: {id: "p1"}})
-      s.on("POST", "/api/import/repair", {dryRun: false, books: 1, job: {id: "r1"}})
-      s.on("GET", "/api/jobs/p1", {id: "p1", status: "done", done: 1, total: 1, errors: [] of String})
-      s.on("GET", "/api/jobs/r1", {id: "r1", status: "done", done: 1, total: 1, errors: [] of String})
-      s.on("GET", "/api/import/repair", {entries: [entry], books: [] of String, counts: {pending: 1}})
-      code, stdo, _ = cli(s, "import", "repair", "--min-id", "1153")
-      code.should eq(0)
-      JSON.parse(s.requests.select(&.method.==("POST")).last.body).should eq(JSON.parse(%({"minId":1153,"dryRun":true})))
-      stdo.should contain("Formulas and Theorems in Pure Mathematics")
-      stdo.should contain("1 books, 1 changes to review")
-      code, stdo, _ = cli(s, "import", "repair", "--apply")
-      code.should eq(0)
-      JSON.parse(s.requests.select(&.method.==("POST")).last.body).should eq(JSON.parse(%({"dryRun":false})))
-      stdo.should contain("repair: done, 1 books checked")
-    end
-  end
-
   it "switches the intake analysis off and on" do
     with_stub do |s|
       s.on("POST", "/api/intake/analysis", {state: "off", done: 3, total: 3})
@@ -653,19 +567,6 @@ describe "hub import" do
       code.should eq(0)
       JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"run":"abc"})))
       stdo.should contain("recheck: 12 books, job j1")
-    end
-  end
-
-  it "reports the quality of a portion" do
-    with_stub do |s|
-      s.on("GET", "/api/import/quality", {total: 200, suspect: 12, reasons: {unknownAuthor: 10, unsure: 0}, runs: [] of String,
-                                          books: [{id: 7, title: "Compilers", authors: ["Unknown"], reasons: ["unknownAuthor"]}]})
-      code, stdo, _ = cli(s, "import", "quality", "--run", "abc")
-      code.should eq(0)
-      stdo.should contain("12 of 200 books suspicious")
-      stdo.should contain("unknownAuthor: 10")
-      stdo.should_not contain("unsure: 0")
-      stdo.should contain("Compilers")
     end
   end
 end

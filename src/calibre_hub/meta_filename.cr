@@ -22,6 +22,13 @@ module CalibreHub
     # every rule is tested with real names (spec/filename_spec.cr,
     # spec/quality_spec.cr).
     module FileName
+      # one word out of a file name: "haskell-beats-C", "grammatik01einschub",
+      # "CompilerConstruction1", "8760-hours-v2"
+      def self.one_word_name?(title : String) : Bool
+        return false if title.includes?(' ')
+        title.matches?(/\A\p{Ll}/) || title.matches?(/[-_.]\p{L}.*[-_.]/) || title.matches?(/\p{Ll}\p{Lu}.*\d\z|\p{Ll}\d+\z/)
+      end
+
       # calibre's sanitize_file_name replaces these with "_", and
       # metadata_from_filename every "_" with a space
       CALIBRE_UNSAFE = Set{'\\', '|', '?', '*', '<', '"', ':', '>', '+', '/'}
@@ -231,7 +238,7 @@ module CalibreHub
       # "logik-stud.dvi", "file:///F|/…", "test", "untitled", "()", "8508 Fm
       # Frame", "19 3.eps", "MMMonth". "Chapter 1: Reasoning in Geometry" says
       # something.
-      BAD_TITLE = /\A(?:test|click here to log on|untitled(?: document)?|unbenannt|title|titel|unknown|document|dokument|vorlage|cover|book\d*|doc\d*|new document|new page \d+|djvu document|e-?book\s*pdf|microsoft word.*|chap(?:ter)?\s*\d+(?:\s+\d+\.\.\d+)?|chap\d+.*|ch\d+.*|app\d+|rev\d+|\p{L}?\d+\s+\d+\.\.\d+|pii:.*|\S+\.(?:dvi|docx?|indd|qxd|tex|ps|rtf|html?|pdf|p65|pm\d|fm|wpd|txt))\z/i
+      BAD_TITLE  = /\A(?:test|click here to log on|untitled(?: document)?|unbenannt|title|titel|unknown|document|dokument|vorlage|cover|book\d*|doc\d*|new document|new page \d+|djvu document|e-?book\s*pdf|microsoft word.*|chap(?:ter)?\s*\d+(?:\s+\d+\.\.\d+)?|chap\d+.*|ch\d+.*|app\d+|rev\d+|\p{L}?\d+\s+\d+\.\.\d+|pii:.*|\S+\.(?:dvi|docx?|indd|qxd|tex|ps|rtf|html?|pdf|p65|pm\d|fm|wpd|txt))\z/i
       FRAME_FILE = /\.(?:qxd|indd|dvi|p65)\b|\.(?:eps|vp|fm|key|tiff?)\z|\bfm\s+(?:frame|r\d)\b|\bfrontmatter\b|\bsup\s+tm\b|\bopener\z/i
 
       # nothing but a volume: "Vol 09", "Band 2", "Part IV"
@@ -457,12 +464,12 @@ module CalibreHub
 
       # How the name was decided: by the name score, by the folder (a tie),
       # or unclear (a tie without a folder, or no person on either side)
-      NAME    = "name"
-      FOLDER  = "folder"
+      NAME   = "name"
+      FOLDER = "folder"
       # hint: calibre named the file, "Title - Author" whatever the sides
       # look like ("Allies - Christie Golden")
       CALIBRE_NAME = :calibre
-      UNCLEAR = "unclear"
+      UNCLEAR      = "unclear"
 
       # The readings of the file name, the one to take first, and how it
       # was decided. Unclear: the author first, last and none (the most

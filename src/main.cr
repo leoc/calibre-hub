@@ -459,75 +459,51 @@ module CalibreHub
       epub_fix.watch_events
       puts "epub-fix: EPUBs of added books are repaired"
     end
-    imports = ImportJobs.new(db, calibre, writer, config.import_roots, config.library).as(ImportJobs?)
-    imports.try { |i| puts "backlog import: roots #{i.roots.join(", ")}" unless i.roots.empty? }
-    # the hooks that work off imported books, for the import's followup
-    imports.try do |i|
-      i.followup = [
-        metadata_jobs && ImportJobs::FollowupHook.new("metadata", "metadata_event_seq", "added", jobs: "metadata_jobs"),
-        classify_jobs && ImportJobs::FollowupHook.new("classify", "classify_event_seq", "added", jobs: "classify_jobs"),
-        config.convert ? ImportJobs::FollowupHook.new("convert", "convert_event_seq", "added", jobs: "convert_jobs") : nil,
-        embedder && ImportJobs::FollowupHook.new("embed", "embed_event_seq", "changed", queue: "embed_queue"),
-      ].compact
-    end
+    imports = Importer.new(db, calibre, writer, config.import_roots, config.library)
+    puts "eingang: backlog #{imports.roots.join(", ")}" unless imports.roots.empty?
     cleanup = config.category_column ? ImportCleanup.new(db, calibre, writer, config.category_column, File.dirname(File.expand_path(config.state_db))) : nil
-    # metadata of books imported from plain files before the import read file names
-    repair = imports ? ImportRepair.new(db, calibre, writer, metadata_jobs.try(&.metadata.log) || MetaLog.new(db)) : nil
-    repair.try &.metadata = metadata_jobs
+    # proposals for the library's books, in the Eingang's filter
+    repair = ImportRepair.new(db, calibre, writer, metadata_jobs.try(&.metadata.log) || MetaLog.new(db))
+    repair.metadata = metadata_jobs
     # unclear file names: the sources and the model decide, else the tag
     Meta.unsure_tag = config.import_unsure_tag
-    if decider = metadata_jobs.try(&.metadata.decider)
-      imports.try &.decider = decider
-      repair.try &.decider = decider
-    end
+    metadata_jobs.try(&.metadata.decider).try { |d| repair.decider = d }
     # readings without an author: the catalogs
-    repair.try &.checker = metadata_jobs.try(&.metadata.checker)
+    repair.checker = metadata_jobs.try(&.metadata.checker)
     # the rule flow (Meta::Flow): the book's pages and the catalogs by ISBN
     Meta::Ocr.jobs = config.ocr_jobs
     if m = metadata_jobs.try(&.metadata)
       m.library = config.library
-      repair.try do |r|
-        r.reader = ->(b : Book, path : String?) { m.flow_info(b, path) }
-        r.quiet_reader = ->(b : Book, path : String?) { m.flow_info(b, path, nice: true) }
-        r.by_isbn = m.isbn_lookup
-        r.owners = m.owners
-        m.review = ->(id : Int64, note : Meta::Flow::Note) { r.flag(id, note); nil }
-      end
-      imports.try do |i|
-        i.reader = ->(path : String, format : String) { m.read_flow(path, format) }
-        i.by_isbn = m.isbn_lookup
-        i.checker = m.checker
-      end
+      repair.reader = ->(b : Book, path : String?) { m.flow_info(b, path) }
+      repair.quiet_reader = ->(b : Book, path : String?) { m.flow_info(b, path, nice: true) }
+      repair.by_isbn = m.isbn_lookup
+      repair.owners = m.owners
+      m.review = ->(id : Int64, note : Meta::Flow::Note) { repair.flag(id, note); nil }
     end
-    imports.try do |i|
-      i.decisions = repair.try(&.log)
-      i.review = repair.try { |r| ->(id : Int64, path : String, d : Meta::Flow::Decision) { r.flagged(id, path, d); nil } }
-    end
+    imports.decisions = repair.log
+    imports.review = ->(id : Int64, path : String, d : Meta::Flow::Decision) { repair.flagged(id, path, d); nil }
     # the Eingang: new files of the import roots, the inbox and uploads,
     # analysed in the background
-    intake = imports.try do |i|
-      Dir.mkdir_p(File.join(config.uploads, ".incoming"))
-      x = Intake.new(db, calibre, i, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"),
-        inbox: config.inbox.try { |dir| Inbox.new(dir, config.inbox_stable) }, uploads: Inbox.new(config.uploads))
-      x.busy = -> { i.running? || (repair.try(&.running?) || false) }
-      x.repair = repair
-      x.category_column = config.category_column
-      writer.staging = File.join(config.uploads, ".incoming")
-      writer.stage = ->(u : Writer::Upload) { x.stage(u, auth.user) }
-      metadata_jobs.try(&.metadata).try do |m|
-        x.reader = ->(path : String, format : String) { m.read_flow(path, format, nice: true) }
-        x.by_isbn = m.isbn_lookup
-        x.decider = m.decider
-        x.checker = m.checker
-        x.search = ->(b : Book, g : Meta::Guess) { m.search(b, g) }
-      end
-      x.start
-      x
+    Dir.mkdir_p(File.join(config.uploads, ".incoming"))
+    intake = Intake.new(db, calibre, imports, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"),
+      inbox: config.inbox.try { |dir| Inbox.new(dir, config.inbox_stable) }, uploads: Inbox.new(config.uploads))
+    intake.busy = -> { repair.running? }
+    intake.repair = repair
+    intake.category_column = config.category_column
+    writer.staging = File.join(config.uploads, ".incoming")
+    writer.stage = ->(u : Writer::Upload) { intake.stage(u, auth.user) }
+    metadata_jobs.try(&.metadata).try do |m|
+      intake.reader = ->(path : String, format : String) { m.read_flow(path, format, nice: true) }
+      intake.by_isbn = m.isbn_lookup
+      intake.decider = m.decider
+      intake.checker = m.checker
+      intake.search = ->(b : Book, g : Meta::Guess) { m.search(b, g) }
     end
+    intake.start
     # the library's books no plan got to, behind the analysis
-    recheck = repair.try { |r| RepairRecheck.new(db, calibre, writer, r) }
-    recheck.try &.busy = -> { intake.try(&.working?) || imports.try(&.running?) || false }
-    intake.try &.recheck = recheck
+    recheck = RepairRecheck.new(db, calibre, writer, repair)
+    recheck.busy = -> { intake.working? }
+    intake.recheck = recheck
     # selections from the command palette ({query} like bulk edits)
     [convert_jobs, epub_fix].each do |j|
       j.list_members = members
@@ -537,12 +513,12 @@ module CalibreHub
     # the metadata cleanup edits no category, but its {query} targets filter by it
     metadata_jobs.try &.category_column = config.category_column
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), intake.try(&.decisions), cleanup, repair, recheck].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, intake.decisions, cleanup, repair, recheck].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
     epub_fix_routes(epub_fix)
-    import_routes(imports, cleanup)
-    import_repair_routes(repair, recheck)
+    import_routes(cleanup)
+    import_repair_routes(recheck)
     intake_routes(intake)
 
     Kemal.config.host_binding = config.host

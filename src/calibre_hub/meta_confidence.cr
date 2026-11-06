@@ -2,9 +2,7 @@ module CalibreHub
   module Meta
     # How sure a decision about a book is, 0..100: one value for its title,
     # one for its authors, the book gets the lower (book). The table is the
-    # only place with these numbers, so it can be recalibrated with the
-    # sample checks (ImportRepair#quality shows the measured hit rate per
-    # band).
+    # only place with these numbers.
     module Confidence
       # the ISBN in the book, the catalog record fits the book's text: title
       # and author appear in it (ISBN_BOTH), a field that doesn't ISBN_ONE.

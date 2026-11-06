@@ -42,7 +42,7 @@ module CalibreHub
     STABLE = 2.minutes
     # between two books, so a run of hours stays in the background
     PAUSE = 500.milliseconds
-    # between two looks while an import or repair runs
+    # between two looks while a repair runs
     WAIT = 30.seconds
     # entries per request at most
     MAX_LIMIT = 500
@@ -160,7 +160,7 @@ module CalibreHub
     property decider : Meta::FileName::Decider?
     property checker : Meta::FileName::Checker?
     property search : Proc(Book, Meta::Guess, Array(Meta::Candidate))?
-    # an import or repair runs: the analysis waits
+    # a repair runs: the backlog's analysis waits
     property busy : Proc(Bool)
     # the column an inbox's folders or an upload's category go to
     property category_column : String?
@@ -251,7 +251,7 @@ module CalibreHub
     end
 
     # covers: where the pictures of plain files go, next to the state DB
-    def initialize(@db : DB::Database, @calibre : Calibre, @imports : ImportJobs, @library : String?,
+    def initialize(@db : DB::Database, @calibre : Calibre, @imports : Importer, @library : String?,
                    @covers : String, @interval = INTERVAL, @stable = STABLE, @pause = PAUSE, @wait = WAIT,
                    @inbox : Inbox? = nil, @uploads : Inbox? = nil, @tick = TICK)
       Intake.migrate(@db)
@@ -260,7 +260,7 @@ module CalibreHub
       # of the inbox and uploads: files left and the current one
       @fast_left = 0
       @fast_current = nil.as(String?)
-      @busy = -> { @imports.running? }
+      @busy = -> { false }
       # files of this pass left, the current one included
       @left = 0
       @decisions = nil.as(IntakeJobs?)
@@ -682,7 +682,7 @@ module CalibreHub
     # What the entry's decision writes. accept: the proposal, or what a
     # chosen candidate says; title and authors as edited over those; file:
     # nothing. A book marked as a duplicate was taken knowing that.
-    def chosen(e : Entry, changes : Hash(String, JSON::Any)) : ImportJobs::Chosen
+    def chosen(e : Entry, changes : Hash(String, JSON::Any)) : Importer::Chosen
       decision = flow_decision(e)
       return given(e, {} of String => JSON::Any, as_in_file) if changes["decision"] == "file"
       p = e.proposal || raise Edit::Invalid.new("decision", "no proposal")
@@ -705,9 +705,9 @@ module CalibreHub
     end
 
     # with what the entry's source says of it
-    private def given(e : Entry, values : Hash(String, JSON::Any), decision : Meta::Flow::Decision) : ImportJobs::Chosen
+    private def given(e : Entry, values : Hash(String, JSON::Any), decision : Meta::Flow::Decision) : Importer::Chosen
       category = e.kategorie.try { |k| @category_column.try { |c| {c, k} } }
-      ImportJobs::Chosen.new(values, decision, e.action == "duplicate" || e.forced, e.forced, e.tags, category)
+      Importer::Chosen.new(values, decision, e.action == "duplicate" || e.forced, e.forced, e.tags, category)
     end
 
     # the flow's decision again, from the entry; a standard's has none
@@ -812,7 +812,7 @@ module CalibreHub
       @state.in?("scanning", "analysing") || !@fast_current.nil?
     end
 
-    # the entry's book counts for later ones, by a pseudo id like a dry run's
+    # the entry's book counts for later ones, by a pseudo id
     private def remember(ix : Backlog::Index, e : Entry)
       remember(ix, e.id, e.path, e.files, e.proposal)
     end

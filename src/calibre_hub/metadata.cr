@@ -79,11 +79,6 @@ module CalibreHub
       end
     end
 
-    # A sample check of a band: of `checked` books `correct` were right
-    record Sample, band : String, checked : Int32, correct : Int32, at : Time do
-      include JSON::Serializable
-    end
-
     COLUMNS  = "id, book_id, field, old, new, source, job_id, at, reverted_at, level"
     DECISION = "book_id, level, confidence, title_confidence, authors_confidence, source, isbn, isbn_source, status, notes, at"
     # a book checked this recently isn't part of "incomplete" again
@@ -131,15 +126,6 @@ module CalibreHub
           notes text not null default '[]',
           at integer not null,
           job_id text
-        )
-        SQL
-      @db.exec <<-SQL
-        create table if not exists metadata_samples (
-          id integer primary key autoincrement,
-          band text not null,
-          checked integer not null,
-          correct integer not null,
-          at integer not null
         )
         SQL
       # what Tesseract read of a file, by the file's key (Meta::Ocr.key)
@@ -233,32 +219,6 @@ module CalibreHub
     # an ISBN written outside the flow (the metadata run)
     def isbn_source(book_id : Int64, isbn : String, source : String)
       @db.exec "update metadata_decisions set isbn = ?, isbn_source = ? where book_id = ?", isbn, source, book_id
-    end
-
-    # per book the source of the last ISBN in the change log
-    def logged_isbn_sources : Hash(Int64, String)
-      all = {} of Int64 => String
-      @db.query_each("select book_id, source from metadata_changes where field = 'isbn' and reverted_at is null order by id") do |rs|
-        id, source = rs.read(Int64, String)
-        all[id] = source
-      end
-      all
-    end
-
-    def add_sample(band : String, checked : Int32, correct : Int32) : Sample
-      at = Time.utc
-      @db.exec "insert into metadata_samples (band, checked, correct, at) values (?, ?, ?, ?)", band, checked, correct, at.to_unix
-      Sample.new(band, checked, correct, Time.unix(at.to_unix))
-    end
-
-    # the last check of each band
-    def samples : Array(Sample)
-      list = [] of Sample
-      @db.query_each("select band, checked, correct, max(at), max(id) from metadata_samples group by band order by band") do |rs|
-        band, checked, correct, at, _ = rs.read(String, Int32, Int32, Int64, Int64)
-        list << Sample.new(band, checked, correct, Time.unix(at))
-      end
-      list
     end
 
     def ocr_cache : Meta::Ocr::Cache

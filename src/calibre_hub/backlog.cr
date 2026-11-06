@@ -13,29 +13,26 @@ require "./dedup"
 require "./backlog_pause"
 
 module CalibreHub
-  # Imports an old collection (the "backlog") that is not sorted for the
-  # inbox: folders never become categories or tags. A folder of an old
-  # calibre library (metadata.opf, cover.jpg, the formats) becomes one book
-  # with the OPF's metadata; any other book file becomes a book with what
-  # calibre reads from it (files with the same name and another extension in
-  # the same folder are formats of one book). Everything else stays where it
-  # is and is listed in the report. Nothing is moved or deleted: the state
-  # DB remembers every file it imported, so another run skips them, unless
-  # the book it went to is no longer in the library (removed, or in
-  # calibre's trash): then the file is planned again.
+  # An old collection (the "backlog") that is not sorted for the inbox: folders
+  # never become categories or tags. A folder of an old calibre library
+  # (metadata.opf, cover.jpg, the formats) becomes one book with the OPF's
+  # metadata; any other book file becomes a book with what calibre reads from
+  # it (files with the same name and another extension in the same folder are
+  # formats of one book). Everything else stays where it is. Nothing is moved
+  # or deleted but by a decision in the Eingang (Intake): the state DB
+  # remembers every file it took, so it isn't offered again, unless the book
+  # it went to is no longer in the library (removed, or in calibre's trash).
   #
   # Before adding, every book is checked against the library: the same file
   # (size and KOReader partial MD5, also of files the hub rewrote since), the
   # ISBN, or title and an author, with the duplicate page's rules (Dedup:
   # its normalization, never two volumes, editions of a standard or numbers
-  # of a series). A duplicate is skipped, or adds the formats the library's
+  # of a series). A duplicate is marked, or adds the formats the library's
   # book lacks. Files without an OPF are checked by file before adding and
   # by what calibre read from them right after (calibre's own title/author
   # check, then ISBN and title/author).
   #
-  # A run scans one or more folders as a job (the scan, then a unit per
-  # book; a dry run only scans), in a queue of its own, resumed after a
-  # restart. While an import runs the metadata, classify, convert and embed
+  # While a decision is carried out the metadata, classify, convert and embed
   # hooks pause (Backlog.paused?) and work off the new books afterwards.
   module Backlog
     # calibre reads the metadata from the first of these the book has
@@ -150,7 +147,7 @@ module CalibreHub
       property book_id : Int64?
       # how the duplicate was found: file, isbn, title, calibre
       property match : String?
-      # a duplicate of a book this run adds (dry run) or added
+      # a duplicate of a book the list would add
       @[JSON::Field(key: "sameAs")]
       property same_as : String?
       # formats the existing book gets
@@ -413,7 +410,7 @@ module CalibreHub
       @md5 = {} of String => {String, String}
       # the library's books and the ones a run added
       @ids = Set(Int64).new
-      # pseudo ids of books a dry run would add -> their folder or file
+      # pseudo ids of books the list would add -> their folder or file
       getter planned = {} of Int64 => String
 
       # library_files: {book, format, path, size}; checksums: {book, partial md5, size}
@@ -473,7 +470,7 @@ module CalibreHub
         add_item(Dedup::Item.new(b))
       end
 
-      # a book from a calibre folder's metadata.opf (added, or a dry run's pseudo id)
+      # a book from a calibre folder's metadata.opf (added, or a pseudo id of the list)
       def add_meta(id : Int64, meta : OpfMeta)
         @ids << id if id > 0
         add_item(Dedup::Item.new(Backlog.book(id, meta)))
@@ -627,88 +624,6 @@ module CalibreHub
       end
       u.action = missing.empty? ? "duplicate" : "addFormats"
       u.add_formats = missing
-    end
-
-    # Plans a scan: books it would add count for later ones; yields the
-    # number of units planned now and then
-    def self.plan_all(units : Array(Unit), index : Index, &progress : Int32 ->)
-      units.each_with_index do |u, i|
-        if i % 32 == 31
-          progress.call(i + 1)
-          Fiber.yield
-        end
-        next unless plan(u, index)
-        pseudo = -(i.to_i64 + 1)
-        index.planned[pseudo] = u.name
-        u.meta.try { |m| index.add_meta(pseudo, m) }
-        index.add_files(pseudo, u.files)
-      end
-      progress.call(units.size)
-    end
-
-    def self.plan_all(units : Array(Unit), index : Index)
-      plan_all(units, index) { }
-    end
-
-    # The units a run imports (indexes): all, or with a limit the first in
-    # scan order until `limit` of them add a book or formats; duplicates on
-    # the way go along (the next run skips them), the rest waits for the
-    # next run
-    def self.take(units : Array(Unit), limit : Int32?) : Array(Int32)
-      return (0...units.size).to_a unless limit
-      taken = [] of Int32
-      books = 0
-      units.each_with_index do |u, i|
-        break if books >= limit
-        taken << i
-        books += 1 unless u.action == "duplicate"
-      end
-      taken
-    end
-
-    # roots: the scanned folders; taken: Backlog.take's units with a limit
-    def self.summary(units : Array(Unit), skipped : Array(Skipped), already : Int32, roots : Array(String) | String,
-                     taken : Array(Int32)? = nil, limit : Int32? = nil) : JSON::Any
-      roots = roots.is_a?(String) ? [roots] : roots
-      formats = Hash(String, Int32).new(0)
-      units.each { |u| u.files.each { |f| formats[f.format] += 1 } }
-      dups = Hash(String, Int32).new(0)
-      units.each { |u| dups[u.same_as ? "backlog" : u.match.not_nil!] += 1 if u.action == "duplicate" }
-      by_reason = Hash(String, Int32).new(0)
-      by_type = Hash(String, Int32).new(0)
-      by_folder = {} of String => Hash(String, Int32)
-      skipped.each do |s|
-        reason = s.reason.sub(/ \(.*\z/, "")
-        by_reason[reason] += 1
-        by_type[s.path.ends_with?('/') ? "(folder)" : s.ext] += 1
-        root = roots.select { |r| s.path.starts_with?(r.rstrip('/') + "/") }.max_by?(&.size) || ""
-        rel = s.path.lchop(root).lchop('/')
-        top = rel.includes?('/') ? rel.split('/').first : "."
-        top = File.join(File.basename(root), top).chomp("/.") if roots.size > 1
-        (by_folder[top] ||= Hash(String, Int32).new(0))[s.path.ends_with?('/') ? "(folder)" : s.ext] += 1
-      end
-      chosen = taken.try(&.map { |i| units[i] }) || units
-      folders = by_folder.map { |f, types| {folder: f, count: types.values.sum, types: types.to_a.sort_by { |_, n| -n }.to_h} }
-        .sort_by { |f| -f[:count] }.first(50)
-      JSON.parse({
-        books:           units.size,
-        files:           units.sum(&.files.size),
-        formats:         formats.to_a.sort_by { |_, n| -n }.to_h,
-        calibreFolders:  units.count(&.kind.==("calibre")),
-        plainFiles:      units.count(&.kind.==("file")),
-        withCover:       units.count(&.cover),
-        toAdd:           units.count(&.action.==("add")),
-        toAddFormats:    units.count(&.action.==("addFormats")),
-        duplicates:      {"total" => units.count(&.action.==("duplicate"))}.merge(dups),
-        alreadyImported: already,
-        limit:           limit,
-        # what this run imports (everything without a limit)
-        selected: {books: chosen.size, toAdd: chosen.count(&.action.==("add")),
-                   toAddFormats: chosen.count(&.action.==("addFormats")), duplicates: chosen.count(&.action.==("duplicate"))},
-        deferred: units.size - chosen.size,
-        skipped:  {total: skipped.size, byReason: by_reason.to_a.sort_by { |_, n| -n }.to_h,
-                  byType: by_type.to_a.sort_by { |_, n| -n }.to_h, byFolder: folders},
-      }.to_json)
     end
   end
 end

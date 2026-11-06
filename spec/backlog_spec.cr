@@ -177,14 +177,13 @@ private def wait_job(jobs : CalibreHub::Jobs, id : String) : CalibreHub::Jobs::J
   raise "job #{id} still running"
 end
 
-# a run once its scan is done
-private def wait_run(jobs : CalibreHub::ImportJobs, id : String) : JSON::Any
-  200.times do
-    r = jobs.run(id).not_nil!
-    return r unless r["status"] == "scanning"
-    sleep 20.milliseconds
-  end
-  raise "run #{id} still scanning"
+# planned as a recheck plans them: book -> the file an import read
+private def plan(repair : CalibreHub::ImportRepair, books : Hash(Int32, String?))
+  books.each { |id, path| repair.recheck(id.to_i64, path) }
+end
+
+private def open_proposals(repair : CalibreHub::ImportRepair) : Hash(Int64, CalibreHub::ImportRepair::Proposal)
+  repair.proposals("pending").to_h { |p| {p.book_id, p} }
 end
 
 private def opf_series(title : String, author : String, series : String, index : String, isbn : String? = nil) : String
@@ -257,12 +256,8 @@ describe Backlog::Scanner do
       reasons["Languages/._a.mp3"].should eq "hidden file"
       reasons["_imported/"].should eq "inbox folder"
       reasons["Empty (3)/metadata.opf"].should eq "calibre folder without a book file"
-
-      summary = Backlog.summary(scan.units, scan.skipped, scan.already, root)
-      summary["books"].should eq 4
-      summary["calibreFolders"].should eq 1
-      summary["skipped"]["byType"]["mp3"].should eq 2
-      summary["skipped"]["byFolder"].as_a.map(&.["folder"].as_s).should contain("Music")
+      scan.units.size.should eq 4
+      scan.units.count(&.kind.==("calibre")).should eq 1
     end
   end
 
@@ -282,8 +277,6 @@ describe Backlog::Scanner do
       scan.units.map { |u| File.basename(u.files.first.path) }.should eq ["book.pdf"]
       # the inbox's folders at the top of every scanned folder
       scan.skipped.map(&.reason).should contain("inbox folder")
-      summary = Backlog.summary(scan.units, scan.skipped, scan.already, [File.join(root, "a"), File.join(root, "b")])
-      summary["skipped"]["byFolder"].as_a.map(&.["folder"].as_s).sort.should eq ["a", "b/_imported"]
     end
   end
 
@@ -319,7 +312,13 @@ describe Backlog::Index do
       books = [book(1, "Something else", ["X"], ["PDF"]), book(2, "Problem Solving 101: A Simple Book for Smart People", ["Ken Watanabe"], ["MOBI"], "9781101028483")]
       index = Backlog::Index.new(books, [{1_i64, "PDF", lib_file, File.size(lib_file)}])
       scan = Backlog::Scanner.new(File.join(root, "in")).run
-      Backlog.plan_all(scan.units, index)
+      scan.units.each_with_index do |u, i|
+        next unless Backlog.plan(u, index)
+        # the list counts for what comes after it
+        index.planned[-(i.to_i64 + 1)] = u.name
+        u.meta.try { |m| index.add_meta(-(i.to_i64 + 1), m) }
+        index.add_files(-(i.to_i64 + 1), u.files)
+      end
       plan = scan.units.to_h { |u| {File.basename(u.files.first.path), {u.action, u.match, u.book_id, u.add_formats}} }
       plan["copy.pdf"].should eq({"duplicate", "file", 1_i64, [] of String})
       plan["ps.mobi"].should eq({"duplicate", "isbn", 2_i64, [] of String})
@@ -359,16 +358,6 @@ describe Backlog::Index do
     # download-site junk in a title is no difference
     index.by_title("Ein Titel", ["Cara Cole"]).should eq 11
   end
-
-  it "takes the next books of a scan up to a limit, duplicates on the way go along" do
-    units = %w(add duplicate add addFormats duplicate add).map do |a|
-      Backlog::Unit.new("file", "/x", [Backlog::BookFile.new("/x/#{a}", "PDF", 3000_i64, 0_i64)]).tap(&.action=(a))
-    end
-    Backlog.take(units, nil).should eq [0, 1, 2, 3, 4, 5]
-    Backlog.take(units, 2).should eq [0, 1, 2]
-    Backlog.take(units, 3).should eq [0, 1, 2, 3]
-    Backlog.take(units, 10).size.should eq 6
-  end
 end
 
 describe CalibreHub::ImportCleanup do
@@ -378,280 +367,6 @@ describe CalibreHub::ImportCleanup do
     f.call("J.R.R. Tolkien.Der Hobbit (12)", ["Der Hobbit (12)", "J.R.R. Tolkien"]).should eq ["J.R.R. Tolkien", "Der Hobbit (12)"]
     f.call("Roman.Krimi", ["Roman"]).should be_nil
     f.call("Ken Watanabe", ["Ken Watanabe", "auto-metadaten"]).should eq ["Ken Watanabe"]
-  end
-end
-
-describe CalibreHub::ImportJobs do
-  it "plans a dry run and imports, without folder categories or tags" do
-    tmpdir do |root|
-      cal = File.join(root, "Ken Watanabe", "Problem Solving 101 (257)")
-      write(File.join(cal, "metadata.opf"), OPF_XML)
-      write(File.join(cal, "cover.jpg"), Bytes[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, 0x4A, 0x46, 0x49, 0x46, 0, 1])
-      write(File.join(cal, "ps.mobi"), mobi)
-      write(File.join(cal, "ps.epub"), epub)
-      write(File.join(root, "Some Author", "book.pdf"), pdf)
-      write(File.join(root, "Some Author", "known.pdf"), pdf("k"))
-      write(File.join(root, "Some Author", "isbn.pdf"), pdf("i"))
-      write(File.join(root, "song.mp3"), "ID3")
-      fake = FakeCalibre.new
-      fake.add(1, "Bekannt", ["Alte Autorin"], ["EPUB"])
-      fake.add(2, "Mit ISBN", ["Wer"], ["EPUB"], "9783446264137")
-      fake.duplicate_titles["known"] = 1_i64
-      fake.file_meta["isbn.pdf"] = {"Anders betitelt", "Wer anders", "978-3-446-26413-7"}
-      calibre = fake.calibre
-      db = state_db
-      writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
-      jobs = CalibreHub::ImportJobs.new(db, calibre, writer, [root], nil, retries: 0)
-
-      expect_raises(CalibreHub::Edit::Invalid, /not below an import root/) { jobs.start("/tmp", true) }
-      started = jobs.start(".", true)
-      # the scan is the job's, the run comes back right away
-      started["status"].should eq "scanning"
-      started["summary"].raw.should be_nil
-      dry = wait_run(jobs, started["id"].as_s)
-      dry["status"].should eq "planned"
-      dry["scan"]["files"].should eq 8
-      dry["scan"]["planned"].should eq 4
-      # a dry run doesn't pause the hooks
-      CalibreHub::Backlog.paused?(db).should be_false
-      dry["summary"]["books"].should eq 4
-      dry["summary"]["toAdd"].should eq 4
-      dry["summary"]["skipped"]["byType"]["mp3"].should eq 1
-      fake.requests.none? { |r| r[0] == "add-book" }.should be_true
-
-      run = jobs.start(root, false)
-      run["status"].should eq "scanning"
-      CalibreHub::Backlog.paused?(db).should be_true
-      job = wait_job(jobs, run["jobId"].as_s)
-      job.status.should eq "done"
-      job.errors.should be_empty
-      CalibreHub::Backlog.paused?(db).should be_false
-      done = jobs.run(run["id"].as_s).not_nil!
-      done["results"].as_h.transform_values(&.as_i).should eq({"imported" => 2, "formatAdded" => 2})
-
-      ps = fake.books.values.find { |b| b["title"] == "Problem Solving 101: A Simple Book for Smart People" }.not_nil!
-      ps["authors"].should eq ["Ken Watanabe"]
-      ps["tags"].should eq ["Business", "Thinking"]
-      ps["formats"].as_a.map(&.as_s).sort.should eq ["EPUB", "MOBI"]
-      ps["cover"].as_s.should start_with "data:image/jpeg;base64,"
-      ps.has_key?("#kategorie").should be_false
-      plain = fake.books.values.find { |b| b["title"] == "book" }.not_nil!
-      # "book.pdf" says nothing: nobody decided it, no folder is a tag
-      plain["tags"].as_a.map(&.as_s).should eq ["auto-unsicher"]
-      # calibre's title/author check: no new book, only the missing format
-      fake.books[1_i64]["formats"].as_a.map(&.as_s).sort.should eq ["EPUB", "PDF"]
-      # the ISBN calibre read from the file is #2's: removed again, the PDF goes to #2
-      fake.books.values.count { |b| b["title"] == "Anders betitelt" }.should eq 0
-      fake.books[2_i64]["formats"].as_a.map(&.as_s).sort.should eq ["EPUB", "PDF"]
-      report = jobs.report(run["id"].as_s).not_nil!
-      report["skipped"].as_a.map(&.["reason"].as_s).should eq ["not a book format"]
-
-      # another run: everything handled already
-      again = wait_run(jobs, jobs.start(root, true)["id"].as_s)
-      again["summary"]["books"].should eq 0
-      again["summary"]["alreadyImported"].should eq 5
-    end
-  end
-end
-
-describe CalibreHub::ImportJobs do
-  it "imports several folders in portions of a limit" do
-    tmpdir do |root|
-      write(File.join(root, "A", "a1.pdf"), pdf("a1"))
-      write(File.join(root, "A", "a2.pdf"), pdf("a2"))
-      write(File.join(root, "A", "dup.pdf"), pdf("dup"))
-      write(File.join(root, "B", "b1.pdf"), pdf("b1"))
-      write(File.join(root, "B", "b2.pdf"), pdf("b2"))
-      write(File.join(root, "C", "c1.pdf"), pdf("c1"))
-      fake = FakeCalibre.new
-      fake.add(1, "Bekannt", ["Alte Autorin"], ["EPUB"])
-      fake.duplicate_titles["dup"] = 1_i64
-      calibre = fake.calibre
-      db = state_db
-      writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
-      jobs = CalibreHub::ImportJobs.new(db, calibre, writer, [root], nil, retries: 0)
-
-      expect_raises(CalibreHub::Edit::Invalid) { jobs.start(["A"], true, 0) }
-      dry = wait_run(jobs, jobs.start(["A", "B", File.join(root, "A")], true, 2)["id"].as_s)
-      dry["paths"].should eq [File.realpath(File.join(root, "A")), File.realpath(File.join(root, "B"))]
-      dry["limit"].should eq 2
-      dry["summary"]["books"].should eq 5
-      dry["summary"]["selected"]["books"].should eq 2
-      dry["summary"]["deferred"].should eq 3
-      dry["results"].as_h.transform_values(&.as_i).should eq({"pending" => 2, "deferred" => 3})
-
-      run = jobs.start(["A", "B"], false, 2)
-      expect_raises(CalibreHub::ImportJobs::Busy) { jobs.start(["C"], false) }
-      job = wait_job(jobs, run["jobId"].as_s)
-      job.status.should eq "done"
-      job.total.should eq 2
-      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 2, "deferred" => 3})
-      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "a1", "a2"]
-
-      # the next portion: calibre's check makes dup.pdf a format of #1
-      run = jobs.start(["A", "B"], false, 2)
-      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
-      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 1, "formatAdded" => 1, "deferred" => 1})
-      run = jobs.start(["A", "B"], false, 2)
-      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
-      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 1})
-      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "a1", "a2", "b1", "b2"]
-      wait_run(jobs, jobs.start(["A", "B"], true)["id"].as_s)["summary"]["books"].should eq 0
-    end
-  end
-
-  it "reports phase, times, failures and the whole backlog's progress" do
-    tmpdir do |root|
-      write(File.join(root, "A", "a1.pdf"), pdf("a1"))
-      write(File.join(root, "A", "a2.pdf"), pdf("a2"))
-      write(File.join(root, "B", "b1.pdf"), pdf("b1"))
-      write(File.join(root, "B", "b2.pdf"), pdf("b2"))
-      fake = FakeCalibre.new
-      calibre = fake.calibre
-      db = state_db
-      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
-      empty = jobs.backlog
-      empty["total"].should eq 0
-      empty["basis"].raw.should be_nil
-
-      dry = wait_run(jobs, jobs.start(".", true)["id"].as_s)
-      dry["phase"].should eq "planned"
-      dry["startedAt"].as_s.should_not be_empty
-      dry["finishedAt"].should eq dry["scannedAt"]
-      dry["scan"]["phase"].should eq "check"
-      dry["current"].raw.should be_nil
-      jobs.backlog["open"]["books"].should eq 4
-      jobs.backlog["basis"]["runId"].should eq dry["id"]
-
-      run = jobs.start(".", false, 2)
-      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
-      done = jobs.run(run["id"].as_s).not_nil!
-      done["phase"].should eq "done"
-      done["elapsedSeconds"].as_i.should be >= 0
-      done["finishedAt"].as_s.should_not be_empty
-      done["failures"].as_a.should be_empty
-      done["etaSeconds"].raw.should be_nil
-      b = jobs.backlog(30.0)
-      {b["imported"], b["total"], b["open"]["books"], b["open"]["failed"]}.should eq({2, 4, 2, 0})
-      b["basis"]["runId"].should eq run["id"]
-      # 2 books left at 30 a minute
-      b["etaSeconds"].should eq 4
-
-      # a book calibre-server fails on stays open
-      fake.no_such_book << 1_i64
-      write(File.join(root, "C", "Bekannt (1)", "metadata.opf"), opf("Bekannt", "Alte Autorin"))
-      write(File.join(root, "C", "Bekannt (1)", "b.pdf"), pdf("bk"))
-      fake.add(1, "Bekannt", ["Alte Autorin"], ["EPUB"])
-      run = jobs.start(".", false)
-      wait_job(jobs, run["jobId"].as_s)
-      failed = jobs.run(run["id"].as_s).not_nil!
-      failed["failures"].as_a.size.should eq 1
-      failed["failures"][0]["path"].as_s.should end_with "Bekannt (1)"
-      failed["failures"][0]["detail"].as_s.should contain "HTTP 500"
-      b = jobs.backlog
-      {b["imported"], b["total"], b["open"]["books"], b["open"]["formats"], b["open"]["failed"]}.should eq({4, 4, 0, 1, 1})
-    end
-  end
-
-  it "counts the hooks' followup of imported books" do
-    db = state_db
-    db.exec "create table meta (key text primary key, value text)"
-    calibre = FakeCalibre.new.calibre
-    jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), ["/tmp"], nil, retries: 0)
-    jobs.followup = [
-      CalibreHub::ImportJobs::FollowupHook.new("metadata", "metadata_event_seq", "added", jobs: "metadata_jobs"),
-      CalibreHub::ImportJobs::FollowupHook.new("embed", "embed_event_seq", "changed", queue: "embed_queue"),
-      # not set up: nothing
-      CalibreHub::ImportJobs::FollowupHook.new("convert", "convert_event_seq", "added", jobs: "convert_jobs"),
-    ]
-    3.times { |i| db.exec "insert into events (type, book_id, payload, created_at) values (?, ?, '{}', 0)", i == 2 ? "changed" : "added", i + 10 }
-    db.exec "insert into meta (key, value) values ('metadata_event_seq', '0'), ('embed_event_seq', '0')"
-    db.exec "create table metadata_jobs (id text, status text, ids text, done integer)"
-    # one book done, one to go, then the author pass (0)
-    db.exec "insert into metadata_jobs values ('m1', 'running', '[5,6,0]', 1), ('m0', 'done', '[7]', 1)"
-    db.exec "create table embed_queue (book_id integer primary key)"
-    db.exec "insert into embed_queue values (4)"
-    f = jobs.followup_status
-    f["queues"].as_h.transform_values(&.as_i).should eq({"metadata" => 3, "embed" => 2, "convert" => 0})
-    f["total"].should eq 5
-    f["paused"].should be_false
-  end
-
-  it "matches only books still in the library and plans files of removed books again" do
-    tmpdir do |root|
-      # different past the first KiB, where the partial MD5 starts
-      %w(x y z w).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n * 2000)) }
-      fake = FakeCalibre.new
-      fake.add(1, "Bekannt", ["Alte Autorin"], ["PDF"])
-      calibre = fake.calibre
-      db = state_db
-      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
-      CalibreHub::BookFiles.create_checksums(db)
-      sum = ->(name : String) { {CalibreHub::BookFiles.partial_md5(File.join(root, name)), File.size(File.join(root, name))} }
-      # x.pdf was a file of #370, removed (calibre's trash) since; z.pdf one of #1
-      {"x.pdf" => 370_i64, "z.pdf" => 1_i64}.each do |name, id|
-        md5, size = sum.call(name)
-        db.exec "insert into file_checksums (book_id, format, partial_md5, size, recorded_at) values (?, 'PDF', ?, ?, 0)", id, md5, size
-      end
-      # an earlier run took y.pdf for a duplicate of #371, removed since, and w.pdf for one of #1
-      {"y.pdf" => 371_i64, "w.pdf" => 1_i64}.each do |name, id|
-        path = File.join(root, name)
-        info = File.info(path)
-        db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, ?, ?, 'duplicate', ?, 'old', 0)",
-          path, info.size, info.modification_time.to_unix, id
-      end
-
-      dry = wait_run(jobs, jobs.start(".", true)["id"].as_s)
-      dry["summary"]["alreadyImported"].should eq 1
-      dry["summary"]["books"].should eq 3
-      dry["summary"]["toAdd"].should eq 2
-      dry["summary"]["duplicates"]["file"].should eq 1
-
-      run = jobs.start(".", false)
-      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
-      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"imported" => 2, "duplicate" => 1})
-      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "x", "y"]
-    end
-  end
-
-  it "fails only the unit of a book calibre-server errs on and goes on" do
-    tmpdir do |root|
-      cal = File.join(root, "A", "Bekannt (1)")
-      write(File.join(cal, "metadata.opf"), opf("Bekannt", "Alte Autorin"))
-      write(File.join(cal, "b.pdf"), pdf("b"))
-      write(File.join(root, "B", "neu.pdf"), pdf("n"))
-      fake = FakeCalibre.new
-      fake.add(1, "Bekannt", ["Alte Autorin"], ["EPUB"])
-      # calibre lists #1, but adding a format fails: NoSuchBook, HTTP 500
-      fake.no_such_book << 1_i64
-      calibre = fake.calibre
-      db = state_db
-      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
-      run = jobs.start(".", false)
-      job = wait_job(jobs, run["jobId"].as_s)
-      job.status.should eq "done"
-      job.error.should be_nil
-      job.errors.size.should eq 1
-      job.errors.first[:error].should contain("HTTP 500")
-      jobs.run(run["id"].as_s).not_nil!["results"].as_h.transform_values(&.as_i).should eq({"failed" => 1, "imported" => 1})
-      failed = jobs.report(run["id"].as_s).not_nil!["units"].as_a.find(&.["status"].==("failed")).not_nil!
-      failed["detail"].as_s.should contain("set-fields/1")
-      fake.books.values.map(&.["title"].as_s).sort.should eq ["Bekannt", "neu"]
-    end
-  end
-
-  it "fails the run when the scan fails" do
-    tmpdir do |root|
-      Dir.mkdir_p(File.join(root, "x"))
-      db = state_db
-      # nothing listens there: the library can't be read for the plan
-      calibre = CalibreHub::Calibre.new("http://127.0.0.1:1", "hub", "pw", nil, ["kategorie"])
-      jobs = CalibreHub::ImportJobs.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
-      run = wait_run(jobs, jobs.start("x", true)["id"].as_s)
-      run["status"].should eq "failed"
-      run["error"].as_s.should contain("calibre-server unavailable")
-      run["summary"].raw.should be_nil
-    end
   end
 end
 
@@ -704,35 +419,6 @@ describe CalibreHub::ImportCleanup do
   end
 end
 
-describe CalibreHub::ImportJobs do
-  it "reads title, authors, publisher and year of a plain file from its name (#8408)" do
-    tmpdir do |root|
-      write(File.join(root, "Algebra", "Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).pdf"), pdf("c"))
-      write(File.join(root, "Algebra", "Duffy - Advanced Engineering Mathematics (1998).pdf"), pdf("d"))
-      write(File.join(root, "Algebra", "Weinberg - The First Three Minutes.pdf"), pdf("w"))
-      fake = FakeCalibre.new
-      # a PDF with a title of its own keeps it
-      fake.file_meta["Weinberg - The First Three Minutes.pdf"] = {"The First Three Minutes: A Modern View", "Steven Weinberg", nil}
-      calibre = fake.calibre
-      jobs = CalibreHub::ImportJobs.new(state_db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), [root], nil, retries: 0)
-      run = jobs.start(".", false)
-      wait_job(jobs, run["jobId"].as_s).status.should eq "done"
-      carr = fake.books.values.find! { |b| b["authors"] == ["Carr"] }
-      carr["title"].should eq "Formulas and Theorems in Pure Mathematics"
-      carr["author_sort"].should eq "Carr"
-      carr["publisher"].should eq "Chelsea"
-      carr["pubdate"].as_s.should start_with "1970-01-01"
-      carr["tags"].as_a.should be_empty
-      duffy = fake.books.values.find! { |b| b["authors"] == ["Duffy"] }
-      duffy["title"].should eq "Advanced Engineering Mathematics"
-      duffy["pubdate"].as_s.should start_with "1998-01-01"
-      duffy["publisher"]?.try(&.raw).should be_nil
-      weinberg = fake.books.values.find! { |b| b["authors"] == ["Steven Weinberg"] }
-      weinberg["title"].should eq "The First Three Minutes: A Modern View"
-    end
-  end
-end
-
 describe CalibreHub::ImportRepair do
   it "plans, applies only on books untouched since the import, logs and reverts (#8408)" do
     tmpdir do |root|
@@ -765,7 +451,7 @@ describe CalibreHub::ImportRepair do
       fake.add(208, "Herbert", ["Dune"], ["PDF"])
       db = state_db
       db.exec "create table if not exists meta (key text primary key, value text)"
-      CalibreHub::ImportJobs.migrate(db)
+      CalibreHub::Importer.migrate(db)
       {carr => 201, duffy => 202, sowell => 203, jung => 204, edited => 205, opf_book => 206, wine => 207, dune => 208}.each do |path, id|
         db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', ?, 'r', 100)", path, id.to_i64
       end
@@ -784,41 +470,33 @@ describe CalibreHub::ImportRepair do
         readings.find { |r| r.authors == ["Herbert"] }.try { |r| {r, "hardcover"} }
       end
 
-      planned = repair.submit_repair({"minId" => JSON::Any.new(200_i64)}, true)
-      # the calibre folder's book is not planned
-      planned["books"].should eq 7
-      wait_job(repair, planned["job"]["id"].as_s).status.should eq "done"
-      review = repair.review
-      entries = review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
-      fields = ->(id : Int32) { entries[id.to_i64]["changes"].as_a.map(&.["field"].as_s) }
-      entries[201_i64]["changes"].as_a.map { |c| {c["field"].as_s, c["new"]} }.should eq [
+      plan(repair, {201 => carr, 202 => duffy, 203 => sowell, 204 => jung, 205 => edited, 207 => wine, 208 => dune} of Int32 => String?)
+      entries = open_proposals(repair)
+      fields = ->(id : Int32) { entries[id.to_i64].changes.map(&.field) }
+      entries[201_i64].changes.map { |c| {c.field, c.new} }.should eq [
         {"title", JSON::Any.new("Formulas and Theorems in Pure Mathematics")}, {"authors", JSON.parse(%(["Carr"]))},
         {"authorSort", JSON::Any.new("Carr")}, {"publisher", JSON::Any.new("Chelsea")}, {"pubdate", JSON::Any.new("1970")},
       ]
-      entries[201_i64]["decided"].should eq "name"
+      entries[201_i64].decided.should eq "name"
       fields.call(202).should eq ["authors", "authorSort", "pubdate"]
       fields.call(203).should eq ["title", "authors", "authorSort"]
-      entries[204_i64]["changes"].as_a.find! { |c| c["field"] == "authors" }["new"].should eq JSON.parse(%(["Jungnickel"]))
-      # authors by hand: they stay, calibre's title goes; a calibre folder's book is left alone
+      entries[204_i64].changes.find! { |c| c.field == "authors" }.new.should eq JSON.parse(%(["Jungnickel"]))
+      # authors by hand: they stay, calibre's title goes
       fields.call(205).should eq ["title", "publisher", "pubdate"]
-      entries.has_key?(206_i64).should be_false
       # unclear and undecided: below the threshold nothing but the tag, the
       # reading is a suggestion for the review
       fields.call(207).should eq ["tags", "candidate"]
-      entries[207_i64]["decided"].should eq "unsure"
-      entries[207_i64]["confidence"].should eq 30
-      entries[207_i64]["band"].should eq "unsure"
-      entries[207_i64]["changes"].as_a.first["new"].should eq JSON.parse(%(["auto-unsicher"]))
+      entries[207_i64].decided.should eq "unsure"
+      entries[207_i64].confidence.should eq 30
+      entries[207_i64].changes.first.new.should eq JSON.parse(%(["auto-unsicher"]))
       # a surname and a title: reviewed; the sources between two names
-      entries[201_i64]["confidence"].should eq 70
-      entries[201_i64]["level"].should eq 3
-      entries[208_i64]["confidence"].should eq 70
-      entries[208_i64]["decided"].should eq "hardcover"
+      entries[201_i64].confidence.should eq 70
+      entries[201_i64].level.should eq 3
+      entries[208_i64].confidence.should eq 70
+      entries[208_i64].decided.should eq "hardcover"
       fields.call(208).should eq ["title", "authors", "authorSort"]
       asked.map { |n| File.basename(n) }.sort.should eq ["Herbert - Dune.pdf", "Wine Tasting - A Professional Handbook.pdf"]
-      review["counts"]["pending"].should eq 7
-      review["planning"].as_bool.should be_false
-      review["books"].as_a.map(&.["id"].as_i64).sort.should eq [201_i64, 202_i64, 203_i64, 204_i64, 205_i64, 207_i64, 208_i64]
+      entries.size.should eq 7
       fake.books[201_i64]["title"].should eq "Carr"
 
       # one book first, one rejected, one changed by hand since the plan
@@ -830,10 +508,9 @@ describe CalibreHub::ImportRepair do
       fake.books[202_i64]["authors"].should eq ["Advanced Engineering Mathematics (1998)"]
       repair.reject([205_i64]).should eq 1
       fake.books[203_i64]["authors"] = JSON.parse(%(["Thomas Sowell"]))
-      all = repair.accept(nil)
+      all = repair.accept([202_i64, 203_i64, 204_i64, 208_i64])
       job = wait_job(repair, all["job"]["id"].as_s)
       job.errors.map(&.[:bookId]).should eq [203_i64]
-      # below the threshold only one by one
       fake.books[207_i64]["tags"].as_a.should be_empty
       one = repair.accept([207_i64])
       wait_job(repair, one["job"]["id"].as_s).errors.should be_empty
@@ -846,17 +523,15 @@ describe CalibreHub::ImportRepair do
       fake.books[208_i64]["authors"].should eq ["Herbert"]
       fake.books[208_i64]["title"].should eq "Dune"
       fake.books[201_i64]["tags"].should eq ["auto-metadaten"]
-      repair.review["counts"].as_h.transform_values(&.as_i).should eq({"applied" => 5, "rejected" => 1, "failed" => 1})
+      counts = {} of String => Int64
+      db.query_each("select status, count(*) from import_repairs group by status") { |rs| counts[rs.read(String)] = rs.read(Int64) }
+      counts.should eq({"applied" => 5_i64, "rejected" => 1_i64, "failed" => 1_i64})
       changes = log.list(201_i64)
       changes.map(&.source).uniq.should eq ["rules"]
       changes.map(&.job_id).uniq.should eq [accepted["job"]["id"].as_s]
-      # again: accepted and rejected books are left out, nothing new
-      again = repair.submit_repair({"minId" => JSON::Any.new(200_i64)}, true)
-      again["books"].should eq 1
-      wait_job(repair, again["job"]["id"].as_s)
       # the failed one again, without the authors set by hand since
-      left = repair.review["entries"].as_a
-      left.map { |e| {e["bookId"].as_i64, e["changes"].as_a.map(&.["field"].as_s)} }.should eq [{203_i64, ["title"]}]
+      plan(repair, {203 => sowell} of Int32 => String?)
+      repair.proposals("pending").map { |p| {p.book_id, p.changes.map(&.field)} }.should eq [{203_i64, ["title"]}]
 
       # revertible like any metadata change
       title = changes.find! { |e| e.field == "title" }
@@ -883,7 +558,7 @@ describe CalibreHub::ImportRepair do
       fake.add(405, "The Art of UNIX Programming", ["Eric S. Raymond"], ["PDF"])
       db = state_db
       db.exec "create table if not exists meta (key text primary key, value text)"
-      CalibreHub::ImportJobs.migrate(db)
+      CalibreHub::Importer.migrate(db)
       db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', 401, 'r1', 100)", path
       db.exec "insert into events (type, book_id, payload, created_at) values ('added', 404, ?, 100)",
         {type: "added", bookId: 404, book: {title: "8508 Fm Frame", authors: ["How To Make Money"]}}.to_json
@@ -896,35 +571,22 @@ describe CalibreHub::ImportRepair do
         CalibreHub::Meta::Verdict.new(false, g.title, ["Alex Hormozi"], "openlibrary", ["openlibrary"]).as(CalibreHub::Meta::Verdict?)
       end
 
-      planned = repair.submit_repair({} of String => JSON::Any, true)
-      planned["books"].should eq 4
-      job = wait_job(repair, planned["job"]["id"].as_s)
-      # a source that fails stops one book, not the run
-      job.status.should eq "done"
-      job.errors.map(&.[:bookId]).should eq [403_i64]
-      entries = repair.review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
+      plan(repair, {401 => path, 402 => nil, 404 => nil} of Int32 => String?)
+      # a source that fails stops one book
+      expect_raises(Exception, "a catalog fails") { repair.recheck(403_i64, nil) }
+      entries = open_proposals(repair)
       entries.keys.sort.should eq [401_i64, 402_i64, 404_i64]
-      entries[402_i64]["file"].should eq ""
-      entries[402_i64]["decided"].should eq "unsure"
-      fields = entries[402_i64]["changes"].as_a.map(&.["field"].as_s)
-      fields.should eq ["candidate", "tags"]
-      entries[402_i64]["confidence"].should eq 50
+      entries[402_i64].file.should eq ""
+      entries[402_i64].decided.should eq "unsure"
+      entries[402_i64].changes.map(&.field).should eq ["candidate", "tags"]
+      entries[402_i64].confidence.should eq 50
       # the person's title stays
-      entries[404_i64]["changes"].as_a.none? { |c| c["field"] == "title" }.should be_true
+      entries[404_i64].changes.none? { |c| c.field == "title" }.should be_true
 
       all = repair.accept(entries.keys)
       wait_job(repair, all["job"]["id"].as_s).errors.should be_empty
       fake.books[402_i64]["authors"].should eq ["How To Make Money"]
       fake.books[402_i64]["tags"].as_a.map(&.as_s).should contain "auto-unsicher"
-
-      report = repair.quality({} of String => JSON::Any)
-      report["total"].should eq 5
-      report["reasons"]["unsure"].as_i.should be > 0
-      report["runs"].as_a.map { |r| {r["run"], r["total"], r["suspect"]} }.should eq [{"r1", 1, 1}]
-      run = repair.quality({"run" => JSON::Any.new("r1")})
-      run["total"].should eq 1
-      run["books"][0]["id"].should eq 401
-      repair.quality({"minId" => JSON::Any.new(405_i64)})["suspect"].should eq 0
     end
   end
 
@@ -944,7 +606,7 @@ describe CalibreHub::ImportRepair do
       fake.add(605, "Mein Titel", ["Meine Autorin"], ["PDF"])
       db = state_db
       db.exec "create table if not exists meta (key text primary key, value text)"
-      CalibreHub::ImportJobs.migrate(db)
+      CalibreHub::Importer.migrate(db)
       {vol => 601, mcevoy => 602, yosida => 603, print => 604, edited => 605}.each do |p, id|
         db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', ?, 'r1', 100)", p, id
       end
@@ -967,10 +629,9 @@ describe CalibreHub::ImportRepair do
       calibre = fake.calibre
       repair = CalibreHub::ImportRepair.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), CalibreHub::MetaLog.new(db))
 
-      planned = repair.submit_repair({} of String => JSON::Any, true)
-      wait_job(repair, planned["job"]["id"].as_s).errors.should be_empty
-      entries = repair.review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
-      fields = ->(id : Int64) { entries[id]["changes"].as_a.to_h { |c| {c["field"].as_s, c["new"]} } }
+      plan(repair, {601 => vol, 602 => mcevoy, 603 => yosida, 604 => print, 605 => edited} of Int32 => String?)
+      entries = open_proposals(repair)
+      fields = ->(id : Int64) { entries[id].changes.to_h { |c| {c.field, c.new} } }
       entries.keys.sort.should eq [601_i64, 602_i64, 603_i64, 604_i64]
       fields.call(601_i64)["tags"].as_a.map(&.as_s).should contain "auto-unsicher"
       fields.call(602_i64)["title"].should eq "Molecular Basis of Medical Cell Biology"
@@ -980,17 +641,16 @@ describe CalibreHub::ImportRepair do
     end
   end
 
-  it "plans the whole library, keeps what was accepted or rejected and offers the bulk band (#8528)" do
+  it "plans the library's books and keeps what was accepted (#8528)" do
     tmpdir do |root|
       fake = FakeCalibre.new
       fake.add(501, "Hacker's Delight", ["Unknown"], ["PDF"])
       fake.add(502, "The Art of UNIX Programming", ["Eric S. Raymond"], ["PDF"])
       fake.add(503, "Zwischen Ich und Du", ["Angelika Krebs"], ["EPUB"], "9783518730898")
-      fake.add(504, "Rejected", ["Unknown"], ["PDF"])
       fake.add(505, "Copy of Hacker's Delight", ["Henry S. Warren"], ["PDF"], "9780201914658")
       db = state_db
       db.exec "create table if not exists meta (key text primary key, value text)"
-      CalibreHub::ImportJobs.migrate(db)
+      CalibreHub::Importer.migrate(db)
       calibre = fake.calibre
       writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
       log = CalibreHub::MetaLog.new(db)
@@ -1005,29 +665,15 @@ describe CalibreHub::ImportRepair do
       end
       repair.owners = ->(isbn : String) { isbn == "9780201914658" ? [505_i64] : [] of Int64 }
 
-      planned = repair.submit_repair({"library" => JSON::Any.new(true)}, true)
-      planned["books"].should eq 5
-      wait_job(repair, planned["job"]["id"].as_s).errors.should be_empty
-      entries = repair.review["entries"].as_a.to_h { |e| {e["bookId"].as_i64, e} }
+      plan(repair, {501 => nil, 502 => nil, 503 => nil, 505 => nil} of Int32 => String?)
+      entries = open_proposals(repair)
       # the same ISBN as another book: reviewed, not written
-      entries[501_i64]["level"].should eq 1
-      entries[501_i64]["confidence"].should eq 89
-      entries[501_i64]["band"].should eq "review"
-      entries[501_i64]["notes"][0]["kind"].should eq "duplicateIsbn"
-      entries[501_i64]["changes"].as_a.map(&.["field"].as_s).should eq ["authors", "authorSort"]
-      # nothing to change is no proposal, the decision is kept all the same
+      entries[501_i64].level.should eq 1
+      entries[501_i64].confidence.should eq 89
+      entries[501_i64].notes[0].kind.should eq "duplicateIsbn"
+      entries[501_i64].changes.map(&.field).should eq ["authors", "authorSort"]
+      # nothing to change is no proposal
       entries.has_key?(502_i64).should be_false
-      log.decided(502_i64).not_nil!.level.should eq 2
-      log.decided(502_i64).not_nil!.status.should eq "written"
-
-      repair.reject([504_i64]).should eq 1
-      log.decided(504_i64).not_nil!.status.should eq "rejected"
-
-      # only bulk goes as a band, nothing below it
-      accepted = repair.accept(nil, "bulk")
-      accepted["books"].should eq entries.values.count { |e| e["band"] == "bulk" }
-      expect_raises(CalibreHub::Edit::Invalid) { repair.accept(nil, "review") }
-      wait_job(repair, accepted["job"]["id"].as_s)
 
       one = repair.accept([501_i64])
       wait_job(repair, one["job"]["id"].as_s).errors.should be_empty
@@ -1035,26 +681,10 @@ describe CalibreHub::ImportRepair do
       changes.map(&.source).uniq.should eq ["hardcover"]
       changes.map(&.level).uniq.should eq [1]
       log.from_source("hardcover", 1).size.should eq changes.size
-      log.decided(501_i64).not_nil!.binding?.should be_true
 
       # again: neither touched nor proposed anew
-      again = repair.submit_repair({"library" => JSON::Any.new(true)}, true)
-      wait_job(repair, again["job"]["id"].as_s)
-      repair.review["entries"].as_a.none? { |e| e["bookId"] == 501 }.should be_true
-
-      report = repair.quality({} of String => JSON::Any)
-      report["bands"].as_h.values.sum(&.as_i).should eq 5
-      report["levels"]["1"].as_i.should be >= 1
-      report["isbn"]["with"].should eq 2
-      report["isbn"]["sources"].as_h.keys.should contain "calibre"
-      report["conflicts"]["notedCount"].as_i.should be >= 1
-
-      expect_raises(CalibreHub::Edit::Invalid) { repair.add_sample("bulk", 30, 31) }
-      repair.add_sample("bulk", 30, 29)
-      repair.add_sample("bulk", 30, 30)
-      samples = repair.quality({} of String => JSON::Any)["samples"].as_a
-      samples.map { |s| {s["band"], s["correct"]} }.should eq [{"bulk", 30}]
-      repair.sample("unsure")["band"].should eq "unsure"
+      plan(repair, {501 => nil} of Int32 => String?)
+      open_proposals(repair).has_key?(501_i64).should be_false
     end
   end
 
@@ -1065,11 +695,11 @@ describe CalibreHub::ImportRepair do
       fake = FakeCalibre.new
       db = state_db
       db.exec "create table if not exists meta (key text primary key, value text)"
-      CalibreHub::ImportJobs.migrate(db)
+      CalibreHub::Importer.migrate(db)
       db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', 1182, 'r', 100)", path
       calibre = fake.calibre
       repair = CalibreHub::ImportRepair.new(db, calibre, CalibreHub::Writer.new(calibre, nil, nil, "kategorie"), CalibreHub::MetaLog.new(db))
-      repair.submit_repair({} of String => JSON::Any, true)["books"].should eq 0
+      repair.recheck_list("r")[0].should be_empty
     end
   end
 
@@ -1097,7 +727,7 @@ describe CalibreHub::ImportRepair do
     CalibreHub::ImportRepair.hand_fields(nil, [{100_000_i64, isbn}], [] of CalibreHub::MetaLog::Entry).should eq Set{"isbn"}
   end
 
-  it "plans and applies at once, then queues a metadata run for the repaired books" do
+  it "queues a metadata run for the repaired books" do
     tmpdir do |root|
       path = File.join(root, "Duffy - Advanced Engineering Mathematics (1998).pdf")
       write(path, pdf)
@@ -1105,7 +735,7 @@ describe CalibreHub::ImportRepair do
       fake.add(301, "Duffy", ["Advanced Engineering Mathematics (1998)"], ["PDF"])
       db = state_db
       db.exec "create table if not exists meta (key text primary key, value text)"
-      CalibreHub::ImportJobs.migrate(db)
+      CalibreHub::Importer.migrate(db)
       db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, 1, 1, 'imported', 301, 'r', 100)", path
       calibre = fake.calibre
       writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
@@ -1114,11 +744,9 @@ describe CalibreHub::ImportRepair do
       metadata_jobs = CalibreHub::MetadataJobs.new(db, calibre, writer, metadata)
       repair = CalibreHub::ImportRepair.new(db, calibre, writer, log)
       repair.metadata = metadata_jobs
-      applied = repair.submit_repair({"since" => JSON::Any.new(Time.unix(50).to_rfc3339)}, false)
-      wait_job(repair, applied["job"]["id"].as_s).status.should eq "done"
-      # a clear name is reviewed: only the bulk band is applied without a look
+      plan(repair, {301 => path} of Int32 => String?)
       fake.books[301_i64]["authors"].should eq ["Advanced Engineering Mathematics (1998)"]
-      repair.review["entries"].as_a.map(&.["bookId"].as_i64).should eq [301_i64]
+      repair.proposals("pending").map(&.book_id).should eq [301_i64]
       accepted = repair.accept([301_i64])
       wait_job(repair, accepted["job"]["id"].as_s).status.should eq "done"
       fake.books[301_i64]["authors"].should eq ["Duffy"]

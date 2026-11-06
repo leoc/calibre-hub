@@ -2,7 +2,6 @@ require "json"
 require "./book"
 require "./meta_confidence"
 require "./meta_filename"
-require "./meta_quality"
 require "./meta_sources"
 
 module CalibreHub
@@ -154,7 +153,7 @@ module CalibreHub
         names = (book.authors + (reading.try(&.authors) || [] of String) + (r.authors || [] of String)).flat_map { |a| Text.tokens(a) }.to_set
         [reading.try(&.title), book.title].compact.uniq.select do |t|
           words = Text.tokens(t)
-          !FileName.bad_title?(t) && !Quality.file_name?(t) && FileName.side_score(t) < 2 &&
+          !FileName.bad_title?(t) && !FileName.one_word_name?(t) && FileName.side_score(t) < 2 &&
             !FileName.known_publisher?(t) && !(words.size == 1 && names.includes?(words.first)) &&
             !FileName.swapped?(t, book.authors, reading)
         end

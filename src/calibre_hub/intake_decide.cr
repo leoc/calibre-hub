@@ -43,13 +43,13 @@ module CalibreHub
 
   # Decisions as jobs, one entry after the other, in a queue of their own: a
   # bulk of a thousand doesn't wait in a request, the entries leave the list
-  # when it is queued. Accepting goes through the import (ImportJobs#import
+  # when it is queued. Accepting goes through the import (Importer#import
   # with what was chosen), so a book gets what any imported book gets and
   # a backlog file is in import_files, an inbox file or an upload moves to
   # _imported; a trashed file moves (IntakeTrash). An entry whose decision
   # fails is back in the list and says why.
   class IntakeJobs < Jobs
-    def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @imports : ImportJobs, @intake : Intake)
+    def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @imports : Importer, @intake : Intake)
       super(db, calibre, writer, nil, "intake_jobs")
     end
 
