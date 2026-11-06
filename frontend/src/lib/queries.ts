@@ -72,34 +72,6 @@ export const metadataStatusQuery = queryOptions({
   refetchInterval: (q) => (q.state.data?.running ? 1500 : false),
 })
 
-// backlog import runs and cleanups; polls while one runs, slower while
-// the hooks work off the imported books
-export const importStatusQuery = queryOptions({
-  queryKey: ["import-status"],
-  queryFn: api.importStatus,
-  staleTime: 30_000,
-  refetchInterval: (q) => {
-    const d = q.state.data
-    if (d?.running || d?.scanning || d?.cleanups.some((c) => c.job?.status === "running" || c.undoJob?.status === "running")) return 2000
-    return d?.followup?.total ? 10_000 : false
-  },
-})
-
-// the repair's open proposals; polls while its plan or accept job runs
-export const importRepairQuery = queryOptions({
-  queryKey: ["import-repair"],
-  queryFn: api.importRepair,
-  staleTime: 10_000,
-  refetchInterval: (q) => (q.state.data?.job?.status === "running" ? 2000 : false),
-})
-
-// the quality report of the library and the last runs
-export const importQualityQuery = queryOptions({
-  queryKey: ["import-quality"],
-  queryFn: api.importQuality,
-  staleTime: 60_000,
-})
-
 export const metadataChangesQuery =(query: MetadataChangesQuery = {}) =>
   queryOptions({
     queryKey: ["metadata-changes", query],

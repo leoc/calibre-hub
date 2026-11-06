@@ -1,8 +1,8 @@
 import { useContext, useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { CopyCheck, Import, Inbox, Library, ListIcon, Sparkles, Trash2, WandSparkles } from "lucide-react"
-import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery, importStatusQuery } from "@/lib/queries"
+import { CopyCheck, Inbox, Library, ListIcon, Sparkles, Trash2, WandSparkles } from "lucide-react"
+import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery } from "@/lib/queries"
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
 import { intakeStatusQuery } from "@/lib/intake"
 import { favoriteTree, findNode, flattenListTree, useListTree } from "@/lib/lists"
@@ -39,10 +39,8 @@ export function Sidebar({ search, onNavigate }: Props) {
     enabled: !!config.categoryColumn,
   })
   const { data: classify } = useQuery({ ...classifyStatusQuery, enabled: !!config.classify && admin })
-  // the backlog import's page, when it is on (no polling from here)
-  const { data: imports } = useQuery({ ...importStatusQuery, enabled: admin, refetchInterval: false })
   // how many are in the Eingang, polled on its own page only
-  const { data: intake } = useQuery({ ...intakeStatusQuery(), enabled: admin && !!imports?.enabled, refetchInterval: false })
+  const { data: intake } = useQuery({ ...intakeStatusQuery(), enabled: admin, refetchInterval: false })
 
   return (
     <nav className="flex h-full flex-col gap-5 overflow-y-auto p-3">
@@ -123,19 +121,12 @@ export function Sidebar({ search, onNavigate }: Props) {
             </span>
           </Link>
         )}
-        {imports?.enabled && admin && (
+        {intake?.enabled && admin && (
           <Link to="/eingang" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
             <span className="flex items-center gap-2">
               <Inbox className="size-4" aria-hidden /> {t("intake.title")}
             </span>
             {intake?.progress && <Count n={intake.progress.total} />}
-          </Link>
-        )}
-        {imports?.enabled && admin && (
-          <Link to="/import" replace={replace} onClick={onNavigate} className={navItem} activeProps={{ className: active }}>
-            <span className="flex items-center gap-2">
-              <Import className="size-4" aria-hidden /> {t("import.page")}
-            </span>
           </Link>
         )}
         {admin && (

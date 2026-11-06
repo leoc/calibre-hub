@@ -159,8 +159,8 @@ export const uploadBoard = {
   decide: (_entry: number, _decision: string, _book?: number) => false,
 }
 
-// The Prüfliste's proposals (mocks/metadata.ts): the Eingang's filter is the
-// same list. A proposal without a confidence is taken as it is.
+// The proposals for the library's books (mocks/metadata.ts). A proposal
+// without a confidence is taken as it is.
 export const proposalBoard = {
   entries: (): ImportRepairEntry[] => [],
   books: [] as Book[],

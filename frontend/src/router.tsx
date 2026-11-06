@@ -12,7 +12,6 @@ import { BookPage } from "./routes/book"
 import { TrashPage } from "./routes/trash"
 import { SuggestionsPage } from "./routes/suggestions"
 import { MetadataPage } from "./routes/metadata"
-import { ImportPage } from "./routes/import"
 import { ListsPage } from "./routes/lists"
 import { DuplicatesPage } from "./routes/duplicates"
 import { IntakePage } from "./routes/intake"
@@ -115,10 +114,13 @@ const metadataRoute = createRoute({
   component: MetadataPage,
 })
 
+// the import page's old address
 const importRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/import",
-  component: ImportPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/eingang", replace: true })
+  },
 })
 
 const intakeRoute = createRoute({

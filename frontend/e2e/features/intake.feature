@@ -410,15 +410,23 @@ Feature: Eingang
     When I press "Escape"
     Then the list has 2 rows
 
+  Scenario: The old address of the import page leads here
+    When I open "/import"
+    Then the page is the Eingang
+    And the menu has no link "Altbestand"
+
+  Scenario: The Metadaten page has nothing of the old import
+    When I open "/metadata"
+    Then the page has no "Altbestand"
+    And the page has no "Portion"
+
   @wide
-  Scenario: A decision here is gone from the Prüfliste, a failed one says why
+  Scenario: A library book's decision takes it from the list
     When I open the Eingang
     And I choose "Schon in der Bibliothek" in "Art"
     And I press "Übernehmen" on the row "Dune"
     Then the row "Dune" is gone
     And the hub was asked to "accept" 1 entry
-    When I go to the import page
-    Then the review has no proposal for "Herbert - Dune.mobi"
 
   Scenario: An accept that finds a field changed comes back and says why
     When I open the Eingang

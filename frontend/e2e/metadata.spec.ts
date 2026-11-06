@@ -139,15 +139,3 @@ test("metadata from the command palette", async ({ page, isMobile }) => {
   await page.getByRole("option", { name: "Metadaten" }).click()
   await expect(page).toHaveURL(/\/metadata$/)
 })
-
-test("backlog import: the running import and scan, the backlog's progress and a link to the import page", async ({ page, isMobile }) => {
-  await openMetadata(page, isMobile)
-  const section = page.getByRole("region", { name: "Altbestand" })
-  await expect(section.getByText("Phase: Import")).toBeVisible()
-  await expect(section.getByRole("status").first()).toHaveText(/^importiert … \d+ von 500$/)
-  await expect(section.getByRole("status").last()).toHaveText("durchsucht … 12.840 Dateien, 6.210 Bücher")
-  await expect(section.getByRole("progressbar", { name: "Altbestand importiert" })).toBeVisible()
-  await section.getByRole("link", { name: "Import-Fortschritt" }).click()
-  await expect(page).toHaveURL(/\/import$/)
-  await expect(page.getByRole("heading", { level: 1, name: "Import" })).toBeVisible()
-})

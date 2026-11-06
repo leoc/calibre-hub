@@ -427,17 +427,17 @@ Then("the page has no button {string}", async ({ page }, name: string) => {
   await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0)
 })
 
-When("I go to the import page", async ({ page }) => {
-  await page.evaluate(() => {
-    history.pushState({}, "", "/import")
-    dispatchEvent(new PopStateEvent("popstate"))
-  })
-  await expect(page.getByRole("heading", { name: "Reparatur" })).toBeVisible()
+When("I open {string}", async ({ page }, path: string) => {
+  await page.goto(path)
 })
 
-Then("the review has no proposal for {string}", async ({ page }, text: string) => {
-  await expect(page.getByRole("list", { name: "Reparatur" })).toBeVisible()
-  await expect(page.getByRole("list", { name: "Reparatur" }).getByText(text)).toHaveCount(0)
+Then("the menu has no link {string}", async ({ page }, name: string) => {
+  await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0)
+})
+
+Then("the page has no {string}", async ({ page }, text: string) => {
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
+  await expect(page.getByText(text)).toHaveCount(0)
 })
 
 Then("each candidate has its digit", async ({ page }) => {

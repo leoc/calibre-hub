@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Book, ImportRepairEntry, ImportRun, Job, MetadataCandidate, MetadataChange, MetadataField, MetadataSource, MetadataStatus, MetadataTarget } from "@/lib/api"
+import type { Book, ImportRepairEntry, Job, MetadataCandidate, MetadataChange, MetadataField, MetadataSource, MetadataStatus, MetadataTarget } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 import { proposalBoard } from "./intake"
 
@@ -141,7 +141,6 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
     return filterBooks(bookSearchParams(target.query))
   }
 
-  let importPolls = 0
   const [r1, r2, r3] = books
   const sure = (confidence: number, band: ImportRepairEntry["band"], level: ImportRepairEntry["level"], source: string) =>
     ({ confidence, band, level, source, titleConfidence: confidence, authorsConfidence: confidence, notes: [] })
@@ -159,213 +158,13 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
     { bookId: r3.id, file: "/srv/media/ebooks/backlog/Defaults/Wine Tasting - A Professional Handbook.pdf", decided: "unsure", status: "pending",
       at: "2026-11-03T12:00:00Z", ...sure(30, "unsure", 3, "rules"), changes: [{ field: "tags", old: [], new: ["auto-unsicher"] }] },
   ]
-  const repairCounts = { applied: 0, rejected: 0, failed: 0 }
-  // the Eingang's filter shows these, one list with two doors
+  // the Eingang's filter shows these
   proposalBoard.entries = () => repair
   proposalBoard.books = books
-  proposalBoard.decide = (ids, how) => {
+  proposalBoard.decide = (ids) => {
     repair = repair.filter((e) => !ids.includes(e.bookId))
-    repairCounts[how] += ids.length
   }
-  const samples: { band: string; checked: number; correct: number; at: string }[] = []
-  let repairJob: Job | null = null
-
-  // The hub between two portions, for the e2e steps (localStorage
-  // hub.mock.import): idle, reviewed (a dry run done before), followup,
-  // planning (a repair plan), empty (nothing left). Without it the running
-  // import below, which answers POST /api/import with a 409.
-  const BACKLOG = "/srv/media/ebooks/backlog"
-  const importMode = () => localStorage.getItem("hub.mock.import")
-  const portionSummary = (limit: number, empty: boolean): NonNullable<ImportRun["summary"]> => ({
-    books: empty ? 0 : 17_900, files: empty ? 0 : 21_400, formats: empty ? {} : { EPUB: 9000, PDF: 8000, MOBI: 900 }, calibreFolders: empty ? 0 : 6000, withCover: 5900,
-    toAdd: empty ? 0 : 17_500, toAddFormats: empty ? 0 : 100, duplicates: { total: empty ? 0 : 300 }, alreadyImported: 1500,
-    selected: empty ? { books: 0, toAdd: 0, toAddFormats: 0, duplicates: 0 } : { books: limit + 8, toAdd: limit - 10, toAddFormats: 10, duplicates: 8 },
-    deferred: empty ? 0 : 17_900 - limit - 8,
-    skipped: { total: 2100, byReason: { "not a book format": 2100 }, byType: { jpg: 2100 } },
-  })
-  const portionRunOf = (id: string, dryRun: boolean, limit: number, extra: Partial<ImportRun>): ImportRun => ({
-    id, path: BACKLOG, paths: [BACKLOG], dryRun, limit, createdAt: "2026-11-04T09:00:00Z", jobId: `j-${id}`, status: "scanning",
-    done: null, total: 0, error: null, summary: null, results: {}, failures: [], ...extra,
-  })
-  const planned = (run: ImportRun) => {
-    const summary = portionSummary(run.limit ?? 0, importMode() === "empty")
-    return { ...run, status: "planned" as const, phase: "planned" as const, summary, total: summary.books,
-      results: { pending: summary.selected?.books ?? 0, deferred: summary.deferred ?? 0 } }
-  }
-  let portions: ImportRun[] = []
-  let scanPolls = 0
-  function portionStatus() {
-    if (importMode() === "reviewed" && !portions.length) portions = [planned(portionRunOf("p0", true, 500, {}))]
-    // a dry run takes two polls, an import 5 books each
-    const newest = portions[0]
-    if (newest?.status === "scanning" && (scanPolls += 1) > 1) portions[0] = planned(newest)
-    if (newest?.status === "running") newest.done = Math.min((newest.done ?? 0) + 5, newest.total)
-    const running = portions[0]?.status === "running"
-    const scanning = portions[0]?.status === "scanning"
-    const empty = importMode() === "empty"
-    const followup = importMode() === "followup" ? 120 : 0
-    return {
-      enabled: true, roots: [BACKLOG], running, scanning, hooksPaused: running, phase: running ? "import" : scanning ? "scan" : followup ? "followup" : null,
-      backlog: {
-        imported: 1500, formatAdded: 40, duplicates: 106,
-        open: { books: empty ? 0 : 17_500, formats: empty ? 0 : 100, duplicates: empty ? 0 : 300, failed: 0 },
-        total: empty ? 1500 : 19_000,
-        basis: { runId: "p-1", paths: [BACKLOG], createdAt: "2026-11-03T09:00:00Z" },
-        etaSeconds: null,
-      },
-      followup: { paused: running, total: followup, queues: followup ? { metadata: followup } : {} },
-      runs: portions,
-      cleanups: [],
-    }
-  }
-
   return [
-    // the backlog import: a running import of 500 books (5 more each time
-    // it is polled), a dry run walking another folder, a finished import,
-    // a dry run and a cleanup
-    // the repair of plain-file imports: three proposals (a name, a source
-    // and an unsure one); accept applies title and authors, reject drops
-    http.get("/api/import/repair", () => {
-      const ids = repair.map((e) => e.bookId)
-      return HttpResponse.json({
-        entries: repair,
-        books: books.filter((b) => ids.includes(b.id)),
-        counts: { ...repairCounts, pending: repair.length },
-        job: importMode() === "planning" ? { status: "running", done: 3, total: 40, errors: [] } : repairJob,
-        planning: importMode() === "planning",
-        unsureTag: "auto-unsicher",
-      })
-    }),
-    // the quality report: the library and two runs
-    http.get("/api/import/quality", () =>
-      HttpResponse.json({
-        total: 1846,
-        suspect: 212,
-        reasons: { unknownAuthor: 191, notAPerson: 0, publisherAuthor: 4, swappedPair: 3, pathTitle: 2, titleSaysNothing: 11, leftoverTitle: 1, fileNameTitle: 24, unsure: 11 },
-        runs: [
-          { run: "77ec37bda5d6d688", at: "2026-11-03T08:48:59Z", total: 437, suspect: 120 },
-          { run: "8c6205172f4fdbb7", at: "2026-11-03T07:35:32Z", total: 196, suspect: 41 },
-        ],
-        books: [{ id: 1617, title: "Compilers: Principles, Techniques and Tools", authors: ["Unknown"], reasons: ["unknownAuthor"] }],
-        bands: { bulk: 900, review: 500, unsure: 346, none: 100 },
-        levels: { "1": 700, "2": 600, "3": 446 },
-        isbn: { with: 800, without: 1046, sources: { text: 400, ocr: 120, calibre: 280 } },
-        conflicts: { duplicates: [{ isbn: "9780201914658", books: [1, 2] }], duplicateCount: 1, noted: [], notedCount: 3 },
-        samples,
-      }),
-    ),
-    http.get("/api/import/quality/sample", ({ request }) =>
-      HttpResponse.json({
-        band: new URL(request.url).searchParams.get("band"),
-        books: [{ id: r2.id, title: r2.title, authors: r2.authors, confidence: 98, level: 1, source: "hardcover" }],
-      }),
-    ),
-    http.post("/api/import/quality/sample", async ({ request }) => {
-      const body = (await request.json()) as { band: string; checked: number; correct: number }
-      const sample = { ...body, at: "2026-11-04T12:00:00Z" }
-      samples.splice(0, samples.length, sample)
-      return HttpResponse.json(sample, { status: 201 })
-    }),
-    http.post("/api/import/repair", () => {
-      repairJob = { status: "done", done: 3, total: 3, errors: [] }
-      return HttpResponse.json({ dryRun: true, books: 3, job: { id: "repair-plan", ...repairJob } }, { status: 202 })
-    }),
-    http.post("/api/import/repair/accept", async ({ request }) => {
-      const body = (await request.json()) as { bookIds?: number[]; band?: string }
-      const take = repair.filter((e) => e.band === body.band || body.bookIds?.includes(e.bookId))
-      for (const e of take) {
-        const b = books.find((x) => x.id === e.bookId)
-        if (!b) continue
-        for (const c of e.changes) {
-          if (c.field === "title") b.title = String(c.new)
-          if (c.field === "authors") b.authors = c.new as string[]
-          if (c.field === "tags") b.tags = c.new as string[]
-        }
-        touch(b)
-      }
-      repair = repair.filter((e) => !take.includes(e))
-      repairCounts.applied += take.length
-      repairJob = { status: "done", done: take.length, total: take.length, errors: [] }
-      return HttpResponse.json({ books: take.length, job: { id: "repair-apply", ...repairJob } }, { status: 202 })
-    }),
-    http.post("/api/import/repair/reject", async ({ request }) => {
-      const body = (await request.json()) as { bookIds?: number[]; all?: boolean }
-      const before = repair.length
-      repair = repair.filter((e) => !(body.all || body.bookIds?.includes(e.bookId)))
-      repairCounts.rejected += before - repair.length
-      return HttpResponse.json({ rejected: before - repair.length })
-    }),
-    http.post("/api/import", async ({ request }) => {
-      const body = (await request.json()) as { path: string; dryRun: boolean; limit: number }
-      if (!importMode() || portions[0]?.status === "running") return HttpResponse.json({ error: "an import is running" }, { status: 409 })
-      if (body.path !== BACKLOG) return HttpResponse.json({ error: "not below an import root", field: "path" }, { status: 400 })
-      const id = `p${portions.length + 1}`
-      scanPolls = 0
-      const summary = portionSummary(body.limit, false)
-      const run = body.dryRun
-        ? portionRunOf(id, true, body.limit, { phase: "scan", scan: { files: 120, units: 40, planned: 0, phase: "scan" } })
-        : portionRunOf(id, false, body.limit, { status: "running", phase: "import", done: 0, total: summary.selected?.books ?? 0, summary, results: { pending: summary.selected?.books ?? 0 } })
-      portions = [run, ...portions]
-      return HttpResponse.json(run, { status: 202 })
-    }),
-    http.get("/api/import", () => {
-      if (importMode()) return HttpResponse.json(portionStatus())
-      importPolls += 1
-      const done = Math.min(260 + importPolls * 5, 500)
-      const summary = {
-        books: 1240, files: 1530, formats: { PDF: 900, MOBI: 400, EPUB: 230 }, calibreFolders: 360, withCover: 340,
-        toAdd: 1100, toAddFormats: 40, duplicates: { total: 100, isbn: 60, title: 30, file: 10 }, alreadyImported: 0,
-        skipped: { total: 9800, byReason: { "not a book format": 9700, "too small": 100 }, byType: { mp3: 4505, flv: 3740 } },
-      }
-      const backlogSummary = {
-        books: 17_900, files: 21_400, formats: { EPUB: 9000, PDF: 8000, MOBI: 900 }, calibreFolders: 6000, withCover: 5900,
-        toAdd: 17_500, toAddFormats: 100, duplicates: { total: 300, title: 200, isbn: 100 }, alreadyImported: 12,
-        limit: 500, selected: { books: 500, toAdd: 490, toAddFormats: 2, duplicates: 8 }, deferred: 17_400,
-        skipped: { total: 2100, byReason: { "not a book format": 2000, "too small": 100 }, byType: { jpg: 2000, txt: 100 } },
-      }
-      // of the running import: 2 failed, 8 duplicates, the rest imported
-      const imported = Math.max(done - 10, 0)
-      return HttpResponse.json({
-        enabled: true,
-        roots: ["/srv/media/ebooks/inbox"],
-        running: true,
-        scanning: true,
-        hooksPaused: true,
-        phase: "import",
-        backlog: {
-          imported: 1100 + imported, formatAdded: 40, duplicates: 106,
-          open: { books: 17_500 - 10 - imported, formats: 100, duplicates: 292, failed: 2 },
-          total: 18_590,
-          basis: { runId: "r4", paths: ["/srv/media/ebooks/backlog"], createdAt: "2026-11-03T09:00:00Z" },
-          etaSeconds: 49_800,
-        },
-        followup: { paused: true, total: 1360, queues: { embed: 60, metadata: 1300 } },
-        runs: [
-          { id: "r4", path: "/srv/media/ebooks/backlog", paths: ["/srv/media/ebooks/backlog"], dryRun: false, limit: 500,
-            createdAt: "2026-11-03T09:00:00Z", jobId: "j4", status: "running", phase: "import",
-            current: "/srv/media/ebooks/backlog/Fontane, Theodor/Effi Briest (412)",
-            startedAt: "2026-11-03T09:00:05Z", scannedAt: "2026-11-03T09:04:00Z", finishedAt: null,
-            elapsedSeconds: 3725, filesPerSecond: null, booksPerMinute: 21.5, etaSeconds: 250, done, total: 500, error: null,
-            scan: { files: 23_500, units: 17_900, planned: 17_900, phase: "check", path: null }, summary: backlogSummary,
-            results: { imported, duplicate: 8, failed: 2, pending: 500 - done, deferred: 17_400 },
-            failures: [
-              { path: "/srv/media/ebooks/backlog/Unbekannt/kaputt.pdf", detail: "calibre-server: HTTP 500 (NoSuchBook)" },
-              { path: "/srv/media/ebooks/backlog/Alt/Scan (3)", detail: "ebook-meta timed out" },
-            ] },
-          { id: "r3", path: "/srv/media/ebooks/neu", paths: ["/srv/media/ebooks/neu"], dryRun: true, limit: 200,
-            createdAt: "2026-11-03T08:00:00Z", jobId: "j3", status: "scanning", phase: "scan", current: "/srv/media/ebooks/neu/Comics/Asterix",
-            startedAt: "2026-11-03T08:00:01Z", scannedAt: null, finishedAt: null, elapsedSeconds: 95, filesPerSecond: 135.2, booksPerMinute: null,
-            etaSeconds: null, done: null, total: 0, error: null,
-            scan: { files: 12840, units: 6210, planned: 0, phase: "scan", path: "/srv/media/ebooks/neu/Comics/Asterix" }, summary: null, results: {}, failures: [] },
-          { id: "r2", path: "/srv/media/ebooks/inbox", dryRun: false, createdAt: "2026-11-02T20:10:00Z", jobId: "j2", status: "done", phase: "done",
-            startedAt: "2026-11-02T20:10:00Z", scannedAt: "2026-11-02T20:11:00Z", finishedAt: "2026-11-02T21:12:30Z", elapsedSeconds: 3750, booksPerMinute: 20.2,
-            done: 1240, total: 1240, error: null, summary, results: { imported: 1100, formatAdded: 40, duplicate: 98, failed: 2 } },
-          { id: "r1", path: "/srv/media/ebooks/inbox", dryRun: true, createdAt: "2026-11-02T20:00:00Z", jobId: null, status: "planned",
-            done: null, total: 1240, error: null, summary, results: { pending: 1240 } },
-        ],
-        cleanups: [{ id: "c1", createdAt: "2026-11-02T19:00:00Z", total: 1038, job: { status: "done", done: 1038, total: 1038, errors: [] }, undoJob: null }],
-      })
-    }),
     http.get("/api/metadata/status", () => {
       const active = new Set(changes.filter((c) => !c.revertedAt).map((c) => c.bookId))
       return HttpResponse.json({

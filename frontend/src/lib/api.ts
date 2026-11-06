@@ -170,82 +170,6 @@ export interface MetadataChange {
 
 export type MetadataTarget = "incomplete" | "all" | "authors" | BulkTarget
 
-// A backlog import run (POST /api/import): the scan's progress, then its
-// summary and, applied, the job's progress and the results per status
-export interface ImportRun {
-  id: string
-  path: string
-  paths?: string[]
-  dryRun: boolean
-  limit?: number | null
-  createdAt: string
-  jobId: string | null
-  status: "scanning" | "planned" | "running" | "done" | "failed" | "gone"
-  // scan (walking the folders), check (against the library), import, else the status
-  phase?: "scan" | "check" | "import" | "planned" | "done" | "failed" | "gone"
-  // the folder (scan) or book (check, import) it is at
-  current?: string | null
-  startedAt?: string | null
-  scannedAt?: string | null
-  finishedAt?: string | null
-  elapsedSeconds?: number | null
-  filesPerSecond?: number | null
-  booksPerMinute?: number | null
-  // while checking and importing
-  etaSeconds?: number | null
-  done: number | null
-  total: number
-  error: string | null
-  // files looked at, books found, books checked against the library
-  scan?: { files: number; units: number; planned: number; phase?: "scan" | "check"; path?: string | null } | null
-  // null while the scan runs (or when it failed)
-  summary: {
-    books: number
-    files: number
-    formats: Record<string, number>
-    calibreFolders: number
-    withCover: number
-    toAdd: number
-    toAddFormats: number
-    duplicates: Record<string, number> & { total: number }
-    alreadyImported: number
-    // what this run imports (everything without a limit)
-    selected?: { books: number; toAdd: number; toAddFormats: number; duplicates: number }
-    deferred?: number
-    skipped: { total: number; byReason: Record<string, number>; byType: Record<string, number> }
-  } | null
-  results: Record<string, number>
-  // the first failed books with the reason
-  failures?: { path: string; detail: string | null }[]
-}
-
-// The whole backlog: imported by every run so far, open by the latest scanned run
-export interface ImportBacklog {
-  imported: number
-  formatAdded: number
-  duplicates: number
-  open: { books: number; formats: number; duplicates: number; failed: number }
-  // new books: imported and still to add
-  total: number
-  basis: { runId: string; paths: string[]; createdAt: string } | null
-  etaSeconds: number | null
-}
-
-// books the hooks still have to work off after imports
-export interface ImportFollowup {
-  paused: boolean
-  total: number
-  queues: Record<string, number>
-}
-
-export interface ImportCleanup {
-  id: string
-  createdAt: string
-  total: number
-  job: Job | null
-  undoJob: Job | null
-}
-
 // How sure a decision is: bulk from 90, review from 60, unsure below
 export type ConfidenceBand = "bulk" | "review" | "unsure"
 
@@ -393,10 +317,9 @@ export interface RepairNote {
   books: number[]
 }
 
-// The repair by the rule flow (POST /api/import/repair plans, GET lists the
-// open proposals): per book the fields to change, who decided, how sure it
-// is and on which level (1 ISBN in the book, 2 the file's metadata, 3 the
-// file name). Older plans have no confidence.
+// A proposal for a book of the library: the fields to change, who decided, how
+// sure it is and on which level (1 ISBN in the book, 2 the file's metadata, 3
+// the file name). Older plans have no confidence.
 export interface ImportRepairEntry {
   bookId: number
   file: string
@@ -414,66 +337,6 @@ export interface ImportRepairEntry {
   // field "candidate": what the catalogs suggest but couldn't confirm
   // ({title, authors, source}), shown for the review and never applied
   changes: { field: string; old: unknown; new: unknown }[]
-}
-
-export interface ImportRepairReview {
-  entries: ImportRepairEntry[]
-  books: Book[]
-  counts: Partial<Record<ImportRepairEntry["status"], number>>
-  // the latest plan or accept job
-  job: Job | null
-  // a plan is running: nothing can be decided until it's done
-  planning: boolean
-  unsureTag: string
-}
-
-// How many books look wrong (GET /api/import/quality): counts per reason,
-// the last import runs, a few of the books
-export interface ImportQuality {
-  total: number
-  suspect: number
-  reasons: Record<string, number>
-  runs: { run: string; at: string; total: number; suspect: number }[]
-  books: { id: number; title: string; authors: string[]; reasons: string[] }[]
-  // what the rule flow decided, "none": not planned yet
-  bands: Record<ConfidenceBand | "none", number>
-  levels: Record<"1" | "2" | "3", number>
-  isbn: { with: number; without: number; sources: Record<string, number> }
-  conflicts: {
-    duplicates: { isbn: string; books: number[] }[]
-    duplicateCount: number
-    noted: { id: number; title: string; notes: RepairNote[] }[]
-    notedCount: number
-  }
-  // the last sample check of each band
-  samples: ImportSample[]
-}
-
-export interface ImportSample {
-  band: ConfidenceBand
-  checked: number
-  correct: number
-  at: string
-}
-
-// books of a band to check by hand (GET /api/import/quality/sample)
-export interface ImportSampleBooks {
-  band: ConfidenceBand
-  books: { id: number; title: string; authors: string[]; confidence: number; level: number; source: string }[]
-}
-
-export interface ImportStatus {
-  enabled: boolean
-  roots?: string[]
-  running?: boolean
-  scanning?: boolean
-  hooksPaused?: boolean
-  // where the backlog import is now, null when idle
-  phase?: "scan" | "check" | "import" | "followup" | null
-  backlog?: ImportBacklog
-  followup?: ImportFollowup
-  runs?: ImportRun[]
-  cleanups: ImportCleanup[]
 }
 
 export interface MetadataStatus {
@@ -632,8 +495,6 @@ export const api = {
     }),
   classifyStatus: () => request<ClassifyStatus>("/api/classify/status"),
   metadataStatus: () => request<MetadataStatus>("/api/metadata/status"),
-  importStatus: () => request<ImportStatus>("/api/import"),
-  importRepair: () => request<ImportRepairReview>("/api/import/repair"),
   intake: (p: IntakeFilter & { after?: string; limit: number }) => {
     const q = new URLSearchParams({ limit: String(p.limit) })
     if (p.band) q.set("band", p.band)
@@ -646,8 +507,6 @@ export const api = {
   },
   intakeEntry: (id: number) => request<IntakeDetail>(`/api/intake/${id}`),
   uploadState: (id: string) => request<UploadState>(`/api/intake/uploads/${id}`),
-  importQuality: () => request<ImportQuality>("/api/import/quality"),
-  importSample: (band: ConfidenceBand) => request<ImportSampleBooks>(`/api/import/quality/sample?band=${band}`),
   metadataChanges: (query: MetadataChangesQuery = {}) =>
     request<{ changes: MetadataChange[]; books: Book[] }>(`/api/metadata/changes?${new URLSearchParams(Object.entries(query).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])))}`),
   // q: own search text instead of the book's title and author
@@ -822,20 +681,6 @@ export const write = {
   intakeThreshold: (origin: IntakeOrigin, value: number | null) => request<{ thresholds: IntakeList["thresholds"] }>("/api/intake/threshold", { method: "POST", ...json({ origin, value }) }),
   // the books no plan got to, behind the analysis
   recheckLibrary: () => request<{ books: number }>("/api/import/repair/recheck", { method: "POST", ...json({}) }),
-  // a backlog import run of a folder: a dry run or the import itself
-  startImport: (path: string, dryRun: boolean, limit: number) =>
-    request<ImportRun>("/api/import", { method: "POST", ...json({ path, dryRun, limit }) }),
-  // the repair: plan (a job; library: every book, not only the suspicious
-  // ones), then accept proposals (bookIds, or the bulk band) or reject them
-  planImportRepair: (library = false) =>
-    request<{ dryRun: boolean; books: number; job: Job }>("/api/import/repair", { method: "POST", ...json({ dryRun: true, ...(library ? { library } : {}) }) }),
-  acceptImportRepair: (bookIds?: number[]) =>
-    request<{ books: number; job: Job }>("/api/import/repair/accept", { method: "POST", ...json(bookIds ? { bookIds } : { band: "bulk" }) }),
-  rejectImportRepair: (bookIds?: number[]) =>
-    request<{ rejected: number }>("/api/import/repair/reject", { method: "POST", ...json(bookIds ? { bookIds } : { all: true }) }),
-  // a sample check: of `checked` books of a band `correct` were right
-  addImportSample: (sample: Pick<ImportSample, "band" | "checked" | "correct">) =>
-    request<ImportSample>("/api/import/quality/sample", { method: "POST", ...json(sample) }),
   // the user's private tags: add and/or remove on books
   privateTags: (target: BulkTarget, change: { add?: string[]; remove?: string[] }) =>
     request<PrivateTagsChange>("/api/private-tags", { method: "POST", ...json({ target, ...change }) }),

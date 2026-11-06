@@ -35,7 +35,6 @@ import {
   type IntakeSource,
 } from "@/lib/intake"
 import { loadBookFile, readBody, type LoadProgress } from "@/lib/offline"
-import { importRepairQuery } from "@/lib/queries"
 import { fileName, loadingText } from "@/lib/reader"
 import { errorText } from "@/lib/run-action"
 import { toast } from "@/lib/toast"
@@ -49,7 +48,7 @@ import { Dialog, DialogContent, DialogDescription, DialogScreen, DialogTitle } f
 import { Input } from "@/components/ui/input"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { ChipsInput } from "@/components/ui/suggest"
-import { RepairProposal } from "@/components/import-repair"
+import { LibraryProposalView } from "@/components/library-proposal"
 import { FilePeek } from "@/routes/reader"
 
 const muted = "text-muted-foreground eink:text-black"
@@ -140,11 +139,7 @@ export function IntakePage() {
       undecide([v.entry.id])
       failed(err)
     },
-    onSettled: (_, __, v) => {
-      // the Prüfliste shows the same proposals
-      if (isLibrary(v.entry)) void qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
-      return queued()
-    },
+    onSettled: () => queued(),
   })
   const bulk = useMutation({
     mutationFn: (v: { expect: number; last: number; gone: IntakeEntry[] }) =>
@@ -157,7 +152,6 @@ export function IntakePage() {
     // the rows behind the loaded ones take their place at once
     onSettled: () => {
       void refetch()
-      if (kind === "library") void qc.invalidateQueries({ queryKey: importRepairQuery.queryKey })
       return queued()
     },
   })
@@ -827,7 +821,7 @@ function chosenValues(p: NonNullable<IntakeEntry["proposal"]>, pick?: Chosen) {
   return { title: f?.title ?? p.title, authors: f?.authors?.length ? f.authors : p.authors }
 }
 
-// old → new as in the Prüfliste
+// old → new, field by field
 function LibraryProposal({ entry: e, detail }: { entry: IntakeEntry; detail: IntakeDetail }) {
-  return <RepairProposal entry={{ ...e, file: e.path, changes: detail.changes }} title={e.bookTitle ?? entryName(e)} unsureTag={detail.unsureTag ?? ""} />
+  return <LibraryProposalView entry={{ ...e, file: e.path, changes: detail.changes }} title={e.bookTitle ?? entryName(e)} unsureTag={detail.unsureTag ?? ""} />
 }

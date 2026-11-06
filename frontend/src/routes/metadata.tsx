@@ -13,7 +13,6 @@ import { BookCover } from "@/components/book-cover"
 import { ErrorMessage } from "@/components/error-view"
 import { LibraryLink } from "@/components/library-link"
 import { EpubFixLibrary } from "@/components/epub-fix"
-import { BacklogImport } from "@/components/backlog-import"
 
 const errorText = (e: unknown) => (e instanceof ApiError ? e.message : String(e))
 const dateTime = (iso: string) => new Date(iso).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" })
@@ -55,7 +54,6 @@ export function MetadataPage() {
       <MetadataRun />
       <ConvertRun />
       <EpubFixLibrary />
-      <BacklogImport />
       {revert.data && (
         <p role="status" className="text-sm">
           {t("meta.revertedCount", { count: formatNumber(revert.data.reverted.length) })}

@@ -106,15 +106,6 @@ test("E-Ink: metadata changes and candidates in the edit form", async ({ page })
   expect(await smallTargets(page, "[role=dialog]")).toEqual([])
 })
 
-test("E-Ink: the import page", async ({ page }) => {
-  await page.goto("/")
-  await expect(results(page)).toBeVisible()
-  await page.getByRole("link", { name: "Import", exact: true }).click()
-  await expect(page.getByRole("heading", { level: 1, name: "Import" })).toBeVisible()
-  await expect(page.getByRole("progressbar").first()).toBeVisible()
-  expect(await smallTargets(page)).toEqual([])
-})
-
 test("E-Ink: the Eingang and its drawer", async ({ page }) => {
   await page.goto("/eingang")
   const list = page.getByRole("list", { name: "Eingang", exact: true })
@@ -133,13 +124,6 @@ test("E-Ink: the Eingang and its drawer", async ({ page }) => {
   expect(await smallTargets(page, "[role=dialog]")).toEqual([])
   await expect(page.getByRole("dialog").locator("kbd:visible")).toHaveCount(0)
   await expect(page.locator("[data-entry][aria-current]")).toHaveCSS("outline-style", "solid")
-})
-
-test("E-Ink: the next portion on the import page", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("hub.mock.import", "reviewed"))
-  await page.goto("/import")
-  await expect(page.getByRole("button", { name: /^Portion starten/ })).toBeVisible()
-  expect(await smallTargets(page, "section[aria-labelledby=import-portion]")).toEqual([])
 })
 
 test("E-Ink: trash and login", async ({ page }) => {
