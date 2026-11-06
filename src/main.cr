@@ -544,7 +544,7 @@ module CalibreHub
     # the metadata cleanup edits no category, but its {query} targets filter by it
     metadata_jobs.try &.category_column = config.category_column
     routes(calibre, auth, auth_handler, config.category_column, config.fast_tags,
-      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), cleanup, repair].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
+      writer, jobs, trash, classify_jobs, metadata_jobs, lists, [convert_jobs, epub_fix, imports, imports.try(&.scans), intake.try(&.decisions), cleanup, repair].compact.map(&.as(Jobs)), progress, ReaderSettings.new(db), private_tags)
     file_routes(convert_jobs, embedder)
     duplicate_routes(dups, auth)
     epub_fix_routes(epub_fix)
