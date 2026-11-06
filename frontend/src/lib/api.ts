@@ -250,7 +250,14 @@ export interface ImportCleanup {
 export type ConfidenceBand = "bulk" | "review" | "unsure"
 
 // the Eingang: new files of the import roots, analysed, not in the library
-export type IntakeKind = "all" | "new" | "duplicates"
+export type IntakeKind = "all" | "new" | "duplicates" | "skipped"
+
+export type IntakeDecision = "accept" | "file" | "skip" | "unskip" | "trash"
+export interface IntakeFilter {
+  band?: string
+  duplicates?: boolean
+  skipped?: boolean
+}
 
 export interface IntakeProgress {
   state: "idle" | "scanning" | "analysing" | "paused" | "off"
@@ -300,6 +307,12 @@ export interface IntakeEntry {
   addFormats: string[]
   cover: string | null
   analysedAt: string
+  // not asked again until taken back
+  skipped: boolean
+  // why the last decision came back
+  error: string | null
+  // the library's book it looks like
+  bookTitle: string | null
 }
 
 export interface IntakeCandidate {
@@ -312,7 +325,6 @@ export interface IntakeCandidate {
 export interface IntakeDetail extends IntakeEntry {
   changes: { field: string; old: unknown; new: unknown; source: string }[]
   candidates: IntakeCandidate[]
-  bookTitle: string | null
 }
 
 // without import roots only {enabled: false}
@@ -321,6 +333,17 @@ export interface IntakeList {
   progress?: IntakeProgress
   total?: number
   counts?: { bulk: number; review: number; unsure: number; none: number }
+  // what „Alle N übernehmen“ takes of the filter, how many of them unsure
+  takeable?: number
+  unsure?: number
+  skipped?: number
+  // the newest entry: a bulk decision stops there
+  last?: number
+  // decided, waiting for their job
+  pending?: number
+  threshold?: number | null
+  // the next page is behind this path
+  next?: string | null
   entries?: IntakeEntry[]
 }
 
@@ -573,10 +596,12 @@ export const api = {
   metadataStatus: () => request<MetadataStatus>("/api/metadata/status"),
   importStatus: () => request<ImportStatus>("/api/import"),
   importRepair: () => request<ImportRepairReview>("/api/import/repair"),
-  intake: (p: { band?: string; duplicates?: boolean; offset: number; limit: number }) => {
-    const q = new URLSearchParams({ offset: String(p.offset), limit: String(p.limit) })
+  intake: (p: IntakeFilter & { after?: string; limit: number }) => {
+    const q = new URLSearchParams({ limit: String(p.limit) })
     if (p.band) q.set("band", p.band)
     if (p.duplicates !== undefined) q.set("duplicates", String(p.duplicates))
+    if (p.skipped) q.set("skipped", "true")
+    if (p.after) q.set("after", p.after)
     return request<IntakeList>(`/api/intake?${q}`)
   },
   intakeEntry: (id: number) => request<IntakeDetail>(`/api/intake/${id}`),
@@ -722,6 +747,16 @@ export interface PrivateTagsChange {
 }
 
 export const write = {
+  // the Eingang: entries by id (one entry's accept with a candidate or edited
+  // values), or all of a filter
+  intakeDecide: (body: {
+    decision: IntakeDecision
+    target: { ids: number[] } | { query: IntakeFilter; last: number; expect: number }
+    candidate?: number
+    title?: string
+    authors?: string[]
+  }) => request<{ jobId?: string | null; total: number }>("/api/intake/decide", { method: "POST", ...json(body) }),
+  intakeThreshold: (value: number | null) => request<{ threshold: number | null }>("/api/intake/threshold", { method: "POST", ...json({ value }) }),
   // a backlog import run of a folder: a dry run or the import itself
   startImport: (path: string, dryRun: boolean, limit: number) =>
     request<ImportRun>("/api/import", { method: "POST", ...json({ path, dryRun, limit }) }),

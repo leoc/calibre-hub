@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { analysedShare, authorsText, badgeText, candidateSource, noteTexts, reasonText, uniqueEntries } from "./intake"
+import { analysedShare, authorsText, badgeText, candidateSource, intakeFilter, noteTexts, reasonText, ringLabel, takeable, uniqueEntries } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -28,10 +28,40 @@ const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   addFormats: [],
   cover: null,
   analysedAt: "2026-11-06T20:00:00Z",
+  skipped: false,
+  error: null,
   changes: [],
   candidates: [],
   bookTitle: null,
   ...extra,
+})
+
+describe("ringLabel", () => {
+  it("reads out what the badge says", () => {
+    expect(ringLabel(entry({}))).toBe("98 %, Sicher")
+    expect(ringLabel(entry({ confidence: 70, band: "review", action: "duplicate" }))).toBe("70 %, Dublette?")
+    expect(ringLabel(entry({ confidence: null, band: null }))).toBe("Fehlgeschlagen")
+  })
+})
+
+describe("takeable", () => {
+  it("leaves failed files, possible duplicates and skipped entries to Arthur", () => {
+    expect(takeable(entry({}), "all")).toBe(true)
+    expect(takeable(entry({ action: "addFormats" }), "all")).toBe(true)
+    expect(takeable(entry({ action: "duplicate" }), "all")).toBe(false)
+    expect(takeable(entry({ status: "failed" }), "all")).toBe(false)
+    expect(takeable(entry({ skipped: true }), "all")).toBe(false)
+    expect(takeable(entry({ skipped: true }), "skipped")).toBe(true)
+  })
+})
+
+describe("intakeFilter", () => {
+  it("is what the list and a bulk decision ask for", () => {
+    expect(intakeFilter("all", "all")).toEqual({ band: undefined, duplicates: undefined, skipped: undefined })
+    expect(intakeFilter("bulk", "new")).toEqual({ band: "bulk", duplicates: false, skipped: undefined })
+    expect(intakeFilter("unsure", "duplicates")).toEqual({ band: "unsure", duplicates: true, skipped: undefined })
+    expect(intakeFilter("all", "skipped")).toEqual({ band: undefined, duplicates: undefined, skipped: true })
+  })
 })
 
 describe("badgeText", () => {

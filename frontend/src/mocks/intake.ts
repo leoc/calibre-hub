@@ -109,6 +109,8 @@ function entry(seed: Seed, id: number): IntakeDetail {
     addFormats: [],
     cover: seed.cover ? `/api/intake/${id}/cover?v=1` : null,
     analysedAt: "2026-11-06T20:00:00Z",
+    skipped: false,
+    error: null,
     changes: [],
     candidates,
     bookTitle: seed.bookTitle ?? null,
@@ -124,28 +126,91 @@ const scans: Seed[] = Array.from({ length: 150 }, (_, i) => ({
   decided: "unsure",
 }))
 
-const ENTRIES = [...SEEDS, ...scans].map((s, i) => entry(s, i + 1)).sort((a, b) => a.path.toLowerCase().localeCompare(b.path.toLowerCase()))
+let ENTRIES = [...SEEDS, ...scans].map((s, i) => entry(s, i + 1)).sort((a, b) => a.path.toLowerCase().localeCompare(b.path.toLowerCase()))
+const IDS = ENTRIES.map((e) => e.id)
+const LAST = Math.max(...IDS)
+
+// what the mock hub was asked, for the scenarios (window.__intake)
+const asked: { decision: string; ids: number[]; title?: string; authors?: string[]; query?: unknown; expect?: number }[] = []
+let threshold: number | null = null
+// a job still running: the entry comes back with an error at the next look
+let waiting: { entry: IntakeDetail; error: string } | null = null
+if (typeof window !== "undefined") (window as unknown as { __intake: unknown }).__intake = asked
+
+const inFilter = (q: { band?: string | null; duplicates?: string | boolean | null; skipped?: string | boolean | null }) => {
+  const dup = q.duplicates === null || q.duplicates === undefined ? null : String(q.duplicates) === "true"
+  const skipped = String(q.skipped) === "true"
+  return ENTRIES.filter((e) => (dup === null || (e.action !== "add") === dup) && (!skipped || e.skipped) && (!q.band || (e.band ?? "none") === q.band))
+}
+
+const takeable = (list: IntakeDetail[], skipped: boolean) => list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && (skipped || !e.skipped))
+
+const limitOf = (q: URLSearchParams) => Number(q.get("limit") ?? 100)
 
 const COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="#475569"/></svg>`
 
 export const intakeHandlers = [
   http.get("/api/intake", ({ request }) => {
     const q = new URL(request.url).searchParams
-    const duplicates = q.get("duplicates")
-    const kind = ENTRIES.filter((e) => duplicates === null || (e.action !== "add") === (duplicates === "true"))
-    const wanted = q.get("band")
-    const list = wanted ? kind.filter((e) => (e.band ?? "none") === wanted) : kind
-    const offset = Number(q.get("offset") ?? 0)
-    const limit = Number(q.get("limit") ?? 100)
+    const filter = { duplicates: q.get("duplicates"), skipped: q.get("skipped") }
+    const pending = waiting ? 1 : 0
+    if (waiting && limitOf(q) > 1) {
+      // the job got to it: back in the list, with the reason
+      waiting.entry.error = waiting.error
+      ENTRIES = [...ENTRIES, waiting.entry].sort((a, b) => IDS.indexOf(a.id) - IDS.indexOf(b.id))
+      waiting = null
+    }
+    const kind = inFilter(filter)
+    const list = inFilter({ ...filter, band: q.get("band") })
+    const after = q.get("after")
+    const from = after ? list.findIndex((e) => e.path.toLowerCase().localeCompare(after.toLowerCase()) > 0) : 0
+    const rest = from < 0 ? [] : list.slice(from)
+    const limit = limitOf(q)
+    const page = rest.slice(0, limit)
     const analysed = ENTRIES.filter((e) => e.status === "analysed").length
     const count = (b: string) => kind.filter((e) => (e.band ?? "none") === b).length
+    const take = takeable(list, q.get("skipped") === "true")
+    const mode = typeof localStorage === "undefined" ? null : localStorage.getItem("hub.mock.intake")
     return HttpResponse.json({
       enabled: true,
-      progress: { state: "analysing", total: 1451, done: ENTRIES.length, analysed, current: "Mader - Biology - Inquiry into Life 9e HQ.pdf" },
+      progress: { state: mode ?? "analysing", total: 1451 - (159 - ENTRIES.length), done: ENTRIES.length, analysed, current: "Mader - Biology - Inquiry into Life 9e HQ.pdf" },
       total: list.length,
       counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: count("none") },
-      entries: list.slice(offset, offset + limit),
+      takeable: take.length,
+      unsure: take.filter((e) => e.band === "unsure").length,
+      skipped: ENTRIES.filter((e) => e.skipped).length,
+      last: LAST,
+      pending,
+      threshold,
+      next: rest.length > limit ? page[page.length - 1].path : null,
+      entries: page,
     })
+  }),
+  http.post("/api/intake/decide", async ({ request }) => {
+    const body = (await request.json()) as {
+      decision: string
+      target: { ids?: number[]; query?: { band?: string; duplicates?: boolean; skipped?: boolean }; expect?: number }
+      title?: string
+      authors?: string[]
+    }
+    const { decision, target } = body
+    const ids = target.ids ?? takeable(inFilter(target.query ?? {}), target.query?.skipped === true).map((e) => e.id)
+    if (target.expect !== undefined && target.expect !== ids.length) {
+      return HttpResponse.json({ error: "the query matches another number", field: "target", expected: target.expect, found: ids.length }, { status: 409 })
+    }
+    asked.push({ decision, ids, title: body.title, authors: body.authors, query: target.query, expect: target.expect })
+    if (decision === "skip" || decision === "unskip") {
+      for (const e of ENTRIES) if (ids.includes(e.id)) e.skipped = decision === "skip"
+      return HttpResponse.json({ total: ids.length })
+    }
+    const failing = ENTRIES.find((e) => ids.includes(e.id) && e.name === "kaputt.pdf")
+    if (failing) waiting = { entry: failing, error: "calibre kann die Datei nicht lesen" }
+    ENTRIES = ENTRIES.filter((e) => !ids.includes(e.id))
+    return HttpResponse.json({ jobId: "intake-job", total: ids.length }, { status: 202 })
+  }),
+  http.post("/api/intake/threshold", async ({ request }) => {
+    threshold = ((await request.json()) as { value: number | null }).value
+    return HttpResponse.json({ threshold })
   }),
   http.get("/api/intake/:id/cover", () => new HttpResponse(COVER, { headers: { "Content-Type": "image/svg+xml" } })),
   http.get("/api/intake/:id", ({ params }) => {

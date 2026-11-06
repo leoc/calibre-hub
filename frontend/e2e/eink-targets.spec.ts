@@ -124,7 +124,11 @@ test("E-Ink: the Eingang and its drawer", async ({ page }) => {
   await expect(bar.locator("div")).toHaveCSS("background-color", "rgb(0, 0, 0)")
   await expect(bar.locator("div")).toHaveCSS("transition-duration", "0s")
   expect(await smallTargets(page)).toEqual([])
-  await page.locator("[data-entry]").filter({ hasText: "Functional Analysis" }).getByRole("button").first().click()
+  // the band's color doesn't show here: the text stays, without a dot or ring
+  const row = page.locator("[data-entry]").filter({ hasText: "Functional Analysis" })
+  await expect(row.getByText("98 % · Sicher", { exact: true })).toBeVisible()
+  await expect(row.getByRole("img")).toBeHidden()
+  await row.getByRole("button").first().click()
   await expect(page.getByRole("list", { name: "Kandidaten" }).getByRole("listitem").first()).toBeVisible()
   expect(await smallTargets(page, "[role=dialog]")).toEqual([])
   await expect(page.getByRole("dialog").locator("kbd:visible")).toHaveCount(0)

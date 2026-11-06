@@ -1,5 +1,5 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query"
-import { api, type ConfidenceBand, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeProgress } from "./api"
+import { api, type ConfidenceBand, type IntakeDetail, type IntakeEntry, type IntakeFilter, type IntakeKind, type IntakeProgress } from "./api"
 import { sourceLabel } from "./metadata"
 import { t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
@@ -9,33 +9,32 @@ export const INTAKE_PAGE = 100
 
 export type IntakeBand = ConfidenceBand | "none" | "all"
 
-const params = (band: IntakeBand, kind: IntakeKind, offset: number, limit: number) => ({
+export const intakeFilter = (band: IntakeBand, kind: IntakeKind): IntakeFilter => ({
   band: band === "all" ? undefined : band,
-  duplicates: kind === "all" ? undefined : kind === "duplicates",
-  offset,
-  limit,
+  duplicates: kind === "all" || kind === "skipped" ? undefined : kind === "duplicates",
+  skipped: kind === "skipped" ? true : undefined,
 })
 
 // Progress and counts, polled without touching the list: it stays where it
 // is while the analysis works (on E-Ink nothing else repaints either)
-export const intakeStatusQuery = (kind: IntakeKind = "all") =>
+export const intakeStatusQuery = (band: IntakeBand = "all", kind: IntakeKind = "all") =>
   queryOptions({
-    queryKey: ["intake-status", kind],
-    queryFn: () => api.intake(params("all", kind, 0, 1)),
+    queryKey: ["intake-status", band, kind],
+    queryFn: () => api.intake({ ...intakeFilter(band, kind), limit: 1 }),
     staleTime: 5_000,
     refetchInterval: (q) => {
       const state = q.state.data?.progress?.state
       if (!state) return false
-      return state === "analysing" || state === "scanning" ? 5_000 : 60_000
+      return q.state.data?.pending || state === "analysing" || state === "scanning" ? 5_000 : 60_000
     },
   })
 
 export const intakeListQuery = (band: IntakeBand, kind: IntakeKind) =>
   infiniteQueryOptions({
     queryKey: ["intake-list", band, kind],
-    queryFn: ({ pageParam }) => api.intake(params(band, kind, pageParam, INTAKE_PAGE)),
-    initialPageParam: 0,
-    getNextPageParam: (last, _, offset) => (offset + (last.entries?.length ?? 0) < (last.total ?? 0) ? offset + INTAKE_PAGE : undefined),
+    queryFn: ({ pageParam }) => api.intake({ ...intakeFilter(band, kind), after: pageParam, limit: INTAKE_PAGE }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next ?? undefined,
     staleTime: 30_000,
   })
 
@@ -51,6 +50,10 @@ export function uniqueEntries(pages: { entries?: IntakeEntry[] }[]): IntakeEntry
 
 export const entryTitle = (e: IntakeEntry) => e.proposal?.title ?? e.name
 
+// what a bulk decision of this filter takes: it leaves failed files and what
+// looks like a book of the library to Arthur, and what he skipped
+export const takeable = (e: IntakeEntry, kind: IntakeKind) => e.status === "analysed" && e.action !== "duplicate" && (kind === "skipped" || !e.skipped)
+
 const authorName = (name: string) => (name === "Unknown" ? t("intake.unknownAuthor") : name)
 
 export const authorsText = (authors: string[] | null | undefined) =>
@@ -58,11 +61,18 @@ export const authorsText = (authors: string[] | null | undefined) =>
 
 const BAND_TAG: Record<ConfidenceBand, MessageKey> = { bulk: "intake.tag.bulk", review: "intake.tag.review", unsure: "intake.tag.unsure" }
 
+const badgeTag = (e: IntakeEntry, band: ConfidenceBand, marked: boolean) => (marked && e.action !== "add" ? t("intake.tag.duplicate") : t(BAND_TAG[band]))
+
 // sure, to check or unsure, or in the list a book that may be there already
 export function badgeText(e: IntakeEntry, marked = true): string {
   if (e.confidence == null || e.band == null) return t("intake.tag.failed")
-  const tag = marked && e.action !== "add" ? t("intake.tag.duplicate") : t(BAND_TAG[e.band])
-  return t("intake.badge", { value: e.confidence, tag })
+  return t("intake.badge", { value: e.confidence, tag: badgeTag(e, e.band, marked) })
+}
+
+// the same for the ring on a phone, read out
+export function ringLabel(e: IntakeEntry): string {
+  if (e.confidence == null || e.band == null) return t("intake.tag.failed")
+  return t("intake.ring", { value: e.confidence, tag: badgeTag(e, e.band, true) })
 }
 
 // why the confidence is what it is, from who decided

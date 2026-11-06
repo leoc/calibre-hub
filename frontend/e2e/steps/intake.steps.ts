@@ -51,15 +51,151 @@ Then("the analysis bar stands at {int} percent", async ({ page }, percent: numbe
 
 Then("the row of {string} shows {string}, then {string} and {string}", async ({ page }, file: string, badge: string, title: string, authors: string) => {
   const r = rows(page).filter({ has: page.getByRole("button", { name: file, exact: true }) })
-  await expect(r.getByText(badge, { exact: true })).toBeVisible()
+  // on a phone the ring says it
+  const [value, tag] = badge.split(" · ")
+  const wide = (page.viewportSize()?.width ?? 0) >= 640
+  await expect(wide ? r.getByText(badge, { exact: true }) : r.getByRole("img", { name: `${value}, ${tag}` })).toBeVisible()
   await expect(r.getByRole("button", { name: file, exact: true })).toHaveClass(/font-medium/)
-  const lines = await r.locator("div > div").allInnerTexts()
-  expect(lines.slice(-2)).toEqual([title, authors])
+  const lines = await r.locator("[data-row-text] > div").allInnerTexts()
+  expect(lines.slice(1, 3)).toEqual([title, authors])
 })
 
-Then("nothing can be decided yet", async ({ page }) => {
-  await expect(page.getByRole("button", { name: /Übernehmen|Papierkorb/ })).toHaveCount(0)
+Then("a row has no checkbox", async ({ page }) => {
   await expect(list(page).getByRole("checkbox")).toHaveCount(0)
+})
+
+type Asked = { decision: string; ids: number[]; title?: string; authors?: string[] }
+const asked = (page: Page) => page.evaluate(() => (window as unknown as { __intake: Asked[] }).__intake)
+const askedTo = async (page: Page, decision: string) => (await asked(page)).filter((a) => a.decision === decision).flatMap((a) => a.ids).length
+
+for (const word of ["entry", "entries"]) {
+  Then(`the hub was asked to {string} {int} ${word}`, async ({ page }, decision: string, n: number) => {
+    await expect.poll(() => askedTo(page, decision)).toBe(n)
+  })
+}
+
+Then("the hub wasn't asked anything", async ({ page }) => {
+  expect(await asked(page)).toEqual([])
+})
+
+Then("the hub was asked to accept the title {string} by {string}", async ({ page }, title: string, author: string) => {
+  await expect.poll(async () => (await asked(page)).at(-1)).toMatchObject({ decision: "accept", title, authors: [author] })
+})
+
+Then("the row {string} has the icons {string} and {string} at {int} px", async ({ page }, title: string, a: string, b: string, size: number) => {
+  // touch screens get the Button's larger icon size
+  const touch = (page.viewportSize()?.width ?? 0) < 640
+  for (const name of [a, b]) {
+    const button = row(page, title).getByRole("button", { name, exact: true })
+    await expect(button).toHaveCSS("height", touch ? "44px" : `${size}px`)
+    await expect(button).toHaveCSS("width", touch ? "44px" : `${size}px`)
+  }
+  await expect(row(page, title).getByRole("button", { name: b, exact: true })).toHaveClass(/text-destructive/)
+})
+
+When("I press {string} on the row {string}", async ({ page }, name: string, title: string) => {
+  await row(page, title).getByRole("button", { name, exact: true }).click()
+})
+
+Then("the row {string} is gone", async ({ page }, title: string) => {
+  await expect(row(page, title)).toHaveCount(0)
+})
+
+Then("no dialog asks anything", async ({ page }) => {
+  await expect(page.getByRole("dialog").filter({ hasText: "Trotzdem" })).toHaveCount(0)
+})
+
+Then("a dialog asks {string}", async ({ page }, text: string) => {
+  await expect(page.getByRole("dialog").getByText(text, { exact: true })).toBeVisible()
+})
+
+When("I press the dialog's {string}", async ({ page }, name: string) => {
+  await page.getByRole("dialog").getByRole("button", { name, exact: true }).click()
+})
+
+Then("the dialog's {string} is disabled", async ({ page }, name: string) => {
+  await expect(page.getByRole("dialog").getByRole("button", { name, exact: true })).toBeDisabled()
+})
+
+Then("the list says {string}", async ({ page }, text: string) => {
+  await expect(page.getByText(text, { exact: true })).toBeVisible()
+})
+
+Then("the button {string} is disabled", async ({ page }, name: string) => {
+  await expect(page.getByRole("button", { name, exact: true })).toBeDisabled()
+})
+
+Then("the button {string} is enabled", async ({ page }, name: string) => {
+  await expect(page.getByRole("button", { name, exact: true })).toBeEnabled()
+})
+
+Then("the row {string} links {string} to book {int} after {string}", async ({ page }, title: string, link: string, id: number, before: string) => {
+  const a = row(page, title).getByRole("link", { name: link, exact: true })
+  await expect(a).toHaveAttribute("href", `/books/${id}`)
+  await expect(row(page, title).getByText(`${before} ${link}`)).toBeVisible()
+})
+
+Then("the row {string} says {string}", async ({ page }, title: string, text: string) => {
+  await expect(row(page, title).getByText(text, { exact: true })).toBeVisible()
+})
+
+Then("the row {string} can't be accepted", async ({ page }, title: string) => {
+  await expect(row(page, title).getByRole("button", { name: "Übernehmen", exact: true })).toBeDisabled()
+})
+
+Then("the drawer has the buttons {string}, {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string, d: string) => {
+  const names = await drawer(page).locator("button:has(kbd)").allInnerTexts()
+  expect(names.map((n) => n.replace(/\s+/g, " ").trim())).toEqual([a, b, c, d])
+})
+
+
+Then("the button {string} is outlined in red", async ({ page }, name: string) => {
+  const button = drawer(page).getByRole("button", { name, exact: true })
+  await expect(button).toHaveClass(/border-destructive/)
+  await expect(button).toHaveClass(/text-destructive/)
+  await expect(button).toHaveCSS("background-color", "oklch(1 0 0)")
+})
+
+When("I hold {string} down", async ({ page }, key: string) => {
+  await page.keyboard.down(key)
+  await page.keyboard.down(key)
+  await page.keyboard.up(key)
+})
+
+When("I type {string} as the title", async ({ page }, title: string) => {
+  const input = drawer(page).getByLabel("Titel", { exact: true })
+  await expect(input).toBeFocused()
+  await input.fill("")
+  await page.keyboard.type(title)
+})
+
+When("I set {string} to {string}", async ({ page }, label: string, value: string) => {
+  await page.getByRole("dialog").getByLabel(label).fill(value)
+})
+
+Given("the analysis is {string}", async ({ page }, state: string) => {
+  await page.addInitScript((s) => localStorage.setItem("hub.mock.intake", s), state)
+})
+
+Then("the page says {string}", async ({ page }, text: string) => {
+  await expect(page.getByRole("main").getByText(text, { exact: true })).toBeVisible()
+})
+
+Then("the page says nothing about the analysis", async ({ page }) => {
+  await expect(page.getByRole("main").getByText(/Die Analyse/)).toHaveCount(0)
+})
+
+Then("the row {string} shows the ring {string} in rgb\\({int}, {int}, {int}\\) at {int} px", async ({ page }, title: string, label: string, r: number, g: number, b: number, size: number) => {
+  const ring = row(page, title).getByRole("img", { name: label, exact: true })
+  await expect(ring).toBeVisible()
+  await expect(ring).toHaveCSS("color", `rgb(${r}, ${g}, ${b})`)
+  await expect(ring).toHaveCSS("width", `${size}px`)
+  await expect(row(page, title).getByText(/ % · /)).toBeHidden()
+})
+
+Then("the row {string} shows no ring and a dot in rgb\\({int}, {int}, {int}\\)", async ({ page }, title: string, r: number, g: number, b: number) => {
+  await expect(row(page, title).getByRole("img")).toBeHidden()
+  await expect(row(page, title).locator("[data-slot=badge] span")).toHaveCSS("background-color", `rgb(${r}, ${g}, ${b})`)
 })
 
 Then("the filter {string} offers {string}", async ({ page }, label: string, option: string) => {
