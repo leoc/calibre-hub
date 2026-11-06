@@ -28,9 +28,13 @@ module CalibreHub
     record FollowupHook, name : String, cursor : String, events : String, jobs : String? = nil, queue : String? = nil
 
     # A decision of the Eingang in place of the rule flow: the values to
-    # write (empty: as in the file), the flow's decision they come from, and
-    # that the book is wanted although it looks like one the library has
-    record Chosen, values : Hash(String, JSON::Any), decision : Meta::Flow::Decision?, force : Bool = false
+    # write (empty: as in the file), the flow's decision they come from, that
+    # the book is wanted although it looks like one the library has, that it
+    # is a book of its own even if only a format looks new (fresh: an upload
+    # sent on purpose), and what its source gives it: tags and a category as
+    # {column, value}
+    record Chosen, values : Hash(String, JSON::Any), decision : Meta::Flow::Decision?, force : Bool = false,
+      fresh : Bool = false, tags : Array(String) = [] of String, category : {String, String}? = nil
 
     getter roots : Array(String)
     # the hooks that are on (main.cr)
@@ -510,6 +514,7 @@ module CalibreHub
     # library comes back with the status duplicate, nothing added
     def import(unit : Backlog::Unit, ix : Backlog::Index, chosen : Chosen)
       Backlog.plan(unit, ix)
+      return add(unit, ix, chosen) if chosen.fresh
       case unit.action
       when "addFormats"
         add_formats(unit.book_id.not_nil!, unit, ix)
@@ -518,6 +523,12 @@ module CalibreHub
       else
         add(unit, ix, chosen)
       end
+    end
+
+    # the unit's files as formats of a book chosen by hand
+    def add_to(unit : Backlog::Unit, ix : Backlog::Index, id : Int64)
+      unit.add_formats = unit.files.map(&.format).uniq
+      add_formats(id, unit, ix)
     end
 
     private def add_formats(id : Int64, unit : Backlog::Unit, ix : Backlog::Index)
@@ -662,9 +673,11 @@ module CalibreHub
     # What the Eingang's decision writes: its values and the flow's tags
     def self.chosen_fields(book : Book, chosen : Chosen) : Hash(String, JSON::Any)
       fields = {} of String => JSON::Any
-      tags = chosen.decision.try(&.changes.find { |c| c.field == "tags" })
-      fields["tags"] = tags.new if tags && tags.new.as_a.size > 0
+      flow = chosen.decision.try(&.changes.find { |c| c.field == "tags" }).try(&.new.as_a.map(&.as_s)) || [] of String
+      tags = (chosen.tags + flow).uniq
+      fields["tags"] = JSON.parse(tags.to_json) unless tags.empty?
       fields.merge!(Edit.changes(Meta::Merge.patch(book, chosen.values), book, nil)) unless chosen.values.empty?
+      chosen.category.try { |column, value| fields["##{column}"] = JSON::Any.new(value) }
       fields
     end
 

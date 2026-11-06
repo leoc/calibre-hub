@@ -76,8 +76,10 @@ let
     lib.mapAttrsToList (name: path: { inherit name path; }) handlers
   );
   # a root's parent: the Eingang moves files to <root>-papierkorb next to the
-  # root, with one rename, which fails between two mounts of ReadWritePaths
-  writable = lib.optional (cfg.inbox.path != null) (toString cfg.inbox.path)
+  # root, with one rename, which fails between two mounts of ReadWritePaths.
+  # The same goes for the inbox; uploads wait in the state directory, which
+  # is writable anyway, and their trash folder lies there too.
+  writable = lib.optional (cfg.inbox.path != null) (dirOf (toString cfg.inbox.path))
     ++ map (root: dirOf (toString root)) cfg.backlogImport.roots
     ++ lib.optional cfg.leseliste.enable (toString cfg.leseliste.target)
     ++ lib.optionals cfg.leseliste.enable (lib.mapAttrsToList (_: u: toString u.leseliste.target) ownTargets);
@@ -306,14 +308,21 @@ in
         type = types.nullOr types.path;
         default = null;
         description = ''
-          Folder whose files are imported. Subfolders become the category
-          (A/B -> "A.B") and tags (A, B); tags embedded in the files are dropped.
+          Folder whose files go through the Eingang. Subfolders become the
+          category (A/B -> "A.B") and tags (A, B); tags embedded in the files
+          are dropped. From the threshold of the source Inbox on (90 unless
+          changed in the Eingang) a book goes to the library by itself, the
+          others wait in the Eingang.
+
+          What the Eingang throws away moves to `<path>-papierkorb` next to
+          the folder: the hub's group needs write access to the folder's
+          parent, the service may write there.
         '';
       };
       stableSeconds = mkOption {
         type = types.ints.positive;
         default = 120;
-        description = "A file is imported once it has not changed for this long.";
+        description = "A file is analysed once it has not changed for this long.";
       };
     };
 

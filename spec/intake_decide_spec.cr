@@ -551,7 +551,7 @@ describe "the threshold" do
       db.exec "update intake_entries set confidence = 99"
       db.exec "update intake_entries set action = 'duplicate' where path like '%x.pdf'"
 
-      intake.threshold = 90
+      intake.set_threshold("backlog", 90)
       settled(intake)
       intake.threshold.should eq 90
       fake.added.should eq ["Frank Herbert - Dune.pdf"]
@@ -563,17 +563,17 @@ describe "the threshold" do
     tmpdir do |_, root|
       write(File.join(root, "Frank Herbert - Dune.pdf"), pdf("dune"))
       intake, fake, _, _ = setup(root)
-      intake.threshold = 60
+      intake.set_threshold("backlog", 60)
       intake.run_once
       settled(intake)
       fake.added.size.should eq 1
 
       write(File.join(root, "Jane Doe - Zwei.pdf"), pdf("zwei"))
-      intake.threshold = nil
+      intake.set_threshold("backlog", nil)
       intake.run_once
       id = id_of(intake, "Jane Doe - Zwei.pdf")
       decide(intake, [id], "skip")
-      intake.threshold = 60
+      intake.set_threshold("backlog", 60)
       settled(intake)
       fake.added.size.should eq 1
       entries(intake).size.should eq 1
@@ -1348,6 +1348,369 @@ describe CalibreHub::RepairRecheck do
       recheck.waiting?.should be_false
       intake.library_list["recheck"].raw.should be_nil
       db.query_one("select count(*) from import_rechecks", as: Int64).should eq 1
+    end
+  end
+end
+
+# The Eingang with all its sources: folders below dir
+private def sources(dir : String, fake = FakeCalibre.new, shelf : String? = nil, db = state_db)
+  calibre = fake.calibre
+  writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
+  root = File.join(dir, "backlog")
+  Dir.mkdir_p(root)
+  Dir.mkdir_p(File.join(dir, "inbox"))
+  Dir.mkdir_p(File.join(dir, "uploads"))
+  imports = CalibreHub::ImportJobs.new(db, calibre, writer, [root], shelf, retries: 0)
+  intake = Intake.new(db, calibre, imports, shelf, File.join(dir, ".covers"), stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds,
+    inbox: CalibreHub::Inbox.new(File.join(dir, "inbox"), 0.seconds), uploads: CalibreHub::Inbox.new(File.join(dir, "uploads"), 0.seconds))
+  intake.category_column = "kategorie"
+  intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
+  intake.reader = ->(path : String, _format : String) do
+    Meta::FileMeta::Info.new(Meta::Record.new, [] of String, front: "", format: "PDF").as(Meta::FileMeta::Info?)
+  end
+  {intake, fake, db, imports}
+end
+
+# what POST /api/books hands over
+private def upload(intake : Intake, dir : String, name : String, content : String, tags = [] of String, kategorie : String? = nil, force = false) : String
+  tmp = File.join(dir, "upload-tmp")
+  File.write(tmp, content)
+  intake.stage(CalibreHub::Writer::Upload.new(tmp, name, tags, kategorie, force, nil), "arthur")["id"].as_s
+end
+
+describe "the sources of the Eingang" do
+  it "keeps the inbox's folders for later and writes nothing before a decision" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Roman/Krimi/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, fake, _, _ = sources(dir)
+      intake.run_fast.should eq 1
+      fake.added.should be_empty
+      e = entries(intake).first
+      e["origin"].should eq "inbox"
+      e["folder"].should eq "Roman/Krimi"
+      File.exists?(File.join(dir, "inbox/Roman/Krimi/Agatha Christie - Poirot.pdf")).should be_true
+      # the same file isn't looked at twice
+      intake.run_fast.should eq 0
+    end
+  end
+
+  it "takes the inbox and uploads from 90 on and leaves the backlog alone until someone says so" do
+    tmpdir do |dir, _|
+      intake, _, _, _ = sources(dir)
+      intake.thresholds.should eq({"backlog" => nil, "inbox" => 90, "upload" => 90})
+      intake.set_threshold("inbox", nil)
+      intake.set_threshold("upload", 70)
+      intake.threshold("inbox").should be_nil
+      intake.threshold("upload").should eq 70
+      intake.set_threshold("backlog", 95)
+      intake.thresholds.should eq({"backlog" => 95, "inbox" => nil, "upload" => 70})
+      intake.set_threshold("backlog", nil)
+      intake.threshold("backlog").should be_nil
+    end
+  end
+
+  it "lets what is below the source's threshold wait, says so and moves on what is above" do
+    tmpdir do |dir, _|
+      name = "Agatha Christie - Poirot.pdf"
+      write(File.join(dir, "inbox/Roman/Krimi", name), pdf("poirot"))
+      intake, fake, _, _ = sources(dir)
+      intake.run_fast
+      # a clear name is 80: below the default
+      settled(intake)
+      entries(intake).first["confidence"].should eq 80
+      fake.added.should be_empty
+
+      intake.set_threshold("inbox", 80)
+      settled(intake)
+      fake.added.should eq [name]
+      id = fake.books.keys.max
+      fake.books[id]["tags"].as_a.map(&.as_s).sort!.should eq ["Krimi", "Roman"]
+      fake.books[id]["#kategorie"].should eq "Roman.Krimi"
+      entries(intake).should be_empty
+      today = Time.local.to_s("%F")
+      File.exists?(File.join(dir, "inbox/_imported", today, "Roman/Krimi", name)).should be_true
+      File.exists?(File.join(dir, "inbox/Roman/Krimi", name)).should be_false
+      # dropped again it is looked at again: nothing remembers the old path
+      write(File.join(dir, "inbox/Roman/Krimi", name), pdf("poirot"))
+      intake.set_threshold("inbox", nil)
+      intake.run_fast.should eq 1
+    end
+  end
+
+  it "leaves the sources' thresholds to themselves" do
+    tmpdir do |dir, root|
+      write(File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf"), pdf("dune"))
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, fake, _, _ = sources(dir)
+      intake.set_threshold("inbox", 60)
+      intake.run_once
+      intake.run_fast
+      settled(intake)
+      fake.added.should eq ["Agatha Christie - Poirot.pdf"]
+      entries(intake).map(&.["origin"]).should eq ["backlog"]
+    end
+  end
+
+  it "goes on with the inbox and uploads while the analysis is off or a repair runs" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, _, _, _ = sources(dir)
+      intake.analysis = false
+      intake.busy = -> { true }
+      upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      intake.run_fast.should eq 2
+      entries(intake).map(&.["origin"].as_s).sort!.should eq ["inbox", "upload"]
+    end
+  end
+
+  it "skips a folder it couldn't move a file out of, and a file still being copied" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Privat/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      File.chmod(File.join(dir, "inbox/Privat"), 0o555)
+      intake, _, _, _ = sources(dir)
+      begin
+        intake.run_fast.should eq 0
+      ensure
+        File.chmod(File.join(dir, "inbox/Privat"), 0o755)
+      end
+      box = CalibreHub::Inbox.new(File.join(dir, "inbox"), 1.hour)
+      box.settled?(Time.utc.to_unix).should be_false
+      box.settled?((Time.utc - 2.hours).to_unix).should be_true
+    end
+  end
+
+  it "doesn't look into the inbox's own folders, at any depth" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/_imported/2026-11-01/Agatha Christie - Poirot.pdf"), pdf("a"))
+      write(File.join(dir, "inbox/Roman/_alt/Frank Herbert - Dune.pdf"), pdf("b"))
+      write(File.join(dir, "inbox/.tmp/Isaac Asimov - Foundation.pdf"), pdf("c"))
+      intake, _, _, _ = sources(dir)
+      intake.run_fast.should eq 0
+    end
+  end
+
+  it "moves what is no book out of the inbox, with a word in the log" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Roman/kaputt.pdf"), "no pdf at all" * 400)
+      write(File.join(dir, "inbox/notes.mp3"), "x")
+      intake, _, _, _ = sources(dir)
+      intake.run_fast.should eq 0
+      File.exists?(File.join(dir, "inbox/_failed", Time.local.to_s("%F"), "Roman/kaputt.pdf")).should be_true
+      # not a book format: stays what and where it is
+      File.exists?(File.join(dir, "inbox/notes.mp3")).should be_true
+    end
+  end
+
+  it "moves an exact copy to _duplicates by the inbox's rules, not to the trash folder" do
+    tmpdir do |dir, _|
+      content = pdf("dune")
+      shelf = library(dir, {1_i64 => {"Dune (1)", "Dune", "PDF", content}})
+      write(File.join(dir, "inbox/Roman/kopie.pdf"), content)
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Dune", ["Frank Herbert"])
+      intake, _, _, _ = sources(dir, fake, shelf)
+      intake.run_fast
+      entries(intake).should be_empty
+      File.exists?(File.join(dir, "inbox/_duplicates", Time.local.to_s("%F"), "Roman/kopie.pdf")).should be_true
+      Dir.exists?(File.join(dir, "inbox-papierkorb")).should be_false
+    end
+  end
+
+  it "throws an inbox file and an upload into the trash folder next to their root" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Roman/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, _, _, _ = sources(dir)
+      up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      intake.run_fast
+      wait(intake, decide(intake, entries(intake).map(&.["id"].as_i64), "trash"))
+      File.exists?(File.join(dir, "inbox-papierkorb/Roman/Agatha Christie - Poirot.pdf")).should be_true
+      File.exists?(File.join(dir, "uploads-papierkorb", up, "Frank Herbert - Dune.pdf")).should be_true
+      intake.upload_state(up).not_nil!["status"].should eq "trashed"
+    end
+  end
+
+  it "filters by source and takes only that source's books" do
+    tmpdir do |dir, root|
+      write(File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf"), pdf("dune"))
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, fake, _, _ = sources(dir)
+      intake.run_once
+      intake.run_fast
+      all = intake.list
+      all["origins"].as_h.transform_values(&.as_i).should eq({"backlog" => 1, "inbox" => 1})
+      only = intake.list(origin: "inbox")
+      only["total"].should eq 1
+      only["takeable"].should eq 1
+      only["entries"].as_a.first["origin"].should eq "inbox"
+      # the numbers of the whole list stay, for the filter to stay
+      only["origins"].as_h.size.should eq 2
+      expect_raises(CalibreHub::Edit::Invalid) { intake.list(origin: "nowhere") }
+
+      target = {query: {origin: "inbox"}, last: all["last"].as_i64, expect: 1}
+      r = intake.decide(JSON.parse({decision: "accept", target: target}.to_json).as_h)[1]
+      wait(intake, r)
+      fake.added.should eq ["Agatha Christie - Poirot.pdf"]
+      entries(intake).map(&.["origin"]).should eq ["backlog"]
+    end
+  end
+end
+
+describe "an upload" do
+  it "waits in the Eingang below the threshold and says so, with what the form said" do
+    tmpdir do |dir, _|
+      intake, fake, _, _ = sources(dir)
+      up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"), ["Neu"], "Roman.SF")
+      state = intake.upload_state(up).not_nil!
+      state["status"].should eq "checking"
+      state["name"].should eq "Frank Herbert - Dune.pdf"
+      intake.run_fast.should eq 1
+      fake.added.should be_empty
+
+      state = intake.upload_state(up).not_nil!
+      state["status"].should eq "waiting"
+      state["confidence"].should eq 80
+      state["threshold"].should eq 90
+      e = entries(intake).first
+      e["origin"].should eq "upload"
+      e["folder"].raw.should be_nil
+      state["entryId"].should eq e["id"]
+
+      wait(intake, decide(intake, [e["id"].as_i64], "accept"))
+      id = fake.books.keys.max
+      fake.books[id]["tags"].as_a.map(&.as_s).should eq ["Neu"]
+      fake.books[id]["#kategorie"].should eq "Roman.SF"
+      state = intake.upload_state(up).not_nil!
+      state["status"].should eq "imported"
+      state["book"]["id"].should eq id
+      # never deleted, also not by being taken
+      File.exists?(File.join(dir, "uploads/_imported", Time.local.to_s("%F"), up, "Frank Herbert - Dune.pdf")).should be_true
+    end
+  end
+
+  it "reaches the library by itself at or above the threshold" do
+    tmpdir do |dir, _|
+      intake, fake, _, _ = sources(dir)
+      intake.set_threshold("upload", 80)
+      up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      intake.run_fast
+      settled(intake)
+      fake.added.should eq ["Frank Herbert - Dune.pdf"]
+      intake.upload_state(up).not_nil!["status"].should eq "imported"
+    end
+  end
+
+  it "takes file types the backlog's scan wouldn't, the proposal from the name" do
+    tmpdir do |dir, _|
+      intake, _, _, _ = sources(dir)
+      up = upload(intake, dir, "Frank Herbert - Dune.html", "<html>short</html>")
+      intake.run_fast
+      intake.upload_state(up).not_nil!["status"].should eq "waiting"
+    end
+  end
+
+  it "refuses what no book can be, before anything is kept" do
+    tmpdir do |dir, _|
+      intake, _, _, _ = sources(dir)
+      expect_raises(CalibreHub::Writer::Unsupported) { upload(intake, dir, "evil.exe", "x") }
+      Dir.children(File.join(dir, "uploads")).should be_empty
+    end
+  end
+
+  it "looks like a book of the library: it asks, whoever sent it can answer" do
+    tmpdir do |dir, _|
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Dune", ["Frank Herbert"], ["EPUB"])
+      intake, _, _, _ = sources(dir, fake)
+      up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      intake.set_threshold("upload", 60)
+      intake.run_fast
+      settled(intake)
+      fake.added.should be_empty
+      state = intake.upload_state(up).not_nil!
+      state["status"].should eq "duplicate"
+      state["duplicates"].as_a.first["id"].should eq 1
+      entry = state["entryId"].as_i64
+
+      # as another format of that book
+      body = JSON.parse({target: {ids: [entry]}, decision: "format", book: 1}.to_json).as_h
+      wait(intake, intake.decide(body)[1])
+      fake.books[1_i64]["formats"].as_a.map(&.as_s).sort!.should eq ["EPUB", "PDF"]
+      state = intake.upload_state(up).not_nil!
+      state["status"].should eq "formatAdded"
+      state["book"]["id"].should eq 1
+      entries(intake).should be_empty
+    end
+  end
+
+  it "wants a format's book to exist and only one entry" do
+    tmpdir do |dir, _|
+      intake, _, _, _ = sources(dir)
+      upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      upload(intake, dir, "Isaac Asimov - Foundation.pdf", pdf("found"))
+      intake.run_fast
+      ids = entries(intake).map(&.["id"].as_i64)
+      format = ->(list : Array(Int64), book : Int64) { intake.decide(JSON.parse({target: {ids: list}, decision: "format", book: book}.to_json).as_h) }
+      expect_raises(CalibreHub::Edit::Invalid) { format.call(ids, 1_i64) }
+      expect_raises(CalibreHub::Writer::NotFound) { format.call(ids[0, 1], 999_i64) }
+      entries(intake).size.should eq 2
+    end
+  end
+
+  it "sent on purpose goes in as a book of its own, also next to the same file" do
+    tmpdir do |dir, _|
+      content = pdf("dune")
+      shelf = library(dir, {1_i64 => {"Dune (1)", "Dune", "PDF", content}})
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Dune", ["Frank Herbert"])
+      fake.duplicate_names["Frank Herbert - Dune.pdf"] = 1_i64
+      intake, _, _, _ = sources(dir, fake, shelf)
+      intake.set_threshold("upload", 60)
+      up = upload(intake, dir, "Frank Herbert - Dune.pdf", content, force: true)
+      intake.run_fast
+      settled(intake)
+      fake.added.should eq ["Frank Herbert - Dune.pdf"]
+      state = intake.upload_state(up).not_nil!
+      state["status"].should eq "imported"
+      state["book"]["id"].should_not eq 1
+    end
+  end
+
+  it "is the same file as a book's: it says so and nothing stays in the list" do
+    tmpdir do |dir, _|
+      content = pdf("dune")
+      shelf = library(dir, {1_i64 => {"Dune (1)", "Dune", "PDF", content}})
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Dune", ["Frank Herbert"])
+      intake, _, _, _ = sources(dir, fake, shelf)
+      up = upload(intake, dir, "kopie.pdf", content)
+      intake.run_fast
+      entries(intake).should be_empty
+      state = intake.upload_state(up).not_nil!
+      state["status"].should eq "copy"
+      state["duplicates"].as_a.first["id"].should eq 1
+      File.exists?(File.join(dir, "uploads/_duplicates", Time.local.to_s("%F"), up, "kopie.pdf")).should be_true
+    end
+  end
+
+  it "that was staged when the hub stopped is analysed after the restart" do
+    tmpdir do |dir, _|
+      db = state_db
+      first, _, _, _ = sources(dir, db: db)
+      up = upload(first, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      second, _, _, _ = sources(dir, db: db)
+      second.run_fast.should eq 1
+      second.upload_state(up).not_nil!["status"].should eq "waiting"
+    end
+  end
+
+  it "is gone when its file is" do
+    tmpdir do |dir, _|
+      intake, _, _, _ = sources(dir)
+      up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      File.delete(File.join(dir, "uploads", up, "Frank Herbert - Dune.pdf"))
+      intake.run_fast
+      intake.upload_state(up).not_nil!["status"].should eq "gone"
+      intake.upload_state("nothing").should be_nil
     end
   end
 end

@@ -49,7 +49,9 @@ module CalibreHub
     getter alert_command : String? = ENV["CALIBRE_HUB_ALERT_COMMAND"]?.presence
     getter inbox : String? = ENV["CALIBRE_HUB_INBOX"]?.presence
     getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
-    # folders a backlog import may read (POST /api/import), ':' separated
+    # where uploads wait for the Eingang; by default next to the state DB
+    getter uploads : String = ENV["CALIBRE_HUB_UPLOADS"]?.presence || File.join(File.dirname(File.expand_path(env("CALIBRE_HUB_STATE_DB", "calibre-hub.sqlite"))), "uploads")
+    # folders the Eingang reads old collections from, ':' separated
     getter import_roots : Array(String) = env("CALIBRE_HUB_IMPORT_ROOTS", "").split(':', remove_empty: true).map(&.strip).reject(&.empty?)
     # tag of books whose file name could not be read for sure
     getter import_unsure_tag : String = env("CALIBRE_HUB_IMPORT_UNSURE_TAG", "auto-unsicher").strip.presence || "auto-unsicher"
@@ -294,19 +296,6 @@ module CalibreHub
     end
   end
 
-  def self.watch_inbox(inbox : Inbox, wake : Channel(Nil))
-    spawn do
-      loop do
-        begin
-          wake.send(nil) if inbox.run_once > 0
-        rescue ex
-          STDERR.puts "inbox failed: #{ex.message}"
-        end
-        sleep 30.seconds
-      end
-    end
-  end
-
   # One Hardcover client (token, pause, alerts) for the metadata source and
   # the sync; nil without a token
   def self.hardcover(config : Config, http : Meta::Http, db : DB::Database) : Meta::Hardcover?
@@ -429,7 +418,6 @@ module CalibreHub
     alert = config.alert_command.try { |c| [c] }
     env = {"CALIBRE_HUB_LIBRARY" => config.library || ""}
     dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert), wake)
-    inbox = config.inbox.try { |dir| Inbox.new(dir, calibre, detector, config.category_column, config.inbox_stable) }
 
     auth = Auth.new(config.accounts, config.session_key, lifetime: config.session_days.days, secure: config.secure_cookies)
     Users.new(db).sync(auth.accounts)
@@ -462,13 +450,6 @@ module CalibreHub
     dups.private_tags = private_tags
     # uploads and the inbox look for duplicates the same way as the page
     writer.similar = ->(id : Int64) { dups.similar(id) }
-    inbox.try do |i|
-      i.on_import = ->(id : Int64) do
-        found = dups.similar(id)
-        puts "inbox: ##{id} looks like #{found.map { |b| "##{b.id}" }.join(", ")} (see Duplikate)" unless found.empty?
-      end
-      watch_inbox(i, wake)
-    end
     embedder, convert_jobs = book_files(config, calibre, writer, db, detector, wake)
     progress = Progress.new(db)
     hardcover_sync(config, calibre, db, progress, hardcover)
@@ -478,8 +459,8 @@ module CalibreHub
       epub_fix.watch_events
       puts "epub-fix: EPUBs of added books are repaired"
     end
-    imports = config.import_roots.empty? ? nil : ImportJobs.new(db, calibre, writer, config.import_roots, config.library)
-    imports.try { |i| puts "backlog import: roots #{i.roots.join(", ")}" }
+    imports = ImportJobs.new(db, calibre, writer, config.import_roots, config.library).as(ImportJobs?)
+    imports.try { |i| puts "backlog import: roots #{i.roots.join(", ")}" unless i.roots.empty? }
     # the hooks that work off imported books, for the import's followup
     imports.try do |i|
       i.followup = [
@@ -522,11 +503,17 @@ module CalibreHub
       i.decisions = repair.try(&.log)
       i.review = repair.try { |r| ->(id : Int64, path : String, d : Meta::Flow::Decision) { r.flagged(id, path, d); nil } }
     end
-    # the Eingang: new files of the import roots, analysed in the background
+    # the Eingang: new files of the import roots, the inbox and uploads,
+    # analysed in the background
     intake = imports.try do |i|
-      x = Intake.new(db, calibre, i, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"))
+      Dir.mkdir_p(File.join(config.uploads, ".incoming"))
+      x = Intake.new(db, calibre, i, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"),
+        inbox: config.inbox.try { |dir| Inbox.new(dir, config.inbox_stable) }, uploads: Inbox.new(config.uploads))
       x.busy = -> { i.running? || (repair.try(&.running?) || false) }
       x.repair = repair
+      x.category_column = config.category_column
+      writer.staging = File.join(config.uploads, ".incoming")
+      writer.stage = ->(u : Writer::Upload) { x.stage(u, auth.user) }
       metadata_jobs.try(&.metadata).try do |m|
         x.reader = ->(path : String, format : String) { m.read_flow(path, format, nice: true) }
         x.by_isbn = m.isbn_lookup
@@ -568,7 +555,7 @@ module CalibreHub
 
   USAGE = <<-TXT
     usage: calibre-hub <command>
-      serve                       API, change detection, handlers, inbox (default)
+      serve                       API, change detection, handlers, the Eingang (default)
       scan                        reconcile with the library once, print events as JSON lines
       install-triggers <db>       create the changelog triggers in metadata.db
                                   (only while calibre-server is stopped)

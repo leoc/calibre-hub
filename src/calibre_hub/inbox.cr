@@ -1,44 +1,28 @@
 require "json"
-require "./calibre"
-require "./detector"
+require "./backlog"
 
 module CalibreHub
-  # Imports files dropped into the inbox through calibre-server.
-  # inbox/Fachbuch/Software/x.epub becomes a book with #<category column>
-  # "Fachbuch.Software" and the tags "Fachbuch" and "Software"; tags embedded
-  # in the file are dropped. Originals move to _imported/<date>/ (new) or
-  # _duplicates/<date>/ (already there), keeping the subfolders. Directories
-  # starting with "_" or "." are not imported.
+  # A folder a file comes in by, as the Eingang (Intake) sees it. Nothing here
+  # reaches the library: the Eingang analyses what lies here and a decision
+  # takes it in. inbox/Fachbuch/Software/x.epub becomes a book with #<category
+  # column> "Fachbuch.Software" and the tags "Fachbuch" and "Software"; tags
+  # embedded in the file are dropped. Originals move to _imported/<date>/
+  # (taken) or _duplicates/<date>/ (byte for byte in the library), a file that
+  # is no book to _failed/<date>/, keeping the subfolders. What Arthur throws
+  # away goes to <root>-papierkorb (IntakeTrash). Directories starting with
+  # "_" or "." are not looked at. The uploads' staging folder goes the same way.
   class Inbox
-    EXTENSIONS = %w(epub pdf mobi azw azw3 kepub fb2 djvu cbz cbr docx rtf txt)
-    # failures before a file is moved to _failed/
-    MAX_FAILURES = 3
+    IMPORTED   = "_imported"
+    DUPLICATES = "_duplicates"
+    FAILED     = "_failed"
 
-    # called with the id of every imported book (duplicates)
-    property on_import : Proc(Int64, Nil)?
+    getter dir : String
+    getter stable : Time::Span
 
-    def initialize(@dir : String, @calibre : Calibre, @detector : Detector,
-                   @category_column : String?, @stable : Time::Span = 2.minutes)
-      @failures = Hash(String, Int32).new(0)
-    end
-
-    # One pass; returns the number of files handled
-    def run_once(now = Time.local) : Int32
-      handled = 0
-      files.each do |path|
-        info = File.info?(path) || next
-        next if now - info.modification_time < @stable
-        import(path, now)
-        handled += 1
-      end
-      cleanup(@dir, now)
-      handled
-    end
-
-    def files : Array(String)
-      found = [] of String
-      walk(@dir) { |p| found << p }
-      found.sort
+    def initialize(dir : String, @stable : Time::Span = 2.minutes)
+      @dir = File.expand_path(dir)
+      # said once per file, not on every pass
+      @unwritable = Set(String).new
     end
 
     # Category and tags from the folders between the inbox and the file
@@ -47,82 +31,53 @@ module CalibreHub
       {folders.empty? ? nil : folders.join('.'), folders}
     end
 
-    private def import(path : String, now : Time)
-      rel = path.lchop(@dir).lchop('/')
-      # importing without being able to move the file away would import it
-      # again on the next pass
-      unless File::Info.writable?(File.dirname(path))
-        if @failures[path] == 0
-          STDERR.puts "inbox: #{rel} skipped, #{File.dirname(rel)} is not writable for the hub (group write missing?)"
-        end
-        @failures[path] = 1
-        return
+    def rel(path : String) : String
+      path.lchop(@dir).lchop('/')
+    end
+
+    # The file can be moved away once it is decided: taking it in without
+    # that would take it in again on the next pass
+    def movable?(path : String) : Bool
+      return true if File::Info.writable?(File.dirname(path))
+      if @unwritable.add?(path)
+        STDERR.puts "inbox: #{rel(path)} skipped, #{File.dirname(rel(path))} is not writable for the hub (group write missing?)"
       end
-      result = @calibre.add_book(path, File.basename(path))
-      if id = result.book_id
-        category, tags = Inbox.classify(rel)
-        changes = {"tags" => JSON.parse(tags.to_json)}
-        if category && (col = @category_column)
-          changes["##{col}"] = JSON::Any.new(category)
-        end
-        begin
-          @calibre.set_fields(id, changes)
-        rescue ex
-          # no half imported book (embedded tags, no category): the next
-          # pass would take the file for a duplicate of it
-          begin
-            @calibre.remove([id], permanent: true)
-          rescue cleanup
-            STDERR.puts "inbox: removing half imported ##{id} failed: #{cleanup.message}"
-          end
-          raise ex
-        end
-        @detector.touch([id]).each { |e| puts e.to_json }
-        move(path, rel, "_imported", now)
-        puts "inbox: imported #{rel} as ##{id}"
-        begin
-          @on_import.try(&.call(id))
-        rescue ex
-          STDERR.puts "inbox: after importing ##{id}: #{ex.message}"
-        end
-      else
-        move(path, rel, "_duplicates", now)
-        puts "inbox: duplicate #{rel} (#{result.duplicates.join("; ")})"
-      end
-      @failures.delete(path)
-    rescue ex : Calibre::Unavailable
-      STDERR.puts "inbox: #{ex.message}"
-      raise ex
-    rescue ex
-      @failures[path] += 1
-      STDERR.puts "inbox: #{rel} failed (#{@failures[path]}/#{MAX_FAILURES}): #{ex.message}"
-      if @failures[path] >= MAX_FAILURES
-        move(path, rel.not_nil!, "_failed", now)
-        @failures.delete(path)
+      false
+    end
+
+    # A file still being written isn't looked at
+    def settled?(mtime : Int64, now = Time.local) : Bool
+      now.to_unix - mtime >= @stable.total_seconds
+    end
+
+    # What the scanner found to be no book of its format goes to _failed,
+    # so nothing lies around without a word; other kinds of files stay
+    def fail_broken(skipped : Array(Backlog::Skipped), now = Time.local)
+      skipped.each do |s|
+        next unless s.reason.starts_with?("too small") || s.reason.starts_with?("broken")
+        info = File.info?(s.path) || next
+        next unless settled?(info.modification_time.to_unix, now) && movable?(s.path)
+        move(s.path, FAILED, now)
+        STDERR.puts "inbox: #{rel(s.path)} failed: #{s.reason}"
       end
     end
 
-    private def move(path : String, rel : String, target : String, now : Time)
-      dest = File.join(@dir, target, now.to_s("%F"), rel)
+    # below target/<date>/, keeping the subfolders; a name taken gets the
+    # time in front
+    def move(path : String, target : String, now = Time.local) : String
+      dest = File.join(@dir, target, now.to_s("%F"), rel(path))
       Dir.mkdir_p(File.dirname(dest))
       dest = File.join(File.dirname(dest), "#{now.to_s("%H%M%S")}-#{File.basename(dest)}") if File.exists?(dest)
       File.rename(path, dest)
-    end
-
-    private def walk(dir : String, &block : String ->)
-      Dir.each_child(dir) do |name|
-        next if name.starts_with?('_') || name.starts_with?('.')
-        path = File.join(dir, name)
-        if File.directory?(path)
-          walk(path, &block)
-        elsif EXTENSIONS.includes?(File.extname(name).lchop('.').downcase)
-          block.call(path)
-        end
-      end
+      dest
     end
 
     # empty sorting folders go away once they are older than the stable time
     # (not the inbox itself, not _*), so a folder just created over Samba stays
+    def cleanup(now = Time.local)
+      cleanup(@dir, now)
+    end
+
     private def cleanup(dir : String, now : Time)
       Dir.each_child(dir) do |name|
         next if name.starts_with?('_') || name.starts_with?('.')

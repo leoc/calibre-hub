@@ -75,7 +75,7 @@ module CalibreHub
                   unsure: repair ? library_count("#{takeable} and confidence < #{Meta::Confidence::REVIEW}") : 0_i64,
                   left: repair ? library_left(band) : {duplicates: 0_i64, failed: 0_i64, skipped: 0_i64, unchanged: 0_i64},
                   skipped: skipped_count, last: repair ? @db.query_one("select coalesce(max(book_id), 0) from import_repairs", as: Int64) : 0_i64,
-                  pending: pending_count, threshold: threshold, recheck: recheck_state,
+                  pending: pending_count, thresholds: thresholds, origins: origin_counts, recheck: recheck_state,
                   entries: rows.map { |p| library_entry(p, books[p.book_id]?) }}.to_json)
     end
 
@@ -178,8 +178,8 @@ module CalibreHub
       file = format ? files.find { |f| f.format == format.upcase } : files.min_by? { |f| formats.index(f.format) || formats.size }
       file || return nil
       real = File.realpath(file.path)
-      inside = @imports.roots.any? do |r|
-        root = File.realpath(r)
+      inside = roots.any? do |r|
+        root = File.realpath(r) rescue next false
         real.starts_with?(root.rstrip('/') + "/")
       end
       info = File.info(real)

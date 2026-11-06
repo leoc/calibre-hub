@@ -478,20 +478,15 @@ module CalibreHub
 
     post "/api/books" do |env|
       write_errors(env) do
-        upload = Writer.read_upload(env.request)
+        upload = Writer.read_upload(env.request, writer.staging || Dir.tempdir)
         begin
-          book, created = writer.upload(upload)
-          env.response.status_code = created ? 201 : 200
-          # a new book that looks like others (the hub's own detection,
-          # beyond calibre's exact title and author check)
-          similar = begin
-            created ? writer.similar.try(&.call(book.id)) : nil
-          rescue ex
-            # the upload stands, only the hint is missing
-            STDERR.puts "upload: duplicate check for ##{book.id} failed: #{ex.message}"
-            nil
+          if id = upload.add_format_to
+            next {book: writer.add_format(upload, id)}.to_json
           end
-          similar ? {book: book, possibleDuplicates: similar}.to_json : {book: book}.to_json
+          stage = writer.stage || raise Writer::Unsupported.new("uploads are off")
+          # in the Eingang now; GET /api/intake/uploads/:id says what came of it
+          env.response.status_code = 202
+          {upload: stage.call(upload)}.to_json
         ensure
           File.delete?(upload.file)
         end

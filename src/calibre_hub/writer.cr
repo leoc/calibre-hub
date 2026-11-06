@@ -50,8 +50,12 @@ module CalibreHub
     getter calibre : Calibre
     # a cover was set; covers don't show in events (only lastModified changes)
     property on_cover : Proc(Int64, Nil)?
-    # books an uploaded one looks like a duplicate of (duplicates.cr)
+    # books a new one looks like a duplicate of (duplicates.cr)
     property similar : Proc(Int64, Array(Book))?
+    # a new book's way in: the upload goes to the Eingang (Intake#stage)
+    property stage : Proc(Upload, JSON::Any)?
+    # where an upload is read to, on the file system of the Eingang's folder
+    property staging : String?
 
     def initialize(@calibre : Calibre, @detector : Detector?, @wake : Channel(Nil)?,
                    @category_column : String?)
@@ -119,27 +123,14 @@ module CalibreHub
       ext
     end
 
-    # {book, created}
-    def upload(u : Upload) : {Book, Bool}
+    # A format for a book someone chose: the only upload that doesn't go
+    # through the Eingang, it brings no new book
+    def add_format(u : Upload, id : Int64) : Book
       ext = Writer.extension(u.filename)
-      if id = u.add_format_to
-        @calibre.book(id) || raise NotFound.new
-        @calibre.add_format(id, u.file, ext)
-        written([id])
-        return {@calibre.book(id) || raise(NotFound.new), false}
-      end
-
-      raise Edit::Invalid.new("kategorie", "no category column configured") if u.kategorie && !@category_column
-      added = @calibre.add_book(u.file, u.filename, duplicates: u.force)
-      id = added.book_id || raise Duplicates.new(duplicate_books(added.duplicates), added.duplicates.map(&.to_s))
-      # embedded tags are dropped, like in the inbox
-      changes = {"tags" => JSON.parse(u.tags.to_json)}
-      if (k = u.kategorie) && (col = @category_column)
-        changes["##{col}"] = JSON::Any.new(k)
-      end
-      @calibre.set_fields(id, changes)
+      @calibre.book(id) || raise NotFound.new
+      @calibre.add_format(id, u.file, ext)
       written([id])
-      {@calibre.book(id) || raise(NotFound.new), true}
+      @calibre.book(id) || raise(NotFound.new)
     end
 
     # Moves the book to calibre's trash; returns its last state

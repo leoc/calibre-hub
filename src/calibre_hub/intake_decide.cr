@@ -45,8 +45,9 @@ module CalibreHub
   # bulk of a thousand doesn't wait in a request, the entries leave the list
   # when it is queued. Accepting goes through the import (ImportJobs#import
   # with what was chosen), so a book gets what any imported book gets and
-  # the file is in import_files; a trashed file moves (IntakeTrash). An entry
-  # whose decision fails is back in the list and says why.
+  # a backlog file is in import_files, an inbox file or an upload moves to
+  # _imported; a trashed file moves (IntakeTrash). An entry whose decision
+  # fails is back in the list and says why.
   class IntakeJobs < Jobs
     def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @imports : ImportJobs, @intake : Intake)
       super(db, calibre, writer, nil, "intake_jobs")
@@ -83,12 +84,15 @@ module CalibreHub
     private def take(e : Intake::Entry, job : Job)
       unit = e.unit
       ix = @imports.index_for("#{Intake::RUN}-#{job.id}")
-      @imports.import(unit, ix, @intake.chosen(e, job.changes))
+      if book = job.changes["book"]?.try(&.as_i64?)
+        @imports.add_to(unit, ix, book)
+      else
+        @imports.import(unit, ix, @intake.chosen(e, job.changes))
+      end
       if unit.status == "duplicate"
         @intake.duplicate(e, unit, ix)
       else
-        @imports.handled(unit, Intake::RUN)
-        @intake.finish(e)
+        @intake.taken(e, unit)
       end
     end
   end

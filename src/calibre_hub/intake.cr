@@ -4,22 +4,27 @@ require "kemal"
 require "./backlog"
 require "./backlog_jobs"
 require "./import_repair"
+require "./inbox"
 require "./meta_flow"
 require "./sanitizer"
 
 module CalibreHub
-  # The „Eingang“: every book file of the backlog goes through a list before
-  # it reaches the library. New files in the import roots are found without a
-  # button and analysed one after another, at low priority, while no import
-  # or repair runs: the same units as an import (Backlog::Scanner), the same
+  # The „Eingang“: every book file goes through a list before it reaches the
+  # library, whichever way it came (origin: the backlog, the inbox, an upload).
+  # New files in the import roots are found without a button and analysed one
+  # after another, at low priority, while no repair runs; the inbox and uploads
+  # have a fiber of their own (run_fast), so a new book doesn't wait behind a
+  # backlog of thousands or the analysis being off. The same units as an
+  # import (Backlog::Scanner), the same
   # check against the library (Backlog::Index) and the same decision
   # (Meta::Flow), only from the file instead of from a book calibre added.
   # Nothing here has a way to write: calibre-server is only asked for its
   # list, the result goes to the state DB (intake_entries, with everything
   # found per file in intake_candidates) and a file changes hands only by a
   # decision (IntakeJobs: Arthur's, the threshold's when it is on), or as an
-  # exact copy of a library's file: that goes to the trash folder by itself,
-  # byte for byte the same or it stays in the list.
+  # exact copy of a library's file: of the backlog that goes to the trash
+  # folder by itself, of the inbox and uploads to their _duplicates, byte for
+  # byte the same or it stays in the list.
   #
   # A file analysed once stays that way as long as path, size and mtime are
   # the same, also over a restart; a file gone or handled by an import leaves
@@ -45,10 +50,20 @@ module CalibreHub
     STORE_BATCH = 500
     # meta: the analysis is switched off
     OFF = "intake_off"
-    # meta: from this confidence on entries are accepted after the analysis
+    # meta: from this confidence on entries are accepted after the analysis,
+    # the backlog's under this key, the others' with their origin behind it
     AUTO     = "intake_auto"
     AUTO_MIN =  60
     AUTO_MAX = 100
+    # the inbox and uploads until someone changes it; the backlog: off
+    AUTO_DEFAULT = 90
+    # between two looks at the inbox and the uploads
+    TICK = 30.seconds
+    # where an entry comes from
+    BACKLOG = "backlog"
+    INBOX   = "inbox"
+    UPLOAD  = "upload"
+    ORIGINS = {BACKLOG, INBOX, UPLOAD}
     # what a decision's run_id is in import_files
     RUN = "intake"
 
@@ -93,7 +108,7 @@ module CalibreHub
       level : Int32?, source : String?, decided : String?, isbn_source : String?, notes : Array(Meta::Flow::Note),
       changes : Array(Changed), action : String, book_id : Int64?, match : String?, same_as : String?,
       add_formats : Array(String), cover : String?, at : Int64, skipped : Bool, error : String?, book_title : String?,
-      decision : String? do
+      decision : String?, origin : String, tags : Array(String), kategorie : String?, forced : Bool do
       def primary : Backlog::BookFile
         files.min_by { |f| Backlog::FORMATS.index(f.format) || Backlog::FORMATS.size }
       end
@@ -118,7 +133,7 @@ module CalibreHub
       end
 
       def to_api(roots : Array(String))
-        {id: id, path: path, name: File.basename(primary.path), folder: folder(roots), kind: kind,
+        {id: id, path: path, name: File.basename(primary.path), folder: origin == UPLOAD ? nil : folder(roots), kind: kind, origin: origin,
          files: files.map { |f| {path: f.path, format: f.format, size: f.size} },
          status: status, detail: detail, proposal: proposal, confidence: confidence, band: band,
          titleConfidence: title_confidence, authorsConfidence: authors_confidence, level: level, source: source,
@@ -130,7 +145,11 @@ module CalibreHub
 
     COLUMNS = "id, path, kind, files, status, detail, proposal, confidence, title_confidence, authors_confidence, level, source, " \
               "decided, isbn_source, notes, changes, action, book_id, match, same_as, add_formats, cover, at, " \
-              "skipped, error, book_title, decision"
+              "skipped, error, book_title, decision, origin, tags, kategorie, forced"
+
+    # What comes with a file besides the file: where from, the inbox's folders
+    # or an upload's form, and that it is wanted whatever it looks like
+    record Extra, origin : String = BACKLOG, tags : Array(String) = [] of String, kategorie : String? = nil, forced : Bool = false
 
     # reads a file for the rule flow (Metadata#read_flow, at low priority),
     # catalogs by ISBN (Metadata#isbn_lookup), an unclear name
@@ -143,6 +162,8 @@ module CalibreHub
     property search : Proc(Book, Meta::Guess, Array(Meta::Candidate))?
     # an import or repair runs: the analysis waits
     property busy : Proc(Bool)
+    # the column an inbox's folders or an upload's category go to
+    property category_column : String?
     # the file's cover at a path (FileMeta.cover), true when there is one
     property cover_reader : Proc(String, String, String, Bool) = ->(path : String, format : String, target : String) do
       Meta::FileMeta.cover(path, format, target, nice: true)
@@ -203,13 +224,42 @@ module CalibreHub
       db.exec "alter table intake_entries add column error text" unless columns.includes?("error")
       # the library's book it looks like, for the list
       db.exec "alter table intake_entries add column book_title text" unless columns.includes?("book_title")
+      # backlog, inbox or upload
+      db.exec "alter table intake_entries add column origin text not null default 'backlog'" unless columns.includes?("origin")
+      # what the source says of it
+      db.exec "alter table intake_entries add column tags text not null default '[]'" unless columns.includes?("tags")
+      db.exec "alter table intake_entries add column kategorie text" unless columns.includes?("kategorie")
+      # sent again on purpose: no duplicate
+      db.exec "alter table intake_entries add column forced integer not null default 0" unless columns.includes?("forced")
+      # An upload outlives its entry, so whoever sent it can ask what came of
+      # it. status: staged (with or without an entry), imported, formatAdded,
+      # copy (byte for byte in the library), trashed, gone
+      db.exec <<-SQL
+        create table if not exists intake_uploads (
+          id text primary key,
+          file text not null unique,
+          name text not null,
+          tags text not null default '[]',
+          kategorie text,
+          forced integer not null default 0,
+          by text not null,
+          status text not null,
+          book_id integer,
+          at integer not null
+        )
+        SQL
     end
 
     # covers: where the pictures of plain files go, next to the state DB
     def initialize(@db : DB::Database, @calibre : Calibre, @imports : ImportJobs, @library : String?,
-                   @covers : String, @interval = INTERVAL, @stable = STABLE, @pause = PAUSE, @wait = WAIT)
+                   @covers : String, @interval = INTERVAL, @stable = STABLE, @pause = PAUSE, @wait = WAIT,
+                   @inbox : Inbox? = nil, @uploads : Inbox? = nil, @tick = TICK)
       Intake.migrate(@db)
       @peeks = File.join(File.dirname(@covers), "intake-peeks")
+      @wake = Channel(Nil).new(1)
+      # of the inbox and uploads: files left and the current one
+      @fast_left = 0
+      @fast_current = nil.as(String?)
       @busy = -> { @imports.running? }
       # files of this pass left, the current one included
       @left = 0
@@ -223,7 +273,7 @@ module CalibreHub
       @decisions.not_nil!
     end
 
-    # Looks at the roots from now on
+    # Looks at the roots from now on, at the inbox and the uploads on their own
     def start(delay = START)
       spawn do
         sleep delay
@@ -237,6 +287,193 @@ module CalibreHub
           sleep @interval
         end
       end
+      spawn do
+        loop do
+          begin
+            run_fast
+          rescue ex
+            STDERR.puts "intake failed: #{ex.message}"
+          end
+          select
+          when @wake.receive
+          when timeout(@tick)
+          end
+        end
+      end
+    end
+
+    # every folder a file of the list can lie in
+    def roots : Array(String)
+      @imports.roots + [@inbox, @uploads].compact.map(&.dir)
+    end
+
+    # the sources there are here: an inbox only with its folder
+    def origins_on : Array(String)
+      list = [] of String
+      list << BACKLOG unless @imports.roots.empty?
+      list << INBOX if @inbox
+      list << UPLOAD if @uploads
+      list
+    end
+
+    private def box(origin : String) : Inbox?
+      case origin
+      when INBOX  then @inbox
+      when UPLOAD then @uploads
+      end
+    end
+
+    # One pass over what came in by the inbox and uploads. Nothing here waits
+    # for the backlog's analysis, a repair or the analysis being off: a book
+    # someone just sent is one file. Returns how many.
+    def run_fast : Int32
+      now = Time.local
+      @inbox.try(&.cleanup(now))
+      @uploads.try(&.cleanup(now))
+      uploads = staged_uploads
+      units = inbox_units(now)
+      return 0 if uploads.empty? && units.empty?
+      ix = Backlog::Index.load(@calibre, @library, @db)
+      all.each { |e| remember(ix, e) if e.action == "add" && e.status == "analysed" }
+      @fast_left = uploads.size + units.size
+      uploads.each do |file, extra|
+        fast(upload_unit(file), ix, extra) { settled_upload(file, "gone", nil) }
+      end
+      units.each do |u|
+        fast(u, ix, inbox_extra(u)) { }
+      end
+      uploads.size + units.size
+    ensure
+      @fast_left = 0
+      @fast_current = nil
+    end
+
+    private def fast(unit : Backlog::Unit?, ix : Backlog::Index, extra : Extra, &)
+      if unit
+        @fast_current = File.basename(unit.primary.path)
+        analyse(unit, ix, extra)
+      else
+        yield
+      end
+      @fast_left -= 1
+    end
+
+    # what is new in the inbox and may be taken in: settled, and movable once
+    # it is decided. What is in the list is looked at again only when it
+    # changed; what went into the library left the folder, so a file dropped
+    # again is new.
+    private def inbox_units(now : Time) : Array(Backlog::Unit)
+      box = @inbox || return [] of Backlog::Unit
+      known = Backlog::Known.new
+      all.each { |e| e.files.each { |f| known[f.path] = {f.size, f.mtime, "analysed", nil} } if e.origin == INBOX }
+      scanner = Backlog::Scanner.new([box.dir], known, underscored: true)
+      scanner.run
+      box.fail_broken(scanner.skipped, now)
+      scanner.units.select { |u| u.files.all? { |f| box.settled?(f.mtime, now) } && u.files.all? { |f| box.movable?(f.path) } }
+    end
+
+    # the folders are the category and the tags; a calibre folder's aren't
+    private def inbox_extra(u : Backlog::Unit) : Extra
+      return Extra.new(INBOX) if u.kind == "calibre"
+      category, tags = Inbox.classify(@inbox.not_nil!.rel(u.primary.path))
+      Extra.new(INBOX, tags, category)
+    end
+
+    private def upload_unit(file : String) : Backlog::Unit?
+      info = File.info?(file) || return nil
+      f = Backlog::BookFile.new(file, File.extname(file).lchop('.').upcase, info.size, info.modification_time.to_unix)
+      Backlog::Unit.new("file", File.dirname(file), [f])
+    end
+
+    # the uploads no analysis got to, also over a restart
+    private def staged_uploads : Array({String, Extra})
+      list = [] of {String, Extra}
+      @db.query_each("select file, tags, kategorie, forced from intake_uploads where status = 'staged' and " \
+                     "file not in (select path from intake_entries) order by at, id") do |rs|
+        file, tags, kategorie, forced = rs.read(String, String, String?, Int64)
+        list << {file, Extra.new(UPLOAD, Array(String).from_json(tags), kategorie, forced == 1)}
+      end
+      list
+    end
+
+    # An upload goes to the staging folder under its name, in a folder of its
+    # own. Admins only (POST /api/books, like everything that writes): the
+    # answer says it is in the Eingang, upload_state what came of it.
+    def stage(u : Writer::Upload, by : String) : JSON::Any
+      Writer.extension(u.filename)
+      raise Edit::Invalid.new("kategorie", "no category column configured") if u.kategorie && !@category_column
+      box = @uploads || raise Writer::Unsupported.new("uploads are off")
+      id = Random::Secure.hex(8)
+      file = File.join(box.dir, id, u.filename)
+      Dir.mkdir_p(File.dirname(file))
+      File.rename(u.file, file)
+      File.chmod(file, 0o660)
+      @db.exec "insert into intake_uploads (id, file, name, tags, kategorie, forced, by, status, at) values (?, ?, ?, ?, ?, ?, ?, 'staged', ?)",
+        id, file, u.filename, u.tags.to_json, u.kategorie, u.force ? 1 : 0, by, Time.utc.to_unix
+      puts "intake: upload #{u.filename} from #{by}"
+      select
+      when @wake.send(nil)
+      else
+      end
+      upload_state(id).not_nil!
+    end
+
+    private def settled_upload(file : String, status : String, book : Int64?)
+      @db.exec "update intake_uploads set status = ?, book_id = ? where file = ? and status = 'staged'", status, book, file
+    end
+
+    # What came of an upload, for whoever sent it. status: checking (the
+    # analysis or a decision is at it), waiting (in the Eingang, below the
+    # threshold), duplicate (in the Eingang, looks like a book of the library),
+    # imported, formatAdded, copy (the same file is in the library, it went to
+    # _duplicates), trashed, gone.
+    def upload_state(id : String) : JSON::Any?
+      row = @db.query_one?("select file, name, status, book_id from intake_uploads where id = ?", id, as: {String, String, String, Int64?}) || return nil
+      file, name, status, book = row
+      e = @db.query_one?("select #{COLUMNS} from intake_entries where path = ?", file) { |rs| read_entry(rs) }
+      h = {} of String => JSON::Any
+      h["id"] = JSON::Any.new(id)
+      h["name"] = JSON::Any.new(name)
+      h["status"] = JSON::Any.new(status)
+      case status
+      when "staged"
+        h["status"] = JSON::Any.new("checking")
+        waiting_state(h, e) if e && e.decision.nil?
+      when "imported", "formatAdded"
+        h["book"] = JSON.parse(book.try { |b| @calibre.book(b) }.to_json)
+        similar = status == "imported" ? book.try { |b| similar_books(b) } : nil
+        h["possibleDuplicates"] = JSON.parse(similar.to_json) if similar
+      when "copy"
+        h["duplicates"] = JSON.parse(book_list(book).to_json)
+      end
+      JSON::Any.new(h)
+    end
+
+    private def waiting_state(h : Hash(String, JSON::Any), e : Entry)
+      h["entryId"] = JSON::Any.new(e.id)
+      h["error"] = JSON::Any.new(e.error || e.detail)
+      if e.action != "add" && !e.forced
+        h["status"] = JSON::Any.new("duplicate")
+        h["duplicates"] = JSON.parse(book_list(e.book_id).to_json)
+        h["titles"] = JSON.parse([e.same_as.try { |s| File.basename(s) }].compact.to_json)
+      else
+        h["status"] = JSON::Any.new("waiting")
+        h["confidence"] = JSON::Any.new(e.confidence.try(&.to_i64))
+        h["threshold"] = JSON::Any.new(threshold(UPLOAD).try(&.to_i64))
+      end
+    end
+
+    private def book_list(id : Int64?) : Array(Book)
+      id ? @calibre.books([id], Calibre::DETAIL_FIELDS) : [] of Book
+    end
+
+    # the hub's own detection, beyond calibre's title and author check; the
+    # book stands without the hint
+    private def similar_books(id : Int64) : Array(Book)?
+      @imports.writer.similar.try(&.call(id)).try { |l| l.empty? ? nil : l }
+    rescue ex
+      STDERR.puts "intake: duplicate check for ##{id} failed: #{ex.message}"
+      nil
     end
 
     # One pass: the new files of the roots analysed. Returns how many.
@@ -311,7 +548,7 @@ module CalibreHub
       known = handled.dup
       all.each do |e|
         same = unchanged?(e)
-        gone = e.files.all? { |f| (k = handled[f.path]?) && k[0] == f.size && k[1] == f.mtime }
+        gone = e.origin == BACKLOG && e.files.all? { |f| (k = handled[f.path]?) && k[0] == f.size && k[1] == f.mtime }
         if same && !gone
           e.files.each { |f| known[f.path] = {f.size, f.mtime, "analysed", nil} }
         else
@@ -332,8 +569,8 @@ module CalibreHub
     # copy goes, the others keep the title of the book they look like
     private def sweep(ix : Backlog::Index)
       all.each do |e|
-        next if e.decision
-        if (u = unit_of(e)) && trash_copy(u, ix)
+        next if e.decision || e.forced
+        if (u = unit_of(e)) && trash_copy(u, ix, e.origin)
           forget(e)
         elsif (title = e.book_id.try { |b| ix.title(b) }) && title != e.book_title
           @db.exec "update intake_entries set book_title = ? where id = ?", title, e.id
@@ -350,12 +587,15 @@ module CalibreHub
 
     # Every file of the unit is in the library, byte for byte, and a calibre
     # folder has nothing else that would go with it: the unit moves to the
-    # trash folder. A move that fails leaves it in the list.
-    private def trash_copy(u : Backlog::Unit, ix : Backlog::Index) : Bool
+    # trash folder, or by the inbox's rules to _duplicates. A move that fails
+    # leaves it in the list.
+    private def trash_copy(u : Backlog::Unit, ix : Backlog::Index, origin : String) : Bool
       book = ix.exact(u) || return false
       return false if u.kind == "calibre" && !Intake.only_book?(u)
-      moved = IntakeTrash.move(@imports.roots, Intake.paths(u.kind, u.name, u.files))
+      paths = Intake.paths(u.kind, u.name, u.files)
+      moved = box(origin).try { |b| paths.map { |p| b.move(p, Inbox::DUPLICATES) } } || IntakeTrash.move(roots, paths)
       puts "intake: #{u.name} is in book #{book} byte for byte, moved to #{moved.join(", ")}"
+      settled_upload(u.name, "copy", book) if origin == UPLOAD
       true
     rescue ex : File::Error | IO::Error
       STDERR.puts "intake: moving #{u.name} failed: #{ex.message}"
@@ -373,6 +613,7 @@ module CalibreHub
     end
 
     private def forget(e : Entry)
+      settled_upload(e.path, "gone", nil) if e.origin == UPLOAD
       @db.exec "delete from intake_candidates where entry_id = ?", e.id
       @db.exec "delete from intake_entries where id = ?", e.id
       e.cover.try { |c| File.delete?(c) if c.starts_with?(@covers) }
@@ -394,6 +635,28 @@ module CalibreHub
     # looks at what is left
     def finish(e : Entry)
       forget(e)
+    end
+
+    # The book is in the library. The backlog's file stays where it is and
+    # import_files remembers it, the inbox's and an upload's leaves the
+    # folder. A move that fails doesn't take the book back: the file comes up
+    # again and goes to _duplicates as a copy.
+    def taken(e : Entry, unit : Backlog::Unit)
+      if b = box(e.origin)
+        begin
+          Intake.paths(e.kind, e.path, e.files).each { |p| b.move(p, Inbox::IMPORTED) }
+        rescue ex : File::Error | IO::Error
+          STDERR.puts "intake: moving #{e.path} away failed: #{ex.message}"
+        end
+        settled_upload(e.path, unit.status, unit.book_id) if e.origin == UPLOAD
+        unit.book_id.try do |id|
+          found = unit.status == "imported" ? similar_books(id) : nil
+          puts "#{e.origin}: ##{id} looks like #{found.map { |x| "##{x.id}" }.join(", ")} (see Duplikate)" if found
+        end
+      else
+        @imports.handled(unit, RUN)
+      end
+      finish(e)
     end
 
     # The decision failed: the entry is back in the list and says why
@@ -420,9 +683,8 @@ module CalibreHub
     # chosen candidate says; title and authors as edited over those; file:
     # nothing. A book marked as a duplicate was taken knowing that.
     def chosen(e : Entry, changes : Hash(String, JSON::Any)) : ImportJobs::Chosen
-      force = e.action == "duplicate"
       decision = flow_decision(e)
-      return ImportJobs::Chosen.new({} of String => JSON::Any, as_in_file, force) if changes["decision"] == "file"
+      return given(e, {} of String => JSON::Any, as_in_file) if changes["decision"] == "file"
       p = e.proposal || raise Edit::Invalid.new("decision", "no proposal")
       values = Intake.values(p)
       if i = changes["candidate"]?.try(&.as_i?) || changes["picks"]?.try(&.[e.id.to_s]?).try(&.as_i?)
@@ -439,7 +701,13 @@ module CalibreHub
         decision = (decision || as_in_file).copy_with(changes: [] of Meta::Change, title: title ? hand : (decision.try(&.title) || hand),
           authors: authors ? hand : (decision.try(&.authors) || hand))
       end
-      ImportJobs::Chosen.new(values, decision || as_in_file, force)
+      given(e, values, decision || as_in_file)
+    end
+
+    # with what the entry's source says of it
+    private def given(e : Entry, values : Hash(String, JSON::Any), decision : Meta::Flow::Decision) : ImportJobs::Chosen
+      category = e.kategorie.try { |k| @category_column.try { |c| {c, k} } }
+      ImportJobs::Chosen.new(values, decision, e.action == "duplicate" || e.forced, e.forced, e.tags, category)
     end
 
     # the flow's decision again, from the entry; a standard's has none
@@ -497,40 +765,51 @@ module CalibreHub
 
     # The entry's unit to the trash folder
     def trash(e : Entry)
-      moved = IntakeTrash.move(@imports.roots, Intake.paths(e.kind, e.path, e.files))
+      moved = IntakeTrash.move(roots, Intake.paths(e.kind, e.path, e.files))
       puts "intake: #{e.path} moved to #{moved.join(", ")}"
+      settled_upload(e.path, "trashed", nil) if e.origin == UPLOAD
       forget(e)
     end
 
-    # the threshold, nil: off
-    def threshold : Int32?
-      @db.query_one?("select value from meta where key = ?", AUTO, as: String).try(&.to_i?)
+    private def auto_key(origin : String) : String
+      origin == BACKLOG ? AUTO : "#{AUTO}_#{origin}"
+    end
+
+    # A source's threshold, nil: off. The inbox and uploads are on until
+    # someone switches them off, so a stored „off“ is what says so.
+    def threshold(origin : String = BACKLOG) : Int32?
+      stored = @db.query_one?("select value from meta where key = ?", auto_key(origin), as: String)
+      return stored.to_i? if stored
+      origin == BACKLOG ? nil : AUTO_DEFAULT
+    end
+
+    # the thresholds of the sources there are
+    def thresholds : Hash(String, Int32?)
+      origins_on.to_h { |o| {o, threshold(o)} }
     end
 
     # nil switches it off; what is above it already goes the same way
-    def threshold=(value : Int32?)
-      if value
-        @db.exec "insert or replace into meta (key, value) values (?, ?)", AUTO, value.to_s
-        accept_above
-      else
-        @db.exec "delete from meta where key = ?", AUTO
-      end
+    def set_threshold(origin : String, value : Int32?)
+      @db.exec "insert or replace into meta (key, value) values (?, ?)", auto_key(origin), value ? value.to_s : "off"
+      accept_above if value
     end
 
-    # Entries at or above the threshold go to the library. Nobody looks at
-    # them: only new books, not what looks like one the library has, not what
-    # was skipped or came back with an error.
+    # Entries at or above their source's threshold go to the library. Nobody
+    # looks at them: only new books, not what looks like one the library has,
+    # not what was skipped or came back with an error.
     private def accept_above
-      limit = threshold || return
-      ids = [] of Int64
-      @db.query_each("select id from intake_entries where decision is null and skipped = 0 and error is null and " \
-                     "status = 'analysed' and action = 'add' and confidence >= ?", limit) { |rs| ids << rs.read(Int64) }
-      decisions.queue(ids, {"decision" => JSON::Any.new("accept")}) unless ids.empty?
+      ORIGINS.each do |origin|
+        limit = threshold(origin) || next
+        ids = [] of Int64
+        @db.query_each("select id from intake_entries where decision is null and skipped = 0 and error is null and " \
+                       "status = 'analysed' and action = 'add' and origin = ? and confidence >= ?", origin, limit) { |rs| ids << rs.read(Int64) }
+        decisions.queue(ids, {"decision" => JSON::Any.new("accept")}) unless ids.empty?
+      end
     end
 
     # the analysis is at it, so what can wait does (RepairRecheck)
     def working? : Bool
-      @state.in?("scanning", "analysing")
+      @state.in?("scanning", "analysing") || !@fast_current.nil?
     end
 
     # the entry's book counts for later ones, by a pseudo id like a dry run's
@@ -553,10 +832,11 @@ module CalibreHub
       ix.add_meta(pseudo, m)
     end
 
-    # One unit: what the library knows of it, what the rules make of it
-    def analyse(unit : Backlog::Unit, ix : Backlog::Index)
+    # One unit: what the library knows of it, what the rules make of it. An
+    # upload sent on purpose is a new book, whatever it looks like.
+    def analyse(unit : Backlog::Unit, ix : Backlog::Index, extra = Extra.new)
       Backlog.plan(unit, ix)
-      return if trash_copy(unit, ix)
+      return if !extra.forced && trash_copy(unit, ix, extra.origin)
       primary = unit.primary
       name = File.basename(primary.path)
       info = read(primary)
@@ -577,7 +857,8 @@ module CalibreHub
       if unit.action == "add" && (hit = ix.match_book(Intake.proposed_book(proposal)))
         Backlog.mark(unit, hit[0], hit[1], ix)
       end
-      id = store(unit, proposal, decision, Intake.ranked(found))
+      Intake.as_new(unit) if extra.forced
+      id = store(unit, proposal, decision, Intake.ranked(found), extra)
       unit.book_id.try { |b| @db.exec "update intake_entries set book_title = ? where id = ?", ix.title(b), id }
       remember(ix, id, unit.name, unit.files, proposal) if unit.action == "add"
       cover(unit, id)
@@ -585,7 +866,16 @@ module CalibreHub
     rescue ex
       # the file stays in the list, unchanged it isn't tried again
       STDERR.puts "intake: #{unit.name}: #{ex.message}"
-      store_failed(unit, ex.message || ex.class.name)
+      store_failed(unit, ex.message || ex.class.name, extra)
+    end
+
+    # the plan of a book nothing is known about
+    def self.as_new(unit : Backlog::Unit)
+      unit.action = "add"
+      unit.book_id = nil
+      unit.match = nil
+      unit.same_as = nil
+      unit.add_formats = [] of String
     end
 
     private def read(file : Backlog::BookFile) : Meta::FileMeta::Info?
@@ -768,12 +1058,12 @@ module CalibreHub
       list
     end
 
-    private def store(unit : Backlog::Unit, p : Proposal, d : Meta::Flow::Decision?, candidates : Array(Candidate)) : Int64
+    private def store(unit : Backlog::Unit, p : Proposal, d : Meta::Flow::Decision?, candidates : Array(Candidate), extra : Extra) : Int64
       changes = (d.try(&.changes) || [] of Meta::Change).map { |c| Changed.new(c.field, c.old, c.new, c.source) }
       # a standard and whatever no rule has a word about: nothing against it
       confidence = d.try(&.confidence) || Meta::Confidence::KEPT
       id = insert(unit, "analysed", nil, p.to_json, confidence, d.try(&.title) || confidence, d.try(&.authors) || confidence,
-        d.try(&.level), d.try(&.source) || "rules", d.try(&.how), d.try(&.isbn_source), (d.try(&.notes) || [] of Meta::Flow::Note).to_json, changes.to_json)
+        d.try(&.level), d.try(&.source) || "rules", d.try(&.how), d.try(&.isbn_source), (d.try(&.notes) || [] of Meta::Flow::Note).to_json, changes.to_json, extra)
       @db.transaction do |tx|
         candidates.each_with_index do |c, i|
           tx.connection.exec "insert into intake_candidates (entry_id, idx, source, confidence, fields, url) values (?, ?, ?, ?, ?, ?)",
@@ -783,19 +1073,20 @@ module CalibreHub
       id
     end
 
-    private def store_failed(unit : Backlog::Unit, detail : String)
-      insert(unit, "failed", detail, nil, nil, nil, nil, nil, nil, nil, nil, "[]", "[]")
+    private def store_failed(unit : Backlog::Unit, detail : String, extra : Extra)
+      insert(unit, "failed", detail, nil, nil, nil, nil, nil, nil, nil, nil, "[]", "[]", extra)
     end
 
     private def insert(unit : Backlog::Unit, status : String, detail : String?, proposal : String?, confidence : Int32?,
                        title : Int32?, authors : Int32?, level : Int32?, source : String?, decided : String?,
-                       isbn_source : String?, notes : String, changes : String) : Int64
+                       isbn_source : String?, notes : String, changes : String, extra : Extra) : Int64
       @db.exec("insert or replace into intake_entries (path, kind, files, status, detail, proposal, confidence, title_confidence, " \
-               "authors_confidence, level, source, decided, isbn_source, notes, changes, action, book_id, match, same_as, add_formats, cover, at) " \
-               "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               "authors_confidence, level, source, decided, isbn_source, notes, changes, action, book_id, match, same_as, add_formats, cover, at, " \
+               "origin, tags, kategorie, forced) " \
+               "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         unit.name, unit.kind, unit.files.to_json, status, detail, proposal, confidence, title, authors, level, source, decided,
         isbn_source, notes, changes, unit.action, unit.book_id, unit.match, unit.same_as, unit.add_formats.to_json, unit.cover,
-        Time.utc.to_unix).last_insert_id
+        Time.utc.to_unix, extra.origin, extra.tags.to_json, extra.kategorie, extra.forced ? 1 : 0).last_insert_id
     end
 
     private def cover(unit : Backlog::Unit, id : Int64)
@@ -815,10 +1106,11 @@ module CalibreHub
       source, decided, isbn_source, notes, changes, action = rs.read(String?, String?, String?, String, String, String)
       book, match, same_as, add_formats, cover, at = rs.read(Int64?, String?, String?, String, String?, Int64)
       skipped, error, book_title, job = rs.read(Int64, String?, String?, String?)
+      origin, tags, kategorie, forced = rs.read(String, String, String?, Int64)
       Entry.new(id, path, kind, Array(Backlog::BookFile).from_json(files), status, detail, proposal.try { |p| Proposal.from_json(p) },
         confidence, title, authors, level, source, decided, isbn_source, Array(Meta::Flow::Note).from_json(notes),
         Array(Changed).from_json(changes), action, book, match, same_as, Array(String).from_json(add_formats), cover, at,
-        skipped == 1, error, book_title, job)
+        skipped == 1, error, book_title, job, origin, Array(String).from_json(tags), kategorie, forced == 1)
     end
 
     private def all : Array(Entry)
@@ -847,7 +1139,9 @@ module CalibreHub
     def progress
       done = @db.query_one("select count(*) from intake_entries where decision is null", as: Int64)
       analysed = @db.query_one("select count(*) from intake_entries where decision is null and status = 'analysed'", as: Int64)
-      {state: off? ? "off" : @state, done: done, total: done + @left, analysed: analysed, current: @current}
+      # the inbox and uploads go on while the rest stands still
+      state = @fast_current ? "analysing" : (off? ? "off" : @state)
+      {state: state, done: done, total: done + @left + @fast_left, analysed: analysed, current: @fast_current || @current}
     end
 
     # bulk, review, unsure: Meta::Confidence's bands; none: failed files
@@ -863,16 +1157,30 @@ module CalibreHub
     end
 
     # what is in the list by a filter; what waits for its job isn't
-    private def filter_sql(band : String?, duplicates : Bool?, skipped : Bool?) : String
+    private def filter_sql(band : String?, duplicates : Bool?, skipped : Bool?, origin : String? = nil) : String
       kind = duplicates.nil? ? nil : (duplicates ? "action != 'add'" : "action = 'add'")
-      ["decision is null", band_sql(band), kind, skipped ? "skipped = 1" : nil].compact.join(" and ")
+      ["decision is null", band_sql(band), kind, skipped ? "skipped = 1" : nil, origin_sql(origin)].compact.join(" and ")
+    end
+
+    private def origin_sql(origin : String?) : String?
+      return nil unless origin
+      raise Edit::Invalid.new("origin", "backlog, inbox or upload expected") unless ORIGINS.includes?(origin)
+      "origin = '#{origin}'"
+    end
+
+    # how many of each source are in the list, whatever the filters: only
+    # with more than one the page offers to choose
+    private def origin_counts : Hash(String, Int64)
+      counts = {} of String => Int64
+      @db.query_each("select origin, count(*) from intake_entries where decision is null group by origin") { |rs| counts[rs.read(String)] = rs.read(Int64) }
+      counts
     end
 
     # Of a filter what „Alle N übernehmen“ takes. Not a failed file, there is
     # no proposal; not what looks like a book of the library, that is for
     # Arthur one by one; not what he skipped, unless that is the filter.
-    private def takeable_sql(band : String?, duplicates : Bool?, skipped : Bool?) : String
-      sql = "#{filter_sql(band, duplicates, skipped)} and status = 'analysed' and action != 'duplicate'"
+    private def takeable_sql(band : String?, duplicates : Bool?, skipped : Bool?, origin : String? = nil) : String
+      sql = "#{filter_sql(band, duplicates, skipped, origin)} and status = 'analysed' and action != 'duplicate'"
       skipped ? sql : "#{sql} and skipped = 0"
     end
 
@@ -889,8 +1197,8 @@ module CalibreHub
 
     # What of a filter a bulk decision leaves in the list and why, so the
     # button's number and the filter's add up
-    private def left_out(band : String?, duplicates : Bool?, skipped : Bool?)
-      clause = filter_sql(band, duplicates, skipped)
+    private def left_out(band : String?, duplicates : Bool?, skipped : Bool?, origin : String? = nil)
+      clause = filter_sql(band, duplicates, skipped, origin)
       count = ->(extra : String) { @db.query_one("select count(*) from intake_entries where #{clause} and #{extra}", as: Int64) }
       {duplicates: count.call("status = 'analysed' and action = 'duplicate'"), failed: count.call("status != 'analysed'"),
        skipped: skipped ? 0_i64 : count.call("status = 'analysed' and action != 'duplicate' and skipped = 1"), unchanged: 0_i64}
@@ -899,12 +1207,12 @@ module CalibreHub
     # The list for the page: a page of entries with the filter's total, how
     # many of that kind there are per band, and what a bulk decision takes.
     # band: by confidence; duplicates: only those that match a book, or
-    # (false) only the new ones; skipped: only the skipped ones. In the order
-    # of ORDER; after: the page behind this place (next of the page before),
-    # a confidence and a path, which stays right while entries leave the list
-    # and the analysis adds some.
-    def list(band : String? = nil, duplicates : Bool? = nil, offset = 0, limit = 100, skipped : Bool? = nil, after : String? = nil) : JSON::Any
-      clause = filter_sql(band, duplicates, skipped)
+    # (false) only the new ones; skipped: only the skipped ones; origin: of
+    # one source. In the order of ORDER; after: the page behind this place
+    # (next of the page before), a confidence and a path, which stays right
+    # while entries leave the list and the analysis adds some.
+    def list(band : String? = nil, duplicates : Bool? = nil, offset = 0, limit = 100, skipped : Bool? = nil, after : String? = nil, origin : String? = nil) : JSON::Any
+      clause = filter_sql(band, duplicates, skipped, origin)
       total = @db.query_one("select count(*) from intake_entries where #{clause}", as: Int64)
       entries = [] of Entry
       size = limit.clamp(1, MAX_LIMIT)
@@ -922,16 +1230,16 @@ module CalibreHub
       entries.pop if more
       counts = Hash(String, Int64).new(0_i64)
       (Meta::Confidence::BANDS + ["none"]).each do |b|
-        counts[b] = @db.query_one("select count(*) from intake_entries where #{filter_sql(b, duplicates, skipped)}", as: Int64)
+        counts[b] = @db.query_one("select count(*) from intake_entries where #{filter_sql(b, duplicates, skipped, origin)}", as: Int64)
       end
-      takeable = takeable_sql(band, duplicates, skipped)
+      takeable = takeable_sql(band, duplicates, skipped, origin)
       JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? Intake.place(entries.last.confidence, entries.last.path) : nil,
                   takeable: @db.query_one("select count(*) from intake_entries where #{takeable}", as: Int64),
                   unsure: @db.query_one("select count(*) from intake_entries where #{takeable} and confidence < #{Meta::Confidence::REVIEW}", as: Int64),
-                  left: left_out(band, duplicates, skipped), skipped: skipped_count,
+                  left: left_out(band, duplicates, skipped, origin), skipped: skipped_count,
                   last: @db.query_one("select coalesce(max(id), 0) from intake_entries", as: Int64),
                   pending: pending_count,
-                  threshold: threshold, entries: entries.map(&.to_api(@imports.roots))}.to_json)
+                  thresholds: thresholds, origins: origin_counts, entries: entries.map(&.to_api(roots))}.to_json)
     end
 
     private def skipped_count : Int64
@@ -945,16 +1253,17 @@ module CalibreHub
     end
 
     # POST /api/intake/decide. decision: accept, file, trash go through the
-    # queue, skip and unskip are done at once. target: {ids: [...]} or, to
-    # accept all of a filter, {query: {band, duplicates, skipped}, last, expect}:
+    # queue, and format (one entry's files to the book {book: id}), skip and
+    # unskip are done at once. target: {ids: [...]} or, to
+    # accept all of a filter, {query: {band, duplicates, skipped, origin}, last, expect}:
     # last (the list's) leaves out what the analysis added since, expect
     # (takeable) is the number meant. One entry's accept takes a candidate
     # (index) and the edited title and authors, a filter's the candidates
     # chosen so far (picks: {entry id: index}). Library books (negative ids,
     # query {library: true}) have their own exits: decide_library.
     def decide(body : Hash(String, JSON::Any)) : {Int32, JSON::Any}
-      decision = body["decision"]?.try(&.as_s?) || raise Edit::Invalid.new("decision", "accept, file, skip, unskip, trash or reject expected")
-      raise Edit::Invalid.new("decision", "accept, file, skip, unskip, trash or reject expected") unless DECISIONS.includes?(decision)
+      decision = body["decision"]?.try(&.as_s?) || raise Edit::Invalid.new("decision", "accept, file, format, skip, unskip, trash or reject expected")
+      raise Edit::Invalid.new("decision", "accept, file, format, skip, unskip, trash or reject expected") unless DECISIONS.includes?(decision)
       target = body["target"]?.try(&.as_h?) || raise Edit::Invalid.new("target", "object expected")
       return decide_library(body, decision, target) if library_target?(target)
       raise Edit::Invalid.new("decision", "reject is for books of the library") if decision == "reject"
@@ -968,7 +1277,7 @@ module CalibreHub
       {202, JSON.parse({jobId: job.try(&.id), total: ids.size}.to_json)}
     end
 
-    DECISIONS = %w(accept file skip unskip trash reject)
+    DECISIONS = %w(accept file format skip unskip trash reject)
 
     # the ones still in the list
     private def by_ids(target : Hash(String, JSON::Any)) : Array(Int64)
@@ -986,7 +1295,7 @@ module CalibreHub
       q = target["query"].as_h? || raise Edit::Invalid.new("target", "object expected")
       expect = target["expect"]?.try(&.as_i64?) || raise Edit::Invalid.new("target", "expect (the number of books meant) required")
       last = target["last"]?.try(&.as_i64?) || raise Edit::Invalid.new("target", "last expected")
-      sql = takeable_sql(q["band"]?.try(&.as_s?), q["duplicates"]?.try(&.as_bool?), q["skipped"]?.try(&.as_bool?))
+      sql = takeable_sql(q["band"]?.try(&.as_s?), q["duplicates"]?.try(&.as_bool?), q["skipped"]?.try(&.as_bool?), q["origin"]?.try(&.as_s?))
       ids = [] of Int64
       @db.query_each("select id from intake_entries where #{sql} and id <= ? order by #{ORDER}", last) { |rs| ids << rs.read(Int64) }
       raise Jobs::CountMismatch.new(expect, ids.size) unless ids.size == expect
@@ -996,6 +1305,12 @@ module CalibreHub
     # checked now, so a job finds what it needs
     private def chosen_changes(body : Hash(String, JSON::Any), decision : String, ids : Array(Int64)) : Hash(String, JSON::Any)
       changes = {"decision" => JSON::Any.new(decision)}
+      if decision == "format"
+        raise Edit::Invalid.new("target", "format is for one entry") unless ids.size <= 1
+        id = body["book"]?.try(&.as_i64?) || raise Edit::Invalid.new("book", "book id expected")
+        @calibre.book(id) || raise Writer::NotFound.new
+        changes["book"] = JSON::Any.new(id)
+      end
       %w(candidate title authors).each do |k|
         v = body[k]? || next
         next if v.raw.nil?
@@ -1042,7 +1357,7 @@ module CalibreHub
     def detail(id : Int64) : JSON::Any?
       return library_detail(-id) if id < 0
       e = self[id]? || return nil
-      h = JSON.parse(e.to_api(@imports.roots).to_json).as_h
+      h = JSON.parse(e.to_api(roots).to_json).as_h
       h["changes"] = JSON.parse(e.changes.to_json)
       h["candidates"] = JSON.parse(candidates(id).to_json)
       h["bookTitle"] = JSON::Any.new(e.book_id.try { |b| book_title(b) })
@@ -1067,7 +1382,7 @@ module CalibreHub
         end
         duplicates = q["duplicates"]?.presence.try { |v| v == "true" }
         intake.list(q["band"]?.presence, duplicates, q["offset"]?.try(&.to_i?) || 0, q["limit"]?.try(&.to_i?) || 100,
-          q["skipped"]? == "true" ? true : nil, q["after"]?.presence).to_json
+          q["skipped"]? == "true" ? true : nil, q["after"]?.presence, q["origin"]?.presence).to_json
       end
     end
 
@@ -1080,16 +1395,25 @@ module CalibreHub
       end
     end
 
-    # {value: 60..100} accepts from there on, {value: null} switches it off
+    # {origin, value: 60..100} accepts a source's books from there on,
+    # {origin, value: null} switches it off
     post "/api/intake/threshold" do |env|
       write_errors(env) do
         next fail(env, 404, {error: "backlog import is off"}) unless intake
-        raw = json_body(env, required: true)["value"]? || raise Edit::Invalid.new("value", "number or null expected")
+        body = json_body(env, required: true)
+        origin = body["origin"]?.try(&.as_s?) || raise Edit::Invalid.new("origin", "backlog, inbox or upload expected")
+        raise Edit::Invalid.new("origin", "backlog, inbox or upload expected") unless intake.origins_on.includes?(origin)
+        raw = body["value"]? || raise Edit::Invalid.new("value", "number or null expected")
         value = raw.raw.nil? ? nil : (raw.as_i? || raise Edit::Invalid.new("value", "number or null expected"))
         raise Edit::Invalid.new("value", "#{Intake::AUTO_MIN} to #{Intake::AUTO_MAX} expected") if value && !(Intake::AUTO_MIN..Intake::AUTO_MAX).includes?(value)
-        intake.threshold = value
-        {threshold: intake.threshold}.to_json
+        intake.set_threshold(origin, value)
+        {thresholds: intake.thresholds}.to_json
       end
+    end
+
+    # what came of an upload (POST /api/books)
+    get "/api/intake/uploads/:id" do |env|
+      intake.try(&.upload_state(env.params.url["id"])).try(&.to_json) || fail(env, 404, {error: "not found"})
     end
 
     # {on: false} stops the analysis, {on: true} lets it go on

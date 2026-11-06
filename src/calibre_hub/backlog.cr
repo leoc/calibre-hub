@@ -204,10 +204,12 @@ module CalibreHub
       property on_progress : Proc(Int32, Int32, Nil)?
       @entries = 0
 
-      def initialize(@roots : Array(String), @known : Known = Known.new)
+      # underscored: folders starting with "_" aren't books at any depth (the
+      # inbox's rule), else only INBOX_DIRS at the top
+      def initialize(@roots : Array(String), @known : Known = Known.new, @underscored = false)
       end
 
-      def initialize(root : String, @known : Known = Known.new)
+      def initialize(root : String, @known : Known = Known.new, @underscored = false)
         @roots = [root]
       end
 
@@ -268,7 +270,7 @@ module CalibreHub
           elsif info.directory?
             if name.starts_with?('.')
               @skipped << Skipped.new(path + "/", "hidden folder")
-            elsif top && INBOX_DIRS.includes?(name)
+            elsif (top && INBOX_DIRS.includes?(name)) || (@underscored && name.starts_with?('_'))
               @skipped << Skipped.new(path + "/", "inbox folder")
             else
               walk(path)
