@@ -86,6 +86,7 @@ export const de = {
   "reader.excerpt": "Erste {pages} Seiten",
   "reader.noFormat": "Dieses Buch hat kein Format, das der Browser lesen kann.",
   "reader.failed": "Das Buch ließ sich nicht öffnen.",
+  "reader.pdfTimeout": "Der PDF-Leser antwortet nicht.",
   "reader.menu": "Leiste ein- und ausblenden",
   "reader.notOffline": "Keine Verbindung, und dieses Buch ist nicht offline verfügbar.",
   "offline.status": "Offline",

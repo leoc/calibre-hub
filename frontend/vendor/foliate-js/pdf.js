@@ -1,12 +1,26 @@
 // calibre-hub: pdf.js comes from the pdfjs-dist npm package (bundled by
 // Vite) instead of foliate-js' own vendor/pdfjs copy; the two layer
 // stylesheets stay vendored (see ../README.md)
-import * as pdfjsLib from 'pdfjs-dist'
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// the legacy build: the modern one needs what only the newest Safari has
+// (see ../README.md)
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
+import workerSrc from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import textLayerBuilderCSS from './vendor/pdfjs/text_layer_builder.css?raw'
 import annotationLayerBuilderCSS from './vendor/pdfjs/annotation_layer_builder.css?raw'
 import { BOOK_CSP_META } from './book-security.js'
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc
+
+// calibre-hub: a worker that fails or never starts doesn't say so, its answer
+// just doesn't come. The file is all here by now, so that is an error.
+const ANSWER_TIMEOUT = 30_000
+const answer = promise => {
+    let timer
+    const late = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(
+            new Error('pdf.js did not answer'), { name: 'PDFTimeout' })), ANSWER_TIMEOUT)
+    })
+    return Promise.race([promise, late]).finally(() => clearTimeout(timer))
+}
 
 const render = async (page, doc, zoom) => {
     const scale = zoom * devicePixelRatio
@@ -116,14 +130,18 @@ export const makePDF = async file => {
             transport.onDataRange(begin, chunk)
         })
     }
-    const pdf = await pdfjsLib.getDocument({
+    const task = pdfjsLib.getDocument({
         range: transport,
         isEvalSupported: false,
-    }).promise
+    })
+    const pdf = await answer(task.promise).catch(e => {
+        task.destroy()
+        throw e
+    })
 
     const book = { rendition: { layout: 'pre-paginated' } }
 
-    const { metadata, info } = await pdf.getMetadata() ?? {}
+    const { metadata, info } = await answer(pdf.getMetadata()) ?? {}
     // TODO: for better results, parse `metadata.getRaw()`
     book.metadata = {
         title: metadata?.get('dc:title') ?? info?.Title,
@@ -138,7 +156,7 @@ export const makePDF = async file => {
         rights: metadata?.get('dc:rights'),
     }
 
-    const outline = await pdf.getOutline()
+    const outline = await answer(pdf.getOutline())
     book.toc = outline?.map(makeTOCItem)
 
     const cache = new Map()
@@ -147,7 +165,7 @@ export const makePDF = async file => {
         load: async () => {
             const cached = cache.get(i)
             if (cached) return cached
-            const url = await renderPage(await pdf.getPage(i + 1))
+            const url = await renderPage(await answer(pdf.getPage(i + 1)))
             cache.set(i, url)
             return url
         },

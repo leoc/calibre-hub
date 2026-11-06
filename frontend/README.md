@@ -26,7 +26,8 @@ makes the dev server send the same policy.
 ### Reader in Safari
 
 Playwright's WebKit doesn't run in this setup (nixpkgs' Playwright browsers
-are older than the npm package), so the e2e tests take Chromium for WebKit
+are older than the npm package, and its own build wants some 80 Ubuntu
+libraries), so the e2e tests take Chromium for WebKit
 (`e2e/features/reading.feature`, Safari's `GestureEvent`). After changes
 to the reader or `vendor/foliate-js/book-security.js`, check once in Safari
 (Mac, iPhone or iPad) on the deployed hub with `e2e/fixtures/script.epub`

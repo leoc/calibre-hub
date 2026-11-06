@@ -15,6 +15,14 @@ E-book renderer of the reader (`/read/:id`), from
   the two layer stylesheets (`vendor/pdfjs/*.css`, Apache-2.0, from pdf.js
   5.5.207) with `?raw`; without the `cmaps/` and `standard_fonts/` copies
   (PDFs with non-embedded CJK or standard fonts fall back to system fonts).
+- Changed: `pdf.js` takes the `legacy` build of `pdfjs-dist` and its worker:
+  the modern build calls `Math.sumPrecise`, `Map#getOrInsertComputed`,
+  `Uint8Array.fromBase64` and more without a check, which Safari on an iPhone
+  and the WebViews of older Boox devices don't have; the legacy build brings
+  them along (core-js). `answer()` gives the worker 30 s for each of its
+  answers before the first page: what fails in a worker can stay silent, and
+  the reader would say it is loading for good. It rejects with the name
+  `PDFTimeout`, which the reader says in German.
 - Changed (security, review #8411 K1): books render in `blob:` iframes with
   the app's origin, so a script in a book would act with the user's session.
   `book-security.js` (new, not upstream) holds three lines of defence:

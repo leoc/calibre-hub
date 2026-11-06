@@ -327,7 +327,7 @@ function Reader({ book, title, name, load, format, start, loading, note, onBack 
         {status === "failed" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background p-4 text-center">
             <p role="alert" className="font-medium">{t("reader.failed")}</p>
-            {failure instanceof Error && <p className="text-sm text-muted-foreground eink:text-black">{failure.message}</p>}
+            {failure instanceof Error && <p className="text-sm text-muted-foreground eink:text-black">{failure.name === "PDFTimeout" ? t("reader.pdfTimeout") : failure.message}</p>}
             <BackButton onClick={onBack} />
           </div>
         )}
