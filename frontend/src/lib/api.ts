@@ -370,7 +370,7 @@ export interface IntakeList {
   // decided, waiting for their job
   pending?: number
   threshold?: number | null
-  // the next page is behind this path
+  // the next page is behind this place in the list
   next?: string | null
   entries?: IntakeEntry[]
   // the library filter: the recheck under way, waiting: for the analysis

@@ -303,10 +303,10 @@ module CalibreHub
       list
     end
 
-    # by a condition on import_repairs, the book's order
-    def proposals(where : String, args : Array(DB::Any), limit = -1) : Array(Proposal)
+    # by a condition on import_repairs
+    def proposals(where : String, args : Array(DB::Any), limit = -1, order = "book_id") : Array(Proposal)
       list = [] of Proposal
-      @db.query_each("select #{PROPOSAL} from import_repairs where #{where} order by book_id limit #{limit}", args: args) { |rs| list << read_proposal(rs) }
+      @db.query_each("select #{PROPOSAL} from import_repairs where #{where} order by #{order} limit #{limit}", args: args) { |rs| list << read_proposal(rs) }
       list
     end
 

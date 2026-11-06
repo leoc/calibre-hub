@@ -40,6 +40,13 @@ Feature: Eingang
     When I press the button "Mehr anzeigen"
     Then the list has 159 rows
 
+  Scenario: The surest come first, ties by path, a failed file last, over the pages too
+    When I open the Eingang
+    Then the rows start with "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf", "Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf" and "Birds.pdf"
+    And the page has no sort control
+    When I press the button "Mehr anzeigen"
+    Then the rows end with "scan-150.pdf", "1380293052863.pdf" and "kaputt.pdf"
+
   Scenario: The drawer shows everything found about a file
     When I open the Eingang
     And I open the row "Functional Analysis"
@@ -63,14 +70,14 @@ Feature: Eingang
     When I open the Eingang
     And I open the row "Britannica Illustrated Science Library: Birds"
     And I press "j"
-    Then the drawer's header reads "Stewart Calculus Concepts and Contexts 2nd Edition.pdf"
-    And the row "Calculus: Concepts and Contexts" is marked as the current one
+    Then the drawer's header reads "Stem Cells - From Bench to Bedside.pdf"
+    And the row "Stem Cells - From Bench to Bedside.pdf" is marked as the current one
     When I press "k"
     Then the drawer's header reads "Birds.pdf"
     And each candidate has its digit
     When I press "j" 19 times
-    Then the drawer's header reads "scan-013.pdf"
-    And the row "scan-013" is in view
+    Then the drawer's header reads "scan-015.pdf"
+    And the row "scan-015" is in view
     When I press "Escape"
     Then no drawer is open
 
@@ -132,29 +139,29 @@ Feature: Eingang
   @wide
   Scenario: The drawer's four exits with their keys, the next entry opening
     When I open the Eingang
-    And I open the row "1380293052863"
+    And I open the row "Mathematics of the Discrete Fourier Transform"
     Then the drawer has the buttons "Übernehmen a", "Wie in der Datei f", "Überspringen j" and "Papierkorb d"
     And the button "Papierkorb d" is outlined in red
     And the drawer shows "k zurück · e bearbeiten · Esc schließen"
     When I press "a"
     Then the hub was asked to "accept" 1 entry
-    And the drawer's header reads "Birds.pdf"
+    And the drawer's header reads "scan-001.pdf"
     When I press "f"
     Then the hub was asked to "file" 1 entry
-    And the drawer's header reads "Stewart Calculus Concepts and Contexts 2nd Edition.pdf"
+    And the drawer's header reads "scan-002.pdf"
     When I press "d"
     Then the hub was asked to "trash" 1 entry
-    And the drawer's header reads "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf"
+    And the drawer's header reads "scan-003.pdf"
     And no dialog asks anything
 
   @wide
   Scenario: Keys leave modifiers and held keys alone
     When I open the Eingang
-    And I open the row "1380293052863"
+    And I open the row "Mathematics of the Discrete Fourier Transform"
     And I press "Control+a"
     And I hold "a" down
     Then the hub was asked to "accept" 1 entry
-    And the drawer's header reads "Birds.pdf"
+    And the drawer's header reads "scan-001.pdf"
 
   @wide
   Scenario: Skipping marks the entry and moves on, back changes nothing
@@ -162,7 +169,7 @@ Feature: Eingang
     And I open the row "Britannica Illustrated Science Library: Birds"
     And I press "j"
     Then the hub was asked to "skip" 1 entry
-    And the drawer's header reads "Stewart Calculus Concepts and Contexts 2nd Edition.pdf"
+    And the drawer's header reads "Stem Cells - From Bench to Bedside.pdf"
     And the row "Britannica Illustrated Science Library: Birds" says "Übersprungen"
     When I press "k"
     Then the drawer's header reads "Birds.pdf"
@@ -185,7 +192,7 @@ Feature: Eingang
     Then the hub wasn't asked anything
     When I press "Enter"
     Then the hub was asked to accept the title "Funktionalanalysis" by "Kosaku Yosida"
-    And the drawer's header reads "kaputt.pdf"
+    And the drawer's header reads "Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf"
 
   Scenario: A decision that failed comes back with its reason
     When I open the Eingang
@@ -225,7 +232,7 @@ Feature: Eingang
     When I open the Eingang
     Then the row "Functional Analysis" shows the ring "98 %, Sicher" in rgb(21, 128, 61) at 24 px
     And the row "Basic Pathology" shows the ring "70 %, Prüfen" in rgb(180, 83, 9) at 24 px
-    And the row "1380293052863" shows the ring "10 %, Unsicher" in rgb(185, 28, 28) at 24 px
+    And the row "Mathematics of the Discrete Fourier Transform" shows the ring "50 %, Unsicher" in rgb(185, 28, 28) at 24 px
 
   @wide
   Scenario: From sm upward the badge stays, with a dot in the band's color

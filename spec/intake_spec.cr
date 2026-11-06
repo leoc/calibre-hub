@@ -207,7 +207,8 @@ describe Intake do
       intake, _, _, _ = setup(root)
       intake.reader = ->(_p : String, _f : String) { info(format: "MOBI") }
       intake.run_once
-      swapped, kept = entries(intake)
+      # the surer one first
+      kept, swapped = entries(intake)
       swapped["kind"].should eq "calibre"
       swapped["folder"].should eq "calibre/Christie Golden/Allies (177)"
       swapped["proposal"]["title"].should eq "Allies"
@@ -329,7 +330,8 @@ describe Intake do
         info
       end
       intake.run_once.should eq 2
-      failed, ok = entries(intake)
+      # a file that failed has no confidence: the end of the list
+      ok, failed = entries(intake)
       failed["status"].should eq "failed"
       failed["detail"].should eq "broken"
       failed["band"].raw.should be_nil

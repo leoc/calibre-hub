@@ -54,7 +54,9 @@ module CalibreHub
 
     # what a Book needs of the flow's fields, as the list shows them
     FIELDS = %w(title authors publisher pubdate series seriesIndex isbn languages)
-    ORDER  = "lower(path), path"
+    # the surest first, what has no value last; a bulk goes the same way
+    SURE  = "coalesce(confidence, -1)"
+    ORDER = "#{SURE} desc, lower(path), path"
 
     # The metadata the hub proposes
     @[JSON::Serializable::Options(emit_nulls: true)]
@@ -872,6 +874,17 @@ module CalibreHub
       skipped ? sql : "#{sql} and skipped = 0"
     end
 
+    # a place in the list, for a page to go on from: confidence and what
+    # orders within it
+    def self.place(confidence : Int32?, key : String | Int64) : String
+      "#{confidence || -1}:#{key}"
+    end
+
+    def self.place(after : String) : {Int32, String}
+      sure, _, key = after.partition(':')
+      {sure.to_i? || raise(Edit::Invalid.new("after", "next of the page before expected")), key}
+    end
+
     # What of a filter a bulk decision leaves in the list and why, so the
     # button's number and the filter's add up
     private def left_out(band : String?, duplicates : Bool?, skipped : Bool?)
@@ -884,16 +897,22 @@ module CalibreHub
     # The list for the page: a page of entries with the filter's total, how
     # many of that kind there are per band, and what a bulk decision takes.
     # band: by confidence; duplicates: only those that match a book, or
-    # (false) only the new ones; skipped: only the skipped ones. after: the
-    # page behind this path (next of the page before), which stays right
-    # while entries leave the list.
+    # (false) only the new ones; skipped: only the skipped ones. In the order
+    # of ORDER; after: the page behind this place (next of the page before),
+    # a confidence and a path, which stays right while entries leave the list
+    # and the analysis adds some.
     def list(band : String? = nil, duplicates : Bool? = nil, offset = 0, limit = 100, skipped : Bool? = nil, after : String? = nil) : JSON::Any
       clause = filter_sql(band, duplicates, skipped)
       total = @db.query_one("select count(*) from intake_entries where #{clause}", as: Int64)
       entries = [] of Entry
       size = limit.clamp(1, MAX_LIMIT)
-      page = after ? "#{clause} and (lower(path), path) > (lower(?), ?)" : clause
-      args = (after ? [after, after] : [] of String).map(&.as(DB::Any)) + [(size + 1).as(DB::Any), {offset, 0}.max.as(DB::Any)]
+      page = after ? "#{clause} and (#{SURE} < ? or (#{SURE} = ? and (lower(path), path) > (lower(?), ?)))" : clause
+      args = [] of DB::Any
+      after.try do |a|
+        sure, path = Intake.place(a)
+        args = [sure, sure, path, path] of DB::Any
+      end
+      args += [(size + 1).as(DB::Any), {offset, 0}.max.as(DB::Any)]
       @db.query_each("select #{COLUMNS} from intake_entries where #{page} order by #{ORDER} limit ? offset ?", args: args) do |rs|
         entries << read_entry(rs)
       end
@@ -904,7 +923,7 @@ module CalibreHub
         counts[b] = @db.query_one("select count(*) from intake_entries where #{filter_sql(b, duplicates, skipped)}", as: Int64)
       end
       takeable = takeable_sql(band, duplicates, skipped)
-      JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? entries.last.path : nil,
+      JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? Intake.place(entries.last.confidence, entries.last.path) : nil,
                   takeable: @db.query_one("select count(*) from intake_entries where #{takeable}", as: Int64),
                   unsure: @db.query_one("select count(*) from intake_entries where #{takeable} and confidence < #{Meta::Confidence::REVIEW}", as: Int64),
                   left: left_out(band, duplicates, skipped), skipped: skipped_count,

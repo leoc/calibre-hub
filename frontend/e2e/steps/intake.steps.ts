@@ -189,6 +189,21 @@ Then("the drawer's top shows {string}", async ({ page }, text: string) => {
   await expect(drawer(page).getByText(text, { exact: true }).first()).toBeVisible()
 })
 
+const fileNames = (page: Page) => page.locator("[data-row-text] > div:first-child > button").allInnerTexts()
+
+Then("the rows start with {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string) => {
+  await expect.poll(async () => (await fileNames(page)).slice(0, 3)).toEqual([a, b, c])
+})
+
+Then("the rows end with {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string) => {
+  await expect(rows(page)).toHaveCount(159)
+  await expect.poll(async () => (await fileNames(page)).slice(-3)).toEqual([a, b, c])
+})
+
+Then("the page has no sort control", async ({ page }) => {
+  await expect(page.getByRole("main").getByLabel(/Sortierung/)).toHaveCount(0)
+})
+
 Then("the page has no line about what stays", async ({ page }) => {
   await expect(page.getByRole("main").getByText(/in der Liste$/)).toHaveCount(0)
 })

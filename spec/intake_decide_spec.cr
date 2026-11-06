@@ -771,6 +771,56 @@ describe "a chosen candidate" do
   end
 end
 
+describe "the list's order" do
+  it "goes by confidence, then path, failed files last, a page staying right while the list moves" do
+    tmpdir do |_, root|
+      %w(a b c d e).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
+      intake, _, db, _ = setup(root)
+      intake.run_once
+      id = %w(a b c d e).to_h { |n| {n, id_of(intake, "#{n}.pdf")} }
+      {"a" => 50, "b" => 90, "c" => 70, "d" => 90}.each { |n, c| db.exec "update intake_entries set confidence = ? where id = ?", c, id[n] }
+      db.exec "update intake_entries set confidence = null, status = 'failed', proposal = null where id = ?", id["e"]
+      names = ->(page : JSON::Any) { page["entries"].as_a.map(&.["name"].as_s.rchop(".pdf")) }
+      names.call(intake.list).should eq %w(b d c a e)
+      first = intake.list(limit: 2)
+      names.call(first).should eq %w(b d)
+      first["next"].as_s.should eq "90:#{File.join(root, "d.pdf")}"
+      # what the page ended on left, and a surer one came in above it
+      db.exec "delete from intake_entries where id = ?", id["d"]
+      db.exec "update intake_entries set confidence = 95 where id = ?", id["a"]
+      second = intake.list(limit: 1, after: first["next"].as_s)
+      names.call(second).should eq %w(c)
+      names.call(intake.list(limit: 5, after: second["next"].as_s)).should eq %w(e)
+      expect_raises(CalibreHub::Edit::Invalid) { intake.list(after: "nonsense") }
+    end
+  end
+
+  it "goes the same way in a bulk and for the library's books" do
+    tmpdir do |_, root|
+      %w(a b).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
+      fake = FakeCalibre.new
+      {1_i64, 2_i64, 3_i64}.each { |i| fake.add(i, "Alt", ["Jemand"]) }
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      intake.run_once
+      a, b = id_of(intake, "a.pdf"), id_of(intake, "b.pdf")
+      db.exec "update intake_entries set confidence = 50 where id = ?", a
+      db.exec "update intake_entries set confidence = 90 where id = ?", b
+      list = intake.list
+      job = wait(intake, intake.decide(JSON.parse({decision: "accept", target: {query: {} of String => String, last: list["last"], expect: 2}}.to_json).as_h)[1])
+      job.ids.should eq [b, a]
+      proposal_row(db, 1, title_change("Alt", "Neu"), 40)
+      proposal_row(db, 2, title_change("Alt", "Neu"), 95)
+      proposal_row(db, 3, title_change("Alt", "Neu"), 95)
+      library_entries(intake).map(&.["bookId"].as_i).should eq [2, 3, 1]
+      page = intake.library_list(limit: 2)
+      page["next"].should eq "95:3"
+      intake.library_list(after: page["next"].as_s)["entries"].as_a.map(&.["bookId"].as_i).should eq [1]
+    end
+  end
+end
+
 describe "what a bulk leaves in the list" do
   it "adds up with the filter" do
     tmpdir do |_, root|
@@ -847,7 +897,7 @@ describe "the filter Schon in der Bibliothek" do
       library_entries(intake, "unsure").map(&.["bookId"].as_i).should eq [8]
       # pages by book id
       page = intake.library_list(limit: 1)
-      page["next"].should eq "7"
+      page["next"].should eq "80:7"
       intake.library_list(after: page["next"].as_s)["entries"].as_a.map(&.["bookId"].as_i).should eq [8]
       # the file list stays what it was
       intake.list["total"].should eq 0

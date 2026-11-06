@@ -5,7 +5,7 @@ import { readerFormat } from "./reader"
 import { formatNumber, t } from "@/i18n"
 import type { MessageKey } from "@/i18n/de"
 
-// entries per request: the list has about 2000
+// entries per request: the list has about 2000, the surest first
 export const INTAKE_PAGE = 100
 
 export type IntakeBand = ConfidenceBand | "none" | "all"

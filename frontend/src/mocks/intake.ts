@@ -127,7 +127,11 @@ const scans: Seed[] = Array.from({ length: 150 }, (_, i) => ({
   decided: "unsure",
 }))
 
-let ENTRIES = [...SEEDS, ...scans].map((s, i) => entry(s, i + 1)).sort((a, b) => a.path.toLowerCase().localeCompare(b.path.toLowerCase()))
+// the surest first, then by path, as the hub has it
+const ordered = (a: { confidence: number | null; path: string }, b: { confidence: number | null; path: string }) =>
+  (b.confidence ?? -1) - (a.confidence ?? -1) || a.path.toLowerCase().localeCompare(b.path.toLowerCase())
+
+let ENTRIES = [...SEEDS, ...scans].map((s, i) => entry(s, i + 1)).sort(ordered)
 const IDS = ENTRIES.map((e) => e.id)
 const LAST = Math.max(...IDS)
 
@@ -198,7 +202,7 @@ const libraryTakeable = (list: IntakeDetail[]) => list.filter((e) => e.status ==
 
 function libraryList(q: URLSearchParams) {
   const all = library()
-  const list = all.filter((e) => !q.get("band") || e.band === q.get("band"))
+  const list = all.filter((e) => !q.get("band") || e.band === q.get("band")).sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1) || (a.bookId ?? 0) - (b.bookId ?? 0))
   const take = libraryTakeable(list)
   const count = (b: string) => all.filter((e) => e.band === b).length
   return {
@@ -240,7 +244,8 @@ export const intakeHandlers = [
     const kind = inFilter(filter)
     const list = inFilter({ ...filter, band: q.get("band") })
     const after = q.get("after")
-    const from = after ? list.findIndex((e) => e.path.toLowerCase().localeCompare(after.toLowerCase()) > 0) : 0
+    const place = after ? { confidence: Number(after.slice(0, after.indexOf(":"))), path: after.slice(after.indexOf(":") + 1) } : null
+    const from = place ? list.findIndex((e) => ordered(place, e) < 0) : 0
     const rest = from < 0 ? [] : list.slice(from)
     const limit = limitOf(q)
     const page = rest.slice(0, limit)
@@ -267,7 +272,7 @@ export const intakeHandlers = [
       last: LAST,
       pending,
       threshold,
-      next: rest.length > limit ? page[page.length - 1].path : null,
+      next: rest.length > limit ? `${page[page.length - 1].confidence ?? -1}:${page[page.length - 1].path}` : null,
       entries: page,
       ...(q.get("library") === "true" ? libraryList(q) : {}),
     })

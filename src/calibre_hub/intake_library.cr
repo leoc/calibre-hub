@@ -44,22 +44,33 @@ module CalibreHub
        unchanged: library_count("#{open} and status = 'pending' and skipped = 0 and not #{LIBRARY_WRITES}")}
     end
 
-    # The list for the filter, as #list has it, in the books' order; after: the
-    # page behind this book id
+    # the surest first as in #list, then by book
+    LIBRARY_ORDER = "#{SURE} desc, book_id"
+
+    # The list for the filter, as #list has it; after: the page behind this
+    # place, a confidence and a book id
     def library_list(band : String? = nil, limit = 100, after : String? = nil) : JSON::Any
       repair = @repair
       repair.try(&.release)
       clause = library_sql(band)
       size = limit.clamp(1, MAX_LIMIT)
       total = repair ? library_count(clause) : 0_i64
-      rows = repair.try(&.proposals("#{clause} and book_id > ?", [after.try(&.to_i64?) || 0_i64] of DB::Any, size + 1)) || [] of ImportRepair::Proposal
+      page = clause
+      args = [] of DB::Any
+      after.try do |a|
+        sure, key = Intake.place(a)
+        book = key.to_i64? || raise Edit::Invalid.new("after", "next of the page before expected")
+        page = "#{clause} and (#{SURE} < ? or (#{SURE} = ? and book_id > ?))"
+        args = [sure, sure, book] of DB::Any
+      end
+      rows = repair.try(&.proposals(page, args, size + 1, LIBRARY_ORDER)) || [] of ImportRepair::Proposal
       more = rows.size > size
       rows.pop if more
       books = @calibre.books(rows.map(&.book_id)).index_by(&.id)
       counts = Hash(String, Int64).new(0_i64)
       (Meta::Confidence::BANDS + ["none"]).each { |b| counts[b] = repair ? library_count(library_sql(b)) : 0_i64 }
       takeable = library_takeable(band)
-      JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? rows.last.book_id.to_s : nil,
+      JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? Intake.place(rows.last.confidence, rows.last.book_id) : nil,
                   takeable: repair ? library_count(takeable) : 0_i64,
                   unsure: repair ? library_count("#{takeable} and confidence < #{Meta::Confidence::REVIEW}") : 0_i64,
                   left: repair ? library_left(band) : {duplicates: 0_i64, failed: 0_i64, skipped: 0_i64, unchanged: 0_i64},
@@ -153,7 +164,7 @@ module CalibreHub
       expect = target["expect"]?.try(&.as_i64?) || raise Edit::Invalid.new("target", "expect (the number of books meant) required")
       last = target["last"]?.try(&.as_i64?) || raise Edit::Invalid.new("target", "last expected")
       ids = [] of Int64
-      @db.query_each("select book_id from import_repairs where #{library_takeable(q["band"]?.try(&.as_s?))} and book_id <= ? order by book_id", last) { |rs| ids << rs.read(Int64) }
+      @db.query_each("select book_id from import_repairs where #{library_takeable(q["band"]?.try(&.as_s?))} and book_id <= ? order by #{LIBRARY_ORDER}", last) { |rs| ids << rs.read(Int64) }
       raise Jobs::CountMismatch.new(expect, ids.size) unless ids.size == expect
       ids
     end
