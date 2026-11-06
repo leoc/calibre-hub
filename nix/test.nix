@@ -319,6 +319,58 @@ pkgs.testers.runNixOSTest {
     with subtest("events reach handlers"):
         machine.wait_until_succeeds("grep -q '\"changed\",1,.*tags' /var/lib/calibre-hub/events.log", timeout=30)
 
+    def api(method, path, body=None, extra=""):
+        data = f"-H 'Content-Type: application/json' -d '{json.dumps(body)}'" if body is not None else ""
+        out = machine.succeed(f"curl -s -b /tmp/jar -X {method} {CSRF} {data} {extra} -w '\\n%{{http_code}}' '{H}{path}'")
+        text, status = out.rsplit("\n", 1)
+        return int(status), (json.loads(text) if text.strip() else None)
+
+    # the entry of a file, by its name, once the Eingang looked at it
+    def entry(name, query="", seconds=900):
+        for _ in range(seconds // 5):
+            listed = api("GET", f"/api/intake?limit=500{query}")[1]["entries"]
+            found = [e for e in listed if e["name"] == name]
+            if found:
+                return found[0]
+            machine.sleep(5)
+        raise Exception(f"{name} is not in the Eingang")
+
+    # a decision that goes through a job, carried out
+    def decide(e, decision, **extra):
+        status, r = api("POST", "/api/intake/decide", {"target": {"ids": [e["id"]]}, "decision": decision, **extra})
+        assert status == 202, (status, r)
+        j = wait_job(r["jobId"], 180)
+        assert j["status"] == "done" and j["errors"] == [], j
+
+    # what came of an upload; below the threshold it is taken by hand
+    def upload(form):
+        status, r = api("POST", "/api/books", extra=form)
+        assert status == 202 and r["upload"]["status"] == "checking", (status, r)
+        decided = False
+        for _ in range(240):
+            status, s = api("GET", f"/api/intake/uploads/{r['upload']['id']}")
+            assert status == 200, (status, s)
+            if s["status"] == "waiting" and not decided:
+                decided = True
+                assert api("POST", "/api/intake/decide", {"target": {"ids": [s["entryId"]]}, "decision": "accept"})[0] == 202
+            elif s["status"] not in ("checking", "waiting"):
+                return s
+            machine.sleep(1)
+        raise Exception(f"upload {r} is still {s}")
+
+    # a file of the inbox in the library, taken by hand when it is below the threshold
+    def from_inbox(name):
+        decided = False
+        for _ in range(180):
+            if machine.execute(f"ls /srv/books/inbox/_imported/*/{name}")[0] == 0:
+                return
+            found = [e for e in api("GET", "/api/intake?limit=500&origin=inbox")[1]["entries"] if e["name"] == name]
+            if found and not decided:
+                decided = True
+                assert api("POST", "/api/intake/decide", {"target": {"ids": [found[0]["id"]]}, "decision": "accept"})[0] == 202
+            machine.sleep(1)
+        raise Exception(f"{name} didn't leave the inbox")
+
     with subtest("inbox"):
         machine.succeed("printf 'Krimi\\n\\nText\\n' > /tmp/k.txt")
         # a folder without group write is skipped, not imported twice
@@ -327,7 +379,20 @@ pkgs.testers.runNixOSTest {
         # like Samba on dmt: directory mask 2775
         machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Roman /srv/books/inbox/Roman/Krimi")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt /srv/books/inbox/Roman/Krimi/k.epub --title Inboxbuch --authors 'Agatha Test' --tags Eingebettet")
+        # it goes through the Eingang: below the threshold it waits there, in its folder
+        assert api("GET", "/api/intake?limit=1")[1]["thresholds"] == {"backlog": None, "inbox": 90, "upload": 90}
+        e = entry("k.epub", "&origin=inbox", 120)
+        assert e["folder"] == "Roman/Krimi" and e["confidence"] < 90, e
+        machine.succeed("test -f /srv/books/inbox/Roman/Krimi/k.epub")
+        assert api("GET", "/api/books?q=title:Inboxbuch")[1]["books"] == []
+        # from its threshold on it goes by itself
+        status, r = api("POST", "/api/intake/threshold", {"origin": "inbox", "value": 60})
+        assert status == 200 and r["thresholds"]["inbox"] == 60, (status, r)
+        assert api("POST", "/api/intake/threshold", {"origin": "upload", "value": 60})[0] == 200
+        assert api("POST", "/api/intake/threshold", {"origin": "nowhere", "value": 60})[0] == 400
+        assert api("POST", "/api/intake/threshold", {"origin": "inbox", "value": 59})[0] == 400
         machine.wait_until_succeeds("ls /srv/books/inbox/_imported/*/Roman/Krimi/k.epub", timeout=90)
+        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/books?q=title:Inboxbuch' | jq -e '.total == 1'", timeout=30)
         books = json.loads(machine.succeed(f"curl -sf -b /tmp/jar '{H}/api/books?q=title:Inboxbuch'"))
         b = books["books"][0]
         assert b["tags"] == ["Krimi", "Roman"] or sorted(b["tags"]) == ["Krimi", "Roman"], b
@@ -335,12 +400,6 @@ pkgs.testers.runNixOSTest {
         # one added event, not one per write
         added = machine.succeed(f"grep -c '\"added\",{b['id']},' /var/lib/calibre-hub/events.log").strip()
         assert added == "1", added
-
-    def api(method, path, body=None, extra=""):
-        data = f"-H 'Content-Type: application/json' -d '{json.dumps(body)}'" if body is not None else ""
-        out = machine.succeed(f"curl -s -b /tmp/jar -X {method} {CSRF} {data} {extra} -w '\\n%{{http_code}}' '{H}{path}'")
-        text, status = out.rsplit("\n", 1)
-        return int(status), (json.loads(text) if text.strip() else None)
 
     STATE = "/var/lib/calibre-hub/state.sqlite"
 
@@ -504,14 +563,19 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'Upload\\n\\nText\\n' > /tmp/u.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/u.txt /tmp/Upload.epub --title Hochgeladen --authors 'Ulla Upload' --tags Eingebettet")
         form = "-F file=@/tmp/Upload.epub -F tags=Roman -F tags=Neu -F kategorie=Roman.Krimi"
-        status, r = api("POST", "/api/books", extra=form)
-        assert status == 201 and sorted(r["book"]["tags"]) == ["Neu", "Roman"] and r["book"]["custom"]["kategorie"] == "Roman.Krimi", (status, r)
+        # a new book goes through the Eingang; the form's tags and category come along
+        r = upload(form)
+        assert r["status"] == "imported" and sorted(r["book"]["tags"]) == ["Neu", "Roman"] and r["book"]["custom"]["kategorie"] == "Roman.Krimi", r
         uid = r["book"]["id"]
         machine.wait_until_succeeds(f"grep -q '\"added\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
-        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Upload.epub")
-        assert status == 409 and r["error"] == "duplicate" and r["duplicates"][0]["id"] == uid, (status, r)
-        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Upload.epub -F force=1")
-        assert status == 201 and r["book"]["id"] != uid, (status, r)
+        machine.succeed("ls /var/lib/calibre-hub/uploads/_imported/*/*/Upload.epub")
+        # the same file again: it says so, nothing is added
+        r = upload("-F file=@/tmp/Upload.epub")
+        assert r["status"] in ("copy", "duplicate") and r["duplicates"][0]["id"] == uid, r
+        if r["status"] == "duplicate":
+            assert api("POST", "/api/intake/decide", {"target": {"ids": [r["entryId"]]}, "decision": "trash"})[0] == 202
+        r = upload("-F file=@/tmp/Upload.epub -F force=1")
+        assert r["status"] == "imported" and r["book"]["id"] != uid, r
         status, r = api("POST", "/api/books", extra=f"-F file=@/tmp/u.txt -F addFormatTo={uid}")
         assert status == 200 and "TXT" in r["book"]["formats"], (status, r)
         machine.succeed("echo x > /tmp/evil.exe")
@@ -961,8 +1025,8 @@ pkgs.testers.runNixOSTest {
         assert st["enabled"] is True and st["target"] == "EPUB" and st["ignore"] == ["PDF", "CBZ", "CBR"], st
         # an upload: the TXT stays, an EPUB is added
         machine.succeed("printf 'Umwandlung\\n\\nText\\n' > /tmp/Umwandlung.txt")
-        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Umwandlung.txt")
-        assert status == 201 and r["book"]["formats"] == ["TXT"], (status, r)
+        r = upload("-F file=@/tmp/Umwandlung.txt")
+        assert r["status"] == "imported" and r["book"]["formats"] == ["TXT"], r
         tid = r["book"]["id"]
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{tid} | jq -e '.formats | sort == [\"EPUB\", \"TXT\"]'", timeout=120)
         machine.succeed(f"{META} '{library_file(tid, 'epub')}' | grep -q '^Title *: Umwandlung$'")
@@ -970,7 +1034,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'Dokument\\n\\nText\\n' > /tmp/d.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/d.txt /tmp/Dokument.docx --title Dokument --authors 'Doris Docx'")
         machine.succeed("install -m 664 -g calibre-hub /tmp/Dokument.docx /srv/books/inbox/Dokument.docx")
-        machine.wait_until_succeeds("ls /srv/books/inbox/_imported/*/Dokument.docx", timeout=90)
+        from_inbox("Dokument.docx")
         did = book_by_title("Dokument")["id"]
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{did} | jq -e '.formats | sort == [\"DOCX\", \"EPUB\"]'", timeout=120)
         # the library: nothing left to convert to EPUB; a PDF-only book would be left alone
@@ -1055,7 +1119,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"{PY} {BROKEN_EPUB} /tmp/wiese.epub")
         machine.fail(f"{PY} {CHECK_EPUB} /tmp/wiese.epub")
         machine.succeed("install -m 664 -g calibre-hub /tmp/wiese.epub /srv/books/inbox/Wiese.epub")
-        machine.wait_until_succeeds("ls /srv/books/inbox/_imported/*/Wiese.epub", timeout=90)
+        from_inbox("Wiese.epub")
         wid = book_by_title("Kaputte Wiese")["id"]
         # repaired on import; the file as it was kept as ORIGINAL_EPUB
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{wid} | jq -e '.formats | sort == [\"EPUB\", \"ORIGINAL_EPUB\"]'", timeout=120)
@@ -1140,43 +1204,40 @@ pkgs.testers.runNixOSTest {
         put(f"{ALT}/Some Author/talk.mp3", b"ID3" + b"\0" * 4000)
         machine.succeed(f"mkdir -p '{ALT}/Krimi' && cp /srv/books/inbox/_imported/*/Roman/Krimi/k.epub '{ALT}/Krimi/k.epub'")
 
-        def wait_run(run_id, seconds=120):
-            for _ in range(seconds):
-                status, r = api("GET", f"/api/import/runs/{run_id}")
-                assert status == 200, (status, r)
-                if r["status"] != "scanning":
-                    return r
-                machine.sleep(1)
-            raise Exception(f"run {run_id} still scanning")
+        # what the next subtests take, in the same pass of the analysis
+        WW = f"{ALT}/Algebra"
+        carr_name = "Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).pdf"
+        # fill bytes no earlier file of the test has (same file = duplicate)
+        put(f"{WW}/{carr_name}", pdf(b"q"))
+        # a scan without a text layer: Tesseract reads it in the analysis, the
+        # ISBN is in the book, the stub's catalogs don't know it
+        FLOW = f"{ALT}/Flow"
+        machine.succeed(f"mkdir -p {FLOW} && cp ${../spec/fixtures/metadata/scan.pdf} '{FLOW}/Herbert - Der Wuestenplanet.pdf' && "
+                        f"cp ${../spec/fixtures/metadata/scan.djvu} '{FLOW}/Herbert - Dune Messias.djvu' && chmod -R u+w {FLOW}")
+        # a MOBI through calibre's tools; a text with the same fill would be a duplicate
+        machine.succeed(f"printf 'A Quiet Book\\n\\nby Jane Roe\\n\\nCopyright 2001. ISBN 0-201-91465-4\\n' > /tmp/quiet.txt && "
+                        f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/quiet.txt '{FLOW}/Roe - A Quiet Book.mobi' --title 'A Quiet Book' --authors 'Jane Roe' >/dev/null")
+        # old enough to be looked at
+        machine.succeed(f"find {ALT} -type f -exec touch -d '1 hour ago' {{}} +")
 
         # the Eingang: nothing to start, it looks at the roots by itself
         status, intake = api("GET", "/api/intake")
         assert status == 200 and intake["enabled"] is True and intake["progress"]["state"] in ("idle", "scanning", "analysing", "paused"), intake
         assert api("GET", "/api/intake/0")[0] == 404
-        assert api("POST", "/api/import", {"path": "/srv/books"})[0] == 400
-        assert api("POST", "/api/import", {"path": ALT, "limit": 0})[0] == 400
-        # the scan runs in the run's job, the request returns at once
-        status, dry = api("POST", "/api/import", {"path": ALT})
-        assert status == 202 and dry["dryRun"] is True and dry["status"] == "scanning" and dry["summary"] is None, (status, dry)
-        dry = wait_run(dry["id"])
-        assert dry["status"] == "planned" and dry["scan"]["planned"] == 4, dry
-        s = dry["summary"]
-        assert s["books"] == 4 and s["calibreFolders"] == 2 and s["withCover"] == 1, s
-        assert s["toAddFormats"] == 1 and s["toAdd"] + s["duplicates"]["total"] == 3, s
-        assert s["skipped"]["byType"] == {"mp3": 1}, s
-        assert book_by_title("Inboxbuch")["formats"] == ib["formats"]
+        # the old ways in are gone
+        for method, path in [("POST", "/api/import"), ("GET", "/api/import"), ("GET", "/api/import/runs/x"), ("GET", "/api/import/quality"),
+                             ("GET", "/api/import/repair"), ("POST", "/api/import/repair/accept"), ("POST", "/api/import/repair/reject")]:
+            assert api(method, path, {} if method == "POST" else None)[0] == 404, path
+        assert machine.execute(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import '{ALT}'")[0] == 1
+        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub eingang")
+        assert "taken by itself: backlog off, inbox from 60, upload from 60" in out, out
 
-        status, run = api("POST", "/api/import", {"path": "/srv/books/alt", "dryRun": False})
-        assert status == 202 and run["jobId"] and run["status"] == "scanning", (status, run)
-        j = wait_job(run["jobId"], 180)
-        assert j["status"] == "done" and j["errors"] == [], j
-        status, run = api("GET", f"/api/import/runs/{run['id']}")
-        assert run["results"] == {"imported": 2, "formatAdded": 1, "duplicate": 1}, run
-        status, report = api("GET", f"/api/import/runs/{run['id']}/report")
-        units = {u["dir"].removeprefix(ALT + "/"): u for u in report["units"]}
-        assert report["skipped"] == [{"path": f"{ALT}/Some Author/talk.mp3", "reason": "not a book format"}], report["skipped"]
-
-        old = api("GET", f"/api/books/{units['Ada Writer/Altes Buch (12)']['bookId']}")[1]
+        # an old calibre folder takes its metadata.opf and cover, no folder as a category
+        e = entry("Altes Buch - Ada Writer.epub")
+        assert e["origin"] == "backlog" and e["kind"] == "calibre", e
+        decide(e, "accept")
+        old = book_by_title("Altes Buch")
+        old = api("GET", f"/api/books/{old['id']}")[1]
         assert old["title"] == "Altes Buch" and old["authors"] == ["Ada Writer"], old
         assert old["series"] == "Alte Reihe" and old["seriesIndex"] == 3.0 and old["publisher"] == "Alter Verlag", old
         assert old["identifiers"].get("isbn") == "9780306406157" and old["languages"] == ["deu"], old
@@ -1184,78 +1245,30 @@ pkgs.testers.runNixOSTest {
         # no folder as category or tag
         assert [t for t in old["tags"] if t != "auto-metadaten"] == ["Geschichte"] and old["custom"]["kategorie"] is None, old
         assert code(f"-b /tmp/jar {H}/api/books/{old['id']}/cover") == "200"
-        plain = api("GET", f"/api/books/{units['Some Author']['bookId']}")[1]
-        assert plain["formats"] == ["PDF"] and plain["custom"]["kategorie"] is None, plain
-        # no folder as a tag; "book.pdf" says nothing, so it goes to the review
-        assert [t for t in plain["tags"] if t != "auto-metadaten"] == ["auto-unsicher"], plain
-        assert units["Agatha Test/Inboxbuch (7)"]["status"] == "formatAdded" and units["Agatha Test/Inboxbuch (7)"]["bookId"] == ib["id"], units
+        # a file that says nothing
+        e = entry("book.pdf")
+        assert e["folder"] == "Some Author", e
+        decide(e, "file")
+        machine.succeed(f"test -f '{ALT}/Some Author/book.pdf'")
+        # a format the library lacks goes to the book it has
+        e = entry("Inboxbuch.azw3")
+        assert e["action"] == "addFormats" and e["bookId"] == ib["id"], e
+        decide(e, "accept")
         assert "AZW3" in book_by_title("Inboxbuch")["formats"]
-        assert units["Krimi"]["status"] == "duplicate" and units["Krimi"]["bookId"] == ib["id"], units["Krimi"]
-        # nothing moved, and another run skips what was handled
-        machine.succeed(f"test -f '{ALT}/Some Author/book.pdf' && test -f '{ALT}/Krimi/k.epub'")
-        status, again = api("POST", "/api/import", {"path": ALT})
-        again = wait_run(again["id"])
-        assert again["summary"]["books"] == 0 and again["summary"]["alreadyImported"] == 5, again["summary"]
-        st = api("GET", "/api/import")[1]
-        assert st["enabled"] and st["roots"] == [ALT] and st["hooksPaused"] is False and st["runs"][0]["id"] == again["id"], st
+        assert not [e for e in api("GET", "/api/intake?limit=500")[1]["entries"] if e["name"] in ("book.pdf", "Inboxbuch.azw3")]
 
-        # the CLI
-        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import '{ALT}'")
-        assert "0 books in 0 files" in out and "imported before: 5" in out, out
-
-        # several folders in portions: the first two books, then the rest
-        for i, (folder, name) in enumerate([("Teil1", "Erstes Stueck"), ("Teil1", "Zweites Stueck"), ("Teil2", "Drittes Stueck")]):
-            put(f"{ALT}/{folder}/{name}.pdf", pdf(bytes([ord("a") + i])))
-        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import Teil1 Teil2 --limit 2")
-        assert "3 books in 3 files" in out and "this run (--limit 2): 2 books: add 2" in out and "1 left for later runs" in out, out
-        status, run = api("POST", "/api/import", {"paths": ["Teil1", f"{ALT}/Teil2"], "limit": 2, "dryRun": False})
-        assert status == 202 and run["paths"] == [f"{ALT}/Teil1", f"{ALT}/Teil2"] and run["limit"] == 2, (status, run)
-        assert wait_job(run["jobId"], 180)["status"] == "done"
-        run = api("GET", f"/api/import/runs/{run['id']}")[1]
-        assert run["results"] == {"imported": 2, "deferred": 1} and run["total"] == 2, run
-        status, run = api("POST", "/api/import", {"paths": ["Teil1", "Teil2"], "limit": 2, "dryRun": False})
-        assert wait_job(run["jobId"], 180)["status"] == "done"
-        run = api("GET", f"/api/import/runs/{run['id']}")[1]
-        assert run["results"] == {"imported": 1} and run["summary"]["alreadyImported"] == 2, run
-        last = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"]
-        assert [u["files"][0]["path"] for u in last] == [f"{ALT}/Teil2/Drittes Stueck.pdf"], last
-        assert api("GET", f"/api/books/{last[0]['bookId']}")[1]["formats"] == ["PDF"], last
-
-        # a book moved to calibre's trash is no longer in the library: its
-        # file is no duplicate and not "imported before", the next run imports it again
-        gone = last[0]["bookId"]
-        status, r = api("DELETE", f"/api/books/{gone}")
-        assert status == 200, (status, r)
-        assert any(e["id"] == gone for e in api("GET", "/api/trash")[1])
-        status, run = api("POST", "/api/import", {"paths": ["Teil1", "Teil2"], "limit": 2, "dryRun": False})
-        assert status == 202, (status, run)
-        j = wait_job(run["jobId"], 180)
-        assert j["status"] == "done" and j["errors"] == [], j
-        run = api("GET", f"/api/import/runs/{run['id']}")[1]
-        assert run["results"] == {"imported": 1} and run["summary"]["alreadyImported"] == 2, run
-        again = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"]
-        assert [u["files"][0]["path"] for u in again] == [f"{ALT}/Teil2/Drittes Stueck.pdf"], again
-        assert again[0]["bookId"] != gone and api("GET", f"/api/books/{again[0]['bookId']}")[0] == 200, again
-
-    with subtest("backlog import reads file names (#8408)"):
+    with subtest("the Eingang reads file names (#8408)"):
         # "Author - Title (Publisher, Year)": calibre alone made it the title
         # "Carr" by "Formulas" and "Theorems in Pure Mathematics 2e (Chelsea, 1970)"
-        WW = f"{ALT}/Algebra"
-        carr_name = "Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).pdf"
-        # fill bytes no earlier file of the test has (same file = duplicate)
-        put(f"{WW}/{carr_name}", pdf(b"q"))
-        status, run = api("POST", "/api/import", {"path": "Algebra", "dryRun": False})
-        assert status == 202, (status, run)
-        j = wait_job(run["jobId"], 180)
-        assert j["status"] == "done" and j["errors"] == [], j
-        unit = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"][0]
-        assert unit["status"] == "imported", unit
-        carr = api("GET", f"/api/books/{unit['bookId']}")[1]
-        assert carr["title"] == "Formulas and Theorems in Pure Mathematics" and carr["authors"] == ["Carr"], carr
-        assert carr["publisher"] == "Chelsea" and carr["pubdate"].startswith("1970-01"), carr
+        e = entry(carr_name)
+        assert e["proposal"]["title"] == "Formulas and Theorems in Pure Mathematics" and e["proposal"]["authors"] == ["Carr"], e
+        decide(e, "accept")
+        carr = book_by_title("Formulas and Theorems in Pure Mathematics")
+        carr = api("GET", f"/api/books/{carr['id']}")[1]
+        assert carr["authors"] == ["Carr"] and carr["publisher"] == "Chelsea" and carr["pubdate"].startswith("1970-01"), carr
 
         # a book added the old way (calibre's add-book with the file name, as
-        # the import did before): the repair plans the fix, dry run by default
+        # the import did before): a recheck proposes the fix in the Eingang
         brass = "Brass - Advanced Data Structures (Cambridge, 2008).pdf"
         put(f"{WW}/{brass}", pdf(b"r"))
         out = machine.succeed(f"curl -sf --user scripts:scripts-secret -X POST --data-binary '@{WW}/{brass}' "
@@ -1266,71 +1279,38 @@ pkgs.testers.runNixOSTest {
         assert old["title"] == "Brass" and old["authors"] == ["Advanced Data Structures (Cambridge, 2008)"], old
         machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"insert into import_files (path, size, mtime, status, book_id, run_id, at) "
                         f"values ('{WW}/{brass}', 1, 1, 'imported', {old_id}, 'old', strftime('%s', 'now'))\"")
-        # the plan is a job; its proposals are reviewed, then accepted
-        status, plan = api("POST", "/api/import/repair", {"minId": old_id, "maxId": old_id})
-        assert status == 202 and plan["dryRun"] is True and plan["books"] == 1, (status, plan)
-        assert wait_job(plan["job"]["id"])["status"] == "done"
-        review = api("GET", "/api/import/repair")[1]
-        entry = next(e for e in review["entries"] if e["bookId"] == old_id)
-        planned = {c["field"]: c["new"] for c in entry["changes"]}
-        assert entry["decided"] == "name" and entry["status"] == "pending", entry
-        assert entry["confidence"] == 70 and entry["level"] == 3 and entry["band"] == "review", entry
-        assert planned["title"] == "Advanced Data Structures" and planned["authors"] == ["Brass"], entry
-        assert planned["publisher"] == "Cambridge University Press" and planned["pubdate"] == "2008", entry
+        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub eingang recheck --run old")
+        assert "recheck: 1 books" in out, out
+        for _ in range(180):
+            status, e = api("GET", f"/api/intake/{-old_id}")
+            if status == 200:
+                break
+            machine.sleep(5)
+        assert status == 200, (status, e)
+        planned = {c["field"]: c["new"] for c in e["changes"]}
+        assert e["decided"] == "name" and e["kind"] == "library" and e["confidence"] == 70 and e["level"] == 3, e
+        assert planned["title"] == "Advanced Data Structures" and planned["authors"] == ["Brass"], e
+        assert planned["publisher"] == "Cambridge University Press" and planned["pubdate"] == "2008", e
         assert api("GET", f"/api/books/{old_id}")[1]["title"] == "Brass"
-        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import repair --min-id {old_id} --max-id {old_id}")
-        assert "Advanced Data Structures" in out and "1 books" in out and "to review" in out, out
-        status, acc = api("POST", "/api/import/repair/accept", {"bookIds": [old_id]})
-        assert status == 202 and acc["books"] == 1, (status, acc)
-        j = wait_job(acc["job"]["id"])
+        status, acc = api("POST", "/api/intake/decide", {"target": {"ids": [-old_id]}, "decision": "accept"})
+        assert status == 202 and acc["total"] == 1, (status, acc)
+        j = wait_job(acc["jobId"])
         assert j["status"] == "done" and j["errors"] == [], j
         fixed = api("GET", f"/api/books/{old_id}")[1]
         assert fixed["title"] == "Advanced Data Structures" and fixed["authors"] == ["Brass"], fixed
         log = api("GET", f"/api/metadata/changes?bookId={old_id}")[1]["changes"]
         assert any(c["field"] == "title" and c["source"] == "rules" and c["old"] == "Brass" for c in log), log
-        assert api("GET", "/api/import/repair")[1]["counts"].get("applied") == 1
-        # the quality report: the portion is clean now, the library has its measure
-        status, report = api("GET", f"/api/import/quality?minId={old_id}&maxId={old_id}")
-        assert status == 200 and report["total"] == 1 and report["suspect"] == 0, (status, report)
-        report = api("GET", "/api/import/quality")[1]
-        assert report["total"] >= 1 and "unknownAuthor" in report["reasons"] and len(report["runs"]) >= 1, report
-        out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import quality --min-id {old_id} --max-id {old_id}")
-        assert "0 of 1 books suspicious" in out, out
 
     with subtest("the rule flow reads the book first (#8528)"):
-        # a scan without a text layer: Tesseract reads it on the import, the
-        # ISBN is in the book, the stub's catalogs don't know it
-        FLOW = f"{ALT}/Flow"
-        machine.succeed(f"mkdir -p {FLOW} && cp ${../spec/fixtures/metadata/scan.pdf} '{FLOW}/Herbert - Der Wuestenplanet.pdf' && "
-                        f"cp ${../spec/fixtures/metadata/scan.djvu} '{FLOW}/Herbert - Dune Messias.djvu' && chmod -R u+w {FLOW}")
-        # a MOBI through calibre's tools; a text with the same fill would be a duplicate
-        machine.succeed(f"printf 'A Quiet Book\\n\\nby Jane Roe\\n\\nCopyright 2001. ISBN 0-201-91465-4\\n' > /tmp/quiet.txt && "
-                        f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/quiet.txt '{FLOW}/Roe - A Quiet Book.mobi' --title 'A Quiet Book' --authors 'Jane Roe' >/dev/null")
-        status, run = api("POST", "/api/import", {"path": "Flow", "dryRun": False})
-        assert status == 202, (status, run)
-        j = wait_job(run["jobId"], 300)
-        assert j["status"] == "done" and j["errors"] == [], j
-        units = api("GET", f"/api/import/runs/{run['id']}/report")[1]["units"]
-        assert len(units) == 3 and all(u["status"] == "imported" for u in units), units
+        names = ["Herbert - Der Wuestenplanet.pdf", "Herbert - Dune Messias.djvu", "Roe - A Quiet Book.mobi"]
+        for name in names:
+            decide(entry(name), "accept")
         sql = lambda q: machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"{q}\"").strip()
         # both scans; the key starts with the file's size
         scans = sql("select front from ocr_pages where key like '16041-%' or key like '25722-%'")
         assert scans.count("Herbert") == 2, scans
-        levels = {u["bookId"]: sql(f"select level || ' ' || confidence from metadata_decisions where book_id = {u['bookId']}") for u in units}
-        mobi = next(u["bookId"] for u in units if u["files"][0]["path"].endswith(".mobi"))
-        assert levels[mobi] == "2 90", levels
-        # the whole library as a dry run, the report has its bands
-        status, plan = api("POST", "/api/import/repair", {"library": True})
-        assert status == 202 and plan["dryRun"] is True, (status, plan)
-        assert wait_job(plan["job"]["id"], 300)["status"] == "done"
-        report = api("GET", "/api/import/quality")[1]
-        assert sum(report["bands"].values()) == report["total"] and report["bands"]["none"] < report["total"], report
-        # a sample check of a band is kept
-        status, sample = api("GET", "/api/import/quality/sample?band=review")
-        assert status == 200 and sample["band"] == "review", (status, sample)
-        status, s = api("POST", "/api/import/quality/sample", {"band": "bulk", "checked": 30, "correct": 29})
-        assert status == 201, (status, s)
-        assert api("GET", "/api/import/quality")[1]["samples"][0]["correct"] == 29
+        mobi = book_by_title("A Quiet Book")["id"]
+        assert sql(f"select level || ' ' || confidence from metadata_decisions where book_id = {mobi}") == "2 90"
         # calibre finds a book by its ISBN in both forms: the same ISBN on two books
         machine.succeed(f"{DB} set_metadata {mobi} -f identifiers:isbn:9780201914658")
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/books?q=identifiers:%22=isbn:=9780201914658%22' | grep -q '\"id\":{mobi}'", timeout=30)
@@ -1346,15 +1326,6 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"cp '{copy}' '{IN}/kopie.pdf' && touch -d '1 hour ago' '{IN}'/*.pdf")
         machine.wait_until_succeeds(f"test -f '{TRASH}/kopie.pdf'", timeout=600)
         assert machine.succeed(f"cmp '{copy}' '{TRASH}/kopie.pdf' && test ! -e '{IN}/kopie.pdf' && echo ok").strip() == "ok"
-
-        def entry(name):
-            for _ in range(120):
-                listed = api("GET", "/api/intake?limit=500")[1]["entries"]
-                found = [e for e in listed if e["name"] == name]
-                if found:
-                    return found[0]
-                machine.sleep(5)
-            raise Exception(f"{name} is not in the Eingang")
 
         # thrown away: out of the root, under its path, the hub's sandbox lets it
         gone = entry("wegwerfen.pdf")
@@ -1373,19 +1344,28 @@ pkgs.testers.runNixOSTest {
         assert book_by_title("Von Hand")["authors"] == ["Ada Writer"]
         machine.succeed(f"test -f '{IN}/Ada Writer - Angenommen.pdf'")
         assert not [e for e in api("GET", "/api/intake?limit=500")[1]["entries"] if e["id"] == kept["id"]]
-        status, dry = api("POST", "/api/import", {"path": "Eingang"})
-        assert status == 202, (status, dry)
-        dry = wait_run(dry["id"])
-        assert dry["summary"]["books"] == 0 and dry["summary"]["alreadyImported"] == 1, dry["summary"]
 
         # a root's parent is writable for the hub, the library in it isn't
         pid = machine.succeed("systemctl show -p MainPID --value calibre-hub").strip()
         machine.fail(f"nsenter -t {pid} -m touch /srv/books/library/from-the-hub")
         machine.succeed(f"nsenter -t {pid} -m touch /srv/books/from-the-hub && rm /srv/books/from-the-hub")
 
-        # the threshold is off until someone sets it
-        assert api("GET", "/api/intake?limit=1")[1]["threshold"] is None
-        assert api("POST", "/api/intake/threshold", {"value": 59})[0] == 400
+        # the inbox's and an upload's trash: one rename next to their root,
+        # with the service's sandbox around it
+        assert api("POST", "/api/intake/threshold", {"origin": "inbox", "value": None})[0] == 200
+        assert api("POST", "/api/intake/threshold", {"origin": "upload", "value": None})[0] == 200
+        machine.succeed("printf 'Weg\\n\\nText\\n' > /tmp/w.txt")
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/w.txt /tmp/Wegwerfbuch.epub --title Wegwerfbuch --authors 'Walter Weg'")
+        machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Weg && install -m 664 -g calibre-hub /tmp/Wegwerfbuch.epub /srv/books/inbox/Weg/Wegwerfbuch.epub")
+        decide(entry("Wegwerfbuch.epub", "&origin=inbox", 120), "trash")
+        machine.succeed("test -f /srv/books/inbox-papierkorb/Weg/Wegwerfbuch.epub && test ! -e /srv/books/inbox/Weg/Wegwerfbuch.epub")
+        machine.succeed("cp /tmp/Wegwerfbuch.epub /tmp/Hochgeladen-weg.epub")
+        status, r = api("POST", "/api/books", extra="-F file=@/tmp/Hochgeladen-weg.epub")
+        assert status == 202, (status, r)
+        e = entry("Hochgeladen-weg.epub", "&origin=upload", 120)
+        decide(e, "trash")
+        assert api("GET", f"/api/intake/uploads/{r['upload']['id']}")[1]["status"] == "trashed"
+        machine.succeed(f"test -f /var/lib/calibre-hub/uploads-papierkorb/{r['upload']['id']}/Hochgeladen-weg.epub")
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
