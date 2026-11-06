@@ -172,10 +172,10 @@ module CalibreHub
     # The file of an entry to read in, the wanted format or the reader's
     # first. Only a file the entry lists, inside a root (a link doesn't lead
     # out) and as analysed.
-    def readable(id : Int64, format : String? = nil) : Backlog::BookFile?
+    def readable(id : Int64, format : String? = nil, formats = READABLE) : Backlog::BookFile?
       e = self[id]? || return nil
-      files = e.files.select { |f| READABLE.includes?(f.format) }
-      file = format ? files.find { |f| f.format == format.upcase } : files.min_by? { |f| READABLE.index(f.format) || READABLE.size }
+      files = e.files.select { |f| formats.includes?(f.format) }
+      file = format ? files.find { |f| f.format == format.upcase } : files.min_by? { |f| formats.index(f.format) || formats.size }
       file || return nil
       real = File.realpath(file.path)
       inside = @imports.roots.any? do |r|

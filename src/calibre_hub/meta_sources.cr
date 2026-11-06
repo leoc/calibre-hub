@@ -64,6 +64,9 @@ module CalibreHub
       BACK_BYTES  = 16 * 1024
       # calibre starts slowly and takes a CHM apart
       CONVERT_TIMEOUT = 3.minutes
+      # someone waits for the first pages of a book
+      PDF_PAGES_TIMEOUT  = 30.seconds
+      DJVU_PAGES_TIMEOUT = 2.minutes
       # what the Eingang's analysis runs its tools at (nice:)
       NICENESS = 15
       # a page small enough for a row of the Eingang
@@ -245,6 +248,31 @@ module CalibreHub
           run("ebook-meta", [path, "--get-cover=#{target}"], CONVERT_TIMEOUT, nice)
         end
         File.exists?(target) && File.size(target) > 0
+      end
+
+      # The first pages of a PDF or DjVu as a PDF at `target`, without touching
+      # the file: how many pages the file has, nil when the tools can't. A PDF
+      # no longer than that stays as it is, nothing is at `target`. A slow
+      # PDF is one that shares a lot between its pages, each page gets its
+      # copy: not worth waiting for. A DjVu has no other way to be read.
+      def self.first_pages(path : String, format : String, target : String, count : Int32, nice = false) : Int32?
+        if format.upcase == "PDF"
+          pages = run("pdfinfo", ["-enc", "UTF-8", path], nice: nice).try(&.[/^Pages:\s*(\d+)/m, 1]?).try(&.to_i?) || return nil
+          return pages if pages <= count
+          pdf_pages(path, target, count, nice) ? pages : nil
+        else
+          pages = run("djvused", ["-e", "n", path], nice: nice).try(&.strip.to_i?) || return nil
+          run("ddjvu", ["-format=pdf", "-page=1-#{count}", path, target], DJVU_PAGES_TIMEOUT, nice) ? pages : nil
+        end
+      end
+
+      private def self.pdf_pages(path : String, target : String, count : Int32, nice : Bool) : Bool
+        dir = "#{target}.pages"
+        Dir.mkdir(dir)
+        run("pdfseparate", ["-f", "1", "-l", count.to_s, path, File.join(dir, "%d.pdf")], PDF_PAGES_TIMEOUT, nice) || return false
+        !!run("pdfunite", (1..count).map { |i| File.join(dir, "#{i}.pdf") } + [target], PDF_PAGES_TIMEOUT, nice)
+      ensure
+        FileUtils.rm_rf(dir) if dir
       end
 
       # the start and the end of a text file

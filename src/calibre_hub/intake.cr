@@ -209,6 +209,7 @@ module CalibreHub
     def initialize(@db : DB::Database, @calibre : Calibre, @imports : ImportJobs, @library : String?,
                    @covers : String, @interval = INTERVAL, @stable = STABLE, @pause = PAUSE, @wait = WAIT)
       Intake.migrate(@db)
+      @peeks = File.join(File.dirname(@covers), "intake-peeks")
       @busy = -> { @imports.running? }
       # files of this pass left, the current one included
       @left = 0
@@ -375,6 +376,7 @@ module CalibreHub
       @db.exec "delete from intake_candidates where entry_id = ?", e.id
       @db.exec "delete from intake_entries where id = ?", e.id
       e.cover.try { |c| File.delete?(c) if c.starts_with?(@covers) }
+      forget_peeks(e.id)
     end
 
     # the entries of jobs that ended without them are back in the list
@@ -1107,16 +1109,24 @@ module CalibreHub
     end
 
     # the file itself, to read a few pages of it: only what the entry says is
-    # its file, nothing is kept about it. Data, never a page of the hub.
+    # its file, nothing is kept about the reading. first=1: a look is enough,
+    # a large PDF's and a DjVu's first pages do (Intake#peek), the header says
+    # when that isn't the whole book. Data, never a page of the hub.
     get "/api/intake/:id/file" do |env|
       id = env.params.url["id"].to_i64? || next fail(env, 404, {error: "not found"})
-      file = intake.try(&.readable(id, env.params.query["format"]?.presence))
+      first = env.params.query["first"]? == "1"
+      file = intake.try(&.readable(id, env.params.query["format"]?.presence, first ? Intake::PEEKABLE : Intake::READABLE))
       next fail(env, 404, {error: "not found"}) unless file
+      peek = first ? intake.not_nil!.peek(id, file) : Intake::Peek.new(file.path)
+      path = peek.path || next fail(env, 422, {error: "no pages to show of this file"})
       env.response.content_type = "application/octet-stream"
       env.response.headers["Content-Disposition"] = "attachment"
       env.response.headers["Cache-Control"] = "private, no-store"
-      env.response.content_length = file.size
-      File.open(file.path) { |io| IO.copy(io, env.response) }
+      env.response.headers[Intake::PEEK_HEADER] = Intake::PEEK_PAGES.to_s if peek.excerpt
+      File.open(path) do |io|
+        env.response.content_length = io.size
+        IO.copy(io, env.response)
+      end
       nil
     end
 
@@ -1136,3 +1146,4 @@ end
 
 require "./intake_decide"
 require "./intake_library"
+require "./intake_peek"

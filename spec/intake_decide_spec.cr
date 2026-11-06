@@ -874,6 +874,211 @@ describe "reading in" do
   end
 end
 
+private FIXTURES = "#{__DIR__}/fixtures/metadata"
+
+# a real PDF or DjVu of that many pages
+private def book_of(path : String, pages : Int32)
+  Dir.mkdir_p(File.dirname(path))
+  if path.ends_with?(".pdf")
+    Process.run("pdfunite", Array.new(pages, "#{FIXTURES}/scan.pdf") + [path]).success?.should be_true
+  else
+    Process.run("djvm", ["-c", path] + Array.new(pages, "#{FIXTURES}/scan.djvu")).success?.should be_true
+  end
+  time = Time.utc - 1.hour
+  File.utime(time, time, path)
+end
+
+private def pages_of(path : String) : Int32
+  info = IO::Memory.new
+  Process.run("pdfinfo", [path], output: info)
+  info.to_s[/^Pages:\s*(\d+)/m, 1].to_i
+end
+
+# the entry of one file, the first pages in their own folder, from any size on
+private def peeking(root : String, dir : String, name : String)
+  intake, _, db, _ = setup(root)
+  intake.peeks = File.join(dir, "intake-peeks")
+  intake.peek_from = 0_i64
+  intake.run_once
+  id = id_of(intake, name)
+  {intake, id, intake.readable(id, nil, Intake::PEEKABLE).not_nil!, db}
+end
+
+describe "the first pages to read in" do
+  it "makes a large PDF's first pages once and leaves the file alone" do
+    tmpdir do |dir, root|
+      source = File.join(root, "big.pdf")
+      book_of(source, 100)
+      before = File.read(source)
+      intake, id, file, _ = peeking(root, dir, "big.pdf")
+      made = 0
+      real = intake.peek_reader
+      intake.peek_reader = ->(path : String, format : String, target : String) do
+        made += 1
+        real.call(path, format, target)
+      end
+      peek = intake.peek(id, file)
+      peek.excerpt.should be_true
+      peek.path.should eq File.join(dir, "intake-peeks", "#{id}-PDF.pdf")
+      pages_of(peek.path.not_nil!).should eq Intake::PEEK_PAGES
+      File.size(peek.path.not_nil!).should be < File.size(source)
+      Dir.children(File.join(dir, "intake-peeks")).should eq ["#{id}-PDF.pdf"]
+      intake.peek(id, file).should eq peek
+      made.should eq 1
+      File.read(source).should eq before
+    end
+  end
+
+  it "goes when the entry leaves the list, the file stays" do
+    tmpdir do |dir, root|
+      source = File.join(root, "big.pdf")
+      book_of(source, 100)
+      intake, id, file, _ = peeking(root, dir, "big.pdf")
+      other = File.join(dir, "intake-peeks", "#{id}1-PDF.pdf")
+      path = intake.peek(id, file).path.not_nil!
+      File.touch(other)
+      intake.finish(intake[id]?.not_nil!)
+      File.exists?(path).should be_false
+      File.exists?(other).should be_true
+      File.exists?(source).should be_true
+    end
+  end
+
+  it "doesn't keep what comes back after the entry left" do
+    tmpdir do |dir, root|
+      book_of(File.join(root, "big.pdf"), 100)
+      intake, id, file, _ = peeking(root, dir, "big.pdf")
+      intake.peek_reader = ->(_path : String, _format : String, target : String) do
+        File.write(target, "x")
+        intake.finish(intake[id]?.not_nil!)
+        100.as(Int32?)
+      end
+      intake.peek(id, file).path.should eq file.path
+      Dir.children(File.join(dir, "intake-peeks")).should be_empty
+    end
+  end
+
+  it "makes it once for two asking at the same time" do
+    tmpdir do |dir, root|
+      book_of(File.join(root, "big.pdf"), 100)
+      intake, id, file, _ = peeking(root, dir, "big.pdf")
+      made = 0
+      intake.peek_reader = ->(_path : String, _format : String, target : String) do
+        made += 1
+        sleep 50.milliseconds
+        File.write(target, "x")
+        100.as(Int32?)
+      end
+      done = Channel(Intake::Peek).new
+      3.times { spawn { done.send(intake.peek(id, file)) } }
+      3.times.map { done.receive }.to_a.map(&.excerpt).should eq [true, true, true]
+      made.should eq 1
+    end
+  end
+
+  it "sends the whole file below the size, and what isn't a PDF" do
+    tmpdir do |dir, root|
+      write(File.join(root, "a.epub"), "PK" + "." * 4000)
+      book_of(File.join(root, "small.pdf"), 40)
+      intake, _, _, _ = setup(root)
+      intake.peeks = File.join(dir, "intake-peeks")
+      intake.peek_reader = ->(_path : String, _format : String, _target : String) { raise "not to be asked" }
+      intake.run_once
+      {"a.epub", "small.pdf"}.each do |name|
+        id = id_of(intake, name)
+        file = intake.readable(id).not_nil!
+        intake.peek_from = 0_i64 if name == "a.epub"
+        intake.peek_from = File.size(file.path) if name == "small.pdf"
+        intake.peek(id, file).should eq Intake::Peek.new(file.path)
+      end
+      Dir.exists?(File.join(dir, "intake-peeks")).should be_false
+    end
+  end
+
+  it "falls back to the whole file, without trying again" do
+    tmpdir do |dir, root|
+      book_of(File.join(root, "short.pdf"), 30)
+      book_of(File.join(root, "broken.pdf"), 40)
+      book_of(File.join(root, "shared.pdf"), 40)
+      intake, _, _, _ = setup(root)
+      intake.peeks = File.join(dir, "intake-peeks")
+      intake.peek_from = 0_i64
+      intake.run_once
+      # as many pages as it takes: nothing to make
+      short = id_of(intake, "short.pdf")
+      file = intake.readable(short).not_nil!
+      intake.peek(short, file).should eq Intake::Peek.new(file.path)
+      # the tools can't, encrypted or broken
+      asked = 0
+      intake.peek_reader = ->(_path : String, _format : String, _target : String) do
+        asked += 1
+        nil.as(Int32?)
+      end
+      broken = id_of(intake, "broken.pdf")
+      file = intake.readable(broken).not_nil!
+      2.times { intake.peek(broken, file).should eq Intake::Peek.new(file.path) }
+      asked.should eq 1
+      # each page with its copy of what they share: larger than two thirds
+      asked = 0
+      shared = id_of(intake, "shared.pdf")
+      file = intake.readable(shared).not_nil!
+      intake.peek_reader = ->(_path : String, _format : String, target : String) do
+        asked += 1
+        File.write(target, "x" * (file.size * 2 // 3 + 1))
+        40.as(Int32?)
+      end
+      2.times { intake.peek(shared, file).should eq Intake::Peek.new(file.path) }
+      asked.should eq 1
+      Dir.children(File.join(dir, "intake-peeks")).sort!.should eq ["#{broken}-PDF.whole", "#{shared}-PDF.whole", "#{short}-PDF.whole"].sort!
+    end
+  end
+
+  it "takes the first pages when they are two thirds at most" do
+    tmpdir do |dir, root|
+      book_of(File.join(root, "big.pdf"), 40)
+      intake, id, file, _ = peeking(root, dir, "big.pdf")
+      intake.peek_reader = ->(_path : String, _format : String, target : String) do
+        File.write(target, "x" * (file.size * 2 // 3))
+        40.as(Int32?)
+      end
+      intake.peek(id, file).excerpt.should be_true
+    end
+  end
+
+  it "reads a DjVu as a PDF, only when asked for a look" do
+    tmpdir do |dir, root|
+      book_of(File.join(root, "scan.djvu"), 40)
+      intake, id, file, _ = peeking(root, dir, "scan.djvu")
+      file.format.should eq "DJVU"
+      intake.readable(id).should be_nil
+      peek = intake.peek(id, file)
+      peek.excerpt.should be_true
+      pages_of(peek.path.not_nil!).should eq Intake::PEEK_PAGES
+    end
+  end
+
+  it "doesn't call a short DjVu an excerpt, however large the result" do
+    tmpdir do |dir, root|
+      book_of(File.join(root, "scan.djvu"), 2)
+      intake, id, file, _ = peeking(root, dir, "scan.djvu")
+      2.times do
+        peek = intake.peek(id, file)
+        peek.excerpt.should be_false
+        peek.path.should eq File.join(dir, "intake-peeks", "#{id}-DJVU.all.pdf")
+        pages_of(peek.path.not_nil!).should eq 2
+      end
+    end
+  end
+
+  it "has nothing to send of a DjVu the tools can't read" do
+    tmpdir do |dir, root|
+      write(File.join(root, "b.djvu"), "AT&TFORM" + "." * 4000)
+      intake, id, file, _ = peeking(root, dir, "b.djvu")
+      intake.peek(id, file).should eq Intake::Peek.new(nil)
+    end
+  end
+end
+
 describe "the filter Schon in der Bibliothek" do
   it "shows the proposals as entries, by the book's title where there is no file" do
     tmpdir do |_, root|

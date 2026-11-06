@@ -485,6 +485,40 @@ describe "intake routes" do
     end
   end
 
+  it "sends the first pages when a look is enough, and says so" do
+    tmpdir do |root|
+      write(File.join(root, "big.pdf"), pdf + "." * 3000)
+      write(File.join(root, "scan.djvu"), "AT&TFORM" + "." * 4000)
+      intake, _, _, _ = setup(root)
+      intake.peeks = File.join(root, "..", "#{File.basename(root)}-peeks")
+      intake.peek_from = 0_i64
+      intake.peek_reader = ->(_path : String, format : String, target : String) do
+        File.write(target, "first pages") unless format == "DJVU"
+        (format == "DJVU" ? nil : 100).as(Int32?)
+      end
+      intake.run_once
+      reset_routes
+      CalibreHub.intake_routes(intake)
+      ids = JSON.parse(call("/api/intake").body)["entries"].as_a.to_h { |e| {e["name"].as_s, e["id"].as_i64} }
+      big, scan = ids["big.pdf"], ids["scan.djvu"]
+
+      whole = call("/api/intake/#{big}/file?format=PDF")
+      whole.body.size.should eq File.size(File.join(root, "big.pdf"))
+      whole.headers[Intake::PEEK_HEADER]?.should be_nil
+      first = call("/api/intake/#{big}/file?format=PDF&first=1")
+      first.status_code.should eq 200
+      first.body.should eq "first pages"
+      first.headers["Content-Length"].should eq "11"
+      first.headers[Intake::PEEK_HEADER].should eq "30"
+      first.headers["Content-Disposition"].should eq "attachment"
+      # never a DjVu as it is, and nothing to send when the tools can't
+      call("/api/intake/#{scan}/file?format=DJVU").status_code.should eq 404
+      call("/api/intake/#{scan}/file?format=DJVU&first=1").status_code.should eq 422
+    ensure
+      FileUtils.rm_rf(intake.peeks) if intake
+    end
+  end
+
   it "says so without import roots" do
     reset_routes
     CalibreHub.intake_routes(nil)
