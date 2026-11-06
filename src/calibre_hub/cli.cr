@@ -86,6 +86,7 @@ module CalibreHub
         when "bulk"       then bulk(args)
         when "list"       then list(args)
         when "import"     then import(args)
+        when "eingang"    then eingang(args)
         when "completion" then completion(args)
         when "tui"        then tui
         when "help"
@@ -276,14 +277,18 @@ module CalibreHub
         tags = args.all("tag").flat_map { |t| Runner.list(t) }
         kategorie = args["kategorie"]?.presence.try { |k| Runner.kategorie(k) }
         add_to = args["add-format-to"]?.try { |i| Runner.id(i) }
-        results = files.map { |f| upload_one(f, tags, kategorie, args.flag?("force"), add_to) }
+        wait = args["wait"]?.try { |w| Runner.int("wait", w) } || UPLOAD_WAIT
+        results = files.map { |f| upload_one(f, tags, kategorie, args.flag?("force"), add_to, wait) }
         @out.puts results.to_json if @json
         codes = results.compact_map { |r| r["exitCode"]?.try(&.as_i) }
         # a duplicate is the most likely thing to act on
         raise Failure.new(codes.includes?(CONFLICT) ? CONFLICT : codes.first, "") unless codes.empty?
       end
 
-      private def upload_one(path, tags, kategorie, force, add_to) : Hash(String, JSON::Any)
+      # how long a new book's analysis is waited for, in seconds
+      UPLOAD_WAIT = 120_i64
+
+      private def upload_one(path, tags, kategorie, force, add_to, wait) : Hash(String, JSON::Any)
         result = {"file" => JSON::Any.new(path)}
         raise Failure.new(USAGE, "no such file") unless File.file?(path)
         form = Runner.multipart(path, tags, kategorie, force, add_to)
@@ -297,29 +302,62 @@ module CalibreHub
         ensure
           File.delete?(form)
         end
-        book = answer["book"]
-        result["status"] = JSON::Any.new(add_to ? "formatAdded" : "added")
-        result["book"] = book
-        verb = add_to ? "format added to" : "added as"
-        @out.puts "#{path}: #{verb} ##{book["id"]} #{Output.value(book["title"]?)} (#{Output.value(book["authors"]?)})" unless @json
-        result
-      rescue ex : HttpError
-        if ex.status == 409 && (dups = ex.body["duplicates"]?)
-          result.not_nil!["status"] = JSON::Any.new("duplicate")
-          result.not_nil!["duplicates"] = dups
-          result.not_nil!["exitCode"] = JSON::Any.new(CONFLICT.to_i64)
-          unless @json
-            @err.puts "#{path}: duplicate, not added (--force adds it anyway); matches:"
-            dups.as_a.each { |b| @err.puts "  ##{b["id"]}  #{Output.value(b["title"]?)} (#{Output.value(b["authors"]?)})" }
-            titles = ex.body["titles"]?.try(&.as_a?) || [] of JSON::Any
-            titles.each { |t| @err.puts "  #{t}" } if dups.as_a.empty?
-          end
-          result.not_nil!
-        else
-          upload_error(path, ex)
+        if book = answer["book"]?
+          result["status"] = JSON::Any.new("formatAdded")
+          result["book"] = book
+          @out.puts "#{path}: format added to ##{book["id"]} #{Output.value(book["title"]?)} (#{Output.value(book["authors"]?)})" unless @json
+          return result
         end
+        upload_outcome(path, result, wait_upload(answer["upload"], wait))
       rescue ex : Failure
         upload_error(path, ex)
+      end
+
+      # A new book goes through the Eingang: what came of it within the wait
+      private def wait_upload(upload : JSON::Any, seconds : Int64) : JSON::Any
+        deadline = Time.instant + seconds.seconds
+        state = upload
+        while state["status"]? == "checking" && Time.instant < deadline
+          sleep @poll_interval
+          state = client.get("/api/intake/uploads/#{upload["id"]}")
+        end
+        state
+      end
+
+      private def upload_outcome(path, result : Hash(String, JSON::Any), state : JSON::Any) : Hash(String, JSON::Any)
+        status = state["status"].as_s
+        result["status"] = JSON::Any.new(status == "imported" ? "added" : status)
+        result["upload"] = state["id"]
+        case status
+        when "imported", "formatAdded"
+          book = state["book"]
+          result["book"] = book
+          verb = status == "imported" ? "added as" : "format added to"
+          @out.puts "#{path}: #{verb} ##{book["id"]} #{Output.value(book["title"]?)} (#{Output.value(book["authors"]?)})" unless @json
+        when "duplicate", "copy"
+          dups = state["duplicates"]? || JSON.parse("[]")
+          result["duplicates"] = dups
+          result["exitCode"] = JSON::Any.new(CONFLICT.to_i64)
+          unless @json
+            what = status == "copy" ? "the same file is in the library" : "duplicate, waits in the Eingang"
+            @err.puts "#{path}: #{what}, not added (--force adds it anyway); matches:"
+            dups.as_a.each { |b| @err.puts "  ##{b["id"]}  #{Output.value(b["title"]?)} (#{Output.value(b["authors"]?)})" }
+            titles = state["titles"]?.try(&.as_a?) || [] of JSON::Any
+            titles.each { |t| @err.puts "  #{t}" } if dups.as_a.empty?
+          end
+        when "waiting"
+          result["confidence"] = state["confidence"]
+          unless @json
+            sure = state["confidence"].as_i?.try { |c| ", #{c} % sure" } || ""
+            @out.puts "#{path}: waits in the Eingang#{sure}"
+          end
+        when "checking"
+          @out.puts "#{path}: in the Eingang, the analysis isn't through yet" unless @json
+        else
+          result["exitCode"] = JSON::Any.new(SERVER.to_i64)
+          @err.puts "#{path}: #{status}" unless @json
+        end
+        result
       end
 
       private def upload_error(path, ex : Failure) : Hash(String, JSON::Any)

@@ -238,12 +238,41 @@ module CalibreHub
         Output.table(@out, ["ID", "Title", "Authors", "Why"], rows) unless rows.empty?
       end
 
-      # hub import analysis off|on: stops the Eingang's analysis or lets it go on
+      # hub eingang: what is in the list, by source, and what happens by itself
+      private def eingang(args : Args)
+        case args.positional.first?
+        when nil        then eingang_status
+        when "analysis" then import_analysis(args)
+        when "recheck"  then import_recheck(args)
+        else                 raise Usage.new("analysis or recheck expected", "eingang")
+        end
+      end
+
+      private def eingang_status
+        st = client.get("/api/intake?limit=1")
+        return @out.puts st.to_json if @json
+        unless st["enabled"].as_bool
+          @out.puts "the Eingang is off"
+          return
+        end
+        p = st["progress"]
+        @out.puts "eingang: #{p["total"]} books, #{p["analysed"]} analysed, analysis #{p["state"]}"
+        p["current"]?.try(&.as_s?).try { |c| @out.puts "  at #{c}" }
+        origins = st["origins"].as_h.map { |k, v| "#{k} #{v}" }.join(", ")
+        @out.puts "  from: #{origins}" unless origins.empty?
+        takes = st["thresholds"].as_h.map { |k, v| v.raw.nil? ? "#{k} off" : "#{k} from #{v}" }.join(", ")
+        @out.puts "  taken by itself: #{takes}"
+        pending = st["pending"].as_i64
+        @out.puts "  #{pending} decided, on their way" if pending > 0
+      end
+
+      # hub eingang analysis off|on: stops the backlog's analysis or lets it
+      # go on; the inbox and uploads don't stop
       private def import_analysis(args : Args)
         on = case args.positional[1]?
              when "on"  then true
              when "off" then false
-             else            raise Usage.new("on or off expected", "import")
+             else            raise Usage.new("on or off expected", "eingang")
              end
         result = client.post("/api/intake/analysis", {"on" => on})
         return @out.puts result.to_json if @json

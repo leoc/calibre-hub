@@ -87,11 +87,12 @@ module CalibreHub
         Flag.new("identifier", "TYPE=VALUE", "set an identifier, TYPE= removes it (repeatable)", repeat: true),
       ]),
       Command.new("tag", "tag add|rm <id...> <tag>", "add a tag to books or remove it", choices: %w(add rm)),
-      Command.new("upload", "upload <files...> [options]", "add books (one per file) or a format to a book", [
+      Command.new("upload", "upload <files...> [options]", "send books (one per file) to the Eingang, or add a format to a book", [
         Flag.new("tag", "TAG", "tag for the new books (repeatable, comma separated)", repeat: true),
         Flag.new("kategorie", "A/B", KATEGORIE),
-        Flag.new("force", help: "add even if calibre finds a duplicate"),
+        Flag.new("force", help: "a book of its own even if it looks like a duplicate"),
         Flag.new("add-format-to", "ID", "add the file as a format of this book instead"),
+        Flag.new("wait", "SECONDS", "wait this long for the analysis (default 120)"),
       ], files: true),
       Command.new("bulk", "bulk (--ids 1,2 | --query Q) <changes> [--yes]",
         "change many books at once as a background job", [
@@ -130,6 +131,10 @@ module CalibreHub
         Flag.new("run", "ID", "quality: the books of this import run"),
         Flag.new("library", help: "repair: plan every book of the library, not only the suspicious ones"),
       ]),
+      Command.new("eingang", "eingang | eingang analysis off|on | eingang recheck [--run ID]",
+        "what is in the Eingang and how it goes on; stop or go on with the backlog's analysis, plan the library's books again", [
+        Flag.new("run", "ID", "recheck: the books of this import run"),
+      ], choices: %w(analysis recheck)),
       Command.new("tui", "tui", "browse the library in the terminal (Vim keys, ? shows them)"),
       Command.new("completion", "completion fish|bash [--prog hub|calibre-hub]",
         "print a shell completion script", [

@@ -287,23 +287,63 @@ describe "hub CLI" do
     file = File.join(dir, "Buch.epub")
     File.write(file, "epub-data")
     with_stub do |s|
-      s.on("POST", "/api/books", {book: book(5, "Buch")}, 201)
-      s.on("POST", "/api/books", {error: "duplicate", duplicates: [book(1)], titles: ["Dune"]}, 409)
+      s.on("POST", "/api/books", {upload: {id: "u1", name: "Buch.epub", status: "checking"}}, 202)
+      s.on("POST", "/api/books", {upload: {id: "u2", name: "Buch.epub", status: "checking"}}, 202)
+      s.on("GET", "/api/intake/uploads/u1", {id: "u1", name: "Buch.epub", status: "checking"})
+      s.on("GET", "/api/intake/uploads/u1", {id: "u1", name: "Buch.epub", status: "imported", book: book(5, "Buch")})
+      s.on("GET", "/api/intake/uploads/u2", {id: "u2", name: "Buch.epub", status: "duplicate", entryId: 7, duplicates: [book(1)], titles: [] of String})
       code, stdo, _ = cli(s, "upload", file, "--tag", "a,b", "--kategorie", "A/B")
       code.should eq(0)
       stdo.should contain("added as #5 Buch")
-      req = s.requests.last
+      req = s.requests.find! { |r| r.method == "POST" }
       req.headers["Content-Length"].should eq(req.body.bytesize.to_s)
       req.body.should contain(%(filename="Buch.epub"))
       req.body.should contain("epub-data")
       req.body.should contain("A.B")
       code, _, err = cli(s, "upload", file)
       code.should eq(3)
-      err.should contain("duplicate, not added (--force adds it anyway)")
+      err.should contain("duplicate, waits in the Eingang, not added (--force adds it anyway)")
       err.should contain("#1  Dune (Frank Herbert)")
       code, stdo, _ = cli(s, "upload", file, File.join(dir, "missing.epub"), "--json")
       code.should eq(3)
       JSON.parse(stdo).as_a.map(&.["status"]).should eq(["duplicate", "error"])
+    end
+  ensure
+    FileUtils.rm_rf(dir) if dir
+  end
+
+  it "says when an upload waits in the Eingang, or isn't through yet" do
+    dir = File.tempname("upload")
+    Dir.mkdir(dir)
+    file = File.join(dir, "Buch.epub")
+    File.write(file, "epub-data")
+    with_stub do |s|
+      s.on("POST", "/api/books", {upload: {id: "u1", name: "Buch.epub", status: "checking"}}, 202)
+      s.on("GET", "/api/intake/uploads/u1", {id: "u1", status: "waiting", entryId: 7, confidence: 75, threshold: 90})
+      code, stdo, _ = cli(s, "upload", file)
+      code.should eq(0)
+      stdo.should contain("waits in the Eingang, 75 % sure")
+    end
+    with_stub do |s|
+      s.on("POST", "/api/books", {upload: {id: "u1", name: "Buch.epub", status: "checking"}}, 202)
+      code, stdo, _ = cli(s, "upload", file, "--wait", "0")
+      code.should eq(0)
+      stdo.should contain("in the Eingang, the analysis isn't through yet")
+    end
+  ensure
+    FileUtils.rm_rf(dir) if dir
+  end
+
+  it "adds a format right away" do
+    dir = File.tempname("upload")
+    Dir.mkdir(dir)
+    file = File.join(dir, "Buch.pdf")
+    File.write(file, "pdf-data")
+    with_stub do |s|
+      s.on("POST", "/api/books", {book: book(5, "Buch")}, 200)
+      code, stdo, _ = cli(s, "upload", file, "--add-format-to", "5")
+      code.should eq(0)
+      stdo.should contain("format added to #5 Buch")
     end
   ensure
     FileUtils.rm_rf(dir) if dir
@@ -438,6 +478,32 @@ describe "hub CLI" do
     _, bash, _ = cli(nil, "completion", "bash", "--prog", "hub")
     bash.should contain("complete -F _calibre_hub_hub hub")
     bash.should_not contain("calibre-hub\n")
+  end
+end
+
+describe "hub eingang" do
+  it "shows what is in the list, by source" do
+    with_stub do |s|
+      s.on("GET", "/api/intake", {enabled: true, progress: {state: "analysing", done: 12, total: 14, analysed: 11, current: "a.pdf"},
+                                  origins: {backlog: 10, inbox: 2}, thresholds: {backlog: nil, inbox: 90, upload: 90}, pending: 3})
+      code, stdo, _ = cli(s, "eingang")
+      code.should eq(0)
+      stdo.should contain("eingang: 14 books, 11 analysed, analysis analysing")
+      stdo.should contain("at a.pdf")
+      stdo.should contain("from: backlog 10, inbox 2")
+      stdo.should contain("taken by itself: backlog off, inbox from 90, upload from 90")
+      stdo.should contain("3 decided, on their way")
+    end
+  end
+
+  it "stops the backlog's analysis and plans the library's books" do
+    with_stub do |s|
+      s.on("POST", "/api/intake/analysis", {state: "off", done: 1, total: 2})
+      s.on("POST", "/api/import/repair/recheck", {books: 3, job: {id: "j1"}}, 202)
+      cli(s, "eingang", "analysis", "off")[1].should contain("analysis: off")
+      cli(s, "eingang", "recheck")[1].should contain("recheck: 3 books")
+      cli(s, "eingang", "nonsense")[0].should eq(1)
+    end
   end
 end
 
@@ -593,7 +659,7 @@ describe "hub import" do
   it "reports the quality of a portion" do
     with_stub do |s|
       s.on("GET", "/api/import/quality", {total: 200, suspect: 12, reasons: {unknownAuthor: 10, unsure: 0}, runs: [] of String,
-                                                  books: [{id: 7, title: "Compilers", authors: ["Unknown"], reasons: ["unknownAuthor"]}]})
+                                          books: [{id: 7, title: "Compilers", authors: ["Unknown"], reasons: ["unknownAuthor"]}]})
       code, stdo, _ = cli(s, "import", "quality", "--run", "abc")
       code.should eq(0)
       stdo.should contain("12 of 200 books suspicious")
