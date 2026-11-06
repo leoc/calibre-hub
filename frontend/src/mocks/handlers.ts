@@ -1,6 +1,6 @@
-import { intakeHandlers } from "./intake"
+import { intakeHandlers, uploadBoard } from "./intake"
 import { http, HttpResponse } from "msw"
-import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Session, Suggestion, SuggestionStatus, TrashEntry } from "@/lib/api"
+import type { Book, BookPatch, BulkChanges, BulkTarget, ClassifyTarget, Job, Session, Suggestion, SuggestionStatus, TrashEntry, UploadState } from "@/lib/api"
 import { bookSearchParams } from "@/lib/api"
 import { categories, makeBooks } from "./data"
 import { metadataHandlers } from "./metadata"
@@ -15,6 +15,21 @@ import { privateCounts, privateFilter, privateTagHandlers, withPrivateTags } fro
 const QUERY_KEYS = ["q", "kategorie", "tag", "ptag", "author", "series", "list", "listPath", "listOwner", "direct"]
 const size = Number(import.meta.env.VITE_MOCK_BOOKS ?? 400)
 export const books = makeBooks(size)
+
+// what came of the uploads: the first look at one decides
+type MockUpload = { name: string; answer: () => Partial<UploadState>; entryId: number; add: () => Partial<UploadState>; ext: string; state?: UploadState }
+const uploads = new Map<string, MockUpload>()
+uploadBoard.decide = (entry, decision, book) => {
+  const found = [...uploads].find(([, u]) => u.entryId === entry)
+  if (!found) return false
+  const [id, u] = found
+  if (decision === "format") {
+    const b = books.find((x) => x.id === book)!
+    b.formats = [...new Set([...b.formats, u.ext])]
+    u.state = { id, name: u.name, status: "formatAdded", book: b }
+  } else u.state = { id, name: u.name, ...u.add() } as UploadState
+  return true
+}
 seedLists(books, matches)
 let loggedIn = true
 // "lea" logs in as a reader, anyone else as the admin
@@ -260,16 +275,35 @@ export const writeHandlers = [
       touch(b)
       return HttpResponse.json({ book: b }, { status: 200 })
     }
+    const id = `upload-${uploads.size + 1}`
     const dups = books.filter((b) => b.title.toLowerCase() === title.toLowerCase())
-    if (dups.length && form.get("force") !== "1") return HttpResponse.json({ error: "duplicate", duplicates: dups, titles: dups.map((d) => `${d.title} (${d.authors.join(" & ")})`) }, { status: 409 })
-    const now = new Date().toISOString()
-    const b: Book = {
-      id: Math.max(...books.map((x) => x.id)) + 1, title, authors: ["Unbekannt"], authorSort: "Unbekannt", tags: form.getAll("tags") as string[],
-      series: null, seriesIndex: null, formats: [ext], lastModified: now, added: now, pubdate: null, rating: null, publisher: null,
-      identifiers: {}, languages: [], comments: null, custom: { kategorie: (form.get("kategorie") as string) || null },
+    const add = () => {
+      const now = new Date().toISOString()
+      const b: Book = {
+        id: Math.max(...books.map((x) => x.id)) + 1, title, authors: ["Unbekannt"], authorSort: "Unbekannt", tags: form.getAll("tags") as string[],
+        series: null, seriesIndex: null, formats: [ext], lastModified: now, added: now, pubdate: null, rating: null, publisher: null,
+        identifiers: {}, languages: [], comments: null, custom: { kategorie: (form.get("kategorie") as string) || null },
+      }
+      books.push(b)
+      return { status: "imported" as const, book: b }
     }
-    books.push(b)
-    return HttpResponse.json({ book: b }, { status: 201 })
+    const entryId = 900_000 + uploads.size
+    // by the name, what a scenario wants: below the threshold, the same file
+    const answer = (): Partial<UploadState> => {
+      if (/unsicher/i.test(title)) return { status: "waiting", entryId, confidence: 75, threshold: 90 }
+      if (/kopie/i.test(title)) return { status: "copy", duplicates: books.slice(0, 1) }
+      if (dups.length && form.get("force") !== "1") return { status: "duplicate", entryId, duplicates: dups, titles: [] }
+      return add()
+    }
+    uploads.set(id, { name: file.name, answer, entryId, add, ext })
+    return HttpResponse.json({ upload: { id, name: file.name, status: "checking" } }, { status: 202 })
+  }),
+  // the analysis takes one look; afterwards the answer stays
+  http.get("/api/intake/uploads/:id", ({ params }) => {
+    const u = uploads.get(params.id as string)
+    if (!u) return HttpResponse.json({ error: "not found" }, { status: 404 })
+    u.state ??= { id: params.id as string, name: u.name, ...u.answer() } as UploadState
+    return HttpResponse.json(u.state)
   }),
   http.put("/api/books/:id/cover", async ({ params, request }) => {
     const b = books.find((x) => x.id === Number(params.id))!

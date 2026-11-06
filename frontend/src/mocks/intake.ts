@@ -90,6 +90,7 @@ function entry(seed: Seed, id: number): IntakeDetail {
     name,
     folder: parts.join("/") || null,
     kind: "file",
+    origin: "backlog",
     files: [{ path: `${ROOT}/${seed.path}`, format, size: 4_200_000 }],
     status: failed ? "failed" : "analysed",
     detail: seed.failed ?? null,
@@ -139,10 +140,24 @@ const LAST = Math.max(...IDS)
 const asked: { decision: string; ids: number[]; candidate?: number; picks?: unknown; title?: string; authors?: string[]; query?: unknown; expect?: number }[] = []
 // the files read in, for the scenarios (window.__intakeReads)
 const reads: string[] = []
-let threshold: number | null = null
+const thresholds: Record<string, number | null> = { backlog: null, inbox: 90, upload: 90 }
 // a job still running: the entry comes back with an error at the next look
 let waiting: { entry: IntakeDetail; error: string } | null = null
 if (typeof window !== "undefined") Object.assign(window, { __intake: asked, __intakeReads: reads })
+
+// Two files that came another way, for the scenarios about sources
+// (localStorage hub.mock.intake.sources)
+const ELSEWHERE: Record<string, "inbox" | "upload"> = { "Birds.pdf": "inbox", "Robbins - Basic Pathology 8e.chm": "upload" }
+function sources() {
+  if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.sources")) return
+  for (const e of ENTRIES) if (ELSEWHERE[e.name]) e.origin = ELSEWHERE[e.name]
+}
+
+// What an upload waits for in the mock Eingang (mocks/handlers.ts): the entry
+// a decision goes to, the book added then
+export const uploadBoard = {
+  decide: (_entry: number, _decision: string, _book?: number) => false,
+}
 
 // The Prüfliste's proposals (mocks/metadata.ts): the Eingang's filter is the
 // same list. A proposal without a confidence is taken as it is.
@@ -218,10 +233,10 @@ function libraryList(q: URLSearchParams) {
   }
 }
 
-const inFilter = (q: { band?: string | null; duplicates?: string | boolean | null; skipped?: string | boolean | null }) => {
+const inFilter = (q: { band?: string | null; duplicates?: string | boolean | null; skipped?: string | boolean | null; origin?: string | null }) => {
   const dup = q.duplicates === null || q.duplicates === undefined ? null : String(q.duplicates) === "true"
   const skipped = String(q.skipped) === "true"
-  return ENTRIES.filter((e) => (dup === null || (e.action !== "add") === dup) && (!skipped || e.skipped) && (!q.band || (e.band ?? "none") === q.band))
+  return ENTRIES.filter((e) => (dup === null || (e.action !== "add") === dup) && (!skipped || e.skipped) && (!q.band || (e.band ?? "none") === q.band) && (!q.origin || e.origin === q.origin))
 }
 
 const takeable = (list: IntakeDetail[], skipped: boolean) => list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && (skipped || !e.skipped))
@@ -233,7 +248,8 @@ const COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400">
 export const intakeHandlers = [
   http.get("/api/intake", ({ request }) => {
     const q = new URL(request.url).searchParams
-    const filter = { duplicates: q.get("duplicates"), skipped: q.get("skipped") }
+    sources()
+    const filter = { duplicates: q.get("duplicates"), skipped: q.get("skipped"), origin: q.get("origin") }
     const pending = waiting ? 1 : 0
     if (waiting && limitOf(q) > 1) {
       // the job got to it: back in the list, with the reason
@@ -271,7 +287,8 @@ export const intakeHandlers = [
       skipped: ENTRIES.filter((e) => e.skipped).length,
       last: LAST,
       pending,
-      threshold,
+      thresholds,
+      origins: ENTRIES.reduce<Record<string, number>>((n, e) => ({ ...n, [e.origin as string]: (n[e.origin as string] ?? 0) + 1 }), {}),
       next: rest.length > limit ? `${page[page.length - 1].confidence ?? -1}:${page[page.length - 1].path}` : null,
       entries: page,
       ...(q.get("library") === "true" ? libraryList(q) : {}),
@@ -280,13 +297,15 @@ export const intakeHandlers = [
   http.post("/api/intake/decide", async ({ request }) => {
     const body = (await request.json()) as {
       decision: string
-      target: { ids?: number[]; query?: { band?: string; duplicates?: boolean; skipped?: boolean }; expect?: number }
+      target: { ids?: number[]; query?: { band?: string; duplicates?: boolean; skipped?: boolean; origin?: string }; expect?: number }
+      book?: number
       candidate?: number
       picks?: unknown
       title?: string
       authors?: string[]
     }
     const { decision, target } = body
+    if (target.ids?.length === 1 && uploadBoard.decide(target.ids[0], decision, body.book)) return HttpResponse.json({ jobId: "upload", total: 1 }, { status: 202 })
     const libraryIds = target.query && "library" in target.query ? libraryTakeable(library()).map((e) => e.id) : null
     const ids = target.ids ?? libraryIds ?? takeable(inFilter(target.query ?? {}), target.query?.skipped === true).map((e) => e.id)
     if (target.expect !== undefined && target.expect !== ids.length) {
@@ -316,8 +335,9 @@ export const intakeHandlers = [
     return HttpResponse.json({ jobId: "intake-job", total: ids.length }, { status: 202 })
   }),
   http.post("/api/intake/threshold", async ({ request }) => {
-    threshold = ((await request.json()) as { value: number | null }).value
-    return HttpResponse.json({ threshold })
+    const body = (await request.json()) as { origin: string; value: number | null }
+    thresholds[body.origin] = body.value
+    return HttpResponse.json({ thresholds })
   }),
   // once: what is left to plan
   http.post("/api/import/repair/recheck", () => {

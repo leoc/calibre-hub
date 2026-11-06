@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { CheckCircle2, ChevronDown, CircleAlert, Copy, Loader2, Pencil, Upload as UploadIcon, X } from "lucide-react"
+import { CheckCircle2, ChevronDown, CircleAlert, Copy, Inbox, Loader2, Pencil, Upload as UploadIcon, X } from "lucide-react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import type { UploadOptions } from "@/lib/api"
 import { addUploads, clearFinished, dismissUpload, retryUpload, useUploads, type UploadItem } from "@/lib/upload-store"
@@ -176,8 +176,8 @@ function UploadTray() {
   const items = useUploads()
   const [collapsed, setCollapsed] = useState(false)
   if (!items.length) return null
-  const active = items.filter((i) => i.status === "queued" || i.status === "uploading").length
-  const problems = items.filter((i) => i.status === "error" || i.status === "duplicate").length
+  const active = items.filter((i) => i.status === "queued" || i.status === "uploading" || i.status === "checking").length
+  const problems = items.filter((i) => i.status === "error" || i.status === "duplicate" || i.status === "gone").length
   return (
     <section
       aria-label={t("upload.title")}
@@ -222,7 +222,9 @@ function Row({ item }: { item: UploadItem }) {
       <div className="flex items-center gap-2">
         {item.status === "done" ? (
           <CheckCircle2 className="size-4 shrink-0" />
-        ) : item.status === "error" || item.status === "duplicate" ? (
+        ) : item.status === "waiting" ? (
+          <Inbox className="size-4 shrink-0" />
+        ) : item.status === "error" || item.status === "duplicate" || item.status === "gone" ? (
           <CircleAlert className="size-4 shrink-0 text-destructive eink:text-black" />
         ) : (
           <Loader2 className="size-4 shrink-0 animate-spin" />
@@ -242,6 +244,16 @@ function Row({ item }: { item: UploadItem }) {
         </div>
       )}
       {item.status === "error" && <p className="text-xs text-destructive eink:text-black">{item.error}</p>}
+      {item.status === "checking" && <p className="text-xs">{t("upload.checking")}</p>}
+      {item.status === "gone" && <p className="text-xs">{t("upload.gone")}</p>}
+      {item.status === "waiting" && (
+        <p className="text-xs">
+          {item.confidence != null && item.threshold != null ? t("upload.waiting", { value: item.confidence, threshold: item.threshold }) : t("upload.waitingPlain")}{" "}
+          <Link to="/eingang" className="underline underline-offset-2">
+            {t("upload.toIntake")}
+          </Link>
+        </p>
+      )}
       {item.status === "done" && !!item.similar?.length && (
         <p className="text-xs">
           {t("dup.upload", { books: item.similar.map((b) => `#${b.id} „${b.title}“`).join(", ") })}{" "}
@@ -262,7 +274,7 @@ function Row({ item }: { item: UploadItem }) {
       )}
       {item.status === "duplicate" && (
         <div className="space-y-1.5">
-          <p className="text-xs">{t("upload.duplicate")}</p>
+          <p className="text-xs">{t(item.copy ? "upload.copy" : "upload.duplicate")}</p>
           {item.duplicates?.length ? (
             item.duplicates.map((d) => {
               const replaces = d.formats.includes(ext)

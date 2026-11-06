@@ -1,5 +1,5 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query"
-import { api, type ConfidenceBand, type IntakeCandidate, type IntakeDetail, type IntakeEntry, type IntakeFilter, type IntakeKind, type IntakeLeft, type IntakeProgress, type IntakeProposal } from "./api"
+import { api, type ConfidenceBand, type IntakeCandidate, type IntakeDetail, type IntakeEntry, type IntakeFilter, type IntakeKind, type IntakeLeft, type IntakeList, type IntakeOrigin, type IntakeProgress, type IntakeProposal } from "./api"
 import { fieldLabel, sourceLabel } from "./metadata"
 import { readerFormat } from "./reader"
 import { formatNumber, t } from "@/i18n"
@@ -9,20 +9,41 @@ import type { MessageKey } from "@/i18n/de"
 export const INTAKE_PAGE = 100
 
 export type IntakeBand = ConfidenceBand | "none" | "all"
+export type IntakeSource = IntakeOrigin | "all"
 
-export const intakeFilter = (band: IntakeBand, kind: IntakeKind): IntakeFilter => ({
+export const ORIGINS: IntakeOrigin[] = ["backlog", "inbox", "upload"]
+
+export const originName = (o: IntakeOrigin) => t(`intake.from.${o}`)
+
+// the books of the library come from no source
+export const intakeFilter = (band: IntakeBand, kind: IntakeKind, source: IntakeSource = "all"): IntakeFilter => ({
   band: band === "all" ? undefined : band,
   duplicates: kind === "all" || kind === "skipped" || kind === "library" ? undefined : kind === "duplicates",
   skipped: kind === "skipped" ? true : undefined,
   library: kind === "library" ? true : undefined,
+  origin: source === "all" || kind === "library" ? undefined : source,
 })
+
+// the sources with entries, only with more than one there is a choice
+export const originsInList = (list: Pick<IntakeList, "origins"> | undefined) => ORIGINS.filter((o) => (list?.origins?.[o] ?? 0) > 0)
+
+// the button's line: every source there is, the order of ORIGINS
+export const autoText = (thresholds: IntakeList["thresholds"]) =>
+  t("intake.auto.button", {
+    list: ORIGINS.filter((o) => thresholds?.[o] !== undefined)
+      .map((o) => {
+        const value = thresholds?.[o]
+        return value == null ? t("intake.auto.sourceOff", { name: originName(o) }) : t("intake.auto.sourceOn", { name: originName(o), value })
+      })
+      .join(", "),
+  })
 
 // Progress and counts, polled without touching the list: it stays where it
 // is while the analysis works (on E-Ink nothing else repaints either)
-export const intakeStatusQuery = (band: IntakeBand = "all", kind: IntakeKind = "all") =>
+export const intakeStatusQuery = (band: IntakeBand = "all", kind: IntakeKind = "all", source: IntakeSource = "all") =>
   queryOptions({
-    queryKey: ["intake-status", band, kind],
-    queryFn: () => api.intake({ ...intakeFilter(band, kind), limit: 1 }),
+    queryKey: ["intake-status", band, kind, source],
+    queryFn: () => api.intake({ ...intakeFilter(band, kind, source), limit: 1 }),
     staleTime: 5_000,
     refetchInterval: (q) => {
       const state = q.state.data?.progress?.state
@@ -31,10 +52,10 @@ export const intakeStatusQuery = (band: IntakeBand = "all", kind: IntakeKind = "
     },
   })
 
-export const intakeListQuery = (band: IntakeBand, kind: IntakeKind) =>
+export const intakeListQuery = (band: IntakeBand, kind: IntakeKind, source: IntakeSource = "all") =>
   infiniteQueryOptions({
-    queryKey: ["intake-list", band, kind],
-    queryFn: ({ pageParam }) => api.intake({ ...intakeFilter(band, kind), after: pageParam, limit: INTAKE_PAGE }),
+    queryKey: ["intake-list", band, kind, source],
+    queryFn: ({ pageParam }) => api.intake({ ...intakeFilter(band, kind, source), after: pageParam, limit: INTAKE_PAGE }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
     staleTime: 30_000,

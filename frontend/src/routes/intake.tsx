@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyEve
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { BookIcon, Check, Trash2, X } from "lucide-react"
-import { ApiError, EXCERPT_HEADER, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeProgress } from "@/lib/api"
+import { ApiError, EXCERPT_HEADER, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeOrigin, type IntakeProgress } from "@/lib/api"
 import {
   acceptable,
   analysedShare,
   asChosen,
   authorsText,
+  autoText,
   badgeText,
   candidateDiff,
   candidateSource,
@@ -21,6 +22,9 @@ import {
   isDjvu, isLibrary,
   leftText,
   noteTexts,
+  originName,
+  originsInList,
+  ORIGINS,
   readableFormat,
   reasonText,
   ringLabel,
@@ -28,6 +32,7 @@ import {
   uniqueEntries,
   unreadable,
   type IntakeBand,
+  type IntakeSource,
 } from "@/lib/intake"
 import { loadBookFile, readBody, type LoadProgress } from "@/lib/offline"
 import { importRepairQuery } from "@/lib/queries"
@@ -60,22 +65,23 @@ type Edited = { title?: string; authors?: string[] }
 // a candidate chosen for an entry, not decided yet
 type Chosen = { index: number; candidate: IntakeCandidate }
 
-// The Eingang: what the analysis found in the backlog, before anything is in
-// the library. Every entry leaves by a decision: at once in the list, in a
-// queue on the hub. The list stays where it is while the analysis works; only
-// the line under the title moves.
+// The Eingang: what the analysis found in the backlog, the inbox and uploads,
+// before anything is in the library. Every entry leaves by a decision: at once
+// in the list, in a queue on the hub. The list stays where it is while the
+// analysis works; only the line under the title moves.
 export function IntakePage() {
   const qc = useQueryClient()
   const [band, setBand] = useState<IntakeBand>("all")
   const [kind, setKind] = useState<IntakeKind>("all")
+  const [source, setSource] = useState<IntakeSource>("all")
   const [open, setOpen] = useState<number | null>(null)
   const [asking, setAsking] = useState(false)
   // per entry, until it is decided: the list shows it too
   const [picks, setPicks] = useState<Map<number, Chosen>>(new Map())
   // decided, gone from the list; with the error it had, a new one brings it back
   const [decided, setDecided] = useState<Map<number, string | null>>(new Map())
-  const { data: status, error, refetch: retry, dataUpdatedAt } = useQuery(intakeStatusQuery(band, kind))
-  const list = useInfiniteQuery({ ...intakeListQuery(band, kind), enabled: status?.enabled === true })
+  const { data: status, error, refetch: retry, dataUpdatedAt } = useQuery(intakeStatusQuery(band, kind, source))
+  const list = useInfiniteQuery({ ...intakeListQuery(band, kind, source), enabled: status?.enabled === true })
   const { hasNextPage, isFetchingNextPage, fetchNextPage, refetch } = list
   const loaded = useMemo(() => uniqueEntries(list.data?.pages ?? []), [list.data])
   const entries = useMemo(() => loaded.filter((e) => !decided.has(e.id) || (e.error != null && e.error !== decided.get(e.id))), [loaded, decided])
@@ -142,7 +148,7 @@ export function IntakePage() {
   })
   const bulk = useMutation({
     mutationFn: (v: { expect: number; last: number; gone: IntakeEntry[] }) =>
-      write.intakeDecide({ decision: "accept", target: { query: intakeFilter(band, kind), last: v.last, expect: v.expect }, picks: chosen() }),
+      write.intakeDecide({ decision: "accept", target: { query: intakeFilter(band, kind, source), last: v.last, expect: v.expect }, picks: chosen() }),
     onError: (err, v) => {
       undecide(v.gone.map((e) => e.id))
       if (err instanceof ApiError && err.status === 409) toast.show(t("intake.changed"))
@@ -203,6 +209,9 @@ export function IntakePage() {
   const shown = list.data?.pages.at(-1)?.total ?? entries.length
   const n = status?.takeable ?? 0
   const unsure = status?.unsure ?? 0
+  const sources = originsInList(status)
+  // the rows say where from when there is more than one place to come from
+  const several = sources.length > 1
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4 lg:p-6">
       <div className="space-y-1">
@@ -238,6 +247,19 @@ export function IntakePage() {
                 {(!!status.skipped || kind === "skipped") && <option value="skipped">{t("intake.kind.skipped", { count: formatNumber(status.skipped ?? 0) })}</option>}
               </select>
             </label>
+            {kind !== "library" && (several || source !== "all") && (
+              <label className="inline-flex items-center gap-2">
+                {t("intake.origin")}
+                <select className={select} value={source} onChange={(e) => filter(() => setSource(e.target.value as IntakeSource))}>
+                  <option value="all">{t("intake.origin.all")}</option>
+                  {ORIGINS.filter((o) => sources.includes(o) || o === source).map((o) => (
+                    <option key={o} value={o}>
+                      {t("intake.origin.option", { name: originName(o), count: formatNumber(status.origins?.[o] ?? 0) })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
               {leftText(status.left) && <span className={muted}>{leftText(status.left)}</span>}
               <Button disabled={n === 0 || bulk.isPending} onClick={() => (unsure > 0 ? setAsking(true) : acceptAll())}>
@@ -259,6 +281,7 @@ export function IntakePage() {
                   entry={e}
                   same={e.sameAs ? entries.find((x) => x.path === e.sameAs)?.id : undefined}
                   current={e.id === open}
+                  origin={several ? e.origin : undefined}
                   pick={picks.get(e.id)}
                   onOpen={setOpen}
                   onAccept={() => decideOne(e, "accept")}
@@ -277,7 +300,7 @@ export function IntakePage() {
           )}
           <div className="flex flex-wrap gap-2">
             {kind === "library" && <Recheck state={status.recheck ?? null} onChanged={refresh} />}
-            <AutoAccept value={status.threshold ?? null} onChanged={refresh} />
+            <AutoAccept thresholds={status.thresholds ?? {}} onChanged={refresh} />
           </div>
           <IntakeSheet
             entry={current}
@@ -327,46 +350,66 @@ function Recheck({ state, onChanged }: { state: IntakeList["recheck"] | null; on
   )
 }
 
-// The threshold, one button until it is wanted
-function AutoAccept({ value, onChanged }: { value: number | null; onChanged: () => void }) {
-  const [editing, setEditing] = useState(false)
-  const [text, setText] = useState("")
+// a source's line in the dialog, as it is being edited
+type AutoRow = { on: boolean; text: string }
+
+const validAuto = (r: AutoRow) => {
+  const n = Number(r.text)
+  return !r.on || (r.text !== "" && Number.isInteger(n) && n >= 60 && n <= 100)
+}
+
+// The thresholds of the sources there are, one button until they are wanted
+function AutoAccept({ thresholds, onChanged }: { thresholds: NonNullable<IntakeList["thresholds"]>; onChanged: () => void }) {
+  const [rows, setRows] = useState<Partial<Record<IntakeOrigin, AutoRow>> | null>(null)
+  const origins = ORIGINS.filter((o) => thresholds[o] !== undefined)
   const save = useMutation({
-    mutationFn: (v: number | null) => write.intakeThreshold(v),
-    onSuccess: () => setEditing(false),
+    mutationFn: async (edited: Partial<Record<IntakeOrigin, AutoRow>>) => {
+      for (const o of origins) {
+        const row = edited[o]
+        const value = row?.on ? Number(row.text) : null
+        if (row && value !== thresholds[o]) await write.intakeThreshold(o, value)
+      }
+    },
+    onSuccess: () => setRows(null),
     onError: (err) => toast.show(t("intake.failed", { error: errorText(err) })),
     onSettled: onChanged,
   })
-  const number = Number(text)
-  const valid = text !== "" && Number.isInteger(number) && number >= 60 && number <= 100
+  const row = (o: IntakeOrigin) => rows?.[o] ?? { on: false, text: "90" }
+  const change = (o: IntakeOrigin, next: Partial<AutoRow>) => setRows({ ...rows, [o]: { ...row(o), ...next } })
+  const edit = () => setRows(Object.fromEntries(origins.map((o) => [o, { on: thresholds[o] != null, text: String(thresholds[o] ?? 90) }])))
   return (
     <>
-      <Button
-        variant="ghost"
-        size="sm"
-        className={muted}
-        onClick={() => {
-          setText(String(value ?? 90))
-          setEditing(true)
-        }}
-      >
-        {value === null ? t("intake.auto.off") : t("intake.auto.on", { value })}
+      <Button variant="ghost" size="sm" className={cn("h-auto min-h-8 shrink text-left whitespace-normal", muted)} onClick={edit}>
+        {autoText(thresholds)}
       </Button>
-      <Dialog open={editing} onOpenChange={setEditing}>
+      <Dialog open={rows !== null} onOpenChange={(o) => !o && setRows(null)}>
         <DialogContent>
           <DialogTitle className="text-lg font-semibold">{t("intake.auto.title")}</DialogTitle>
           <DialogDescription>{t("intake.auto.text")}</DialogDescription>
-          <label className="grid gap-1 text-sm">
-            {t("intake.auto.value")}
-            <Input type="number" inputMode="numeric" min={60} max={100} value={text} aria-invalid={!valid} onChange={(e) => setText(e.target.value)} />
-          </label>
+          <div className="grid gap-3 text-sm">
+            {origins.map((o) => (
+              <div key={o} className="flex items-center gap-3">
+                <label className="flex min-h-9 w-28 items-center gap-2 eink:min-h-12 touch:min-h-11">
+                  <input type="checkbox" className="size-4 eink:size-6" checked={row(o).on} onChange={(e) => change(o, { on: e.target.checked })} />
+                  {originName(o)}
+                </label>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  className="w-24"
+                  min={60}
+                  max={100}
+                  disabled={!row(o).on}
+                  value={row(o).text}
+                  aria-label={t("intake.auto.value", { name: originName(o) })}
+                  aria-invalid={!validAuto(row(o))}
+                  onChange={(e) => change(o, { text: e.target.value })}
+                />
+              </div>
+            ))}
+          </div>
           <div className="flex justify-end gap-2">
-            {value !== null && (
-              <Button variant="outline" disabled={save.isPending} onClick={() => save.mutate(null)}>
-                {t("intake.auto.disable")}
-              </Button>
-            )}
-            <Button disabled={!valid || save.isPending} onClick={() => save.mutate(number)}>
+            <Button disabled={!origins.every((o) => validAuto(row(o))) || save.isPending} onClick={() => rows && save.mutate(rows)}>
               {t("intake.auto.save")}
             </Button>
           </div>
@@ -459,7 +502,7 @@ function DuplicateLine({ entry: e, same, onOpen }: { entry: IntakeEntry; same?: 
   )
 }
 
-function IntakeRow(props: { entry: IntakeEntry; same?: number; current: boolean; pick?: Chosen; onOpen: (id: number) => void; onAccept: () => void; onDrop: () => void }) {
+function IntakeRow(props: { entry: IntakeEntry; same?: number; current: boolean; origin?: IntakeOrigin; pick?: Chosen; onOpen: (id: number) => void; onAccept: () => void; onDrop: () => void }) {
   const { current, pick, onOpen: openEntry } = props
   // how sure it is, as the choice has it; the rest is the entry's
   const e = asChosen(props.entry, pick?.candidate)
@@ -499,6 +542,7 @@ function IntakeRow(props: { entry: IntakeEntry; same?: number; current: boolean;
             {e.band && <span aria-hidden className={cn("size-2 rounded-full bg-current eink:hidden", BAND_COLOR[e.band])} />}
             {badgeText(e)}
           </Badge>
+          {props.origin && <Badge variant="outline">{originName(props.origin)}</Badge>}
           {e.skipped && <Badge variant="outline">{t("intake.tag.skipped")}</Badge>}
         </div>
         {e.proposal && <div className="break-words">{title}</div>}

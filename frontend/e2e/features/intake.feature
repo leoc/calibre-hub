@@ -1,5 +1,5 @@
-# The Eingang: what the analysis found in the backlog, before anything is in
-# the library, and the four ways out of the list.
+# The Eingang: what the analysis found in the backlog, the inbox and uploads,
+# before anything is in the library, and the four ways out of the list.
 #
 # The mock hub has nine files like the live backlog (a sure ISBN hit, a
 # possible duplicate, a file that failed, ...) and 150 scans, the analysis
@@ -200,18 +200,44 @@ Feature: Eingang
     And I press "Papierkorb" on the row "kaputt.pdf"
     Then the row "kaputt.pdf" says "Das hat nicht geklappt: calibre kann die Datei nicht lesen"
 
-  Scenario: The threshold hides behind one button
+  Scenario: The thresholds hide behind one button, a line per source
     When I open the Eingang
-    Then the button "Automatisch übernehmen: aus" is enabled
-    When I press the button "Automatisch übernehmen: aus"
-    And I set "Ab Sicherheit (60 bis 100)" to "59"
-    Then the dialog's "Einschalten" is disabled
-    When I set "Ab Sicherheit (60 bis 100)" to "95"
-    And I press the dialog's "Einschalten"
-    Then the button "Automatisch übernehmen: ab 95 %" is enabled
-    When I press the button "Automatisch übernehmen: ab 95 %"
-    And I press the dialog's "Ausschalten"
-    Then the button "Automatisch übernehmen: aus" is enabled
+    Then the button "Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 90 %" is enabled
+    When I press the button "Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 90 %"
+    And I switch on "Backlog"
+    And I set "Backlog: ab Sicherheit (60 bis 100)" to "59"
+    Then the dialog's "Speichern" is disabled
+    When I set "Backlog: ab Sicherheit (60 bis 100)" to "95"
+    And I switch off "Inbox"
+    And I press the dialog's "Speichern"
+    Then the button "Automatisch übernehmen: Backlog ab 95 %, Inbox aus, Upload ab 90 %" is enabled
+    When I press the button "Automatisch übernehmen: Backlog ab 95 %, Inbox aus, Upload ab 90 %"
+    And I switch off "Backlog"
+    And I switch on "Inbox"
+    And I press the dialog's "Speichern"
+    Then the button "Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 90 %" is enabled
+
+  @narrow
+  Scenario: On a phone the thresholds' button stays within the page
+    When I open the Eingang
+    Then the page is no wider than the screen
+
+  Scenario: With one source there is nothing to say about it
+    When I open the Eingang
+    Then there is no filter "Quelle"
+    And the row of "Birds.pdf" shows no source
+
+  Scenario: With several sources the rows say which and a filter chooses
+    Given files came in by the inbox and an upload
+    When I open the Eingang
+    Then the filter "Quelle" offers "Inbox (1)"
+    And the filter "Quelle" offers "Upload (1)"
+    And the row of "Birds.pdf" shows the source "Inbox"
+    When I choose "Inbox (1)" in "Quelle"
+    Then the list has 1 rows
+    And the button "Alle 1 übernehmen" is enabled
+    When I press the button "Alle 1 übernehmen"
+    Then the hub was asked to accept the filter of the source "inbox"
 
   Scenario Outline: One muted line when the analysis stands still
     Given the analysis is "<state>"
@@ -220,8 +246,8 @@ Feature: Eingang
 
     Examples:
       | state  | hint                                                      |
-      | paused | Die Analyse wartet, bis Import oder Reparatur fertig sind. |
-      | off    | Die Analyse ist ausgeschaltet.                            |
+      | paused | Die Analyse des Backlogs wartet, bis die Reparatur fertig ist. |
+      | off    | Die Analyse des Backlogs ist ausgeschaltet.                            |
 
   Scenario: Nothing while the analysis runs normally
     When I open the Eingang

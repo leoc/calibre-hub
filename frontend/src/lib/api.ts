@@ -249,14 +249,17 @@ export interface ImportCleanup {
 // How sure a decision is: bulk from 90, review from 60, unsure below
 export type ConfidenceBand = "bulk" | "review" | "unsure"
 
-// the Eingang: new files of the import roots, analysed, not in the library
+// the Eingang: new files of the backlog, the inbox and uploads, analysed, not
+// in the library
 export type IntakeKind = "all" | "new" | "duplicates" | "skipped" | "library"
+export type IntakeOrigin = "backlog" | "inbox" | "upload"
 
-export type IntakeDecision = "accept" | "file" | "skip" | "unskip" | "trash" | "reject"
+export type IntakeDecision = "accept" | "file" | "format" | "skip" | "unskip" | "trash" | "reject"
 export interface IntakeFilter {
   band?: string
   duplicates?: boolean
   skipped?: boolean
+  origin?: IntakeOrigin
   // the proposals for books of the library, instead of the files
   library?: boolean
 }
@@ -291,6 +294,8 @@ export interface IntakeEntry {
   // below its root, null in the root
   folder: string | null
   kind: "file" | "calibre" | "library"
+  // a book of the library has none
+  origin?: IntakeOrigin
   files: { path: string; format: string; size: number }[]
   status: "analysed" | "failed"
   detail: string | null
@@ -369,7 +374,10 @@ export interface IntakeList {
   last?: number
   // decided, waiting for their job
   pending?: number
-  threshold?: number | null
+  // the sources there are: from this confidence on their books go by themselves
+  thresholds?: Partial<Record<IntakeOrigin, number | null>>
+  // how many of each are in the list, whatever the filters
+  origins?: Partial<Record<IntakeOrigin, number>>
   // the next page is behind this place in the list
   next?: string | null
   entries?: IntakeEntry[]
@@ -631,11 +639,13 @@ export const api = {
     if (p.band) q.set("band", p.band)
     if (p.duplicates !== undefined) q.set("duplicates", String(p.duplicates))
     if (p.skipped) q.set("skipped", "true")
+    if (p.origin) q.set("origin", p.origin)
     if (p.library) q.set("library", "true")
     if (p.after) q.set("after", p.after)
     return request<IntakeList>(`/api/intake?${q}`)
   },
   intakeEntry: (id: number) => request<IntakeDetail>(`/api/intake/${id}`),
+  uploadState: (id: string) => request<UploadState>(`/api/intake/uploads/${id}`),
   importQuality: () => request<ImportQuality>("/api/import/quality"),
   importSample: (band: ConfidenceBand) => request<ImportSampleBooks>(`/api/import/quality/sample?band=${band}`),
   metadataChanges: (query: MetadataChangesQuery = {}) =>
@@ -757,8 +767,26 @@ export interface UploadOptions {
   addFormatTo?: number
 }
 
+// What came of an upload. checking: the analysis or a decision is at it;
+// waiting: in the Eingang, below the threshold; duplicate: in the Eingang,
+// looks like a book of the library; copy: the same file is in the library;
 // possibleDuplicates: books the hub's own detection pairs with the new one
-export type UploadResult = { status: "added"; book: Book; possibleDuplicates?: Book[] } | { status: "duplicate"; duplicates: Book[]; titles: string[] }
+export interface UploadState {
+  id: string
+  name: string
+  status: "checking" | "waiting" | "duplicate" | "copy" | "imported" | "formatAdded" | "trashed" | "gone"
+  entryId?: number
+  confidence?: number | null
+  threshold?: number | null
+  error?: string | null
+  book?: Book | null
+  duplicates?: Book[]
+  titles?: string[]
+  possibleDuplicates?: Book[]
+}
+
+// a format goes straight to its book, a new book into the Eingang
+export type UploadResult = { status: "added"; book: Book } | { status: "staged"; upload: UploadState }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
@@ -783,13 +811,15 @@ export const write = {
   intakeDecide: (body: {
     decision: IntakeDecision
     target: { ids: number[] } | { query: IntakeFilter; last: number; expect: number }
+    // a format's book
+    book?: number
     candidate?: number
     // a filter's accept: the candidates chosen so far, by entry
     picks?: Record<number, number>
     title?: string
     authors?: string[]
   }) => request<{ jobId?: string | null; total: number }>("/api/intake/decide", { method: "POST", ...json(body) }),
-  intakeThreshold: (value: number | null) => request<{ threshold: number | null }>("/api/intake/threshold", { method: "POST", ...json({ value }) }),
+  intakeThreshold: (origin: IntakeOrigin, value: number | null) => request<{ thresholds: IntakeList["thresholds"] }>("/api/intake/threshold", { method: "POST", ...json({ origin, value }) }),
   // the books no plan got to, behind the analysis
   recheckLibrary: () => request<{ books: number }>("/api/import/repair/recheck", { method: "POST", ...json({}) }),
   // a backlog import run of a folder: a dry run or the import itself
@@ -890,8 +920,8 @@ export function uploadBook(file: File, opts: UploadOptions, onProgress: (fractio
           return null
         }
       })()
-      if (xhr.status === 201 || xhr.status === 200) resolve({ status: "added", book: body.book, possibleDuplicates: body.possibleDuplicates })
-      else if (xhr.status === 409 && body?.error === "duplicate") resolve({ status: "duplicate", duplicates: body.duplicates ?? [], titles: body.titles ?? [] })
+      if (xhr.status === 202) resolve({ status: "staged", upload: body.upload })
+      else if (xhr.status === 200) resolve({ status: "added", book: body.book })
       else reject(new ApiError(xhr.status, body?.error ?? xhr.statusText))
     }
     signal?.addEventListener("abort", () => xhr.abort())

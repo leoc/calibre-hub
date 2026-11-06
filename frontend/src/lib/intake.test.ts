@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { acceptable, analysedShare, asChosen, authorsText, badgeText, candidateDiff, candidateSource, entryName, errorText, intakeFilter, leftText, noteTexts, readableFormat, reasonText, ringLabel, takeable, uniqueEntries, unreadable } from "./intake"
+import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, candidateDiff, candidateSource, entryName, errorText, intakeFilter, leftText, noteTexts, originsInList, readableFormat, reasonText, ringLabel, takeable, uniqueEntries, unreadable } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -215,5 +215,24 @@ describe("asChosen", () => {
     const c = { source: "name", confidence: 40, fields: {}, url: null }
     expect(badgeText(asChosen(entry({}), c), false)).toBe("40 % · Unsicher")
     expect(asChosen(entry({}))).toEqual(entry({}))
+  })
+})
+
+describe("the sources", () => {
+  it("names only the sources with entries", () => {
+    expect(originsInList({ origins: { backlog: 3, inbox: 0, upload: 1 } })).toEqual(["backlog", "upload"])
+    expect(originsInList({})).toEqual([])
+    expect(originsInList(undefined)).toEqual([])
+  })
+
+  it("says per source what goes by itself, only for the sources there are", () => {
+    expect(autoText({ backlog: null, inbox: 90, upload: 75 })).toBe("Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 75 %")
+    expect(autoText({ upload: 90 })).toBe("Automatisch übernehmen: Upload ab 90 %")
+  })
+
+  it("leaves the source out of a filter of the library's books", () => {
+    expect(intakeFilter("all", "all", "inbox").origin).toBe("inbox")
+    expect(intakeFilter("all", "all", "all").origin).toBeUndefined()
+    expect(intakeFilter("all", "library", "inbox").origin).toBeUndefined()
   })
 })

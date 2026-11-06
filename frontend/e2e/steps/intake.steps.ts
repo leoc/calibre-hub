@@ -173,6 +173,41 @@ When("I type {string} as the title", async ({ page }, title: string) => {
   await page.keyboard.type(title)
 })
 
+When("I switch on {string}", async ({ page }, label: string) => {
+  await page.getByRole("dialog").getByRole("checkbox", { name: label }).check()
+})
+
+When("I switch off {string}", async ({ page }, label: string) => {
+  await page.getByRole("dialog").getByRole("checkbox", { name: label }).uncheck()
+})
+
+Then("the page is no wider than the screen", async ({ page }) => {
+  const width = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth])
+  expect(width[0]).toBeLessThanOrEqual(width[1])
+})
+
+Given("files came in by the inbox and an upload", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.intake.sources", "1"))
+})
+
+Then("there is no filter {string}", async ({ page }, label: string) => {
+  await expect(page.getByLabel(label)).toHaveCount(0)
+})
+
+Then("the row of {string} shows no source", async ({ page }, name: string) => {
+  await expect(rows(page).filter({ hasText: name }).getByText(/^(Backlog|Inbox|Upload)$/)).toHaveCount(0)
+})
+
+Then("the row of {string} shows the source {string}", async ({ page }, name: string, source: string) => {
+  await expect(rows(page).filter({ hasText: name }).getByText(source, { exact: true })).toBeVisible()
+})
+
+Then("the hub was asked to accept the filter of the source {string}", async ({ page }, origin: string) => {
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __intake: { query?: { origin?: string } }[] }).__intake.at(-1)?.query?.origin))
+    .toBe(origin)
+})
+
 When("I set {string} to {string}", async ({ page }, label: string, value: string) => {
   await page.getByRole("dialog").getByLabel(label).fill(value)
 })
