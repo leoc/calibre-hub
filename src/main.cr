@@ -52,7 +52,8 @@ module CalibreHub
     getter inbox : String? = ENV["CALIBRE_HUB_INBOX"]?.presence
     getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
     # the Eingang: first look at the roots after a start, between two looks
-    # at them, between two looks at the inbox and uploads
+    # at them, between two looks at the inbox and uploads (and at a repair
+    # the roots wait for)
     getter intake_start : Time::Span = env("CALIBRE_HUB_INTAKE_START", "60").to_i.seconds
     getter intake_interval : Time::Span = env("CALIBRE_HUB_INTAKE_INTERVAL", "300").to_i.seconds
     getter intake_tick : Time::Span = env("CALIBRE_HUB_INTAKE_TICK", "30").to_i.seconds
@@ -291,7 +292,7 @@ module CalibreHub
     now >= today && last < today
   end
 
-  def self.dispatch(dispatcher : Dispatcher, wake : Channel(Nil))
+  def self.dispatch(dispatcher : Dispatcher, wake : Channel(Nil), interval : Time::Span)
     spawn do
       loop do
         begin
@@ -302,7 +303,7 @@ module CalibreHub
         end
         select
         when wake.receive
-        when timeout(5.seconds)
+        when timeout(interval)
         end
       end
     end
@@ -429,7 +430,7 @@ module CalibreHub
     detect(detector, config, wake)
     alert = config.alert_command.try { |c| [c] }
     env = {"CALIBRE_HUB_LIBRARY" => config.library || ""}
-    dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert, config.handler_retry_delay), wake)
+    dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert, config.handler_retry_delay), wake, config.event_interval || 5.seconds)
 
     auth = Auth.new(config.accounts, config.session_key, lifetime: config.session_days.days, secure: config.secure_cookies)
     Users.new(db).sync(auth.accounts)
@@ -498,7 +499,7 @@ module CalibreHub
     # analysed in the background
     Dir.mkdir_p(File.join(config.uploads, ".incoming"))
     intake = Intake.new(db, calibre, imports, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"),
-      interval: config.intake_interval, tick: config.intake_tick,
+      interval: config.intake_interval, wait: config.intake_tick, tick: config.intake_tick,
       inbox: config.inbox.try { |dir| Inbox.new(dir, config.inbox_stable) }, uploads: Inbox.new(config.uploads))
     intake.busy = -> { repair.running? }
     intake.repair = repair

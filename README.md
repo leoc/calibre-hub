@@ -1072,7 +1072,7 @@ Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
 | `CALIBRE_HUB_EVENT_INTERVAL` | none | seconds between two looks for new events of the background work; none: each its own, 2 to 10 |
 | `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
 | `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |
-| `CALIBRE_HUB_INTAKE_START`, `_INTERVAL`, `_TICK` | `60`, `300`, `30` | the Eingang: seconds to the first look at the roots after a start, between two looks at them, between two looks at the inbox and uploads |
+| `CALIBRE_HUB_INTAKE_START`, `_INTERVAL`, `_TICK` | `60`, `300`, `30` | the Eingang: seconds to the first look at the roots after a start, between two looks at them, between two looks at the inbox and uploads (and at a repair the roots wait for) |
 | `CALIBRE_HUB_UPLOADS` | `uploads` next to the state DB | where uploads wait for the Eingang |
 | `CALIBRE_HUB_LIST_MIGRATE_TAG` | `leseliste` | books with this tag become the list "Leseliste" on the first start |
 | `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each, of the login user |

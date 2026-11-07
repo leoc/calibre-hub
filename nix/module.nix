@@ -307,8 +307,8 @@ in
       default = null;
       description = ''
         Seconds between two looks for new events of the background work
-        (metadata, classification, conversion, EPUB fixer, embedding, lists,
-        private tags). Null: each its own, 2 to 10 seconds.
+        (handlers' retries, metadata, classification, conversion, EPUB fixer,
+        embedding, lists, private tags). Null: each its own, 2 to 10 seconds.
       '';
     };
 
@@ -356,7 +356,7 @@ in
       tick = mkOption {
         type = types.ints.positive;
         default = 30;
-        description = "Seconds between two looks of the Eingang at the inbox and the uploads.";
+        description = "Seconds between two looks of the Eingang at the inbox and the uploads, and at a repair the import roots wait for.";
       };
     };
 
