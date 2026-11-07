@@ -1363,7 +1363,10 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"install -d -m 2775 -g calibre-hub '{IN}'")
         put(f"{IN}/Ada Writer - Angenommen.pdf", pdf(b"s"))
         put(f"{IN}/wegwerfen.pdf", pdf(b"t"))
-        # byte for byte a file of the library: nobody has to look at it
+        # byte for byte a file of the library: nobody has to look at it, and
+        # nothing may rewrite that file after the copy
+        hub_idle()
+        embed_idle()
         copy = machine.succeed("find /srv/books/library -name '*.pdf' | head -1").strip()
         machine.succeed(f"cp '{copy}' '{IN}/kopie.pdf' && touch -d '1 hour ago' '{IN}'/*.pdf")
         wait_until(f"test -f '{TRASH}/kopie.pdf'", timeout=600)
