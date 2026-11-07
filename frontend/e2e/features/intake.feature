@@ -453,6 +453,19 @@ Feature: Eingang
     When I press "Escape"
     Then the list has 2 rows
 
+  Scenario: A proposal that writes nothing is not in the list, and an empty list keeps the recheck
+    When I open the Eingang
+    And I choose "Schon in der Bibliothek" in "Art"
+    Then the list has 3 rows
+    And the row "Nur ein Kandidat.pdf" is gone
+    And the page says "Alle 3 übernehmen"
+    When I press "Ablehnen" on the row "Formulas and Theorems in Pure Mathematics"
+    And I press "Ablehnen" on the row "Dune"
+    And I press "Ablehnen" on the row "Wine Tasting - A Professional Handbook.pdf"
+    Then the list says "Hier ist nichts zu entscheiden."
+    And the button "Alle 0 übernehmen" is disabled
+    And the button "Bestand neu prüfen" is enabled
+
   Scenario: The old address of the import page leads here
     When I open "/import"
     Then the page is the Eingang

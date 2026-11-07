@@ -17,19 +17,17 @@ module CalibreHub
     # what the reader opens (frontend READER_FORMATS), in its order
     READABLE = %w(EPUB KEPUB AZW3 MOBI AZW FB2 CBZ PDF)
 
-    # open: to decide here. A failed one stays to say why.
-    LIBRARY_OPEN = "status in ('pending', 'failed') and decision is null"
-    # something to write: not only a conflict's note or an unconfirmed candidate
-    LIBRARY_WRITES = "exists (select 1 from json_each(changes) where json_extract(value, '$.field') != '#{Meta::FileName::CANDIDATE}')"
+    # open: to decide here, so with something to write. A failed one stays to
+    # say why. What writes nothing waits for a recheck (ImportRepair#recheck_list).
+    LIBRARY_OPEN = "status in ('pending', 'failed') and decision is null and #{ImportRepair::WRITES}"
 
     private def library_sql(band : String?) : String
       [LIBRARY_OPEN, band_sql(band)].compact.join(" and ")
     end
 
-    # Of a filter what „Alle N übernehmen“ takes: not what failed, is skipped
-    # or has nothing to write
+    # Of a filter what „Alle N übernehmen“ takes: not what failed or is skipped
     private def library_takeable(band : String?) : String
-      "#{library_sql(band)} and status = 'pending' and skipped = 0 and #{LIBRARY_WRITES}"
+      "#{library_sql(band)} and status = 'pending' and skipped = 0"
     end
 
     private def library_count(where : String) : Int64
@@ -39,8 +37,7 @@ module CalibreHub
     private def library_left(band : String?)
       open = library_sql(band)
       {duplicates: 0_i64, failed: library_count("#{open} and status = 'failed'"),
-       skipped: library_count("#{open} and status = 'pending' and skipped = 1"),
-       unchanged: library_count("#{open} and status = 'pending' and skipped = 0 and not #{LIBRARY_WRITES}")}
+       skipped: library_count("#{open} and status = 'pending' and skipped = 1")}
     end
 
     # the surest first as in #list, then by book
@@ -72,7 +69,7 @@ module CalibreHub
       JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? Intake.place(rows.last.confidence, rows.last.book_id) : nil,
                   takeable: repair ? library_count(takeable) : 0_i64,
                   unsure: repair ? library_count("#{takeable} and confidence < #{Meta::Confidence::REVIEW}") : 0_i64,
-                  left: repair ? library_left(band) : {duplicates: 0_i64, failed: 0_i64, skipped: 0_i64, unchanged: 0_i64},
+                  left: repair ? library_left(band) : {duplicates: 0_i64, failed: 0_i64, skipped: 0_i64},
                   skipped: skipped_count, last: repair ? @db.query_one("select coalesce(max(book_id), 0) from import_repairs", as: Int64) : 0_i64,
                   pending: pending_count, thresholds: thresholds, origins: origin_counts, recheck: recheck_state,
                   entries: rows.map { |p| library_entry(p, books[p.book_id]?) }}.to_json)
@@ -91,7 +88,6 @@ module CalibreHub
     private def library_entry(p : ImportRepair::Proposal, book : Book?)
       changes = p.changes.map { |c| Meta::Change.new(c.field, c.old, c.new, c.source) }
       proposed = Intake.from_values(Intake.changed_values(book || Backlog.book(p.book_id, "##{p.book_id}", [] of String), changes))
-      unchanged = changes.none? { |c| c.field != Meta::FileName::CANDIDATE }
       {id: -p.book_id, path: p.file, name: p.file.empty? ? "" : File.basename(p.file), folder: nil, kind: "library",
        files: (book.try(&.formats) || [] of String).map { |f| {path: "", format: f.upcase, size: 0} },
        status: p.status == "failed" ? "failed" : "analysed", detail: nil, proposal: proposed, confidence: p.confidence,
@@ -99,7 +95,7 @@ module CalibreHub
        authorsConfidence: p.authors_confidence, level: p.level, source: p.source, decided: p.decided, isbnSource: nil,
        notes: p.notes, action: "update", bookId: p.book_id, match: nil, sameAs: nil, addFormats: [] of String,
        cover: book ? "/api/books/#{p.book_id}/cover?size=thumb" : nil, analysedAt: Time.unix(p.at).to_rfc3339,
-       skipped: p.skipped, error: p.detail, bookTitle: book.try(&.title), unchanged: unchanged}
+       skipped: p.skipped, error: p.detail, bookTitle: book.try(&.title)}
     end
 
     # One library entry for the drawer: old → new per field; a proposal
@@ -134,7 +130,7 @@ module CalibreHub
       ids = target["query"]? ? library_by_filter(target, decision) : library_by_ids(target)
       case decision
       when "accept"
-        wanted = ids.empty? ? [] of Int64 : repair.proposals("status = 'pending' and #{LIBRARY_WRITES} and book_id in (#{ids.join(",")})", [] of DB::Any).map(&.book_id)
+        wanted = ids.empty? ? [] of Int64 : repair.proposals("status = 'pending' and book_id in (#{ids.join(",")})", [] of DB::Any).map(&.book_id)
         return {202, JSON.parse({jobId: nil, total: 0}.to_json)} if wanted.empty?
         result = repair.accept(wanted)
         {202, JSON.parse({jobId: result["job"]["id"], total: wanted.size}.to_json)}

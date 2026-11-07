@@ -1245,7 +1245,7 @@ module CalibreHub
       clause = filter_sql(band, duplicates, skipped, origin)
       count = ->(extra : String) { @db.query_one("select count(*) from intake_entries where #{clause} and #{extra}", as: Int64) }
       {duplicates: count.call("status = 'analysed' and action = 'duplicate'"), failed: count.call("status != 'analysed'"),
-       skipped: skipped ? 0_i64 : count.call("status = 'analysed' and action != 'duplicate' and skipped = 1"), unchanged: 0_i64}
+       skipped: skipped ? 0_i64 : count.call("status = 'analysed' and action != 'duplicate' and skipped = 1")}
     end
 
     # The list for the page: a page of entries with the filter's total, how

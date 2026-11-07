@@ -231,7 +231,8 @@ function libraryEntry(r: ImportRepairEntry): IntakeDetail {
   }
 }
 
-const library = () => proposalBoard.entries().map(libraryEntry)
+// a proposal that writes nothing has nothing to decide here
+const library = () => proposalBoard.entries().filter((r) => r.changes.some((c) => c.field !== "candidate")).map(libraryEntry)
 const libraryTakeable = (list: IntakeDetail[]) => list.filter((e) => e.status === "analysed" && !e.skipped)
 
 function libraryList(q: URLSearchParams) {
@@ -244,7 +245,7 @@ function libraryList(q: URLSearchParams) {
     counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: 0 },
     takeable: take.length,
     unsure: take.filter((e) => e.band === "unsure").length,
-    left: { duplicates: 0, failed: list.filter((e) => e.status === "failed").length, skipped: list.filter((e) => e.status === "analysed" && e.skipped).length, unchanged: 0 },
+    left: { duplicates: 0, failed: list.filter((e) => e.status === "failed").length, skipped: list.filter((e) => e.status === "analysed" && e.skipped).length },
     last: Math.max(0, ...all.map((e) => e.bookId ?? 0)),
     pending: 0,
     next: null,
@@ -295,7 +296,6 @@ export const intakeHandlers = [
       duplicates: list.filter((e) => e.status === "analysed" && e.action === "duplicate").length,
       failed: list.filter((e) => e.status !== "analysed").length,
       skipped: skippedFilter ? 0 : list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && e.skipped).length,
-      unchanged: 0,
     }
     const mode = typeof localStorage === "undefined" ? null : localStorage.getItem("hub.mock.intake")
     return HttpResponse.json({

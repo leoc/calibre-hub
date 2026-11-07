@@ -80,11 +80,11 @@ export const entryName = (e: IntakeEntry) => e.name || e.bookTitle || `#${e.book
 export const isLibrary = (e: IntakeEntry) => e.kind === "library"
 
 // a proposal to accept: a failed library entry needs a new plan first
-export const acceptable = (e: IntakeEntry) => e.proposal !== null && e.status === "analysed" && !e.unchanged
+export const acceptable = (e: IntakeEntry) => e.proposal !== null && e.status === "analysed"
 
 // what a bulk decision of this filter takes: it leaves failed files and what
 // looks like a book of the library to Arthur, and what he skipped
-export const takeable = (e: IntakeEntry, kind: IntakeKind) => e.status === "analysed" && !e.unchanged && e.action !== "duplicate" && (kind === "skipped" || !e.skipped)
+export const takeable = (e: IntakeEntry, kind: IntakeKind) => e.status === "analysed" && e.action !== "duplicate" && (kind === "skipped" || !e.skipped)
 
 // what „Alle N in den Papierkorb“ takes: the hub says what is the same book
 export const trashable = (e: IntakeEntry) => e.status === "analysed" && e.action === "duplicate" && e.sameBook === true && !e.skipped
@@ -103,11 +103,10 @@ export function leftText(left: IntakeLeft | undefined): string | null {
     left.duplicates && t(left.duplicates === 1 ? "intake.left.duplicate" : "intake.left.duplicates", { count: formatNumber(left.duplicates) }),
     left.failed && t("intake.left.failed", { count: formatNumber(left.failed) }),
     left.skipped && t("intake.left.skipped", { count: formatNumber(left.skipped) }),
-    left.unchanged && t("intake.left.unchanged", { count: formatNumber(left.unchanged) }),
   ].filter((p): p is string => !!p)
   if (parts.length === 0) return null
   const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} ${t("intake.left.and")} ${parts.at(-1)}` : parts[0]
-  const one = left.duplicates + left.failed + left.skipped + left.unchanged === 1
+  const one = left.duplicates + left.failed + left.skipped === 1
   return t(one ? "intake.left.one" : "intake.left.many", { list })
 }
 

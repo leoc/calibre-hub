@@ -141,7 +141,7 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
     return filterBooks(bookSearchParams(target.query))
   }
 
-  const [r1, r2, r3] = books
+  const [r1, r2, r3, r4] = books
   const sure = (confidence: number, band: ImportRepairEntry["band"], level: ImportRepairEntry["level"], source: string) =>
     ({ confidence, band, level, source, titleConfidence: confidence, authorsConfidence: confidence, notes: [] })
   let repair: ImportRepairEntry[] = [
@@ -157,6 +157,8 @@ export function metadataHandlers({ books, jobs, touch, filterBooks, setCover, de
       at: "2026-11-03T12:00:00Z", ...sure(98, "bulk", 1, "hardcover"), changes: [{ field: "title", old: r2.title, new: "Dune" }, { field: "authors", old: r2.authors, new: ["Herbert"] }] },
     { bookId: r3.id, file: "/srv/media/ebooks/backlog/Defaults/Wine Tasting - A Professional Handbook.pdf", decided: "unsure", status: "pending",
       at: "2026-11-03T12:00:00Z", ...sure(30, "unsure", 3, "rules"), changes: [{ field: "tags", old: [], new: ["auto-unsicher"] }] },
+    { bookId: r4.id, file: "/srv/media/ebooks/backlog/Defaults/Nur ein Kandidat.pdf", decided: "unsure", status: "pending",
+      at: "2026-11-03T12:00:00Z", ...sure(30, "unsure", 3, "rules"), changes: [{ field: "candidate", old: null, new: { title: "Nur ein Kandidat", authors: [] } }] },
   ]
   // the Eingang's filter shows these
   proposalBoard.entries = () => repair

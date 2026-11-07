@@ -800,7 +800,6 @@ export const de = {
   "intake.left.duplicate": "{count} mögliche Dublette",
   "intake.left.failed": "{count} fehlgeschlagen",
   "intake.left.skipped": "{count} übersprungen",
-  "intake.left.unchanged": "{count} ohne Änderung",
   "intake.left.and": "und",
   "intake.left.one": "{list} bleibt in der Liste",
   "intake.left.many": "{list} bleiben in der Liste",

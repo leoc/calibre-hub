@@ -31,7 +31,8 @@ module CalibreHub
   # A proposal waiting for its accept job is out of the Eingang (decision), a
   # skipped one is not asked again there (skipped). An accept that fails stays
   # and says why (detail); one that found a field changed is failed, only a new
-  # plan helps there.
+  # plan helps there. A proposal that writes nothing (WRITES) has nothing to
+  # decide: it stays out of the Eingang until a recheck finds a change.
   class ImportRepair < Jobs
     # automatic changes the repair builds on (not a person's edits)
     AUTO = Set{"rules", "model", "authors"}
@@ -41,6 +42,11 @@ module CalibreHub
                    "pubdate" => "pubdate", "series" => "series", "seriesIndex" => "seriesIndex"}
     # what a backlog import writes right after adding a book isn't an edit
     IMPORT_WINDOW = 10.minutes
+    # a proposal with something to write: not only a conflict's note or an
+    # unconfirmed candidate
+    WRITES = "exists (select 1 from json_each(changes) where json_extract(value, '$.field') != '#{Meta::FileName::CANDIDATE}')"
+    # open, but out of the Eingang: nothing to write
+    HIDDEN = "status = 'pending' and decision is null and not #{WRITES}"
 
     record Proposed, field : String, old : JSON::Any, new : JSON::Any, source : String = "rules" do
       include JSON::Serializable
@@ -395,15 +401,18 @@ module CalibreHub
 
     # The books a recheck has to look at, with the file an import read:
     # those accepted before the rules of today (a plan leaves them out), those
-    # whose accept failed, and the books of an import run (the last one
-    # without a run), once each. Nothing that is open or was rejected, nothing
-    # Arthur took in the Eingang, no book gone from the library.
+    # whose accept failed, the books of an import run (the last one without a
+    # run), once each, and a proposal that writes nothing once after it was
+    # stored. Nothing that is open or was rejected, nothing Arthur took in the
+    # Eingang, no book gone from the library.
     def recheck_list(run : String? = nil) : {Array(Int64), Hash(Int64, String)}
       rows = {} of Int64 => String
       @db.query_each("select book_id, status from import_repairs") { |rs| rows[rs.read(Int64)] = rs.read(String) }
       ids = rows.select { |_, s| s.in?("applied", "failed") }.keys.to_set
       (run || last_run).try { |r| ids.concat(run_books(r).reject { |id| rows.has_key?(id) }) }
       @db.query_each("select book_id from import_rechecks") { |rs| ids.delete(rs.read(Int64)) }
+      @db.query_each("select r.book_id from import_repairs r left join import_rechecks c on c.book_id = r.book_id " \
+                     "where #{HIDDEN} and (c.at is null or c.at < r.at)") { |rs| ids << rs.read(Int64) }
       known = @calibre.list("", Calibre::DETAIL_FIELDS).map(&.id).to_set
       decided = @log.decisions
       list = ids.select { |id| known.includes?(id) && decided[id]?.try(&.status) != MetaLog::ACCEPTED }.to_a.sort!
@@ -419,10 +428,12 @@ module CalibreHub
     # A book planned again. The flow is the plan's, so a field edited by hand
     # stays and what a catalog wrote gives way to an ISBN only. A plan that
     # would write nothing leaves everything as it was: no proposal, the book
-    # keeps its decision. Decided meanwhile: left alone.
+    # keeps its decision. Decided meanwhile: left alone, and so is an open
+    # proposal with something to write.
     def recheck(id : Int64, path : String?)
       now = @db.query_one?("select status from import_repairs where book_id = ?", id, as: String)
-      unless now.in?("pending", "rejected") || @log.decided(id).try(&.status) == MetaLog::ACCEPTED
+      hidden = @db.query_one?("select 1 from import_repairs where book_id = ? and #{HIDDEN}", id, as: Int64)
+      unless (now.in?("pending", "rejected") && !hidden) || @log.decided(id).try(&.status) == MetaLog::ACCEPTED
         book = @calibre.book(id) || return
         d = decide(book, path, baselines([id])[id]?, @quiet_reader || @reader)
         replace(id, path || "", d) if d

@@ -248,8 +248,6 @@ export interface IntakeEntry {
   bookTitle: string | null
   // a duplicate with the title and authors of its book: a bulk may trash it
   sameBook?: boolean
-  // a library entry with nothing to write: a conflict's note, a candidate
-  unchanged?: boolean
 }
 
 export interface IntakeCandidate {
@@ -281,8 +279,6 @@ export interface IntakeLeft {
   duplicates: number
   failed: number
   skipped: number
-  // library entries with nothing to write
-  unchanged: number
 }
 
 export interface IntakeList {

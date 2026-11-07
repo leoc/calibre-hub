@@ -157,7 +157,7 @@ it("keeps an entry once over a moved page boundary", () => {
 })
 
 describe("leftText", () => {
-  const left = { duplicates: 0, failed: 0, skipped: 0, unchanged: 0 }
+  const left = { duplicates: 0, failed: 0, skipped: 0 }
   it("says nothing when the bulk takes everything", () => {
     expect(leftText(left)).toBeNull()
     expect(leftText(undefined)).toBeNull()
@@ -165,7 +165,7 @@ describe("leftText", () => {
   it("names what stays", () => {
     expect(leftText({ ...left, duplicates: 59 })).toBe("59 mögliche Dubletten bleiben in der Liste")
     expect(leftText({ ...left, duplicates: 1 })).toBe("1 mögliche Dublette bleibt in der Liste")
-    expect(leftText({ duplicates: 2, failed: 1, skipped: 3, unchanged: 0 })).toBe("2 mögliche Dubletten, 1 fehlgeschlagen und 3 übersprungen bleiben in der Liste")
+    expect(leftText({ duplicates: 2, failed: 1, skipped: 3 })).toBe("2 mögliche Dubletten, 1 fehlgeschlagen und 3 übersprungen bleiben in der Liste")
   })
 })
 
@@ -197,8 +197,6 @@ describe("a library entry", () => {
   it("can't be accepted failed or with nothing to write", () => {
     expect(acceptable(library)).toBe(true)
     expect(acceptable({ ...library, status: "failed" })).toBe(false)
-    expect(acceptable({ ...library, unchanged: true })).toBe(false)
-    expect(takeable({ ...library, unchanged: true }, "library")).toBe(false)
   })
   it("says in German which field changed", () => {
     expect(errorText({ ...library, error: "title changed since the plan" })).toBe("Titel wurde seit dem Vorschlag geändert. Bitte ablehnen oder Bestand neu prüfen.")
