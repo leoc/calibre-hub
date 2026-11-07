@@ -1,0 +1,52 @@
+# The demo library: names of old books whose authors died long ago. The text in the files is generated (dev/demo.py).
+# author	title	series	index	kategorie	tags	language	publisher	year	formats
+Johann Wolfgang von Goethe	Faust. Der Tragödie erster Teil	Faust	1	Roman.Klassik.Drama	gelesen	deu	Cotta	1808	EPUB,PDF
+Johann Wolfgang von Goethe	Faust. Der Tragödie zweiter Teil	Faust	2	Roman.Klassik.Drama		deu	Cotta	1832	EPUB
+Johann Wolfgang von Goethe	Die Leiden des jungen Werthers			Roman.Klassik	leseliste	deu	Weygand	1774	EPUB
+Friedrich Schiller	Die Räuber			Roman.Klassik.Drama		deu	Metzler	1781	EPUB
+Friedrich Schiller	Maria Stuart			Roman.Klassik.Drama		deu	Cotta	1801	EPUB
+Friedrich Schiller	Wilhelm Tell			Roman.Klassik.Drama	gelesen	deu	Cotta	1804	EPUB,AZW3
+Heinrich von Kleist	Michael Kohlhaas			Roman.Klassik		deu	Realschulbuchhandlung	1810	EPUB
+Heinrich von Kleist	Der zerbrochne Krug			Roman.Klassik.Drama		deu	Realschulbuchhandlung	1811	EPUB
+Georg Büchner	Woyzeck			Roman.Klassik.Drama		deu	Sauerländer	1879	EPUB
+Georg Büchner	Lenz			Roman.Klassik		deu	Sauerländer	1839	EPUB
+Theodor Fontane	Effi Briest			Roman.Realismus	leseliste	deu	Fontane & Co.	1895	EPUB
+Theodor Fontane	Der Stechlin			Roman.Realismus		deu	Fontane & Co.	1898	EPUB
+Gottfried Keller	Der grüne Heinrich			Roman.Realismus		deu	Vieweg	1855	EPUB
+Annette von Droste-Hülshoff	Die Judenbuche			Roman.Realismus		deu	Cotta	1842	EPUB,PDF
+Franz Kafka	Die Verwandlung			Roman.Moderne	gelesen	deu	Kurt Wolff	1915	EPUB
+Franz Kafka	Der Process			Roman.Moderne	leseliste	deu	Die Schmiede	1925	EPUB
+Franz Kafka	Das Schloss			Roman.Moderne		deu	Kurt Wolff	1926	EPUB
+Rainer Maria Rilke	Die Aufzeichnungen des Malte Laurids Brigge			Roman.Moderne		deu	Insel	1910	EPUB
+Karl May	Winnetou I	Winnetou	1	Roman.Abenteuer		deu	Fehsenfeld	1893	EPUB
+Karl May	Winnetou II	Winnetou	2	Roman.Abenteuer		deu	Fehsenfeld	1893	EPUB
+Karl May	Winnetou III	Winnetou	3	Roman.Abenteuer		deu	Fehsenfeld	1893	EPUB
+Jules Verne	Reise um die Erde in achtzig Tagen			Roman.Abenteuer		deu	Hartleben	1873	EPUB
+Jules Verne	Zwanzigtausend Meilen unter dem Meer			Roman.Abenteuer		deu	Hartleben	1870	EPUB,AZW3
+Mary Shelley	Frankenstein			Roman.Schauer		eng	Lackington	1818	EPUB
+Bram Stoker	Dracula			Roman.Schauer	gelesen	eng	Constable	1897	EPUB
+Jane Austen	Pride and Prejudice			Roman.Klassik		eng	Egerton	1813	EPUB,PDF
+Jane Austen	Emma			Roman.Klassik		eng	Murray	1815	EPUB
+Charles Dickens	Great Expectations			Roman.Klassik	leseliste	eng	Chapman & Hall	1861	EPUB
+Charles Dickens	Oliver Twist			Roman.Klassik		eng	Bentley	1838	EPUB
+Herman Melville	Moby-Dick			Roman.Abenteuer		eng	Harper	1851	EPUB
+Mark Twain	The Adventures of Tom Sawyer	Tom Sawyer	1	Roman.Abenteuer		eng	American Publishing	1876	EPUB
+Mark Twain	Adventures of Huckleberry Finn	Tom Sawyer	2	Roman.Abenteuer		eng	Chatto & Windus	1884	EPUB
+Arthur Conan Doyle	A Study in Scarlet	Sherlock Holmes	1	Roman.Krimi		eng	Ward Lock	1887	EPUB
+Arthur Conan Doyle	The Sign of the Four	Sherlock Holmes	2	Roman.Krimi		eng	Spencer Blackett	1890	EPUB
+Arthur Conan Doyle	The Hound of the Baskervilles	Sherlock Holmes	5	Roman.Krimi	gelesen	eng	Newnes	1902	EPUB
+Leo Tolstoi	Krieg und Frieden			Roman.Klassik		deu	Reclam	1869	PDF
+Fjodor Dostojewski	Schuld und Sühne			Roman.Klassik		deu	Piper	1866	EPUB
+Immanuel Kant	Kritik der reinen Vernunft			Fachbuch.Philosophie		deu	Hartknoch	1781	PDF
+Georg Wilhelm Friedrich Hegel	Phänomenologie des Geistes			Fachbuch.Philosophie		deu	Goebhardt	1807	EPUB
+Friedrich Nietzsche	Also sprach Zarathustra			Fachbuch.Philosophie	leseliste	deu	Schmeitzner	1883	EPUB
+Arthur Schopenhauer	Die Welt als Wille und Vorstellung			Fachbuch.Philosophie		deu	Brockhaus	1819	EPUB
+Charles Darwin	Über die Entstehung der Arten			Fachbuch.Biologie		deu	Schweizerbart	1860	PDF
+Carl Friedrich Gauß	Disquisitiones Arithmeticae			Fachbuch.Mathematik		deu	Fleischer	1801	PDF
+Leonhard Euler	Vollständige Anleitung zur Algebra			Fachbuch.Mathematik		deu	Kaiserliche Akademie	1770	EPUB,PDF
+Bernhard Riemann	Grundlagen für eine allgemeine Theorie der Functionen			Fachbuch.Mathematik		deu	Huth	1851	PDF
+Hermann von Helmholtz	Die Lehre von den Tonempfindungen			Fachbuch.Physik		deu	Vieweg	1863	EPUB
+Wilhelm von Humboldt	Über die Verschiedenheit des menschlichen Sprachbaues			Fachbuch.Sprache		deu	Dümmler	1836	EPUB
+Jacob Grimm	Deutsche Grammatik			Fachbuch.Sprache		deu	Dieterich	1819	EPUB
+Jacob Grimm	Kinder- und Hausmärchen			Roman.Märchen	gelesen	deu	Realschulbuchhandlung	1812	EPUB
+Hans Christian Andersen	Märchen			Roman.Märchen		deu	Reitzel	1835	EPUB
