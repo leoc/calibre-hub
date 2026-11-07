@@ -1,7 +1,7 @@
 require "db"
 require "json"
 require "kemal"
-require "./backlog"
+require "./incoming"
 require "./covers"
 require "./meta_filename"
 require "./writer"
@@ -28,7 +28,7 @@ module CalibreHub
     def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer,
                    @library : String?, @retries = 20, @retry_wait = 15.seconds)
       Importer.migrate(@db)
-      @index = nil.as(Backlog::Index?)
+      @index = nil.as(Incoming::Index?)
       @index_run = ""
       # folder -> how its files are named (Meta::FileName.orientation)
       @hints = {} of String => Symbol?
@@ -48,18 +48,18 @@ module CalibreHub
         SQL
     end
 
-    def index_for(run_id : String) : Backlog::Index
+    def index_for(run_id : String) : Incoming::Index
       if (ix = @index) && @index_run == run_id
         return ix
       end
-      ix = with_retry { Backlog::Index.load(@calibre, @library, @db) }
+      ix = with_retry { Incoming::Index.load(@calibre, @library, @db) }
       @index = ix
       @index_run = run_id
       ix
     end
 
     # the book's files, for ImportRepair
-    def handled(unit : Backlog::Unit, run_id : String)
+    def handled(unit : Incoming::Unit, run_id : String)
       now = Time.utc.to_unix
       unit.files.each do |f|
         @db.exec "insert or replace into import_files (path, size, mtime, status, book_id, run_id, at) values (?, ?, ?, ?, ?, ?, ?)",
@@ -98,8 +98,8 @@ module CalibreHub
 
     # A unit as decided in the Eingang; a book that turned out to be in the
     # library comes back with the status duplicate, nothing added
-    def import(unit : Backlog::Unit, ix : Backlog::Index, chosen : Chosen)
-      Backlog.plan(unit, ix)
+    def import(unit : Incoming::Unit, ix : Incoming::Index, chosen : Chosen)
+      Incoming.plan(unit, ix)
       return add(unit, ix, chosen) if chosen.fresh
       case unit.action
       when "addFormats"
@@ -112,17 +112,17 @@ module CalibreHub
     end
 
     # the unit's files as formats of a book chosen by hand
-    def add_to(unit : Backlog::Unit, ix : Backlog::Index, id : Int64)
+    def add_to(unit : Incoming::Unit, ix : Incoming::Index, id : Int64)
       unit.add_formats = unit.files.map(&.format).uniq
       add_formats(id, unit, ix)
     end
 
-    private def add_formats(id : Int64, unit : Backlog::Unit, ix : Backlog::Index)
-      added = [] of Backlog::BookFile
+    private def add_formats(id : Int64, unit : Incoming::Unit, ix : Incoming::Index)
+      added = [] of Incoming::BookFile
       notes = [] of String
       unit.files.each do |f|
         next unless unit.add_formats.includes?(f.format) && added.none? { |a| a.format == f.format }
-        if f.size > Backlog::MAX_FORMAT
+        if f.size > Incoming::MAX_FORMAT
           notes << "#{File.basename(f.path)} too large for another format"
           next
         end
@@ -137,7 +137,7 @@ module CalibreHub
       @writer.written([id]) unless added.empty?
     end
 
-    private def add(unit : Backlog::Unit, ix : Backlog::Index, chosen : Chosen)
+    private def add(unit : Incoming::Unit, ix : Incoming::Index, chosen : Chosen)
       primary = unit.primary
       opf = unit.meta
       force = chosen.force
@@ -181,7 +181,7 @@ module CalibreHub
         end
         unit.files.each do |f|
           next if f.path == primary.path || f.format == primary.format
-          if f.size > Backlog::MAX_FORMAT
+          if f.size > Incoming::MAX_FORMAT
             notes << "#{File.basename(f.path)} too large for another format"
             next
           end
@@ -239,7 +239,7 @@ module CalibreHub
       @hints.clear if @hints.size > 500
       return @hints[dir] if @hints.has_key?(dir)
       names = begin
-        Dir.children(dir).select { |n| Backlog::Scanner.format(n) }
+        Dir.children(dir).select { |n| Incoming::Scanner.format(n) }
       rescue File::Error
         [] of String
       end
@@ -247,7 +247,7 @@ module CalibreHub
     end
 
     # the unit is the book `id` already has: only its missing formats
-    private def merge(unit : Backlog::Unit, id : Int64, how : String, ix : Backlog::Index)
+    private def merge(unit : Incoming::Unit, id : Int64, how : String, ix : Incoming::Index)
       have = @calibre.book(id).try(&.formats.map(&.upcase).to_set) || ix.formats(id)
       unit.match = how
       unit.add_formats = unit.files.reject { |f| have.includes?(f.format) }.map(&.format).uniq

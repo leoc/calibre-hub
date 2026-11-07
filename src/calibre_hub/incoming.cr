@@ -10,7 +10,7 @@ require "./meta_sources"
 require "./files"
 require "./sanitizer"
 require "./dedup"
-require "./backlog_pause"
+require "./incoming_pause"
 
 module CalibreHub
   # How a folder becomes books. A folder of an old calibre library
@@ -30,10 +30,10 @@ module CalibreHub
   # check, then ISBN and title/author).
   #
   # While a decision is carried out the metadata, classify, convert and embed
-  # hooks pause (Backlog.paused?) and work off the new books afterwards.
-  module Backlog
+  # hooks pause (Incoming.paused?) and work off the new books afterwards.
+  module Incoming
     # calibre reads the metadata from the first of these the book has
-    FORMATS  = %w(EPUB KEPUB AZW3 AZW MOBI PRC AZW4 FB2 FBZ DOCX ODT RTF PDF DJVU DJV CHM CBZ CBR CB7 LIT PDB TXT)
+    FORMATS = %w(EPUB KEPUB AZW3 AZW MOBI PRC AZW4 FB2 FBZ DOCX ODT RTF PDF DJVU DJV CHM CBZ CBR CB7 LIT PDB TXT)
     # further formats go to calibre-server as base64 in JSON (set-fields)
     MAX_FORMAT = Writer::MAX_UPLOAD
     OPF        = "metadata.opf"
@@ -449,7 +449,7 @@ module CalibreHub
       # a book from a calibre folder's metadata.opf (added, or a pseudo id of the list)
       def add_meta(id : Int64, meta : OpfMeta)
         @ids << id if id > 0
-        add_item(Dedup::Item.new(Backlog.book(id, meta)))
+        add_item(Dedup::Item.new(Incoming.book(id, meta)))
       end
 
       private def add_item(item : Dedup::Item)
@@ -547,7 +547,7 @@ module CalibreHub
 
       # the book with this title and an author in common
       def by_title(title : String, authors : Array(String)) : Int64?
-        hit = match_item(Dedup::Item.new(Backlog.book(0_i64, title, authors)))
+        hit = match_item(Dedup::Item.new(Incoming.book(0_i64, title, authors)))
         hit && hit[1] == "title" ? hit[0] : nil
       end
 
@@ -560,7 +560,7 @@ module CalibreHub
       # {book, how} for a unit, before adding
       def match(u : Unit) : {Int64, String}?
         u.files.each { |f| same_file(f).try { |id| return {id, "file"} } }
-        u.meta.try { |m| match_item(Dedup::Item.new(Backlog.book(0_i64, m))) }
+        u.meta.try { |m| match_item(Dedup::Item.new(Incoming.book(0_i64, m))) }
       end
 
       # {book, how} for a book calibre just added from a file, other than itself

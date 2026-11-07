@@ -1,9 +1,9 @@
 require "spec"
 require "file_utils"
-require "../src/calibre_hub/backlog_jobs"
+require "../src/calibre_hub/importer"
 require "../src/calibre_hub/import_repair"
 
-private alias Backlog = CalibreHub::Backlog
+private alias Incoming = CalibreHub::Incoming
 
 OPF_XML = <<-XML
   <?xml version='1.0' encoding='utf-8'?>
@@ -51,7 +51,7 @@ private def mobi(text = "x") : String
 end
 
 private def tmpdir(&)
-  dir = File.tempname("backlog")
+  dir = File.tempname("incoming")
   Dir.mkdir_p(dir)
   begin
     yield dir
@@ -197,9 +197,9 @@ private def opf_series(title : String, author : String, series : String, index :
   opf(title, author, isbn).sub(%(content="Toolbox"), %(content="#{series}")).sub(%(content="2.0"), %(content="#{index}"))
 end
 
-describe Backlog::OpfMeta do
+describe Incoming::OpfMeta do
   it "takes the fields of a calibre folder's metadata.opf, without the old library's ids" do
-    m = Backlog::OpfMeta.parse(OPF_XML)
+    m = Incoming::OpfMeta.parse(OPF_XML)
     m.title.should eq "Problem Solving 101: A Simple Book for Smart People"
     m.authors.should eq ["Ken Watanabe"]
     m.tags.should eq ["Business", "Thinking"]
@@ -217,12 +217,12 @@ describe Backlog::OpfMeta do
   end
 
   it "always sets the tags, so none calibre read from the file stay" do
-    m = Backlog::OpfMeta.parse(opf("T", "A").gsub(%r{<dc:subject>[^<]*</dc:subject>}, ""))
+    m = Incoming::OpfMeta.parse(opf("T", "A").gsub(%r{<dc:subject>[^<]*</dc:subject>}, ""))
     m.changes["tags"].as_a.should be_empty
   end
 end
 
-describe Backlog::Scanner do
+describe Incoming::Scanner do
   it "finds calibre folders, books by name and skips everything else" do
     tmpdir do |root|
       cal = File.join(root, "Ken Watanabe", "Problem Solving 101 (257)")
@@ -243,7 +243,7 @@ describe Backlog::Scanner do
       write(File.join(root, "_SORT", "sorted.pdf"), pdf("s"))
       write(File.join(root, "Empty (3)", "metadata.opf"), OPF_XML)
 
-      scan = Backlog::Scanner.new(root).run
+      scan = Incoming::Scanner.new(root).run
       units = scan.units.map { |u| {u.kind, u.files.map { |f| File.basename(f.path) }.sort} }
       units.should contain({"calibre", ["Problem Solving.epub", "Problem Solving.mobi"]})
       units.should contain({"file", ["book.epub", "book.pdf"]})
@@ -275,7 +275,7 @@ describe Backlog::Scanner do
       write(File.join(root, "b", "book.pdf"), pdf)
       ran = false
       spawn { ran = true }
-      scan = Backlog::Scanner.new(root).run
+      scan = Incoming::Scanner.new(root).run
       ran.should be_true
       scan.units.map { |u| File.basename(u.files.first.path) }.should eq ["book.pdf"]
       # the inbox's folders, at any depth
@@ -289,16 +289,16 @@ describe Backlog::Scanner do
       write(File.join(root, "b.pdf"), pdf("b"))
       a = File.info(File.join(root, "a.pdf"))
       b = File.info(File.join(root, "b.pdf"))
-      known = Backlog::Known{File.join(root, "a.pdf") => {a.size, a.modification_time.to_unix},
-                             File.join(root, "b.pdf") => {b.size + 1, b.modification_time.to_unix}}
-      scan = Backlog::Scanner.new(root, known).run
+      known = Incoming::Known{File.join(root, "a.pdf") => {a.size, a.modification_time.to_unix},
+                              File.join(root, "b.pdf") => {b.size + 1, b.modification_time.to_unix}}
+      scan = Incoming::Scanner.new(root, known).run
       scan.units.map { |u| File.basename(u.files.first.path) }.should eq ["b.pdf"]
       scan.already.should eq 1
     end
   end
 end
 
-describe Backlog::Index do
+describe Incoming::Index do
   it "finds duplicates by file, ISBN and title with an author" do
     tmpdir do |root|
       lib_file = File.join(root, "lib", "Book.pdf")
@@ -313,10 +313,10 @@ describe Backlog::Index do
       write(File.join(root, "in", "New", "N (4)", "metadata.opf"), opf("Ganz neu", "Neue Autorin", "9783446264137"))
       write(File.join(root, "in", "New", "N (4)", "n.epub"), epub("n2"))
       books = [book(1, "Something else", ["X"], ["PDF"]), book(2, "Problem Solving 101: A Simple Book for Smart People", ["Ken Watanabe"], ["MOBI"], "9781101028483")]
-      index = Backlog::Index.new(books, [{1_i64, "PDF", lib_file, File.size(lib_file)}])
-      scan = Backlog::Scanner.new(File.join(root, "in")).run
+      index = Incoming::Index.new(books, [{1_i64, "PDF", lib_file, File.size(lib_file)}])
+      scan = Incoming::Scanner.new(File.join(root, "in")).run
       scan.units.each_with_index do |u, i|
-        next unless Backlog.plan(u, index)
+        next unless Incoming.plan(u, index)
         # the list counts for what comes after it
         index.planned[-(i.to_i64 + 1)] = u.name
         u.meta.try { |m| index.add_meta(-(i.to_i64 + 1), m) }
@@ -334,7 +334,7 @@ describe Backlog::Index do
   end
 
   it "matches title and author without an ISBN" do
-    index = Backlog::Index.new([book(7, "Die Welt: Ein Buch", ["Müller, Anna"])])
+    index = Incoming::Index.new([book(7, "Die Welt: Ein Buch", ["Müller, Anna"])])
     index.by_title("Die Welt - ein Buch", ["Anna Muller"]).should eq 7
     index.by_title("Die Welt - ein Buch", ["Someone Else"]).should be_nil
     index.by_title("Die Welt", ["Anna Müller"]).should be_nil
@@ -348,14 +348,14 @@ describe Backlog::Index do
       custom: {} of String => JSON::Any)
     unknown = book(10, "Ohne Namen", ["Unknown"])
     junk = book(11, "Ein Titel (z-lib.org)", ["Cara Cole"])
-    index = Backlog::Index.new([vol, numbered, unknown, junk])
+    index = Incoming::Index.new([vol, numbered, unknown, junk])
     index.by_title("Die Chronik Band 1", ["Müller, Anna"]).should eq 8
     index.by_title("Die Chronik Band 2", ["Anna Müller"]).should be_nil
     # the same ISBN, but another number of the series
-    other = Backlog::OpfMeta.parse(opf_series("Saga", "Bo Berg", "Saga", "2.0", "9783446264137"))
-    index.match_item(CalibreHub::Dedup::Item.new(Backlog.book(0_i64, other))).should be_nil
-    same = Backlog::OpfMeta.parse(opf_series("Saga", "Bo Berg", "Saga", "1.0", "9783446264137"))
-    index.match_item(CalibreHub::Dedup::Item.new(Backlog.book(0_i64, same))).should eq({9_i64, "isbn"})
+    other = Incoming::OpfMeta.parse(opf_series("Saga", "Bo Berg", "Saga", "2.0", "9783446264137"))
+    index.match_item(CalibreHub::Dedup::Item.new(Incoming.book(0_i64, other))).should be_nil
+    same = Incoming::OpfMeta.parse(opf_series("Saga", "Bo Berg", "Saga", "1.0", "9783446264137"))
+    index.match_item(CalibreHub::Dedup::Item.new(Incoming.book(0_i64, same))).should eq({9_i64, "isbn"})
     # an unknown author is no author in common
     index.by_title("Ohne Namen", ["Unknown"]).should be_nil
     # download-site junk in a title is no difference

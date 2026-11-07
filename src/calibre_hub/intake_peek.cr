@@ -41,7 +41,7 @@ module CalibreHub
     @peek_lock = Mutex.new
 
     # What to send for the entry's file when a look is enough
-    def peek(id : Int64, file : Backlog::BookFile) : Peek
+    def peek(id : Int64, file : Incoming::BookFile) : Peek
       djvu = DJVU.includes?(file.format)
       return Peek.new(file.path) unless djvu || (file.format == "PDF" && file.size > @peek_from)
       base = File.join(@peeks, "#{id}-#{file.format}")
@@ -71,7 +71,7 @@ module CalibreHub
       end
     end
 
-    private def build_peek(id : Int64, base : String, file : Backlog::BookFile, djvu : Bool)
+    private def build_peek(id : Int64, base : String, file : Incoming::BookFile, djvu : Bool)
       work = "#{base}.build"
       FileUtils.rm_rf(work)
       Dir.mkdir_p(work)

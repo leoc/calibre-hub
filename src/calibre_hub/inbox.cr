@@ -1,5 +1,5 @@
 require "json"
-require "./backlog"
+require "./incoming"
 
 module CalibreHub
   # A folder a file comes in by, as the Eingang (Intake) sees it. Nothing here
@@ -52,7 +52,7 @@ module CalibreHub
 
     # What the scanner found to be no book of its format goes to _failed,
     # so nothing lies around without a word; other kinds of files stay
-    def fail_broken(skipped : Array(Backlog::Skipped), now = Time.local)
+    def fail_broken(skipped : Array(Incoming::Skipped), now = Time.local)
       skipped.each do |s|
         next unless s.reason.starts_with?("broken")
         info = File.info?(s.path) || next

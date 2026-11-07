@@ -1,8 +1,8 @@
 require "db"
 require "json"
 require "kemal"
-require "./backlog"
-require "./backlog_jobs"
+require "./incoming"
+require "./importer"
 require "./import_repair"
 require "./inbox"
 require "./meta_flow"
@@ -12,8 +12,8 @@ module CalibreHub
   # The „Eingang“: every book file goes through a list before it reaches the
   # library, whichever way it came (origin: the inbox, an upload). New files
   # are found without a button and analysed one after another (run_once): the
-  # same units as an import (Backlog::Scanner), the same check against the
-  # library (Backlog::Index) and the same decision (Meta::Flow), only from the
+  # same units as an import (Incoming::Scanner), the same check against the
+  # library (Incoming::Index) and the same decision (Meta::Flow), only from the
   # file instead of from a book calibre added. Now and then the list looks at
   # itself (tidy), for what changed in the library or on disk.
   # Nothing here has a way to write: calibre-server is only asked for its
@@ -93,7 +93,7 @@ module CalibreHub
     end
 
     # a row of intake_entries
-    record Entry, id : Int64, path : String, kind : String, files : Array(Backlog::BookFile), status : String,
+    record Entry, id : Int64, path : String, kind : String, files : Array(Incoming::BookFile), status : String,
       detail : String?, proposal : Proposal?, confidence : Int32?, title_confidence : Int32?, authors_confidence : Int32?,
       level : Int32?, source : String?, decided : String?, isbn_source : String?, notes : Array(Meta::Flow::Note),
       changes : Array(Changed), action : String, book_id : Int64?, match : String?, same_as : String?,
@@ -105,8 +105,8 @@ module CalibreHub
         status == "analysed" && action == "duplicate" && match == "file" && !same_as.nil? && book_id.nil?
       end
 
-      def primary : Backlog::BookFile
-        files.min_by { |f| Backlog::FORMATS.index(f.format) || Backlog::FORMATS.size }
+      def primary : Incoming::BookFile
+        files.min_by { |f| Incoming::FORMATS.index(f.format) || Incoming::FORMATS.size }
       end
 
       def band : String?
@@ -114,11 +114,11 @@ module CalibreHub
       end
 
       # the unit as an import sees it; a calibre folder's OPF as it is now
-      def unit : Backlog::Unit
-        return Backlog::Unit.new(kind, File.dirname(primary.path), files) unless kind == "calibre"
-        cover = File.join(path, Backlog::COVER)
-        Backlog::Unit.new(kind, path, files, File.file?(cover) ? cover : nil,
-          Backlog::OpfMeta.parse(File.read(File.join(path, Backlog::OPF))))
+      def unit : Incoming::Unit
+        return Incoming::Unit.new(kind, File.dirname(primary.path), files) unless kind == "calibre"
+        cover = File.join(path, Incoming::COVER)
+        Incoming::Unit.new(kind, path, files, File.file?(cover) ? cover : nil,
+          Incoming::OpfMeta.parse(File.read(File.join(path, Incoming::OPF))))
       end
 
       # the file's folder below its root, nil in the root
@@ -328,7 +328,7 @@ module CalibreHub
       uploads = staged_uploads
       units = inbox_units(now)
       return 0 if uploads.empty? && units.empty?
-      ix = Backlog::Index.load(@calibre, @library, @db)
+      ix = Incoming::Index.load(@calibre, @library, @db)
       all.each { |e| remember(ix, e) if e.action == "add" && e.status == "analysed" }
       @left = uploads.size + units.size
       uploads.each do |file, extra|
@@ -351,7 +351,7 @@ module CalibreHub
       @current = nil
     end
 
-    private def one(unit : Backlog::Unit?, ix : Backlog::Index, extra : Extra, &)
+    private def one(unit : Incoming::Unit?, ix : Incoming::Index, extra : Extra, &)
       if unit
         @current = File.basename(unit.primary.path)
         analyse(unit, ix, extra)
@@ -365,29 +365,29 @@ module CalibreHub
     # it is decided. What is in the list is looked at again only when it
     # changed; what went into the library left the folder, so a file dropped
     # again is new.
-    private def inbox_units(now : Time) : Array(Backlog::Unit)
-      box = @inbox || return [] of Backlog::Unit
-      known = Backlog::Known.new
+    private def inbox_units(now : Time) : Array(Incoming::Unit)
+      box = @inbox || return [] of Incoming::Unit
+      known = Incoming::Known.new
       @db.query_each("select files from intake_entries where origin = ?", INBOX) do |rs|
-        Array(Backlog::BookFile).from_json(rs.read(String)).each { |f| known[f.path] = {f.size, f.mtime} }
+        Array(Incoming::BookFile).from_json(rs.read(String)).each { |f| known[f.path] = {f.size, f.mtime} }
       end
-      scanner = Backlog::Scanner.new(box.dir, known)
+      scanner = Incoming::Scanner.new(box.dir, known)
       scanner.run
       box.fail_broken(scanner.skipped, now)
       scanner.units.select { |u| u.files.all? { |f| box.settled?(f.mtime, now) } && u.files.all? { |f| box.movable?(f.path) } }
     end
 
     # the folders are the category and the tags; a calibre folder's aren't
-    private def inbox_extra(u : Backlog::Unit) : Extra
+    private def inbox_extra(u : Incoming::Unit) : Extra
       return Extra.new(INBOX) if u.kind == "calibre"
       category, tags = Inbox.classify(@inbox.not_nil!.rel(u.primary.path))
       Extra.new(INBOX, tags, category)
     end
 
-    private def upload_unit(file : String) : Backlog::Unit?
+    private def upload_unit(file : String) : Incoming::Unit?
       info = File.info?(file) || return nil
-      f = Backlog::BookFile.new(file, File.extname(file).lchop('.').upcase, info.size, info.modification_time.to_unix)
-      Backlog::Unit.new("file", File.dirname(file), [f])
+      f = Incoming::BookFile.new(file, File.extname(file).lchop('.').upcase, info.size, info.modification_time.to_unix)
+      Incoming::Unit.new("file", File.dirname(file), [f])
     end
 
     # the uploads no analysis got to, also over a restart
@@ -499,8 +499,8 @@ module CalibreHub
 
     # The library and the books the list would add already, so the same book
     # twice is marked. An entry whose files changed or went leaves the list.
-    private def index : Backlog::Index
-      ix = Backlog::Index.load(@calibre, @library, @db)
+    private def index : Incoming::Index
+      ix = Incoming::Index.load(@calibre, @library, @db)
       release
       all.each { |e| forget(e) unless unchanged?(e) }
       all.each { |e| remember(ix, e) if e.action == "add" && e.status == "analysed" }
@@ -516,7 +516,7 @@ module CalibreHub
 
     # What the library knows by now about entries analysed earlier: an exact
     # copy goes, the others keep the title of the book they look like
-    private def sweep(ix : Backlog::Index)
+    private def sweep(ix : Incoming::Index)
       all.each do |e|
         next if e.decision || e.forced
         if (u = unit_of(e)) && trash_copy(u, ix, e.origin)
@@ -529,7 +529,7 @@ module CalibreHub
 
     # The library's titles and authors change, and entries analysed before
     # the column came have to get it
-    private def mark_same(ix : Backlog::Index)
+    private def mark_same(ix : Incoming::Index)
       all.each { |e| mark_same(e, ix) }
     end
 
@@ -538,7 +538,7 @@ module CalibreHub
     # file that stays in the Eingang. A format the book lacks isn't that
     # (action addFormats), and neither is what only looks like another book
     # or file, that is for a person. ix knows at least the entry's book.
-    private def mark_same(e : Entry, ix : Backlog::Index) : Bool
+    private def mark_same(e : Entry, ix : Incoming::Index) : Bool
       p, book = e.proposal, e.book_id
       duplicate = e.status == "analysed" && e.action == "duplicate"
       same = duplicate && !p.nil? && !book.nil? && ix.same_book?(Intake.proposed_book(p), book)
@@ -548,7 +548,7 @@ module CalibreHub
     end
 
     # the file that brought it together with its book is still the book's
-    private def in_library?(e : Entry, ix : Backlog::Index) : Bool
+    private def in_library?(e : Entry, ix : Incoming::Index) : Bool
       book = e.book_id
       return false unless e.match == "file" && book
       e.files.any? { |f| ix.same_file(f) == book }
@@ -559,7 +559,7 @@ module CalibreHub
     # that isn't a copy itself, or to the last one whose other file left or
     # changed; of copies pointing at each other the oldest. Not a matter of
     # any filter: a bulk of one band or source never takes this one either.
-    private def keeper(e : Entry, ix : Backlog::Index) : Entry
+    private def keeper(e : Entry, ix : Incoming::Index) : Entry
       seen = [e]
       loop do
         at = seen.last
@@ -573,7 +573,7 @@ module CalibreHub
       end
     end
 
-    private def unit_of(e : Entry) : Backlog::Unit?
+    private def unit_of(e : Entry) : Incoming::Unit?
       e.unit
     rescue ex : File::Error | IO::Error | XML::Error | ArgumentError
       STDERR.puts "intake: #{e.path}: #{ex.message}"
@@ -584,7 +584,7 @@ module CalibreHub
     # folder has nothing else that would go with it: the unit moves to its
     # source's _duplicates, a row of the backlog's to the trash folder. A move
     # that fails leaves it in the list.
-    private def trash_copy(u : Backlog::Unit, ix : Backlog::Index, origin : String) : Bool
+    private def trash_copy(u : Incoming::Unit, ix : Incoming::Index, origin : String) : Bool
       book = ix.exact(u) || return false
       return false if u.kind == "calibre" && !Intake.only_book?(u)
       paths = Intake.paths(u.kind, u.name, u.files)
@@ -597,13 +597,13 @@ module CalibreHub
       false
     end
 
-    def self.only_book?(u : Backlog::Unit) : Bool
+    def self.only_book?(u : Incoming::Unit) : Bool
       files = u.files.map { |f| File.basename(f.path) }.to_set
-      Dir.children(u.dir).all? { |n| files.includes?(n) || n == Backlog::OPF || n == Backlog::COVER }
+      Dir.children(u.dir).all? { |n| files.includes?(n) || n == Incoming::OPF || n == Incoming::COVER }
     end
 
     # what moves: a calibre folder as a whole, else the unit's files
-    def self.paths(kind : String, name : String, files : Array(Backlog::BookFile)) : Array(String)
+    def self.paths(kind : String, name : String, files : Array(Incoming::BookFile)) : Array(String)
       kind == "calibre" ? [name] : files.map(&.path)
     end
 
@@ -638,7 +638,7 @@ module CalibreHub
     # again and goes to _duplicates as a copy. A row of the backlog's has no
     # such folder, its file stays where it is and import_files remembers it,
     # for ImportRepair like the ones before it.
-    def taken(e : Entry, unit : Backlog::Unit)
+    def taken(e : Entry, unit : Incoming::Unit)
       if b = box(e.origin)
         begin
           Intake.paths(e.kind, e.path, e.files).each { |p| b.move(p, Inbox::IMPORTED) }
@@ -663,7 +663,7 @@ module CalibreHub
 
     # Taking the book turned out to add nothing, it looks like one the
     # library has: back in the list as that
-    def duplicate(e : Entry, u : Backlog::Unit, ix : Backlog::Index)
+    def duplicate(e : Entry, u : Incoming::Unit, ix : Incoming::Index)
       @db.exec "update intake_entries set decision = null, error = ?, action = 'duplicate', book_id = ?, match = ?, " \
                "same_as = ?, add_formats = '[]', book_title = ? where id = ?",
         u.detail, u.book_id, u.match, u.same_as, u.book_id.try { |b| ix.title(b) }, e.id
@@ -812,16 +812,16 @@ module CalibreHub
     end
 
     # the entry's book counts for later ones, by a pseudo id
-    private def remember(ix : Backlog::Index, e : Entry)
+    private def remember(ix : Incoming::Index, e : Entry)
       remember(ix, e.id, e.path, e.files, e.proposal)
     end
 
-    private def remember(ix : Backlog::Index, id : Int64, path : String, files : Array(Backlog::BookFile), p : Proposal?)
+    private def remember(ix : Incoming::Index, id : Int64, path : String, files : Array(Incoming::BookFile), p : Proposal?)
       pseudo = -id
       ix.planned[pseudo] = path
       ix.add_files(pseudo, files)
       return unless p
-      m = Backlog::OpfMeta.new
+      m = Incoming::OpfMeta.new
       m.title = p.title
       m.authors = p.authors
       m.series = p.series
@@ -833,14 +833,14 @@ module CalibreHub
 
     # One unit: what the library knows of it, what the rules make of it. An
     # upload sent on purpose is a new book, whatever it looks like.
-    def analyse(unit : Backlog::Unit, ix : Backlog::Index, extra : Extra)
-      Backlog.plan(unit, ix)
+    def analyse(unit : Incoming::Unit, ix : Incoming::Index, extra : Extra)
+      Incoming.plan(unit, ix)
       return if !extra.forced && trash_copy(unit, ix, extra.origin)
       primary = unit.primary
       name = File.basename(primary.path)
       info = read(primary)
       book = Intake.book(unit, info)
-      calibre_named = unit.kind == "calibre" || Backlog.calibre_name?(unit.dir)
+      calibre_named = unit.kind == "calibre" || Incoming.calibre_name?(unit.dir)
       hint = calibre_named ? Meta::FileName::CALIBRE_NAME : @imports.hint(unit.dir)
       found = [] of Candidate
       input = Meta::Flow::Input.new(book, ->(field : String) { Meta::Merge.value(book, field).as(JSON::Any?) }, name, hint)
@@ -854,7 +854,7 @@ module CalibreHub
       Intake.own_candidates(found, unit, info, name, hint)
       searched(found, book, proposal)
       if unit.action == "add" && (hit = ix.match_book(Intake.proposed_book(proposal)))
-        Backlog.mark(unit, hit[0], hit[1], ix)
+        Incoming.mark(unit, hit[0], hit[1], ix)
       end
       Intake.as_new(unit) if extra.forced
       id = store(unit, proposal, decision, Intake.ranked(found), extra)
@@ -870,7 +870,7 @@ module CalibreHub
     end
 
     # the plan of a book nothing is known about
-    def self.as_new(unit : Backlog::Unit)
+    def self.as_new(unit : Incoming::Unit)
       unit.action = "add"
       unit.book_id = nil
       unit.match = nil
@@ -878,7 +878,7 @@ module CalibreHub
       unit.add_formats = [] of String
     end
 
-    private def read(file : Backlog::BookFile) : Meta::FileMeta::Info?
+    private def read(file : Incoming::BookFile) : Meta::FileMeta::Info?
       r = @reader || return nil
       return r.call(file.path, file.format) if Meta::FileMeta::FORMATS.includes?(file.format)
       Meta::FileMeta.metadata(file.path, file.format, nice: true)
@@ -887,7 +887,7 @@ module CalibreHub
     # What calibre would read, without adding the book: the name as calibre
     # reads it (FileName.calibre) with the file's metadata over it. A calibre
     # folder's book is what its metadata.opf says.
-    def self.book(unit : Backlog::Unit, info : Meta::FileMeta::Info?) : Book
+    def self.book(unit : Incoming::Unit, info : Meta::FileMeta::Info?) : Book
       title, authors = Meta::FileName.calibre(File.basename(unit.primary.path))
       r = unit.meta.try { |m| opf_record(m) } || info.try(&.record) || Meta::Record.new
       ids = unit.meta.try(&.identifiers.dup) || {} of String => String
@@ -905,7 +905,7 @@ module CalibreHub
       nil
     end
 
-    def self.opf_record(m : Backlog::OpfMeta) : Meta::Record
+    def self.opf_record(m : Incoming::OpfMeta) : Meta::Record
       Meta::Record.new(title: m.title, authors: m.authors.empty? ? nil : m.authors, isbn: m.isbn, publisher: m.publisher,
         pubdate: m.pubdate, languages: m.languages.empty? ? nil : m.languages, comments: m.comments, series: m.series,
         series_index: m.series_index)
@@ -914,7 +914,7 @@ module CalibreHub
     # What the flow reads: of a calibre folder the OPF takes the place of the
     # file's metadata. Its format is no EPUB's, which Flow would trust: its
     # title and authors have to fit the text or the name.
-    def self.flow_info(unit : Backlog::Unit, info : Meta::FileMeta::Info?) : Meta::FileMeta::Info?
+    def self.flow_info(unit : Incoming::Unit, info : Meta::FileMeta::Info?) : Meta::FileMeta::Info?
       m = unit.meta || return info
       record = opf_record(m)
       info ? info.copy_with(record: record, format: "OPF") : Meta::FileMeta::Info.new(record, [] of String, format: "OPF")
@@ -957,7 +957,7 @@ module CalibreHub
 
     # the proposal as Dedup's rules see it
     def self.proposed_book(p : Proposal) : Book
-      Backlog.book(0_i64, p.title, p.authors, p.series, p.series_index,
+      Incoming.book(0_i64, p.title, p.authors, p.series, p.series_index,
         p.isbn ? {"isbn" => p.isbn.not_nil!} : {} of String => String, p.publisher)
     end
 
@@ -1011,7 +1011,7 @@ module CalibreHub
     end
 
     # what the file, its OPF and its name say themselves
-    def self.own_candidates(found : Array(Candidate), unit : Backlog::Unit, info : Meta::FileMeta::Info?, name : String, hint : Symbol?)
+    def self.own_candidates(found : Array(Candidate), unit : Incoming::Unit, info : Meta::FileMeta::Info?, name : String, hint : Symbol?)
       reading = Meta::FileName.parse(name, hint)
       unit.meta.try { |m| own_candidate(found, Meta::Flow::SOURCE_OPF, opf_record(m), reading) }
       info.try { |i| own_candidate(found, "file", i.record, reading) }
@@ -1058,7 +1058,7 @@ module CalibreHub
       list
     end
 
-    private def store(unit : Backlog::Unit, p : Proposal, d : Meta::Flow::Decision?, candidates : Array(Candidate), extra : Extra) : Int64
+    private def store(unit : Incoming::Unit, p : Proposal, d : Meta::Flow::Decision?, candidates : Array(Candidate), extra : Extra) : Int64
       changes = (d.try(&.changes) || [] of Meta::Change).map { |c| Changed.new(c.field, c.old, c.new, c.source) }
       # a standard and whatever no rule has a word about: nothing against it
       confidence = d.try(&.confidence) || Meta::Confidence::KEPT
@@ -1073,11 +1073,11 @@ module CalibreHub
       id
     end
 
-    private def store_failed(unit : Backlog::Unit, detail : String, extra : Extra)
+    private def store_failed(unit : Incoming::Unit, detail : String, extra : Extra)
       insert(unit, "failed", detail, nil, nil, nil, nil, nil, nil, nil, nil, "[]", "[]", extra)
     end
 
-    private def insert(unit : Backlog::Unit, status : String, detail : String?, proposal : String?, confidence : Int32?,
+    private def insert(unit : Incoming::Unit, status : String, detail : String?, proposal : String?, confidence : Int32?,
                        title : Int32?, authors : Int32?, level : Int32?, source : String?, decided : String?,
                        isbn_source : String?, notes : String, changes : String, extra : Extra) : Int64
       @db.exec("insert or replace into intake_entries (path, kind, files, status, detail, proposal, confidence, title_confidence, " \
@@ -1089,7 +1089,7 @@ module CalibreHub
         Time.utc.to_unix, extra.origin, extra.tags.to_json, extra.kategorie, extra.forced ? 1 : 0).last_insert_id
     end
 
-    private def cover(unit : Backlog::Unit, id : Int64)
+    private def cover(unit : Incoming::Unit, id : Int64)
       return if unit.cover
       Dir.mkdir_p(@covers)
       target = File.join(@covers, "#{id}.jpg")
@@ -1107,7 +1107,7 @@ module CalibreHub
       book, match, same_as, add_formats, cover, at = rs.read(Int64?, String?, String?, String, String?, Int64)
       skipped, error, book_title, job = rs.read(Int64, String?, String?, String?)
       origin, tags, kategorie, forced, same_book, sure = rs.read(String, String, String?, Int64, Int64, Int64)
-      Entry.new(id, path, kind, Array(Backlog::BookFile).from_json(files), status, detail, proposal.try { |p| Proposal.from_json(p) },
+      Entry.new(id, path, kind, Array(Incoming::BookFile).from_json(files), status, detail, proposal.try { |p| Proposal.from_json(p) },
         confidence, title, authors, level, source, decided, isbn_source, Array(Meta::Flow::Note).from_json(notes),
         Array(Changed).from_json(changes), action, book, match, same_as, Array(String).from_json(add_formats), cover, at,
         skipped == 1, error, book_title, job, origin, Array(String).from_json(tags), kategorie, forced == 1, same_book == 1, sure == 1)
@@ -1346,7 +1346,7 @@ module CalibreHub
     # by the right number.
     private def same_now(ids : Array(Int64)) : Array(Int64)
       entries = ids.compact_map { |id| self[id]? }
-      ix = Backlog::Index.load(@calibre, @library, @db, entries.compact_map(&.book_id).uniq)
+      ix = Incoming::Index.load(@calibre, @library, @db, entries.compact_map(&.book_id).uniq)
       entries.select { |e| mark_same(e, ix) }.map(&.id)
     end
 

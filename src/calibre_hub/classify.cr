@@ -5,7 +5,7 @@ require "uri"
 require "digest/sha1"
 require "./book"
 require "./calibre"
-require "./backlog_pause"
+require "./incoming_pause"
 require "./writer"
 
 module CalibreHub
@@ -441,7 +441,7 @@ module CalibreHub
     end
 
     def follow_events
-      return if Backlog.paused?(@db)
+      return if Incoming.paused?(@db)
       cursor = @db.query_one("select value from meta where key = 'classify_event_seq'", as: String).to_i64
       ids = [] of Int64
       last = cursor

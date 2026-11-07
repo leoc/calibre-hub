@@ -1,7 +1,7 @@
 require "db"
 require "json"
-require "./backlog"
-require "./backlog_jobs"
+require "./incoming"
+require "./importer"
 require "./meta_filename"
 require "./metadata"
 require "./writer"
@@ -114,8 +114,8 @@ module CalibreHub
       result = {} of Int64 => String
       by_book.each do |id, paths|
         # a calibre folder's books came from its metadata.opf
-        next if !folders && paths.any? { |p| Backlog.calibre_name?(File.dirname(p)) }
-        result[id] = paths.min_by { |p| Backlog::FORMATS.index(File.extname(p).lchop('.').upcase) || Backlog::FORMATS.size }
+        next if !folders && paths.any? { |p| Incoming.calibre_name?(File.dirname(p)) }
+        result[id] = paths.min_by { |p| Incoming::FORMATS.index(File.extname(p).lchop('.').upcase) || Incoming::FORMATS.size }
       end
       result
     end
@@ -382,10 +382,10 @@ module CalibreHub
 
     # a calibre folder, gone by now or not, says it by its name
     private def hint(dir : String) : Symbol?
-      return Meta::FileName::CALIBRE_NAME if Backlog.calibre_name?(dir)
+      return Meta::FileName::CALIBRE_NAME if Incoming.calibre_name?(dir)
       return @hints[dir] if @hints.has_key?(dir)
       names = begin
-        Dir.children(dir).select { |n| Backlog::Scanner.format(n) }
+        Dir.children(dir).select { |n| Incoming::Scanner.format(n) }
       rescue File::Error
         # the folder isn't there any more: the files the imports handled
         list = [] of String

@@ -2,7 +2,7 @@ require "db"
 require "sqlite3"
 
 module CalibreHub
-  module Backlog
+  module Incoming
     # The metadata, classify, convert and embed hooks wait while the Eingang's
     # decisions run, so calibre-server only adds books; they work off the new
     # books' events afterwards (their cursors stay where they were)

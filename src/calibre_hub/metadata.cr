@@ -6,7 +6,7 @@ require "./meta_rules"
 require "./meta_sources"
 require "./meta_flow"
 require "./calibre"
-require "./backlog_pause"
+require "./incoming_pause"
 require "./covers"
 require "./writer"
 require "./classify"
@@ -874,7 +874,7 @@ module CalibreHub
     end
 
     def follow_events
-      return if Backlog.paused?(@db)
+      return if Incoming.paused?(@db)
       requeue_stranded
       from = cursor || 0_i64
       ids = [] of Int64

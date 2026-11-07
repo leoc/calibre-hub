@@ -4,7 +4,7 @@ require "http/server"
 require "../src/calibre_hub/intake"
 
 private alias Meta = CalibreHub::Meta
-private alias Backlog = CalibreHub::Backlog
+private alias Incoming = CalibreHub::Incoming
 private alias Intake = CalibreHub::Intake
 private alias IntakeTrash = CalibreHub::IntakeTrash
 

@@ -87,7 +87,7 @@ module CalibreHub
     # bookTitle. A book gone from the library has neither.
     private def library_entry(p : ImportRepair::Proposal, book : Book?)
       changes = p.changes.map { |c| Meta::Change.new(c.field, c.old, c.new, c.source) }
-      proposed = Intake.from_values(Intake.changed_values(book || Backlog.book(p.book_id, "##{p.book_id}", [] of String), changes))
+      proposed = Intake.from_values(Intake.changed_values(book || Incoming.book(p.book_id, "##{p.book_id}", [] of String), changes))
       {id: -p.book_id, path: p.file, name: p.file.empty? ? "" : File.basename(p.file), folder: nil, kind: "library",
        files: (book.try(&.formats) || [] of String).map { |f| {path: "", format: f.upcase, size: 0} },
        status: p.status == "failed" ? "failed" : "analysed", detail: nil, proposal: proposed, confidence: p.confidence,
@@ -167,7 +167,7 @@ module CalibreHub
     # The file of an entry to read in, the wanted format or the reader's
     # first. Only a file the entry lists, inside a root (a link doesn't lead
     # out) and as analysed.
-    def readable(id : Int64, format : String? = nil, formats = READABLE) : Backlog::BookFile?
+    def readable(id : Int64, format : String? = nil, formats = READABLE) : Incoming::BookFile?
       e = self[id]? || return nil
       files = e.files.select { |f| formats.includes?(f.format) }
       file = format ? files.find { |f| f.format == format.upcase } : files.min_by? { |f| formats.index(f.format) || formats.size }

@@ -4,7 +4,7 @@ require "http/server"
 require "../src/calibre_hub/intake"
 
 private alias Meta = CalibreHub::Meta
-private alias Backlog = CalibreHub::Backlog
+private alias Incoming = CalibreHub::Incoming
 private alias Intake = CalibreHub::Intake
 
 private def write(path : String, content : String, age = 1.hour)
@@ -247,7 +247,7 @@ describe Intake do
   end
 
   it "doesn't take an EPUB's trust over to its calibre folder's OPF" do
-    unit = Backlog::Unit.new("calibre", "/x", [Backlog::BookFile.new("/x/a.epub", "EPUB", 1_i64, 1_i64)], nil, Backlog::OpfMeta.new)
+    unit = Incoming::Unit.new("calibre", "/x", [Incoming::BookFile.new("/x/a.epub", "EPUB", 1_i64, 1_i64)], nil, Incoming::OpfMeta.new)
     Intake.flow_info(unit, info(format: "EPUB")).not_nil!.format.should eq "OPF"
   end
 
@@ -389,7 +389,7 @@ describe Intake do
   end
 
   it "reads what calibre would without calibre" do
-    unit = Backlog::Unit.new("file", "/x", [Backlog::BookFile.new("/x/Dune - Frank Herbert.pdf", "PDF", 1_i64, 1_i64)])
+    unit = Incoming::Unit.new("file", "/x", [Incoming::BookFile.new("/x/Dune - Frank Herbert.pdf", "PDF", 1_i64, 1_i64)])
     book = Intake.book(unit, nil)
     book.title.should eq "Dune"
     book.authors.should eq ["Frank Herbert"]

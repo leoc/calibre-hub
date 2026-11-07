@@ -16,7 +16,7 @@ require "./calibre_hub/security_headers"
 require "./calibre_hub/body_limit"
 require "./calibre_hub/cli"
 require "./calibre_hub/hardcover_sync"
-require "./calibre_hub/backlog_jobs"
+require "./calibre_hub/importer"
 require "./calibre_hub/import_repair"
 require "./calibre_hub/intake"
 
