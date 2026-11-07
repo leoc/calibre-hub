@@ -55,6 +55,10 @@ declare module "foliate-js/view.js" {
 }
 
 // calibre-hub's own addition to the vendored copy (README there)
+declare module "foliate-js/vendor/fflate.js" {
+  export function unzlibSync(data: Uint8Array): Uint8Array
+}
+
 declare module "foliate-js/book-security.js" {
   export function isWebKit(win?: { navigator?: { userAgent?: string; maxTouchPoints?: number }; GestureEvent?: unknown }): boolean
   export function bookSandbox(webkit?: boolean): string

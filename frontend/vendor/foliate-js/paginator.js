@@ -655,7 +655,7 @@ export class Paginator extends HTMLElement {
             const h = innerHeight
             detail.data = Promise.resolve(detail.data).then(data => data
                 // unprefix as most of the props are (only) supported unprefixed
-                .replace(/(?<=[{\s;])-epub-/gi, '')
+                .replace(/([{\s;])-epub-/gi, '$1')
                 // replace vw and vh as they cause problems with layout
                 .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
                 .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')

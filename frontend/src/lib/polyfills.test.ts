@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
+import fs from "node:fs"
+import path from "node:path"
+import { deflateRawSync } from "node:zlib"
 import { installPolyfills } from "./polyfills"
 
 interface Item {
@@ -36,4 +39,42 @@ describe("groupBy on a browser without it", () => {
     expect(object.groupBy).toBe(own.object)
     expect(map.groupBy).toBe(own.map)
   })
+})
+
+describe("DecompressionStream on a browser without it", () => {
+  const own = globalThis.DecompressionStream
+  afterEach(() => Object.defineProperty(globalThis, "DecompressionStream", { value: own, writable: true, configurable: true }))
+
+  const inflate = (data: Uint8Array) => {
+    Reflect.deleteProperty(globalThis, "DecompressionStream")
+    installPolyfills()
+    expect(globalThis.DecompressionStream).not.toBe(own)
+    const half = data.length >> 1
+    const input = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(data.slice(0, half))
+        c.enqueue(data.slice(half))
+        c.close()
+      },
+    })
+    return new Response(input.pipeThrough(new DecompressionStream("deflate-raw") as ReadableWritablePair<Uint8Array, Uint8Array>)).text()
+  }
+
+  it("inflates a zip entry's raw deflate, as it comes in pieces", async () => {
+    const text = "Kapitel 1, Absatz 1. ".repeat(500)
+    expect(await inflate(new Uint8Array(deflateRawSync(text)))).toBe(text)
+  })
+
+  it("says what it can't do", () => {
+    Reflect.deleteProperty(globalThis, "DecompressionStream")
+    installPolyfills()
+    expect(() => new DecompressionStream("gzip")).toThrow("gzip")
+  })
+})
+
+// a syntax error in Safari below 16.4: the module wouldn't load at all
+it("foliate-js has no regex lookbehind", () => {
+  const dir = path.resolve(import.meta.dirname, "../../vendor/foliate-js")
+  const modules = fs.readdirSync(dir).filter((f) => f.endsWith(".js"))
+  expect(modules.filter((f) => /\(\?<[=!]/.test(fs.readFileSync(path.join(dir, f), "utf8")))).toEqual([])
 })

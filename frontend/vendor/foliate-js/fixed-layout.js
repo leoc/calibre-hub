@@ -34,6 +34,7 @@ const getViewport = (doc, viewport) => {
 export class FixedLayout extends HTMLElement {
     static observedAttributes = ['zoom']
     #root = this.attachShadow({ mode: 'closed' })
+    #style = document.createElement('style')
     #observer = new ResizeObserver(() => this.#render())
     #spreads
     #index = -1
@@ -48,16 +49,16 @@ export class FixedLayout extends HTMLElement {
     constructor() {
         super()
 
-        const sheet = new CSSStyleSheet()
-        this.#root.adoptedStyleSheets = [sheet]
-        sheet.replaceSync(`:host {
+        // calibre-hub: a style element, `new CSSStyleSheet()` needs Safari 16.4
+        this.#style.textContent = `:host {
             width: 100%;
             height: 100%;
             display: flex;
             justify-content: center;
             align-items: center;
             overflow: auto;
-        }`)
+        }`
+        this.#root.append(this.#style)
 
         this.#observer.observe(this)
     }
@@ -167,7 +168,7 @@ export class FixedLayout extends HTMLElement {
         }
     }
     async #showSpread({ left, right, center, side }) {
-        this.#root.replaceChildren()
+        this.#root.replaceChildren(this.#style)
         this.#left = null
         this.#right = null
         this.#center = null

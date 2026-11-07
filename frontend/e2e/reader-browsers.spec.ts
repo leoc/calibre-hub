@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test"
 
-// What Safari on an iPhone and older Boox WebViews lack, in Chromium: this
-// stands in for a real WebKit, which doesn't run here (README, Reader in
-// Safari). The page's own scope only, a worker has its APIs: that the worker
+// What Safari on an iPhone and older Boox WebViews lack, in Chromium; the same
+// in a real WebKit: e2e/webkit/reader.mjs (README, Reader in Safari). The
+// page's own scope only, a worker has its APIs: that the worker
 // doesn't need them is the legacy build's word. Promise.withResolvers stays:
 // the mock hub (MSW) needs it, the built app doesn't.
 const older = () => {
@@ -16,6 +16,13 @@ const older = () => {
   gone(Uint8Array, "fromBase64", "fromHex")
   gone(Uint8Array.prototype, "toBase64", "toHex")
   gone(AbortSignal, "any")
+  // below Safari 16.4
+  gone(window, "DecompressionStream", "CompressionStream")
+  const own = CSSStyleSheet
+  window.CSSStyleSheet = function () {
+    throw new TypeError("Illegal constructor")
+  } as unknown as typeof CSSStyleSheet
+  window.CSSStyleSheet.prototype = own.prototype
 }
 
 // the worker itself; with ?url it is the module that names it, and without

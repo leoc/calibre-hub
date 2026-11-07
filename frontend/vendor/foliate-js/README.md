@@ -23,6 +23,12 @@ E-book renderer of the reader (`/read/:id`), from
   answers before the first page: what fails in a worker can stay silent, and
   the reader would say it is loading for good. It rejects with the name
   `PDFTimeout`, which the reader says in German.
+- Changed: for Safari below 16.4, `paginator.js` has no regex lookbehind (a
+  syntax error there, the whole module would fail) and `fixed-layout.js` a
+  style element instead of `new CSSStyleSheet()`. `DecompressionStream` for
+  zip.js comes from `src/lib/polyfills.ts`. PDFs stay at 16.4: pdf.js' legacy
+  build and worker have class static blocks, a syntax error before that; the
+  reader then says so.
 - Changed (security, review #8411 K1): books render in `blob:` iframes with
   the app's origin, so a script in a book would act with the user's session.
   `book-security.js` (new, not upstream) holds three lines of defence:
