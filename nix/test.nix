@@ -326,7 +326,7 @@ pkgs.testers.runNixOSTest {
         return int(status), (json.loads(text) if text.strip() else None)
 
     # the entry of a file, by its name, once the Eingang looked at it
-    def entry(name, query="", seconds=900):
+    def intake_entry(name, query="", seconds=900):
         for _ in range(seconds // 5):
             listed = api("GET", f"/api/intake?limit=500{query}")[1]["entries"]
             found = [e for e in listed if e["name"] == name]
@@ -336,14 +336,14 @@ pkgs.testers.runNixOSTest {
         raise Exception(f"{name} is not in the Eingang")
 
     # a decision that goes through a job, carried out
-    def decide(e, decision, **extra):
+    def intake_decide(e, decision, **extra):
         status, r = api("POST", "/api/intake/decide", {"target": {"ids": [e["id"]]}, "decision": decision, **extra})
         assert status == 202, (status, r)
         j = wait_job(r["jobId"], 180)
         assert j["status"] == "done" and j["errors"] == [], j
 
     # what came of an upload; below the threshold it is taken by hand
-    def upload(form):
+    def upload_book(form):
         status, r = api("POST", "/api/books", extra=form)
         assert status == 202 and r["upload"]["status"] == "checking", (status, r)
         decided = False
@@ -381,7 +381,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt /srv/books/inbox/Roman/Krimi/k.epub --title Inboxbuch --authors 'Agatha Test' --tags Eingebettet")
         # it goes through the Eingang: below the threshold it waits there, in its folder
         assert api("GET", "/api/intake?limit=1")[1]["thresholds"] == {"backlog": None, "inbox": 90, "upload": 90}
-        e = entry("k.epub", "&origin=inbox", 120)
+        e = intake_entry("k.epub", "&origin=inbox", 120)
         assert e["folder"] == "Roman/Krimi" and e["confidence"] < 90, e
         machine.succeed("test -f /srv/books/inbox/Roman/Krimi/k.epub")
         assert api("GET", "/api/books?q=title:Inboxbuch")[1]["books"] == []
@@ -564,17 +564,17 @@ pkgs.testers.runNixOSTest {
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/u.txt /tmp/Upload.epub --title Hochgeladen --authors 'Ulla Upload' --tags Eingebettet")
         form = "-F file=@/tmp/Upload.epub -F tags=Roman -F tags=Neu -F kategorie=Roman.Krimi"
         # a new book goes through the Eingang; the form's tags and category come along
-        r = upload(form)
+        r = upload_book(form)
         assert r["status"] == "imported" and sorted(r["book"]["tags"]) == ["Neu", "Roman"] and r["book"]["custom"]["kategorie"] == "Roman.Krimi", r
         uid = r["book"]["id"]
         machine.wait_until_succeeds(f"grep -q '\"added\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
         machine.succeed("ls /var/lib/calibre-hub/uploads/_imported/*/*/Upload.epub")
         # the same file again: it says so, nothing is added
-        r = upload("-F file=@/tmp/Upload.epub")
+        r = upload_book("-F file=@/tmp/Upload.epub")
         assert r["status"] in ("copy", "duplicate") and r["duplicates"][0]["id"] == uid, r
         if r["status"] == "duplicate":
             assert api("POST", "/api/intake/decide", {"target": {"ids": [r["entryId"]]}, "decision": "trash"})[0] == 202
-        r = upload("-F file=@/tmp/Upload.epub -F force=1")
+        r = upload_book("-F file=@/tmp/Upload.epub -F force=1")
         assert r["status"] == "imported" and r["book"]["id"] != uid, r
         status, r = api("POST", "/api/books", extra=f"-F file=@/tmp/u.txt -F addFormatTo={uid}")
         assert status == 200 and "TXT" in r["book"]["formats"], (status, r)
@@ -742,14 +742,14 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'Doppelt\\n\\nText\\n' > /tmp/d.txt")
         for fmt in ("epub", "azw3"):
             machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/d.txt /tmp/Doppelbuch.{fmt} --title Doppelbuch --authors 'Dora Doppel'")
-        r = upload("-F file=@/tmp/Doppelbuch.epub")
+        r = upload_book("-F file=@/tmp/Doppelbuch.epub")
         assert r["status"] == "imported", r
         keep = r["book"]["id"]
         # the Eingang asks about the copy; forced, the hub's detection names the first
-        r = upload("-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie")
+        r = upload_book("-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie")
         assert r["status"] == "duplicate" and [b["id"] for b in r["duplicates"]] == [keep], r
-        decide({"id": r["entryId"]}, "trash")
-        r = upload("-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie -F force=1")
+        intake_decide({"id": r["entryId"]}, "trash")
+        r = upload_book("-F file=@/tmp/Doppelbuch.azw3 -F tags=Zweitkopie -F force=1")
         assert r["status"] == "imported" and [b["id"] for b in r["possibleDuplicates"]] == [keep], r
         other = r["book"]["id"]
         # the copy is converted to EPUB too (convert.enable); wait for it, so nothing changes under the merge
@@ -829,7 +829,7 @@ pkgs.testers.runNixOSTest {
         assert status == 200 and st["enabled"] and st["model"] == "stub" and st["threshold"] == 0.85, st
         # the tree so far: Bulk, Roman, Roman.Krimi; Roman.SF from a book of
         # its own, added with its category, so it isn't classified
-        r = upload(f"-F file=@{epub('Fern')} -F kategorie=Roman.SF")
+        r = upload_book(f"-F file=@{epub('Fern')} -F kategorie=Roman.SF")
         assert r["status"] == "imported", r
         machine.wait_for_unit("model-stub.service")
         # the upload without a category in "upload" was classified on its added event
@@ -1026,7 +1026,7 @@ pkgs.testers.runNixOSTest {
         assert st["enabled"] is True and st["target"] == "EPUB" and st["ignore"] == ["PDF", "CBZ", "CBR"], st
         # an upload: the TXT stays, an EPUB is added
         machine.succeed("printf 'Umwandlung\\n\\nText\\n' > /tmp/Umwandlung.txt")
-        r = upload("-F file=@/tmp/Umwandlung.txt")
+        r = upload_book("-F file=@/tmp/Umwandlung.txt")
         assert r["status"] == "imported" and r["book"]["formats"] == ["TXT"], r
         tid = r["book"]["id"]
         machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{tid} | jq -e '.formats | sort == [\"EPUB\", \"TXT\"]'", timeout=120)
@@ -1234,9 +1234,9 @@ pkgs.testers.runNixOSTest {
         assert "taken by itself: backlog off, inbox from 60, upload from 60" in out, out
 
         # an old calibre folder takes its metadata.opf and cover, no folder as a category
-        e = entry("Altes Buch - Ada Writer.epub")
+        e = intake_entry("Altes Buch - Ada Writer.epub")
         assert e["origin"] == "backlog" and e["kind"] == "calibre", e
-        decide(e, "accept")
+        intake_decide(e, "accept")
         old = book_by_title("Altes Buch")
         old = api("GET", f"/api/books/{old['id']}")[1]
         assert old["title"] == "Altes Buch" and old["authors"] == ["Ada Writer"], old
@@ -1247,23 +1247,23 @@ pkgs.testers.runNixOSTest {
         assert [t for t in old["tags"] if t != "auto-metadaten"] == ["Geschichte"] and old["custom"]["kategorie"] is None, old
         assert code(f"-b /tmp/jar {H}/api/books/{old['id']}/cover") == "200"
         # a file that says nothing
-        e = entry("book.pdf")
+        e = intake_entry("book.pdf")
         assert e["folder"] == "Some Author", e
-        decide(e, "file")
+        intake_decide(e, "file")
         machine.succeed(f"test -f '{ALT}/Some Author/book.pdf'")
         # a format the library lacks goes to the book it has
-        e = entry("Inboxbuch.azw3")
+        e = intake_entry("Inboxbuch.azw3")
         assert e["action"] == "addFormats" and e["bookId"] == ib["id"], e
-        decide(e, "accept")
+        intake_decide(e, "accept")
         assert "AZW3" in book_by_title("Inboxbuch")["formats"]
         assert not [e for e in api("GET", "/api/intake?limit=500")[1]["entries"] if e["name"] in ("book.pdf", "Inboxbuch.azw3")]
 
     with subtest("the Eingang reads file names (#8408)"):
         # "Author - Title (Publisher, Year)": calibre alone made it the title
         # "Carr" by "Formulas" and "Theorems in Pure Mathematics 2e (Chelsea, 1970)"
-        e = entry(carr_name)
+        e = intake_entry(carr_name)
         assert e["proposal"]["title"] == "Formulas and Theorems in Pure Mathematics" and e["proposal"]["authors"] == ["Carr"], e
-        decide(e, "accept")
+        intake_decide(e, "accept")
         carr = book_by_title("Formulas and Theorems in Pure Mathematics")
         carr = api("GET", f"/api/books/{carr['id']}")[1]
         assert carr["authors"] == ["Carr"] and carr["publisher"] == "Chelsea" and carr["pubdate"].startswith("1970-01"), carr
@@ -1305,7 +1305,7 @@ pkgs.testers.runNixOSTest {
     with subtest("the rule flow reads the book first (#8528)"):
         names = ["Herbert - Der Wuestenplanet.pdf", "Herbert - Dune Messias.djvu", "Roe - A Quiet Book.mobi"]
         for name in names:
-            decide(entry(name), "accept")
+            intake_decide(intake_entry(name), "accept")
         sql = lambda q: machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"{q}\"").strip()
         # both scans; the key starts with the file's size
         scans = sql("select front from ocr_pages where key like '16041-%' or key like '25722-%'")
@@ -1329,7 +1329,7 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed(f"cmp '{copy}' '{TRASH}/kopie.pdf' && test ! -e '{IN}/kopie.pdf' && echo ok").strip() == "ok"
 
         # thrown away: out of the root, under its path, the hub's sandbox lets it
-        gone = entry("wegwerfen.pdf")
+        gone = intake_entry("wegwerfen.pdf")
         status, r = api("POST", "/api/intake/decide", {"target": {"ids": [gone["id"]]}, "decision": "trash"})
         assert status == 202, (status, r)
         j = wait_job(r["jobId"], 60)
@@ -1337,7 +1337,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"test -f '{TRASH}/wegwerfen.pdf' && test ! -e '{IN}/wegwerfen.pdf'")
 
         # accepted with an edited title: a book like any import's, the file stays
-        kept = entry("Ada Writer - Angenommen.pdf")
+        kept = intake_entry("Ada Writer - Angenommen.pdf")
         status, r = api("POST", "/api/intake/decide", {"target": {"ids": [kept["id"]]}, "decision": "accept", "title": "Von Hand", "authors": ["Ada Writer"]})
         assert status == 202, (status, r)
         j = wait_job(r["jobId"], 120)
@@ -1358,13 +1358,13 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'Weg\\n\\nText\\n' > /tmp/w.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/w.txt /tmp/Wegwerfbuch.epub --title Wegwerfbuch --authors 'Walter Weg'")
         machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Weg && install -m 664 -g calibre-hub /tmp/Wegwerfbuch.epub /srv/books/inbox/Weg/Wegwerfbuch.epub")
-        decide(entry("Wegwerfbuch.epub", "&origin=inbox", 120), "trash")
+        intake_decide(intake_entry("Wegwerfbuch.epub", "&origin=inbox", 120), "trash")
         machine.succeed("test -f /srv/books/inbox-papierkorb/Weg/Wegwerfbuch.epub && test ! -e /srv/books/inbox/Weg/Wegwerfbuch.epub")
         machine.succeed("cp /tmp/Wegwerfbuch.epub /tmp/Hochgeladen-weg.epub")
         status, r = api("POST", "/api/books", extra="-F file=@/tmp/Hochgeladen-weg.epub")
         assert status == 202, (status, r)
-        e = entry("Hochgeladen-weg.epub", "&origin=upload", 120)
-        decide(e, "trash")
+        e = intake_entry("Hochgeladen-weg.epub", "&origin=upload", 120)
+        intake_decide(e, "trash")
         assert api("GET", f"/api/intake/uploads/{r['upload']['id']}")[1]["status"] == "trashed"
         machine.succeed(f"test -f /var/lib/calibre-hub/uploads-papierkorb/{r['upload']['id']}/Hochgeladen-weg.epub")
 
