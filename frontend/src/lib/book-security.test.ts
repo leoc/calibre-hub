@@ -66,6 +66,8 @@ describe("addBookCSP", () => {
 
   it("puts script-src 'none' first into the head of XHTML and HTML documents", () => {
     expect(BOOK_CSP).toContain("script-src 'none'")
+    // the app may be framed by its own origin, a book may not do that
+    expect(BOOK_CSP).toContain("frame-src 'none'")
     const doc = addBookCSP(xhtml("<p>t</p>"))
     const meta = csp(doc)!
     expect(meta.getAttribute("content")).toBe(BOOK_CSP)

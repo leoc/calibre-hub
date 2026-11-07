@@ -16,13 +16,15 @@ private def directives(csp : String)
 end
 
 describe CalibreHub::SecurityHeadersHandler do
-  it "gives the web app a CSP with only its own scripts and no framing" do
+  it "gives the web app a CSP with only its own scripts and no framing from elsewhere" do
     {"/", "/books/12", "/read/3", "/assets/app-abc.js", "/sw.js"}.each do |path|
       h = headers_for(path)
       csp = directives(h["Content-Security-Policy"])
       csp["script-src"].should eq("'self'")
       csp["default-src"].should eq("'self'")
-      csp["frame-ancestors"].should eq("'none'")
+      # not 'none': blob: documents inherit this policy, and WebKit then refuses
+      # the reader's book pages, on every book (#8607)
+      csp["frame-ancestors"].should eq("'self'")
       csp["object-src"].should eq("'none'")
       csp["base-uri"].should eq("'none'")
       # the reader's book pages (blob: iframes) and pdf.js' worker

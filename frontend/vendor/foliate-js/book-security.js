@@ -29,7 +29,10 @@ export const isWebKit = (win = globalThis) => {
 export const bookSandbox = (webkit = isWebKit()) =>
     webkit ? 'allow-same-origin allow-scripts' : 'allow-same-origin'
 
-export const BOOK_CSP = "script-src 'none'; object-src 'none'; base-uri 'none'"
+// frame-src: the app lets its own origin frame it (WebKit counts the blob:
+// book pages against frame-ancestors), so a book must not lay the app under
+// its page
+export const BOOK_CSP = "script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'"
 export const BOOK_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${BOOK_CSP}"/>`
 
 const URL_ATTRS = ['href', 'src', 'action', 'formaction', 'data', 'xlink:href']

@@ -13,6 +13,9 @@ module CalibreHub
   # - img-src https:: cover and metadata suggestions show remote covers
   # - frame-src/child-src blob:: the reader's book pages
   # - worker-src: pdf.js' worker (/assets) and the service worker (/sw.js)
+  # - frame-ancestors 'self', not 'none': the book pages inherit this policy
+  #   and WebKit holds it against them, it refuses every book page under
+  #   'none' (#8607). Books themselves frame nothing (BOOK_CSP, frame-src).
   # API, OPDS and file responses are data, never documents: nothing at all.
   class SecurityHeadersHandler
     include HTTP::Handler
@@ -32,7 +35,7 @@ module CalibreHub
       "object-src 'none'",
       "base-uri 'none'",
       "form-action 'self'",
-      "frame-ancestors 'none'",
+      "frame-ancestors 'self'",
     }.join("; ")
     DATA_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
     DATA_PATHS = {"/api/", "/opds", "/get/", "/healthz"}
