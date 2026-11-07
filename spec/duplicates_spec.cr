@@ -23,6 +23,29 @@ private def kinds(pairs, a : Int64, b : Int64) : Array(String)
 end
 
 describe CalibreHub::Dedup do
+  describe ".same_book?" do
+    it "takes title and authors as the duplicate check normalizes them" do
+      a = item(book(1, "Das Café: am Meer!", ["Jane Doe"]))
+      CalibreHub::Dedup.same_book?(a, item(book(2, "das cafe am meer", ["JANE DOE"]))).should be_true
+      CalibreHub::Dedup.same_book?(a, item(book(2, "Das Café: am Meer!", ["Doe, Jane"]))).should be_true
+    end
+
+    it "doesn't take what only looks alike" do
+      a = item(book(1, "Dune", ["Frank Herbert"]))
+      CalibreHub::Dedup.same_book?(a, item(book(2, "Dune: A Novel", ["Frank Herbert"]))).should be_false
+      CalibreHub::Dedup.same_book?(a, item(book(2, "Dune", ["Frank Herbert", "Brian Herbert"]))).should be_false
+      CalibreHub::Dedup.same_book?(a, item(book(2, "Dune", ["Brian Herbert"]))).should be_false
+    end
+
+    it "takes no book without a known author, no other part" do
+      CalibreHub::Dedup.same_book?(item(book(1, "Dune", ["Unknown"])), item(book(2, "Dune", ["Unknown"]))).should be_false
+      CalibreHub::Dedup.same_book?(item(book(1, "Dune", [] of String)), item(book(2, "Dune", [] of String))).should be_false
+      a = item(book(1, "Dune", ["Frank Herbert"], series: "Dune", series_index: 1.0))
+      b = item(book(2, "Dune", ["Frank Herbert"], series: "Dune", series_index: 2.0))
+      CalibreHub::Dedup.same_book?(a, b).should be_false
+    end
+  end
+
   it "pairs the same title and author, ignoring case, despite different editions (#5/#26)" do
     a = item(book(5, "Stop Letting Everything Affect You: How to Break Free From Overthinking, Emotional Chaos, and Self-Sabotage", isbn: "9781764110822"))
     b = item(book(26, "Stop Letting Everything Affect You: How to break free from overthinking, emotional chaos, and self-sabotage", isbn: "9781764110808"))

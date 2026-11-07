@@ -571,6 +571,12 @@ module CalibreHub
         hit && hit[1] == "title" ? hit[0] : nil
       end
 
+      # the book is in the library with this title and these authors
+      def same_book?(b : Book, id : Int64) : Bool
+        other = @items[id]? || return false
+        Dedup.same_book?(Dedup::Item.new(b), other)
+      end
+
       # {book, how} for a unit, before adding
       def match(u : Unit) : {Int64, String}?
         u.files.each { |f| same_file(f).try { |id| return {id, "file"} } }

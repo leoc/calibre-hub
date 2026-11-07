@@ -151,6 +151,14 @@ module CalibreHub
       2.0 * (sa & sb).size / (sa.size + sb.size)
     end
 
+    # The same title and the same authors after normalization, not one
+    # author in common or a title a subtitle apart: what may go without a
+    # person looking at it. A book without a known author is never that.
+    def self.same_book?(a : Item, b : Item) : Bool
+      return false if a.title_key.empty? || a.author_keys.empty?
+      a.full_key == b.full_key && a.author_keys == b.author_keys && !different_parts?(a, b)
+    end
+
     # Volume 1 and 2, two numbers of one series, two editions of a
     # standard are never the same book
     def self.different_parts?(a : Item, b : Item) : Bool
