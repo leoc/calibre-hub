@@ -65,6 +65,15 @@ pkgs.testers.runNixOSTest {
           path = "/srv/books/inbox";
           stableSeconds = 2;
         };
+        # the production timers are minutes and tens of seconds: a test waits
+        # for what they start, not for them
+        intake = {
+          startDelay = 1;
+          interval = 1;
+          tick = 1;
+        };
+        eventInterval = 1;
+        handlerRetryDelay = 1;
         leseliste = {
           enable = true;
           target = "/srv/books/boox";
@@ -72,6 +81,7 @@ pkgs.testers.runNixOSTest {
         classify = {
           enable = true;
           model = "stub";
+          retryDelay = 1;
         };
         # Hardcover, Open Library and DNB from recorded answers (sources-stub below)
         metadata = {
@@ -88,9 +98,9 @@ pkgs.testers.runNixOSTest {
         hardcoverSync = {
           enable = true;
           write = true;
-          interval = 2;
+          interval = 1;
         };
-        embed.delay = 2;
+        embed.delay = 1;
         convert.enable = true;
         epubFix.onImport = true;
         handlerAttempts = 2;
@@ -267,6 +277,8 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     import json
+    import shlex
+    import time
     import urllib.parse
     from datetime import datetime
 
@@ -277,6 +289,18 @@ pkgs.testers.runNixOSTest {
 
     def code(args):
         return machine.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' {args}").strip()
+
+    # a command until it succeeds, tried in the VM five times a second
+    # (wait_until_succeeds: once a second, through the driver)
+    def wait_until(command, timeout=900):
+        machine.succeed(f"timeout {timeout} bash -c " + shlex.quote(f"set -o pipefail; until {command}; do sleep 0.2; done"))
+
+    # for loops that ask the API until the time is up
+    def ticks(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            yield
+            time.sleep(0.2)
 
     machine.wait_for_unit("calibre-server.service")
     machine.wait_for_open_port(8083, timeout=120)
@@ -317,7 +341,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("sqlite3 -cmd '.timeout 5000' /srv/books/library/metadata.db 'select count(*) from hub_changelog' | grep -qv '^0$'")
 
     with subtest("events reach handlers"):
-        machine.wait_until_succeeds("grep -q '\"changed\",1,.*tags' /var/lib/calibre-hub/events.log", timeout=30)
+        wait_until("grep -q '\"changed\",1,.*tags' /var/lib/calibre-hub/events.log", timeout=30)
 
     def api(method, path, body=None, extra=""):
         data = f"-H 'Content-Type: application/json' -d '{json.dumps(body)}'" if body is not None else ""
@@ -327,12 +351,11 @@ pkgs.testers.runNixOSTest {
 
     # the entry of a file, by its name, once the Eingang looked at it
     def intake_entry(name, query="", seconds=900):
-        for _ in range(seconds // 5):
+        for _ in ticks(seconds):
             listed = api("GET", f"/api/intake?limit=500{query}")[1]["entries"]
             found = [e for e in listed if e["name"] == name]
             if found:
                 return found[0]
-            machine.sleep(5)
         raise Exception(f"{name} is not in the Eingang")
 
     # a decision that goes through a job, carried out
@@ -347,7 +370,7 @@ pkgs.testers.runNixOSTest {
         status, r = api("POST", "/api/books", extra=form)
         assert status == 202 and r["upload"]["status"] == "checking", (status, r)
         decided = False
-        for _ in range(240):
+        for _ in ticks(240):
             status, s = api("GET", f"/api/intake/uploads/{r['upload']['id']}")
             assert status == 200, (status, s)
             if s["status"] == "waiting" and not decided:
@@ -355,27 +378,25 @@ pkgs.testers.runNixOSTest {
                 assert api("POST", "/api/intake/decide", {"target": {"ids": [s["entryId"]]}, "decision": "accept"})[0] == 202
             elif s["status"] not in ("checking", "waiting"):
                 return s
-            machine.sleep(1)
         raise Exception(f"upload {r} is still {s}")
 
     # a file of the inbox in the library, taken by hand when it is below the threshold
     def from_inbox(name):
         decided = False
-        for _ in range(180):
+        for _ in ticks(180):
             if machine.execute(f"ls /srv/books/inbox/_imported/*/{name}")[0] == 0:
                 return
             found = [e for e in api("GET", "/api/intake?limit=500&origin=inbox")[1]["entries"] if e["name"] == name]
             if found and not decided:
                 decided = True
                 assert api("POST", "/api/intake/decide", {"target": {"ids": [found[0]["id"]]}, "decision": "accept"})[0] == 202
-            machine.sleep(1)
         raise Exception(f"{name} didn't leave the inbox")
 
     with subtest("inbox"):
         machine.succeed("printf 'Krimi\\n\\nText\\n' > /tmp/k.txt")
         # a folder without group write is skipped, not imported twice
         machine.succeed("mkdir -m 755 /srv/books/inbox/Privat && cp /tmp/b.epub /srv/books/inbox/Privat/")
-        machine.wait_until_succeeds("journalctl -u calibre-hub -o cat | grep -q 'Privat/b.epub skipped'", timeout=30)
+        wait_until("journalctl -u calibre-hub -o cat | grep -q 'Privat/b.epub skipped'", timeout=30)
         # like Samba on dmt: directory mask 2775
         machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Roman /srv/books/inbox/Roman/Krimi")
         # finished, then in: a file ebook-convert is still writing looks broken
@@ -393,8 +414,8 @@ pkgs.testers.runNixOSTest {
         assert api("POST", "/api/intake/threshold", {"origin": "upload", "value": 60})[0] == 200
         assert api("POST", "/api/intake/threshold", {"origin": "nowhere", "value": 60})[0] == 400
         assert api("POST", "/api/intake/threshold", {"origin": "inbox", "value": 59})[0] == 400
-        machine.wait_until_succeeds("ls /srv/books/inbox/_imported/*/Roman/Krimi/k.epub", timeout=90)
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/books?q=title:Inboxbuch' | jq -e '.total == 1'", timeout=30)
+        wait_until("ls /srv/books/inbox/_imported/*/Roman/Krimi/k.epub", timeout=90)
+        wait_until(f"curl -sf -b /tmp/jar '{H}/api/books?q=title:Inboxbuch' | jq -e '.total == 1'", timeout=30)
         books = json.loads(machine.succeed(f"curl -sf -b /tmp/jar '{H}/api/books?q=title:Inboxbuch'"))
         b = books["books"][0]
         assert b["tags"] == ["Krimi", "Roman"] or sorted(b["tags"]) == ["Krimi", "Roman"], b
@@ -404,6 +425,18 @@ pkgs.testers.runNixOSTest {
         assert added == "1", added
 
     STATE = "/var/lib/calibre-hub/state.sqlite"
+    SQL = f"sqlite3 -cmd '.timeout 5000' {STATE}"
+
+    # every handler had every event
+    def events_handled():
+        wait_until(f"test $({SQL} 'select count(*) from events where done_at is null') = 0", timeout=60)
+
+    # nothing goes on that writes to a book: the background work has seen the
+    # last event and no job runs
+    def hub_idle():
+        behind = "select value from meta where key like '%_event_seq' and cast(value as integer) < (select max(id) from events)"
+        jobs = " union all ".join(f"select id from {t} where status = 'running'" for t in ["metadata_jobs", "classify_jobs", "convert_jobs", "epub_fix_jobs"])
+        wait_until(f"test -z \"$({SQL} \"{behind} union all {jobs}\")\"", timeout=120)
 
     with subtest("reading list tag becomes a list"):
         # migrated on the first start, when the library was still empty
@@ -414,15 +447,17 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"delete from list_items; delete from lists; delete from meta where key = 'lists_migrated'\"")
         machine.systemctl("start calibre-hub.service")
         machine.wait_for_open_port(8084)
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'", timeout=60)
+        wait_until("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'", timeout=60)
         status, ls = api("GET", "/api/lists")
         assert [(l["name"], l["sync"], l["isDefault"], l["favorite"], l["count"]) for l in ls] == [("Leseliste", True, True, True, 1)], ls
         lid = ls[0]["id"]
         assert api("GET", "/api/books/1")[1]["lists"] == [lid]
         # the old category folders are gone, the tag no longer counts
         machine.fail("test -e /srv/books/boox/Fachbuch")
+        changed = int(machine.succeed("grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log").strip())
         machine.succeed(f"{DB} set_metadata 1 -f tags:")
-        machine.sleep(5)
+        wait_until(f"test $(grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log) -gt {changed}", timeout=30)
+        events_handled()
         machine.succeed("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'")
 
     with subtest("lists"):
@@ -433,7 +468,7 @@ pkgs.testers.runNixOSTest {
         assert status == 200 and r["added"] == [1] and r["list"]["count"] == 1, (status, r)
         assert api("PUT", f"/api/lists/{u['id']}/books/9999")[0] == 404
         # one folder per synced list, a book in two lists is in both
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Urlaub/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        wait_until("test -f '/srv/books/boox/Urlaub/Lovelace, Ada - Testbuch.epub'", timeout=30)
         machine.succeed("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'")
         status, page = api("GET", f"/api/books?list={u['id']}")
         assert status == 200 and page["total"] == 1 and page["books"][0]["id"] == 1, page
@@ -445,22 +480,22 @@ pkgs.testers.runNixOSTest {
         # renaming moves the folder
         status, u = api("PATCH", f"/api/lists/{u['id']}", {"name": "Sommer"})
         assert status == 200 and u["name"] == "Sommer", (status, u)
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        wait_until("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
         machine.succeed("test ! -e /srv/books/boox/Urlaub")
         # removing a book removes its file, not what the e-reader keeps next to it
         machine.succeed("mkdir '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr' && echo x > '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr/metadata.epub.lua'")
         status, r = api("DELETE", f"/api/lists/{u['id']}/books/1")
         assert status == 200 and r["removed"] == [1] and r["list"]["count"] == 0, (status, r)
-        machine.wait_until_succeeds("! test -e '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        wait_until("! test -e '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
         machine.succeed("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr/metadata.epub.lua'")
         machine.succeed("rm -r '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.sdr'")
         machine.succeed("test -f '/srv/books/boox/Leseliste/Lovelace, Ada - Testbuch.epub'")
         status, r = api("POST", f"/api/lists/{u['id']}/books", {"target": {"query": {"q": "title:Testbuch"}}})
         assert status == 200 and r["added"] == [1], (status, r)
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        wait_until("test -f '/srv/books/boox/Sommer/Lovelace, Ada - Testbuch.epub'", timeout=30)
         assert api("DELETE", f"/api/lists/{u['id']}")[0] == 200
-        machine.wait_until_succeeds("! test -e /srv/books/boox/Sommer", timeout=30)
-        machine.wait_until_succeeds("grep -q '\"list\",0,' /var/lib/calibre-hub/events.log", timeout=30)
+        wait_until("! test -e /srv/books/boox/Sommer", timeout=30)
+        wait_until("grep -q '\"list\",0,' /var/lib/calibre-hub/events.log", timeout=30)
         # nested lists: a synced parent takes its sublists along, in nested folders
         status, sub = api("POST", "/api/lists", {"name": "Reise / 2026"})
         assert status == 201 and sub["name"] == "Reise/2026" and sub["parent"] == "Reise", (status, sub)
@@ -472,16 +507,16 @@ pkgs.testers.runNixOSTest {
         status, parent = api("POST", "/api/lists", {"name": "Reise", "sync": True})
         assert status == 201 and parent["totalCount"] == 1 and parent["count"] == 0, (status, parent)
         assert api("GET", f"/api/books?list={parent['id']}")[1]["total"] == 1
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Reise/2026/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        wait_until("test -f '/srv/books/boox/Reise/2026/Lovelace, Ada - Testbuch.epub'", timeout=30)
         # renaming the parent renames the sublist and moves the folders
         status, parent = api("PATCH", f"/api/lists/{parent['id']}", {"name": "Fahrt"})
         assert status == 200 and api("GET", f"/api/lists/{sub['id']}")[1]["name"] == "Fahrt/2026"
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Fahrt/2026/Lovelace, Ada - Testbuch.epub'", timeout=30)
-        machine.wait_until_succeeds("test ! -e /srv/books/boox/Reise", timeout=30)
+        wait_until("test -f '/srv/books/boox/Fahrt/2026/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        wait_until("test ! -e /srv/books/boox/Reise", timeout=30)
         # deleting the parent leaves the sublist, no longer synced
         assert api("DELETE", f"/api/lists/{parent['id']}")[0] == 200
         assert api("GET", f"/api/lists/{sub['id']}")[0] == 200
-        machine.wait_until_succeeds("! test -e /srv/books/boox/Fahrt", timeout=30)
+        wait_until("! test -e /srv/books/boox/Fahrt", timeout=30)
         assert api("GET", "/api/books?listPath=Fahrt")[1]["total"] == 1
         assert api("DELETE", f"/api/lists/{sub['id']}")[0] == 200
         # each list is an OPDS catalog, with Basic auth like /opds
@@ -501,7 +536,7 @@ pkgs.testers.runNixOSTest {
         assert [l["name"] for l in ls] == ["Leseliste"], ls
         machine.succeed(f"{CLI} hub list create Krimis --sync")
         machine.succeed(f"{CLI} hub list add krimis 1")
-        machine.wait_until_succeeds("test -f '/srv/books/boox/Krimis/Lovelace, Ada - Testbuch.epub'", timeout=30)
+        wait_until("test -f '/srv/books/boox/Krimis/Lovelace, Ada - Testbuch.epub'", timeout=30)
         shown = json.loads(machine.succeed(f"{CLI} hub list show Krimis --json"))
         assert shown["books"]["total"] == 1 and shown["list"]["sync"] is True, shown
         machine.succeed(f"{CLI} hub list create Krimis/Klassiker")
@@ -512,9 +547,9 @@ pkgs.testers.runNixOSTest {
         assert json.loads(machine.succeed(f"{CLI} hub list show Krimis --json"))["books"]["total"] == 1
         machine.succeed(f"{CLI} hub list delete Krimis/Klassiker --yes")
         machine.succeed(f"{CLI} hub list delete Krimis --yes")
-        machine.wait_until_succeeds("! test -e /srv/books/boox/Krimis", timeout=30)
+        wait_until("! test -e /srv/books/boox/Krimis", timeout=30)
         status, r = api("DELETE", f"/api/lists/{lid}/books/1")
-        machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
+        wait_until("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
 
     with subtest("magic shelves"):
         inbox = api("GET", "/api/books?q=title:Inboxbuch")[1]["books"][0]["id"]
@@ -543,7 +578,7 @@ pkgs.testers.runNixOSTest {
         n = int(machine.succeed("grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log").strip())
         status, b = api("PATCH", "/api/books/1", {"addTags": ["neu"]})
         assert status == 200 and "neu" in b["tags"], (status, b)
-        machine.wait_until_succeeds(f"test $(grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log) -gt {n}", timeout=30)
+        wait_until(f"test $(grep -c '\"changed\",1,' /var/lib/calibre-hub/events.log) -gt {n}", timeout=30)
         status, b2 = api("PATCH", "/api/books/1", {"title": "Neuer Titel", "series": "Reihe", "seriesIndex": 3,
             "rating": 8, "pubdate": "2020-05-01", "kategorie": "Roman", "identifiers": {"isbn": "9780000000001"},
             "comments": "<p onclick=x>Hallo<script>alert(1)</script></p>", "lastModified": b["lastModified"]})
@@ -569,7 +604,7 @@ pkgs.testers.runNixOSTest {
         r = upload_book(form)
         assert r["status"] == "imported" and sorted(r["book"]["tags"]) == ["Neu", "Roman"] and r["book"]["custom"]["kategorie"] == "Roman.Krimi", r
         uid = r["book"]["id"]
-        machine.wait_until_succeeds(f"grep -q '\"added\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
+        wait_until(f"grep -q '\"added\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
         machine.succeed("ls /var/lib/calibre-hub/uploads/_imported/*/*/Upload.epub")
         # the same file again: it says so, nothing is added
         r = upload_book("-F file=@/tmp/Upload.epub")
@@ -584,12 +619,11 @@ pkgs.testers.runNixOSTest {
         assert api("POST", "/api/books", extra="-F file=@/tmp/evil.exe")[0] == 415
 
     def wait_job(job_id, seconds=60):
-        for _ in range(seconds):
+        for _ in ticks(seconds):
             status, j = api("GET", f"/api/jobs/{job_id}")
             assert status == 200, (status, j)
             if j["status"] != "running":
                 return j
-            machine.sleep(1)
         raise Exception("job still running")
 
     with subtest("bulk"):
@@ -645,11 +679,11 @@ pkgs.testers.runNixOSTest {
         ids = list(range(1000, 2500)) + [uid]
         status, r = api("POST", "/api/books/bulk", {"target": {"ids": ids}, "changes": {"addTags": ["Neustart"]}})
         assert status == 202 and r["total"] == len(ids), (status, r)
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/jobs/{r['jobId']} | jq -e '.done > 0'", timeout=30)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/jobs/{r['jobId']} | jq -e '.done > 0'", timeout=30)
         machine.systemctl("restart calibre-hub.service")
         machine.wait_for_open_port(8084)
         # the worker picks the job up shortly after the port is open
-        machine.wait_until_succeeds(f"journalctl -u calibre-hub -o cat | grep -q 'resuming job {r['jobId']} at '", timeout=30)
+        wait_until(f"journalctl -u calibre-hub -o cat | grep -q 'resuming job {r['jobId']} at '", timeout=30)
         j = wait_job(r["jobId"], 180)
         assert j["status"] == "done" and j["done"] == len(ids), {k: v for k, v in j.items() if k != "errors"}
         assert len(j["errors"]) == len(ids) - 1 and uid not in [e["bookId"] for e in j["errors"]], len(j["errors"])
@@ -700,16 +734,16 @@ pkgs.testers.runNixOSTest {
         status, r = api("PUT", f"/api/lists/{lid}/books/{uid}")
         assert status == 200, (status, r)
         mirrored = "find /srv/books/boox/Leseliste -name '*Hochgeladen.epub' | grep -q ."
-        machine.wait_until_succeeds(mirrored, timeout=30)
+        wait_until(mirrored, timeout=30)
         assert code(f"-b /tmp/jar -X DELETE {H}/api/books/{uid}") == "403"
         status, r = api("DELETE", f"/api/books/{uid}")
         assert status == 200 and r["book"]["id"] == uid and r["book"]["title"] == "Hochgeladen", (status, r)
         assert api("GET", f"/api/books/{uid}")[0] == 404
         assert api("DELETE", f"/api/books/{uid}")[0] == 404
-        machine.wait_until_succeeds(f"grep -q '\"deleted\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
-        machine.wait_until_succeeds(f"! {mirrored}", timeout=30)
+        wait_until(f"grep -q '\"deleted\",{uid},' /var/lib/calibre-hub/events.log", timeout=30)
+        wait_until(f"! {mirrored}", timeout=30)
         # the deleted book left its list
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/lists/{lid} | jq -e '.count == 0'", timeout=30)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/lists/{lid} | jq -e '.count == 0'", timeout=30)
         machine.succeed(f"test -f /srv/books/library/.caltrash/b/{uid}/metadata.opf")
         status, trash = api("GET", "/api/trash")
         entry = next(e for e in trash if e["id"] == uid)
@@ -725,10 +759,10 @@ pkgs.testers.runNixOSTest {
         assert added(rb) == added(b), (rb, b)
         rid = rb["id"]
         assert code(f"-b /tmp/jar '{H}/api/books/{rid}/cover'") == "200"
-        machine.wait_until_succeeds(f"grep -q '\"added\",{rid},' /var/lib/calibre-hub/events.log", timeout=30)
+        wait_until(f"grep -q '\"added\",{rid},' /var/lib/calibre-hub/events.log", timeout=30)
         # back in the list it was in, with its new id
         assert api("GET", f"/api/books/{rid}")[1]["lists"] == [lid]
-        machine.wait_until_succeeds(mirrored, timeout=30)
+        wait_until(mirrored, timeout=30)
         assert all(e["id"] != uid for e in api("GET", "/api/trash")[1])
         assert api("POST", f"/api/trash/{uid}/restore")[0] == 404
         # bulk delete moves to the trash too
@@ -738,7 +772,7 @@ pkgs.testers.runNixOSTest {
         assert j["status"] == "done" and j["errors"] == [], j
         assert api("GET", f"/api/books/{rid}")[0] == 404
         assert any(e["id"] == rid for e in api("GET", "/api/trash")[1])
-        machine.wait_until_succeeds(f"! {mirrored}", timeout=30)
+        wait_until(f"! {mirrored}", timeout=30)
 
     with subtest("duplicates: detect, merge, undo"):
         machine.succeed("printf 'Doppelt\\n\\nText\\n' > /tmp/d.txt")
@@ -755,7 +789,7 @@ pkgs.testers.runNixOSTest {
         assert r["status"] == "imported" and [b["id"] for b in r["possibleDuplicates"]] == [keep], r
         other = r["book"]["id"]
         # the copy is converted to EPUB too (convert.enable); wait for it, so nothing changes under the merge
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{other} | jq -e '.formats | sort == [\"AZW3\", \"EPUB\"]'", timeout=120)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{other} | jq -e '.formats | sort == [\"AZW3\", \"EPUB\"]'", timeout=120)
         status, dl = api("POST", "/api/lists", {"name": "Doppelt"})
         assert status == 201, (status, dl)
         assert api("PUT", f"/api/lists/{dl['id']}/books/{other}")[0] == 200
@@ -775,11 +809,10 @@ pkgs.testers.runNixOSTest {
         assert api("GET", f"/api/books/{other}")[0] == 200
 
         # the metadata cleanup or the classifier may write the book right then (409; nothing merged yet)
-        for _ in range(5):
+        for _ in ticks(10):
             status, m = api("POST", "/api/duplicates/merge", {"keepId": keep, "bookIds": [other]})
             if status != 409:
                 break
-            machine.sleep(2)
         assert status == 200 and m["merge"]["status"] == "done", (status, m)
         b = m["book"]
         assert sorted(b["formats"]) == ["AZW3", "EPUB"] and "Zweitkopie" in b["tags"], b
@@ -836,12 +869,12 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_unit("model-stub.service")
         # the upload without a category in "upload" was classified on its added event
         dup = book_by_title("Hochgeladen")["id"]
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/suggestions/{dup} | jq -e '.status == \"pending\"'", timeout=60)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/suggestions/{dup} | jq -e '.status == \"pending\"'", timeout=60)
 
         # model down: the run stops as failed, nothing else breaks
         machine.systemctl("stop model-stub.service")
         mord = add_book("Mordfall")
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/classify/status | jq -e '.lastRun.status == \"failed\" and (.lastRun.error | contains(\"model unavailable\"))'", timeout=90)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/classify/status | jq -e '.lastRun.status == \"failed\" and (.lastRun.error | contains(\"model unavailable\"))'", timeout=90)
         assert api("GET", f"/api/suggestions/{mord}")[0] == 404
         assert code(f"-b /tmp/jar {H}/api/books") == "200"
         machine.systemctl("start model-stub.service")
@@ -850,7 +883,7 @@ pkgs.testers.runNixOSTest {
         # a new book without a category is classified through its added event,
         # sure enough to be applied with the tag
         dune = add_book("Wüstenplanet")
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{dune} | jq -e '.custom.kategorie == \"Roman.SF\"'", timeout=90)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{dune} | jq -e '.custom.kategorie == \"Roman.SF\"'", timeout=90)
         b = api("GET", f"/api/books/{dune}")[1]
         assert "auto-kategorie" in b["tags"], b
         s = api("GET", f"/api/suggestions/{dune}")[1]
@@ -902,8 +935,8 @@ pkgs.testers.runNixOSTest {
         # the added event starts a run: cleaned by the rules, completed by
         # the ISBN from the text through the stubbed sources
         # the rules write first, the catalogs after them, and the log last
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{messy} | jq -e '.title == \"Der Herr der Ringe\" and .publisher != null and .comments != null'", timeout=90)
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/metadata/changes?bookId={messy}' | jq -e '[.changes[].field] | contains([\"title\", \"authors\", \"isbn\", \"publisher\", \"comments\"])'", timeout=30)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{messy} | jq -e '.title == \"Der Herr der Ringe\" and .publisher != null and .comments != null'", timeout=90)
+        wait_until(f"curl -sf -b /tmp/jar '{H}/api/metadata/changes?bookId={messy}' | jq -e '[.changes[].field] | contains([\"title\", \"authors\", \"isbn\", \"publisher\", \"comments\"])'", timeout=30)
         b = api("GET", f"/api/books/{messy}")[1]
         assert b["authors"] == ["J.R.R. Tolkien"], b
         assert b["identifiers"].get("isbn") == "9783608938289", b
@@ -923,7 +956,7 @@ pkgs.testers.runNixOSTest {
         machine.fail("grep -q Hardcover /var/lib/calibre-hub/alerts.log")
         assert log["books"][0]["id"] == messy, log
         # classified after the cleanup, on the clean title
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/suggestions/{messy} | jq -e '.status == \"none\"'", timeout=60)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/suggestions/{messy} | jq -e '.status == \"none\"'", timeout=60)
         machine.succeed("journalctl -u model-stub -o cat | grep -q 'asked about Der Herr der Ringe'")
         machine.fail("journalctl -u model-stub -o cat | grep -q 'asked about tolkien'")
 
@@ -947,35 +980,33 @@ pkgs.testers.runNixOSTest {
         assert api("GET", "/api/metadata/status")[1]["changedBooks"] == 0
 
     with subtest("hardcover sync"):
-        # the hub writes every 2 s here: wait for its lock
-        SQL = f"sqlite3 -cmd '.timeout 5000' {STATE}"
         # a book with the ISBN the stub knows (Hardcover book 900000)
         hid = add_book("Gelesen")
         status, b = api("PATCH", f"/api/books/{hid}", {"identifiers": {"isbn": "9783608938289"}})
         assert status == 200, (status, b)
-        machine.wait_until_succeeds(f"test \"$({SQL} 'select hc_book_id from hardcover_books where book_id = {hid}')\" = 900000", timeout=60)
+        wait_until(f"test \"$({SQL} 'select hc_book_id from hardcover_books where book_id = {hid}')\" = 900000", timeout=60)
         status, r = api("PUT", f"/api/books/{hid}/progress", {"format": "epub", "position": "epubcfi(/6/4)", "fraction": 0.4, "device": "vm"})
         assert status == 200, (status, r)
         stub = "journalctl -u sources-stub -o cat"
-        machine.wait_until_succeeds(f"{stub} | grep -qF 'MUTATION insert_user_book {{\"object\": {{\"book_id\": 900000, \"edition_id\": 900001, \"status_id\": 2}}}}'", timeout=60)
-        machine.wait_until_succeeds(f"{stub} | grep 'MUTATION insert_user_book_read' | grep -q started_at", timeout=30)
+        wait_until(f"{stub} | grep -qF 'MUTATION insert_user_book {{\"object\": {{\"book_id\": 900000, \"edition_id\": 900001, \"status_id\": 2}}}}'", timeout=60)
+        wait_until(f"{stub} | grep 'MUTATION insert_user_book_read' | grep -q started_at", timeout=30)
         # at the end: Read, the open read finished
         status, r = api("PUT", f"/api/books/{hid}/progress", {"format": "epub", "position": "epubcfi(/6/40)", "fraction": 1, "device": "vm"})
         assert status == 200, (status, r)
-        machine.wait_until_succeeds(f"{stub} | grep 'MUTATION update_user_book ' | grep -q '\"status_id\": 3'", timeout=60)
-        machine.wait_until_succeeds(f"{stub} | grep 'MUTATION update_user_book_read' | grep -q finished_at", timeout=30)
+        wait_until(f"{stub} | grep 'MUTATION update_user_book ' | grep -q '\"status_id\": 3'", timeout=60)
+        wait_until(f"{stub} | grep 'MUTATION update_user_book_read' | grep -q finished_at", timeout=30)
         n = machine.succeed(f"{stub} | grep -c MUTATION").strip()
         assert n == "4", n
         row = machine.succeed(f"{SQL} 'select status, dry_run from hardcover_sync where book_id = {hid}'").strip()
         assert row == "3|0", row
-        machine.succeed("journalctl -u calibre-hub -o cat | grep -q 'hardcover sync: progress of arthur every 2 s, writing'")
+        machine.succeed("journalctl -u calibre-hub -o cat | grep -q 'hardcover sync: progress of arthur every 1 s, writing'")
 
         # tagged private after the sync: what the hub created is deleted again
         status, b = api("PATCH", f"/api/books/{hid}", {"addTags": ["Private"]})
         assert status == 200, (status, b)
-        machine.wait_until_succeeds(f"{stub} | grep -q 'MUTATION delete_user_book {{\"id\": 1001}}'", timeout=60)
+        wait_until(f"{stub} | grep -q 'MUTATION delete_user_book {{\"id\": 1001}}'", timeout=60)
         machine.succeed(f"{stub} | grep -q 'MUTATION delete_user_book_read'")
-        machine.wait_until_succeeds(f"test $({SQL} 'select dry_run from hardcover_private where book_id = {hid}') = 0", timeout=30)
+        wait_until(f"test $({SQL} 'select dry_run from hardcover_private where book_id = {hid}') = 0", timeout=30)
         assert machine.succeed(f"{SQL} 'select count(*) from hardcover_sync where book_id = {hid}'").strip() == "0"
 
         # private from the start: never matched or synced
@@ -983,7 +1014,12 @@ pkgs.testers.runNixOSTest {
         gid = book_by_title("Geheim")["id"]
         status, r = api("PUT", f"/api/books/{gid}/progress", {"format": "epub", "position": "epubcfi(/6/4)", "fraction": 0.5, "device": "vm"})
         assert status == 200, (status, r)
-        machine.sleep(8)
+        # the sync's passes, by what they ask the stub: a new ISBN is looked up
+        # in a pass that read the library after the change, so the second one
+        # comes up in a pass after the first one's, which had the private book
+        for book, isbn in [(mord, "9781861972712"), (dune, "9780140449136")]:
+            assert api("PATCH", f"/api/books/{book}", {"identifiers": {"isbn": isbn}})[0] == 200
+            wait_until(f"{stub} | grep -qF '\"isbn\": \"{isbn}\"'", timeout=30)
         assert machine.succeed(f"{SQL} 'select count(*) from hardcover_books where book_id = {gid}'").strip() == "0"
         assert machine.succeed(f"{SQL} 'select count(*) from hardcover_sync where book_id = {gid}'").strip() == "0"
         n = machine.succeed(f"{stub} | grep -c MUTATION").strip()
@@ -995,33 +1031,33 @@ pkgs.testers.runNixOSTest {
         return f"/srv/books/library/{rel}.{fmt.lower()}"
 
     def embed_idle():
-        machine.wait_until_succeeds(f"test $(sqlite3 -cmd '.timeout 5000' {STATE} 'select count(*) from embed_queue') = 0", timeout=60)
+        wait_until(f"test $(sqlite3 -cmd '.timeout 5000' {STATE} 'select count(*) from embed_queue') = 0", timeout=60)
 
     META = "QT_QPA_PLATFORM=offscreen ebook-meta"
 
     with subtest("embed metadata into the files"):
         status, r = api("PUT", f"/api/lists/{lid}/books/1")
         assert status == 200, (status, r)
-        machine.wait_until_succeeds("ls /srv/books/boox/Leseliste/*.epub", timeout=30)
+        wait_until("ls /srv/books/boox/Leseliste/*.epub", timeout=30)
         embed_idle()
         status, b = api("PATCH", "/api/books/1", {"title": "Eingebettet", "publisher": "Hub Verlag"})
         assert status == 200 and b["title"] == "Eingebettet", (status, b)
         # several quick edits, one rewrite
         status, b = api("PATCH", "/api/books/1", {"addTags": ["eingebettet"]})
         assert status == 200, (status, b)
-        machine.wait_until_succeeds(f"{META} '{library_file(1, 'epub')}' | grep -q '^Title *: Eingebettet$'", timeout=60)
+        wait_until(f"{META} '{library_file(1, 'epub')}' | grep -q '^Title *: Eingebettet$'", timeout=60)
         machine.succeed(f"{META} '{library_file(1, 'epub')}' | grep -q '^Publisher *: Hub Verlag$'")
-        machine.wait_until_succeeds(f"{META} '{library_file(1, 'epub')}' | grep -q '^Tags *: .*eingebettet'")
+        wait_until(f"{META} '{library_file(1, 'epub')}' | grep -q '^Tags *: .*eingebettet'")
         # the reading list copies the rewritten file again
-        machine.wait_until_succeeds(f"{META} /srv/books/boox/Leseliste/*Eingebettet.epub | grep -q '^Title *: Eingebettet$'", timeout=60)
-        machine.wait_until_succeeds(f"cmp '{library_file(1, 'epub')}' /srv/books/boox/Leseliste/*Eingebettet.epub", timeout=60)
+        wait_until(f"{META} /srv/books/boox/Leseliste/*Eingebettet.epub | grep -q '^Title *: Eingebettet$'", timeout=60)
+        wait_until(f"cmp '{library_file(1, 'epub')}' /srv/books/boox/Leseliste/*Eingebettet.epub", timeout=60)
         # the KOReader checksum of the file before the first rewrite is kept
         n = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"select count(*) from file_checksums where book_id = 1 and format = 'EPUB' and length(partial_md5) = 32\"").strip()
         assert int(n) >= 1, n
         assert api("GET", "/api/embed/status")[1]["enabled"] is True
         embed_idle()
         status, r = api("DELETE", f"/api/lists/{lid}/books/1")
-        machine.wait_until_succeeds("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
+        wait_until("! find /srv/books/boox -name '*.epub' | grep -q .", timeout=30)
 
     with subtest("convert added books"):
         st = api("GET", "/api/convert/status")[1]
@@ -1031,7 +1067,7 @@ pkgs.testers.runNixOSTest {
         r = upload_book("-F file=@/tmp/Umwandlung.txt")
         assert r["status"] == "imported" and r["book"]["formats"] == ["TXT"], r
         tid = r["book"]["id"]
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{tid} | jq -e '.formats | sort == [\"EPUB\", \"TXT\"]'", timeout=120)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{tid} | jq -e '.formats | sort == [\"EPUB\", \"TXT\"]'", timeout=120)
         machine.succeed(f"{META} '{library_file(tid, 'epub')}' | grep -q '^Title *: Umwandlung$'")
         # the inbox: a DOCX
         machine.succeed("printf 'Dokument\\n\\nText\\n' > /tmp/d.txt")
@@ -1039,7 +1075,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("install -m 664 -g calibre-hub /tmp/Dokument.docx /srv/books/inbox/Dokument.docx")
         from_inbox("Dokument.docx")
         did = book_by_title("Dokument")["id"]
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{did} | jq -e '.formats | sort == [\"DOCX\", \"EPUB\"]'", timeout=120)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{did} | jq -e '.formats | sort == [\"DOCX\", \"EPUB\"]'", timeout=120)
         # the library: nothing left to convert to EPUB; a PDF-only book would be left alone
         status, r = api("POST", "/api/convert", {})
         assert status == 202, (status, r)
@@ -1125,8 +1161,8 @@ pkgs.testers.runNixOSTest {
         from_inbox("Wiese.epub")
         wid = book_by_title("Kaputte Wiese")["id"]
         # repaired on import; the file as it was kept as ORIGINAL_EPUB
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{wid} | jq -e '.formats | sort == [\"EPUB\", \"ORIGINAL_EPUB\"]'", timeout=120)
-        machine.wait_until_succeeds(f"{PY} {CHECK_EPUB} '{library_file(wid, 'epub')}'", timeout=60)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{wid} | jq -e '.formats | sort == [\"EPUB\", \"ORIGINAL_EPUB\"]'", timeout=120)
+        wait_until(f"{PY} {CHECK_EPUB} '{library_file(wid, 'epub')}'", timeout=60)
         machine.fail(f"{PY} {CHECK_EPUB} '{library_file(wid, 'original_epub')}'")
         machine.succeed(f"{META} '{library_file(wid, 'epub')}' | grep -q '^Title *: Kaputte Wiese$'")
         machine.succeed(f"QT_QPA_PLATFORM=offscreen ebook-convert '{library_file(wid, 'epub')}' /tmp/wiese.txt")
@@ -1277,18 +1313,17 @@ pkgs.testers.runNixOSTest {
         out = machine.succeed(f"curl -sf --user scripts:scripts-secret -X POST --data-binary '@{WW}/{brass}' "
                               f"'http://127.0.0.1:8083/cdb/add-book/1/y/{urllib.parse.quote(brass)}/library'")
         old_id = json.loads(out)["book_id"]
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar {H}/api/books/{old_id}", timeout=30)
+        wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{old_id}", timeout=30)
         old = api("GET", f"/api/books/{old_id}")[1]
         assert old["title"] == "Brass" and old["authors"] == ["Advanced Data Structures (Cambridge, 2008)"], old
         machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"insert into import_files (path, size, mtime, status, book_id, run_id, at) "
                         f"values ('{WW}/{brass}', 1, 1, 'imported', {old_id}, 'old', strftime('%s', 'now'))\"")
         out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub eingang recheck --run old")
         assert "recheck: 1 books" in out, out
-        for _ in range(180):
+        for _ in ticks(900):
             status, e = api("GET", f"/api/intake/{-old_id}")
             if status == 200:
                 break
-            machine.sleep(5)
         assert status == 200, (status, e)
         planned = {c["field"]: c["new"] for c in e["changes"]}
         assert e["decided"] == "name" and e["kind"] == "library" and e["confidence"] == 70 and e["level"] == 3, e
@@ -1316,7 +1351,7 @@ pkgs.testers.runNixOSTest {
         assert sql(f"select level || ' ' || confidence from metadata_decisions where book_id = {mobi}") == "2 90"
         # calibre finds a book by its ISBN in both forms: the same ISBN on two books
         machine.succeed(f"{DB} set_metadata {mobi} -f identifiers:isbn:9780201914658")
-        machine.wait_until_succeeds(f"curl -sf -b /tmp/jar '{H}/api/books?q=identifiers:%22=isbn:=9780201914658%22' | grep -q '\"id\":{mobi}'", timeout=30)
+        wait_until(f"curl -sf -b /tmp/jar '{H}/api/books?q=identifiers:%22=isbn:=9780201914658%22' | grep -q '\"id\":{mobi}'", timeout=30)
 
     with subtest("the Eingang decides (#8605)"):
         IN = f"{ALT}/Eingang"
@@ -1327,7 +1362,7 @@ pkgs.testers.runNixOSTest {
         # byte for byte a file of the library: nobody has to look at it
         copy = machine.succeed("find /srv/books/library -name '*.pdf' | head -1").strip()
         machine.succeed(f"cp '{copy}' '{IN}/kopie.pdf' && touch -d '1 hour ago' '{IN}'/*.pdf")
-        machine.wait_until_succeeds(f"test -f '{TRASH}/kopie.pdf'", timeout=600)
+        wait_until(f"test -f '{TRASH}/kopie.pdf'", timeout=600)
         assert machine.succeed(f"cmp '{copy}' '{TRASH}/kopie.pdf' && test ! -e '{IN}/kopie.pdf' && echo ok").strip() == "ok"
 
         # thrown away: out of the root, under its path, the hub's sandbox lets it
@@ -1395,20 +1430,26 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'x\\n' > /tmp/x.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/x.txt /tmp/kaputt.epub --title Kaputt --authors Niemand")
         machine.succeed(f"{DB} add /tmp/kaputt.epub")
-        machine.wait_until_succeeds("grep -q '90-fail failed' /var/lib/calibre-hub/alerts.log", timeout=120)
+        wait_until("grep -q '90-fail failed' /var/lib/calibre-hub/alerts.log", timeout=120)
 
     with subtest("deleted"):
         machine.succeed(f"{DB} remove 1")
-        machine.wait_until_succeeds("grep -q '\"deleted\",1,' /var/lib/calibre-hub/events.log", timeout=30)
+        wait_until("grep -q '\"deleted\",1,' /var/lib/calibre-hub/events.log", timeout=30)
 
     with subtest("restart does not repeat events"):
+        hub_idle()
         embed_idle()
-        before = machine.succeed("wc -l < /var/lib/calibre-hub/events.log").strip()
+        events_handled()
+        before = int(machine.succeed("wc -l < /var/lib/calibre-hub/events.log").strip())
         machine.systemctl("restart calibre-hub.service")
         machine.wait_for_open_port(8084)
-        machine.sleep(10)
-        after = machine.succeed("wc -l < /var/lib/calibre-hub/events.log").strip()
-        assert before == after, (before, after)
+        # events go out in order: one repeated is in front of this edit's
+        mark = book_by_title("Inboxbuch")["id"]
+        assert api("PATCH", f"/api/books/{mark}", {"addTags": ["Neustart"]})[0] == 200
+        wait_until(f"tail -n +{before + 1} /var/lib/calibre-hub/events.log | grep -q '\"changed\",{mark},'", timeout=30)
+        after = machine.succeed(f"tail -n +{before + 1} /var/lib/calibre-hub/events.log").splitlines()
+        assert all(e.startswith(f'["changed",{mark},') for e in after), after
+        embed_idle()
 
     with subtest("hub restart and update leave calibre-server running"):
         def invocation(unit):
@@ -1461,7 +1502,7 @@ pkgs.testers.runNixOSTest {
         assert as_lea("PUT", f"/api/lists/{l['id']}/books/{bid}")[0] in (200, 201)
         # synced into her own reader folder, not into arthur's
         assert as_lea("PATCH", f"/api/lists/{l['id']}", {"sync": True})[0] == 200
-        machine.wait_until_succeeds("ls '/srv/books/boox-lea/Leas Liste/' | grep -q .", timeout=60)
+        wait_until("ls '/srv/books/boox-lea/Leas Liste/' | grep -q .", timeout=60)
         machine.succeed("test ! -e '/srv/books/boox/Leas Liste'")
         # arthur's editable list: books yes, its settings no (sync off would empty his e-reader folder)
         status, shared = api("POST", "/api/lists", {"name": "Gemeinsam", "visibility": "editable", "sync": True})
@@ -1534,7 +1575,7 @@ pkgs.testers.runNixOSTest {
     with subtest("a single-user configuration (login user and tokens) keeps working"):
         machine.succeed(f"{BASE}/specialisation/single-user/bin/switch-to-configuration test")
         machine.wait_for_open_port(8084)
-        machine.wait_until_succeeds("journalctl -u calibre-hub -o cat | grep -qx 'users: arthur (admin)'", timeout=30)
+        wait_until("journalctl -u calibre-hub -o cat | grep -qx 'users: arthur (admin)'", timeout=30)
         # his session, his token and his password as before; her login is gone
         assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin", "sync": True})
         assert code(f"-H 'Authorization: Bearer cli-token-0123456789abcdef' {H}/api/books") == "200"
