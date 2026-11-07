@@ -454,7 +454,7 @@ module CalibreHub
       Metadata.model_guess(content, input)
     end
 
-    # For a file name the backlog import can't read for sure (which side of
+    # For a file name the Eingang can't read for sure (which side of
     # " - " is the author, Meta::FileName.readings): a title and author
     # search at the sources, a sure or very good match (Meta::HIGH) with the
     # author of one reading decides; then the model, whose answer counts only

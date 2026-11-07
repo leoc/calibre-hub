@@ -6,7 +6,7 @@ require "./meta_rules"
 module CalibreHub
   module Meta
     # Text of a file without a text layer: its first and last few pages
-    # through Tesseract (German and English). A backlog has thousands of
+    # through Tesseract (German and English). An old collection has thousands of
     # scans, so this runs on few pages, at most `jobs` books at a time, one
     # thread each and at low priority, and every page and book has a time
     # limit. A labelled ISBN on the first pages ends the book early. What

@@ -61,6 +61,10 @@ hub bulk --ids 7,3,9 --series Dune --number-series --yes --json   # 1, 2, 3 in i
   `"waiting"` stays in the Eingang below the threshold for Arthur to decide
   (hub.nor.sh/eingang), `"checking"` means the analysis wasn't through within
   `--wait` (120 s). `hub eingang` shows what waits there.
+- files come in by upload or the inbox folder, there is no other import
+  (`hub import <folder>` is gone). What the Eingang throws away lands in one
+  trash folder (on dmt `/srv/media/ebooks/papierkorb`), below `inbox/` or
+  `upload/` under its path there; nothing in it is deleted, Arthur empties it.
 - upload exit 3 with `"status": "duplicate"` or `"copy"`: the library already
   has the book (`duplicates` lists them), nothing was added. Only use `--force`
   if Arthur wants a copy; `--add-format-to` goes straight to that book.

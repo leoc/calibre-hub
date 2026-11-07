@@ -6,9 +6,9 @@ require "./meta_rules"
 module CalibreHub
   module Meta
     # Title, authors, series, publisher and year from the name of a book
-    # file without metadata.opf (the backlog import), and what calibre's
+    # file without metadata.opf (the Eingang), and what calibre's
     # add-book makes of the same name. calibre reads "Title - Author" (the
-    # last " - " splits, "and"/"&" split authors), but most backlog files
+    # last " - " splits, "and"/"&" split authors), but most old files
     # are "Author - Title (Publisher, Year)": "Carr - Formulas and Theorems
     # in Pure Mathematics 2e (Chelsea, 1970).djvu" became the title "Carr"
     # by "Formulas" and "Theorems in Pure Mathematics 2e (Chelsea, 1970)".

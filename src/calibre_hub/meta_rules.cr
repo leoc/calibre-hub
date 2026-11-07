@@ -11,7 +11,7 @@ module CalibreHub
   module Meta
     TAG = "auto-metadaten"
     # books whose file name could not be read for sure (FileName, the
-    # backlog import), for a manual review; logged as the field "tags"
+    # Eingang), for a manual review; logged as the field "tags"
     class_property unsure_tag = "auto-unsicher"
     # fields the cleanup changes, as the change log names them; "tags" are
     # only the tags the rules manage (Norms::TAGS), "identifier:<scheme>"
@@ -571,7 +571,7 @@ module CalibreHub
             end
             a, b = parts.first, parts[1..].join(" - ")
             # "Wine Tasting - A Professional Handbook": no person on either
-            # side (as the backlog import reads file names), one title
+            # side (as the Eingang reads file names), one title
             if a.split(' ').size >= 2 && FileName.side_score(a) <= 0 && FileName.side_score(parts.last) <= 0 &&
                FileName.article?(parts.last)
               return {[guess(t, known, year)], false}
@@ -1595,5 +1595,5 @@ module CalibreHub
   end
 end
 
-# the backlog import's reading of file names (uses Clean, used by its readings)
+# the Eingang's reading of file names (uses Clean, used by its readings)
 require "./meta_filename"
