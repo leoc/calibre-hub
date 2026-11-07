@@ -30,8 +30,8 @@ Feature: Eingang
     Then the list has 2 rows
     When I choose "Alle (159)" in "Sicherheit"
     And I choose "Mögliche Dubletten" in "Art"
-    Then the list has 2 rows
-    And the filter "Sicherheit" offers "Prüfen 60 bis 89 (2)"
+    Then the list has 1 rows
+    And the filter "Sicherheit" offers "Prüfen 60 bis 89 (1)"
     And the numbers are "1.451 im Eingang" and "158 analysiert"
 
   Scenario: The list loads more on request
@@ -126,9 +126,12 @@ Feature: Eingang
   Scenario: A row that may be a duplicate says of what and stays out of a bulk
     When I open the Eingang
     And I choose "Mögliche Dubletten" in "Art"
-    Then the row "Calculus: Concepts and Contexts" links "Calculus: Concepts and Contexts" to book 1 after "Dublette von"
-    And the row "Stem Cells: From Bench to Bedside" says "Dublette von „Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf“ im Eingang"
+    Then the row "Stem Cells: From Bench to Bedside" says "Dublette von „Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf“ im Eingang"
+    And the list has 1 rows
     And the button "Alle 0 übernehmen" is disabled
+    And there is no button "Alle 0 in den Papierkorb"
+    When I choose "Sichere Dubletten (1)" in "Art"
+    Then the row "Calculus: Concepts and Contexts" links "Calculus: Concepts and Contexts" to book 1 after "Dublette von"
 
   Scenario: A failed file has no proposal to accept
     When I open the Eingang
@@ -382,34 +385,53 @@ Feature: Eingang
     When I choose "Alle (159)" in "Sicherheit"
     Then the page says "2 mögliche Dubletten und 1 fehlgeschlagen bleiben in der Liste"
     When I choose "Mögliche Dubletten" in "Art"
-    Then the page says "2 mögliche Dubletten bleiben in der Liste"
+    Then the page says "1 mögliche Dublette bleibt in der Liste"
+    When I choose "Sichere Dubletten (1)" in "Art"
+    Then the page has no line about what stays
 
-  Scenario: The possible duplicates with a book's author and title go to the trash after asking, the others stay
+  Scenario: The sure duplicates are what the list shows, they go to the trash after asking
     When I open the Eingang
-    Then there is no button "Alle 0 in den Papierkorb"
+    Then there is no button "Alle 1 in den Papierkorb"
     When I choose "Mögliche Dubletten" in "Art"
+    Then there is no button "Alle 1 in den Papierkorb"
+    When I choose "Sichere Dubletten (1)" in "Art"
     Then the bulk's button "Alle 1 in den Papierkorb" is outlined in red
-    And the list has 2 rows
+    And the list has 1 rows
+    And the page has no button "Alle 0 übernehmen"
     When I press the button "Alle 1 in den Papierkorb"
-    Then a dialog asks "1 Datei mit gleichem Autor und Titel wie ein Buch der Bibliothek geht in den Papierkorb. 1 weiterer Eintrag bleibt in der Liste."
+    Then a dialog asks "1 sichere Dublette geht in den Papierkorb. Die Bibliothek hat Buch oder Datei schon, oder eine Kopie bleibt im Eingang."
     When I press the dialog's "Abbrechen"
     Then the hub wasn't asked anything
-    And the list has 2 rows
+    And the list has 1 rows
     When I press the button "Alle 1 in den Papierkorb"
     And I press the dialog's "In den Papierkorb"
     Then the hub was asked to "trash" 1 entry
     And the hub was told to expect 1
     And a message says "1 Datei geht in den Papierkorb."
-    And the row "Calculus: Concepts and Contexts" is gone
-    And the list has 1 rows
-    And the button "Alle 0 in den Papierkorb" is disabled
+    And the list says "Hier ist nichts zu entscheiden."
+    And there is no button "Alle 0 in den Papierkorb"
+    And the filter "Art" offers "Sichere Dubletten (0)"
+    When I choose "Mögliche Dubletten" in "Art"
+    Then the list has 1 rows
+    And the row "Stem Cells: From Bench to Bedside" says "Dublette von „Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf“ im Eingang"
 
-  Scenario: With nothing left behind the dialog says only the number
+  Scenario: Band and source narrow the sure duplicates, the list and the button stay the same number
     Given every possible duplicate is the same as its book
+    And files came in by the inbox and an upload
     When I open the Eingang
-    And I choose "Mögliche Dubletten" in "Art"
-    And I press the button "Alle 2 in den Papierkorb"
-    Then a dialog asks "2 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb."
+    And I choose "Sichere Dubletten (2)" in "Art"
+    Then the list has 2 rows
+    When I choose "Sicher ab 90 (0)" in "Sicherheit"
+    Then the list says "Hier ist nichts zu entscheiden."
+    And there is no button "Alle 0 in den Papierkorb"
+    When I choose "Prüfen 60 bis 89 (2)" in "Sicherheit"
+    And I choose "Upload (1)" in "Quelle"
+    Then the list says "Hier ist nichts zu entscheiden."
+    And there is no button "Alle 0 in den Papierkorb"
+    When I choose "Backlog (157)" in "Quelle"
+    Then the list has 2 rows
+    When I press the button "Alle 2 in den Papierkorb"
+    Then a dialog asks "2 sichere Dubletten gehen in den Papierkorb. Die Bibliothek hat Buch oder Datei schon, oder eine Kopie bleibt im Eingang."
     When I press the dialog's "In den Papierkorb"
     Then the hub was asked to "trash" 2 entries
     And the hub was told to expect 2
@@ -419,13 +441,13 @@ Feature: Eingang
   Scenario: A book renamed since the list was shown trashes nothing, the number follows
     Given the book of a possible duplicate was renamed
     When I open the Eingang
-    And I choose "Mögliche Dubletten" in "Art"
+    And I choose "Sichere Dubletten (1)" in "Art"
     And I press the button "Alle 1 in den Papierkorb"
     And I press the dialog's "In den Papierkorb"
     Then a message says "Die Liste hat sich geändert, bitte noch einmal."
     And the hub wasn't asked anything
-    And the list has 2 rows
-    And the button "Alle 0 in den Papierkorb" is disabled
+    And the list says "Hier ist nichts zu entscheiden."
+    And there is no button "Alle 0 in den Papierkorb"
 
   Scenario: The library's books have their proposals in the same list
     When I open the Eingang

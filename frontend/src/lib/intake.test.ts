@@ -56,21 +56,19 @@ describe("takeable", () => {
 })
 
 describe("trashable", () => {
-  it("is what the hub marked as the same book, nothing else of the filter", () => {
-    expect(trashable(entry({ action: "duplicate", sameBook: true }))).toBe(true)
+  it("is what the hub marked as sure, nothing else of the filter", () => {
+    expect(trashable(entry({ action: "duplicate", sure: true }))).toBe(true)
     expect(trashable(entry({ action: "duplicate" }))).toBe(false)
-    expect(trashable(entry({ action: "addFormats", sameBook: true }))).toBe(false)
-    expect(trashable(entry({ action: "duplicate", sameBook: true, status: "failed" }))).toBe(false)
-    expect(trashable(entry({ action: "duplicate", sameBook: true, skipped: true }))).toBe(false)
+    expect(trashable(entry({ action: "addFormats", sure: true }))).toBe(false)
+    expect(trashable(entry({ action: "duplicate", sure: true, status: "failed" }))).toBe(false)
+    expect(trashable(entry({ action: "duplicate", sure: true, skipped: true }))).toBe(false)
   })
 })
 
 describe("trashAllText", () => {
   it("names the number and what stays, only if anything does", () => {
-    expect(trashAllText(640, 0)).toBe("640 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb.")
-    expect(trashAllText(1, 0)).toBe("1 Datei mit gleichem Autor und Titel wie ein Buch der Bibliothek geht in den Papierkorb.")
-    expect(trashAllText(2, 1)).toBe("2 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb. 1 weiterer Eintrag bleibt in der Liste.")
-    expect(trashAllText(2, 3)).toBe("2 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb. 3 weitere Einträge bleiben in der Liste.")
+    expect(trashAllText(640)).toBe("640 sichere Dubletten gehen in den Papierkorb. Die Bibliothek hat Buch oder Datei schon, oder eine Kopie bleibt im Eingang.")
+    expect(trashAllText(1)).toBe("1 sichere Dublette geht in den Papierkorb. Die Bibliothek hat Buch oder Datei schon, oder eine Kopie bleibt im Eingang.")
   })
 })
 
@@ -79,6 +77,7 @@ describe("intakeFilter", () => {
     expect(intakeFilter("all", "all")).toEqual({ band: undefined, duplicates: undefined, skipped: undefined })
     expect(intakeFilter("bulk", "new")).toEqual({ band: "bulk", duplicates: false, skipped: undefined })
     expect(intakeFilter("unsure", "duplicates")).toEqual({ band: "unsure", duplicates: true, skipped: undefined })
+    expect(intakeFilter("bulk", "sure", "inbox")).toEqual({ band: "bulk", duplicates: "sure", skipped: undefined, origin: "inbox" })
     expect(intakeFilter("all", "skipped")).toEqual({ band: undefined, duplicates: undefined, skipped: true })
   })
 })

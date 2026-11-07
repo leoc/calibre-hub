@@ -175,13 +175,14 @@ export type ConfidenceBand = "bulk" | "review" | "unsure"
 
 // the Eingang: new files of the backlog, the inbox and uploads, analysed, not
 // in the library
-export type IntakeKind = "all" | "new" | "duplicates" | "skipped" | "library"
+export type IntakeKind = "all" | "new" | "sure" | "duplicates" | "skipped" | "library"
 export type IntakeOrigin = "backlog" | "inbox" | "upload"
 
 export type IntakeDecision = "accept" | "file" | "format" | "skip" | "unskip" | "trash" | "reject"
 export interface IntakeFilter {
   band?: string
-  duplicates?: boolean
+  // true: those that stay for a person; "sure": what a bulk may trash
+  duplicates?: boolean | "sure"
   skipped?: boolean
   origin?: IntakeOrigin
   // the proposals for books of the library, instead of the files
@@ -246,8 +247,8 @@ export interface IntakeEntry {
   error: string | null
   // the library's book it looks like; a library entry's title now
   bookTitle: string | null
-  // a duplicate with the title and authors of its book: a bulk may trash it
-  sameBook?: boolean
+  // a sure duplicate: a bulk may trash it
+  sure?: boolean
 }
 
 export interface IntakeCandidate {
@@ -289,7 +290,7 @@ export interface IntakeList {
   // what „Alle N übernehmen“ takes of the filter, how many of them unsure
   takeable?: number
   unsure?: number
-  // what „Alle N in den Papierkorb“ takes of the filter on possible duplicates
+  // the sure duplicates of the band and source, what „Alle N in den Papierkorb“ takes
   trashable?: number
   left?: IntakeLeft
   skipped?: number

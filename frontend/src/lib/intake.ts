@@ -18,7 +18,7 @@ export const originName = (o: IntakeOrigin) => t(`intake.from.${o}`)
 // the books of the library come from no source
 export const intakeFilter = (band: IntakeBand, kind: IntakeKind, source: IntakeSource = "all"): IntakeFilter => ({
   band: band === "all" ? undefined : band,
-  duplicates: kind === "all" || kind === "skipped" || kind === "library" ? undefined : kind === "duplicates",
+  duplicates: kind === "sure" ? "sure" : kind === "all" || kind === "skipped" || kind === "library" ? undefined : kind === "duplicates",
   skipped: kind === "skipped" ? true : undefined,
   library: kind === "library" ? true : undefined,
   origin: source === "all" || kind === "library" ? undefined : source,
@@ -86,15 +86,11 @@ export const acceptable = (e: IntakeEntry) => e.proposal !== null && e.status ==
 // looks like a book of the library to Arthur, and what he skipped
 export const takeable = (e: IntakeEntry, kind: IntakeKind) => e.status === "analysed" && e.action !== "duplicate" && (kind === "skipped" || !e.skipped)
 
-// what „Alle N in den Papierkorb“ takes: the hub says what is the same book
-export const trashable = (e: IntakeEntry) => e.status === "analysed" && e.action === "duplicate" && e.sameBook === true && !e.skipped
+// what „Alle N in den Papierkorb“ takes: the hub says what is sure
+export const trashable = (e: IntakeEntry) => e.status === "analysed" && e.action === "duplicate" && e.sure === true && !e.skipped
 
-// the question before it: how many go, how many of the filter stay
-export function trashAllText(count: number, stay: number): string {
-  const going = count === 1 ? t("intake.trashAll.one") : t("intake.trashAll.many", { count: formatNumber(count) })
-  if (stay <= 0) return going
-  return `${going} ${stay === 1 ? t("intake.trashAll.stayOne") : t("intake.trashAll.stayMany", { count: formatNumber(stay) })}`
-}
+// the question before it; the filter is what it takes, nothing of it stays
+export const trashAllText = (count: number) => (count === 1 ? t("intake.trashAll.one") : t("intake.trashAll.many", { count: formatNumber(count) }))
 
 // what stays behind a bulk, in one line; null when it takes all of the filter
 export function leftText(left: IntakeLeft | undefined): string | null {

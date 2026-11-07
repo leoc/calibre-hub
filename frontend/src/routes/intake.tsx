@@ -253,6 +253,7 @@ export function IntakePage() {
               <select className={select} value={kind} onChange={(e) => filter(() => setKind(e.target.value as IntakeKind))}>
                 <option value="all">{t("intake.kind.all")}</option>
                 <option value="new">{t("intake.kind.new")}</option>
+                <option value="sure">{t("intake.kind.sure", { count: formatNumber(toTrash) })}</option>
                 <option value="duplicates">{t("intake.kind.duplicates")}</option>
                 <option value="library">{t("intake.kind.library")}</option>
                 {(!!status.skipped || kind === "skipped") && <option value="skipped">{t("intake.kind.skipped", { count: formatNumber(status.skipped ?? 0) })}</option>}
@@ -273,14 +274,16 @@ export function IntakePage() {
             )}
             <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
               {leftText(status.left) && <span className={muted}>{leftText(status.left)}</span>}
-              {kind === "duplicates" && (
-                <Button variant="outline" className={trashButton} disabled={toTrash === 0 || bulk.isPending} onClick={() => setTrashing(true)}>
+              {kind === "sure" && toTrash > 0 && (
+                <Button variant="outline" className={trashButton} disabled={bulk.isPending} onClick={() => setTrashing(true)}>
                   {t("intake.trashAll", { count: formatNumber(toTrash) })}
                 </Button>
               )}
-              <Button disabled={n === 0 || bulk.isPending} onClick={() => (unsure > 0 ? setAsking(true) : acceptAll())}>
-                {t("intake.acceptAll", { count: formatNumber(n) })}
-              </Button>
+              {kind !== "sure" && (
+                <Button disabled={n === 0 || bulk.isPending} onClick={() => (unsure > 0 ? setAsking(true) : acceptAll())}>
+                  {t("intake.acceptAll", { count: formatNumber(n) })}
+                </Button>
+              )}
             </div>
           </div>
           {list.error ? (
@@ -343,7 +346,7 @@ export function IntakePage() {
           <Dialog open={trashing} onOpenChange={setTrashing}>
             <DialogContent>
               <DialogTitle className="text-lg font-semibold">{t("intake.trashAll.title")}</DialogTitle>
-              <DialogDescription>{trashAllText(toTrash, (status.total ?? 0) - toTrash)}</DialogDescription>
+              <DialogDescription>{trashAllText(toTrash)}</DialogDescription>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setTrashing(false)}>
                   {t("edit.cancel")}

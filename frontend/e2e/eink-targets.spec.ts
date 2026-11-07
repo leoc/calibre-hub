@@ -51,7 +51,7 @@ test("E-Ink: library, sidebar and pagination", async ({ page }) => {
 
 test("E-Ink: the Eingang's bulk to the trash and its dialog", async ({ page }) => {
   await page.goto("/eingang")
-  await page.getByLabel("Art").selectOption({ label: "Mögliche Dubletten" })
+  await page.getByLabel("Art").selectOption({ label: "Sichere Dubletten (1)" })
   const button = page.getByRole("button", { name: "Alle 1 in den Papierkorb", exact: true })
   await expect(button).toBeEnabled()
   expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(MIN)

@@ -19,7 +19,7 @@ interface Seed {
   action?: "add" | "addFormats" | "duplicate"
   bookId?: number
   bookTitle?: string
-  sameBook?: boolean
+  sure?: boolean
   sameAs?: string
   notes?: IntakeEntry["notes"]
   cover?: boolean
@@ -67,7 +67,7 @@ const SEEDS: Seed[] = [
     action: "duplicate",
     bookId: 1,
     bookTitle: "Calculus: Concepts and Contexts",
-    sameBook: true,
+    sure: true,
   },
   { path: "Kopie/Stem Cells - From Bench to Bedside.pdf", title: "Stem Cells: From Bench to Bedside", authors: ["Ariff Bongso"], confidence: 80, level: 3, decided: "name", action: "duplicate", sameAs: `${ROOT}/Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf` },
   { path: "kaputt.pdf", title: "", authors: [], confidence: 0, level: null, failed: "pdfinfo: not a PDF" },
@@ -118,7 +118,7 @@ function entry(seed: Seed, id: number): IntakeDetail {
     changes: [],
     candidates,
     bookTitle: seed.bookTitle ?? null,
-    sameBook: seed.sameBook ?? false,
+    sure: seed.sure ?? false,
   }
 }
 
@@ -160,7 +160,7 @@ function sources() {
 // without anything left behind (localStorage hub.mock.intake.sameBooks)
 function sameBooks() {
   if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.sameBooks")) return
-  for (const e of ENTRIES) if (e.sameAs) Object.assign(e, { sameAs: null, bookId: 2, bookTitle: e.proposal?.title, sameBook: true })
+  for (const e of ENTRIES) if (e.sameAs) Object.assign(e, { sameAs: null, bookId: 2, bookTitle: e.proposal?.title, sure: true })
 }
 
 // The book of the possible duplicate was renamed since the list was shown: the
@@ -168,7 +168,7 @@ function sameBooks() {
 function renamed(): boolean {
   if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.renamed")) return false
   localStorage.removeItem("hub.mock.intake.renamed")
-  for (const e of ENTRIES) e.sameBook = false
+  for (const e of ENTRIES) e.sure = false
   return true
 }
 
@@ -253,15 +253,23 @@ function libraryList(q: URLSearchParams) {
   }
 }
 
+const isSure = (e: IntakeDetail) => e.status === "analysed" && e.action === "duplicate" && e.sure === true && !e.skipped
+
+// the hub's filter on duplicates: sure ones, those for a person, the new ones
+const ofKind = (e: IntakeDetail, duplicates: string | boolean | null | undefined) => {
+  if (duplicates === null || duplicates === undefined) return true
+  if (duplicates === "sure") return isSure(e)
+  return String(duplicates) === "true" ? e.action !== "add" && !isSure(e) : e.action === "add"
+}
+
 const inFilter = (q: { band?: string | null; duplicates?: string | boolean | null; skipped?: string | boolean | null; origin?: string | null }) => {
-  const dup = q.duplicates === null || q.duplicates === undefined ? null : String(q.duplicates) === "true"
   const skipped = String(q.skipped) === "true"
-  return ENTRIES.filter((e) => (dup === null || (e.action !== "add") === dup) && (!skipped || e.skipped) && (!q.band || (e.band ?? "none") === q.band) && (!q.origin || e.origin === q.origin))
+  return ENTRIES.filter((e) => ofKind(e, q.duplicates) && (!skipped || e.skipped) && (!q.band || (e.band ?? "none") === q.band) && (!q.origin || e.origin === q.origin))
 }
 
 const takeable = (list: IntakeDetail[], skipped: boolean) => list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && (skipped || !e.skipped))
 
-const trashable = (list: IntakeDetail[]) => list.filter((e) => e.status === "analysed" && e.action === "duplicate" && e.sameBook && !e.skipped)
+const trashable = (list: IntakeDetail[]) => list.filter(isSure)
 
 const limitOf = (q: URLSearchParams) => Number(q.get("limit") ?? 100)
 
@@ -293,7 +301,7 @@ export const intakeHandlers = [
     const take = takeable(list, q.get("skipped") === "true")
     const skippedFilter = q.get("skipped") === "true"
     const left = {
-      duplicates: list.filter((e) => e.status === "analysed" && e.action === "duplicate").length,
+      duplicates: q.get("duplicates") === "sure" ? 0 : list.filter((e) => e.status === "analysed" && e.action === "duplicate").length,
       failed: list.filter((e) => e.status !== "analysed").length,
       skipped: skippedFilter ? 0 : list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && e.skipped).length,
     }
@@ -305,7 +313,7 @@ export const intakeHandlers = [
       counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: count("none") },
       takeable: take.length,
       unsure: take.filter((e) => e.band === "unsure").length,
-      trashable: q.get("duplicates") === "true" ? trashable(list).length : 0,
+      trashable: trashable(inFilter({ band: q.get("band"), origin: q.get("origin") })).length,
       left,
       skipped: ENTRIES.filter((e) => e.skipped).length,
       last: LAST,
@@ -320,7 +328,7 @@ export const intakeHandlers = [
   http.post("/api/intake/decide", async ({ request }) => {
     const body = (await request.json()) as {
       decision: string
-      target: { ids?: number[]; query?: { band?: string; duplicates?: boolean; skipped?: boolean; origin?: string }; expect?: number }
+      target: { ids?: number[]; query?: { band?: string; duplicates?: boolean | "sure"; skipped?: boolean; origin?: string }; expect?: number }
       book?: number
       candidate?: number
       picks?: unknown
