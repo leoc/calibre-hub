@@ -378,7 +378,9 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("journalctl -u calibre-hub -o cat | grep -q 'Privat/b.epub skipped'", timeout=30)
         # like Samba on dmt: directory mask 2775
         machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Roman /srv/books/inbox/Roman/Krimi")
-        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt /srv/books/inbox/Roman/Krimi/k.epub --title Inboxbuch --authors 'Agatha Test' --tags Eingebettet")
+        # finished, then in: a file ebook-convert is still writing looks broken
+        machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt /tmp/k.epub --title Inboxbuch --authors 'Agatha Test' --tags Eingebettet")
+        machine.succeed("cp /tmp/k.epub /srv/books/inbox/Roman/Krimi/k.epub")
         # it goes through the Eingang: below the threshold it waits there, in its folder
         assert api("GET", "/api/intake?limit=1")[1]["thresholds"] == {"backlog": None, "inbox": 90, "upload": 90}
         e = intake_entry("k.epub", "&origin=inbox", 120)
