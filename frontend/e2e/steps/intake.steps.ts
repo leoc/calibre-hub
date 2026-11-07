@@ -360,6 +360,10 @@ Then("the page is no wider than the screen", async ({ page }) => {
   expect(width[0]).toBeLessThanOrEqual(width[1])
 })
 
+Given("decisions can come back", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.intake.returns", "1"))
+})
+
 Given("files came in by the inbox and an upload", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("hub.mock.intake.sources", "1"))
 })

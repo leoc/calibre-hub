@@ -151,6 +151,12 @@ const reads: string[] = []
 const thresholds: Record<string, number | null> = { backlog: null, inbox: 90, upload: 90 }
 // a job still running: the entry comes back with an error at the next look
 let waiting: { entry: IntakeDetail; error: string } | null = null
+// Taking the book adds nothing, the library has it: back in the list as a
+// duplicate without an error by the time anyone looks; the other one fails
+// the same way every time (localStorage hub.mock.intake.returns)
+const RETURNS = "Mathematics of the Discrete Fourier Transform"
+const FAILS = "Britannica Illustrated Science Library: Birds"
+const returning = () => typeof localStorage !== "undefined" && !!localStorage.getItem("hub.mock.intake.returns")
 if (typeof window !== "undefined") Object.assign(window, { __intake: asked, __intakeReads: reads })
 
 // Two files that came another way, for the scenarios about sources
@@ -416,7 +422,9 @@ export const intakeHandlers = [
     }
     const failing = ENTRIES.find((e) => ids.includes(e.id) && e.name === "kaputt.pdf")
     if (failing) waiting = { entry: failing, error: "calibre kann die Datei nicht lesen" }
-    ENTRIES = ENTRIES.filter((e) => !ids.includes(e.id))
+    const back = ENTRIES.filter((e) => returning() && ids.includes(e.id) && [RETURNS, FAILS].includes(e.proposal?.title ?? ""))
+    for (const e of back) Object.assign(e, e.proposal?.title === RETURNS ? { action: "duplicate", bookId: 1, match: "title", bookTitle: "Dune" } : { error: "calibre kann die Datei nicht lesen" })
+    ENTRIES = ENTRIES.filter((e) => !ids.includes(e.id) || back.includes(e))
     return HttpResponse.json({ jobId: "intake-job", total: ids.length }, { status: 202 })
   }),
   http.post("/api/intake/threshold", async ({ request }) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, bandCount, bulkOf, candidateDiff, candidateSource, entryName, errorText, headlineText, inBar, inKind, inLegend, intakeFilter, isPicked, kindCount, noteTexts, openCount, originsInList, partTitle, shareParts, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
+import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, bandCount, bulkOf, candidateDiff, candidateSource, entryName, errorText, headlineText, hubTook, inBar, inKind, inLegend, intakeFilter, isPicked, kindCount, leaving, noteTexts, openCount, originsInList, partTitle, shareParts, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -34,6 +34,22 @@ const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   candidates: [],
   bookTitle: null,
   ...extra,
+})
+
+describe("an entry on its way out", () => {
+  it("is out of the list until a list younger than the hub's answer has it", () => {
+    expect(leaving(undefined, 100)).toBe(false)
+    expect(leaving("sent", 100)).toBe(true)
+    expect(leaving(200, 100)).toBe(true)
+    expect(leaving(200, 300)).toBe(false)
+  })
+
+  it("is out of the list again when decided again", () => {
+    const back = hubTook(new Map([[1, "sent"], [2, "sent"]]), [1], 500)
+    expect([...back]).toEqual([[1, 500], [2, "sent"]])
+    expect(leaving(back.get(1), 600)).toBe(false)
+    expect(leaving(hubTook(back, [1], 700).get(1), 600)).toBe(true)
+  })
 })
 
 describe("ringLabel", () => {

@@ -18,6 +18,7 @@ import {
   entryTitle,
   errorText as entryError,
   headlineText,
+  hubTook,
   inKind,
   intakeEntryQuery,
   intakeFilter,
@@ -25,6 +26,7 @@ import {
   intakeStatusQuery,
   isDjvu, isLibrary,
   kindCount,
+  leaving,
   noteTexts,
   openCount,
   originName,
@@ -40,6 +42,7 @@ import {
   unreadable,
   type IntakeBand,
   type IntakeSource,
+  type Leaving,
   type SharePart,
 } from "@/lib/intake"
 import { loadBookFile, readBody } from "@/lib/offline"
@@ -92,14 +95,15 @@ export function IntakePage() {
   const [trashing, setTrashing] = useState(false)
   // per entry, until it is decided: the list shows it too
   const [picks, setPicks] = useState<Map<number, Chosen>>(new Map())
-  // decided, gone from the list; with the error it had, a new one brings it back
-  const [decided, setDecided] = useState<Map<number, string | null>>(new Map())
+  // decided, gone from the list until a list asked for after the hub took it
+  const [decided, setDecided] = useState<Map<number, Leaving>>(new Map())
   // a new filter's answer is on its way: the bars don't follow the filter, they stay
   const { data: status, error, refetch: retry, dataUpdatedAt } = useQuery({ ...intakeStatusQuery(band, kind, source), placeholderData: keepPreviousData })
   const list = useInfiniteQuery({ ...intakeListQuery(band, kind, source), enabled: status?.enabled === true })
   const { hasNextPage, isFetchingNextPage, fetchNextPage, refetch } = list
   const loaded = useMemo(() => uniqueEntries(list.data?.pages ?? []), [list.data])
-  const entries = useMemo(() => loaded.filter((e) => inKind(e, kind) && (!decided.has(e.id) || (e.error != null && e.error !== decided.get(e.id)))), [loaded, decided, kind])
+  const listedAt = list.dataUpdatedAt
+  const entries = useMemo(() => loaded.filter((e) => inKind(e, kind) && !leaving(decided.get(e.id), listedAt)), [loaded, decided, kind, listedAt])
   const done = status?.progress?.done
   const pending = status?.pending
   const checked = status?.recheck?.done
@@ -108,12 +112,13 @@ export function IntakePage() {
     if (done !== undefined && !hasNextPage) void refetch()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the analysis or the recheck moved on
   }, [done, checked])
-  // the queue is through: what failed is back
+  // the queue is through: what failed or turned out a duplicate is back,
+  // in every filter's list
   const waited = useRef(false)
   useEffect(() => {
     if (pending === 0 && waited.current) {
       waited.current = false
-      void refetch()
+      void qc.invalidateQueries({ queryKey: ["intake-list"] })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the hub answered
   }, [dataUpdatedAt])
@@ -152,13 +157,22 @@ export function IntakePage() {
   const leave = (gone: IntakeEntry[]) =>
     setDecided((d) => {
       const next = new Map(d)
-      gone.forEach((e) => next.set(e.id, e.error))
+      gone.forEach((e) => next.set(e.id, "sent"))
       return next
     })
+  // the hub took them: what a list has from now on came back, a list on its
+  // way may be older than that
+  const taken = (ids: number[]) => {
+    void qc.cancelQueries({ queryKey: ["intake-list"] })
+    setDecided((d) => hubTook(d, ids, Date.now()))
+  }
   const failed = (err: unknown) => toast.show(t("intake.failed", { error: errorText(err) }))
   const decide = useMutation({
     mutationFn: (v: { entry: IntakeEntry; decision: IntakeDecision; candidate?: number } & Edited) =>
       write.intakeDecide({ decision: v.decision, target: { ids: [v.entry.id] }, candidate: v.candidate, title: v.title, authors: v.authors }),
+    onSuccess: (_r, v) => {
+      if (v.decision !== "skip" && v.decision !== "unskip") taken([v.entry.id])
+    },
     onError: (err, v) => {
       undecide([v.entry.id])
       failed(err)
@@ -173,6 +187,7 @@ export function IntakePage() {
     mutationFn: (v: { decision: "accept" | "trash"; expect: number; last: number; gone: IntakeEntry[] }) =>
       write.intakeDecide({ decision: v.decision, target: { query: intakeFilter(band, kind, source), last: v.last, expect: v.expect }, picks: v.decision === "accept" ? chosen() : undefined }),
     onSuccess: (r, v) => {
+      taken(v.gone.map((e) => e.id))
       if (v.decision === "trash") toast.show(r.total === 1 ? t("intake.trashAll.doneOne") : t("intake.trashAll.doneMany", { count: formatNumber(r.total) }))
     },
     onError: (err, v) => {

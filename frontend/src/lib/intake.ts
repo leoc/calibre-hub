@@ -61,6 +61,19 @@ export const intakeListQuery = (band: IntakeBand, kind: IntakeKind, source: Inta
     staleTime: 30_000,
   })
 
+// A decided entry on its way out. While its job waits the hub leaves it out of
+// every list, so a row that comes back needs no error to say so: a list younger
+// than the hub's answer has it because it is back. sent: no answer yet.
+export type Leaving = "sent" | number
+
+export const leaving = (mark: Leaving | undefined, listedAt: number) => mark === "sent" || (mark !== undefined && mark >= listedAt)
+
+export const hubTook = (marks: Map<number, Leaving>, ids: number[], now: number) => {
+  const next = new Map(marks)
+  ids.forEach((id) => next.set(id, now))
+  return next
+}
+
 export const intakeEntryQuery = (id: number) =>
   queryOptions({ queryKey: ["intake-entry", id], queryFn: () => api.intakeEntry(id), staleTime: 60_000 })
 

@@ -328,6 +328,32 @@ Feature: Eingang
     And I press "Papierkorb" on the row "kaputt.pdf"
     Then the row "kaputt.pdf" says "Das hat nicht geklappt: calibre kann die Datei nicht lesen"
 
+  Scenario: An accepted book that comes back as a duplicate, without an error, is in the list again
+    Given decisions can come back
+    When I open the Eingang
+    And I press "Übernehmen" on the row "Mathematics of the Discrete Fourier Transform"
+    Then the row "Mathematics of the Discrete Fourier Transform" links "Dune" to book 1 after "Dublette von"
+    And every number in the filters is what the list shows
+
+  Scenario: What came back is in the list of its new kind too
+    Given decisions can come back
+    When I open the Eingang
+    And I choose "Mögliche Dubletten (1)" in "Art"
+    And I choose "Neue Dateien (157)" in "Art"
+    And I press "Übernehmen" on the row "Mathematics of the Discrete Fourier Transform"
+    Then the filter "Art" reads "Neue Dateien (156)"
+    When I choose "Mögliche Dubletten (2)" in "Art"
+    Then the list has 2 rows
+    And every number in the filters is what the list shows
+
+  Scenario: A decision that fails the same way twice is back both times
+    Given decisions can come back
+    When I open the Eingang
+    And I press "Übernehmen" on the row "Birds"
+    Then the row "Birds.pdf" says "Das hat nicht geklappt: calibre kann die Datei nicht lesen"
+    When I press "Übernehmen" on the row "Birds"
+    Then the row "Birds.pdf" says "Das hat nicht geklappt: calibre kann die Datei nicht lesen"
+
   Scenario: The thresholds hide behind one button, a line per source
     When I open the Eingang
     Then the button "Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 90 %" is enabled
