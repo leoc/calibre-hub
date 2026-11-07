@@ -323,6 +323,10 @@ pkgs.testers.runNixOSTest {
     with subtest("books, filters, categories"):
         machine.succeed("printf 'Testbuch\\n\\nInhalt\\n' > /tmp/b.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/b.txt /tmp/b.epub --title Testbuch --authors 'Ada Lovelace'")
+        # the hub starts before calibre-server listens and tries again after
+        # 10 s; what it finds then is its snapshot, without events
+        wait_until("journalctl -u calibre-hub -o cat | grep -q 'reconciled: snapshot of 0 books'", timeout=60)
+        wait_until("journalctl -u calibre-hub -o cat | grep -qF 'migrated to the list Leseliste (0 books)'", timeout=60)
         machine.succeed(f"{DB} add /tmp/b.epub")
         machine.succeed(f"{DB} set_custom kategorie 1 Fachbuch.Software")
         machine.succeed(f"{DB} set_metadata 1 -f tags:leseliste")
