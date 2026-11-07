@@ -1031,6 +1031,108 @@ start. Secrets are passed as systemd credentials, so they can stay root-owned.
 
 ## Development
 
+### How a change gets out
+
+1. Build it on a branch (`feat/<id>-…`, `fix/<id>-…`).
+2. Show it locally: `dev/mock` for the surface, `dev/up` for the real flow.
+3. Arthur tries it and approves it. Nothing goes to dmt before that.
+4. `nix flake check`, merge, rollout.
+
+### Two ways to see a branch
+
+`<branch>` is optional and means the current checkout; a branch without a
+worktree gets one in its state directory. Every branch has its own ports,
+derived from its name, and its own state, so several run side by side.
+
+```sh
+dev/mock [<branch>]   # the web app against the mock hub, ready in seconds
+dev/up [<branch>]     # the hub with a real calibre-server on a demo library
+dev/reset [<branch>]  # back to the start; a running stack comes back up
+dev/down [<branch>]   # stops both; --all for every branch
+```
+
+**`dev/mock`** runs `pnpm dev:mock` and prints the URL (password `hub`). The
+Eingang has scenarios, by URL or with the switcher at the bottom left, which
+only the mock has: `?scenario=voll` (about 500 entries in all parts),
+`analyse` (the default, what the e2e tests know), `leer`, `dubletten`. A
+scenario holds for the tab, a decision until the page is loaded again. MSW's
+service worker needs a secure context, so the mock works on this machine only.
+
+**`dev/up`** builds the hub in `nix develop` and the web app, makes the demo
+files on the first start (cached for all branches) and prints URL and login.
+State and logs live in `~/_nobackup/calibre-hub-dev/<slug>/`, the logins are
+generated there and are never in the repo.
+
+| Option | |
+|---|---|
+| `--vite` | the web app from Vite with hot reload, against this hub, on its own port |
+| `--no-lookups` | no DNB and Open Library, only the file and its name |
+| `--ollama` | title and author cleaned by the model at `127.0.0.1:11434` |
+| `--devices` | also at `100.64.0.2` in the tailnet, for iPhone and Boox |
+
+After a change run `dev/up` again: it rebuilds and restarts what changed.
+
+The demo library has 50 books. Backlog and inbox have a case each for the
+flow (`dev/demo.py` says which file is for what): sure, to review, unsure, a
+scan without a text layer, a byte-identical copy (goes to the trash folder by
+itself), the same book with metadata embedded by calibre since, same title and
+authors, a possible duplicate, two copies within the Eingang, broken files, a
+large PDF and a long DjVu for first pages, a calibre folder of an old library.
+Only titles of old books are real, the text is generated.
+
+### How close that is to dmt
+
+calibre-server and the hub run from the units' own values: `dev/hub-env.nix`
+evaluates `nix/module.nix` of the branch with dmt's settings, `nix/init.sh`
+prepares the library, the triggers go in, calibre-server gets the module's
+command line, so a new variable of the module arrives by itself. calibre and
+the tools come from the nixpkgs dmt runs on (`nixpkgs-stable` in nixos-config's
+`flake.lock`, `dev/tools.nix`), the repo's own only without a nixos-config.
+
+Each runs in a bubblewrap sandbox in place of the systemd unit, with dmt's
+paths: `/srv/media/ebooks/{calibre,backlog,inbox,sync/boox}` and
+`/var/lib/calibre-hub`, mounted from the state directory. The hub sees the
+library read-only and the folders around it writable, as in `ReadOnlyPaths`
+and `ReadWritePaths`, the system read-only, a private `/tmp`, no `/home`, no
+inherited environment, umask 0002, folders 2775. The hub can't write outside
+its state directory and can't read `~/.config/calibre-hub/token`.
+
+What differs from dmt:
+
+- One host user: calibre-server and hub are not two users in a group `srv`, so
+  a folder without group write is no obstacle here (`inbox: … skipped` doesn't
+  happen). Inside each branch has a user id of its own, because calibre allows
+  one program per user: that keeps branches and calibre Desktop apart.
+- No seccomp, no `RestrictAddressFamilies`, `ProtectKernel*` only as far as
+  bubblewrap goes.
+- Seconds instead of minutes: `INTAKE_START` 2, `INTAKE_INTERVAL` 20,
+  `INTAKE_TICK` 5, `INBOX_STABLE` 5, `EMBED_DELAY` 5.
+- `CALIBRE_HUB_SECURE_COOKIES=false`, plain http, no Traefik in front.
+- No Hardcover: no token, sync off, its URL points nowhere. No API tokens, no
+  alerts, the model off. Lookups at the DNB and Open Library are real, reads only.
+- calibre-server doesn't announce itself by Bonjour (`--disable-use-bonjour`).
+- The hub is a debug build, on dmt a release build, compiled by the repo's
+  nixpkgs, not dmt's.
+
+### iPhone and Boox
+
+`dev/up --devices` needs Tailscale up on shmoz. The tailnet has no HTTPS
+certificates (Headscale, `CertDomains` null), so this is plain http, which the
+full stack can do: login and the reader work. A forwarder takes
+`100.64.0.2:<port>` to the hub, which itself stays on `127.0.0.1`; calibre-server
+stays local. A plain http page is no secure context, so there is no service
+worker, no saving for offline, no copy to the clipboard, and an EPUB with
+obfuscated fonts doesn't open (foliate-js takes SHA-1 from `crypto.subtle`).
+
+The firewall of shmoz opens no hub port and doesn't trust `tailscale0`. If a
+device gets no connection, this in `hosts/shmoz` opens the hub's ports:
+
+```nix
+networking.firewall.interfaces.tailscale0.allowedTCPPortRanges = [ { from = 8200; to = 8599; } ];
+```
+
+### By hand
+
 ```sh
 nix develop
 dev/testlib.sh /tmp/hub-testlib &      # test library + calibre-server on :18083

@@ -10,7 +10,7 @@ components on Tailwind 4. Static build, served by the hub
 ```sh
 pnpm install
 pnpm dev          # proxies /api to https://hub.nor.sh (HUB_URL=… to change), log in with the real user
-pnpm dev:mock     # MSW mock library (400 books, VITE_MOCK_BOOKS=10000 for more), password "hub"
+pnpm dev:mock     # MSW mock library (400 books, VITE_MOCK_BOOKS=10000 for more), password "hub"; ?scenario=voll|analyse|leer|dubletten for the Eingang
 pnpm test         # vitest
 pnpm lint && pnpm typecheck
 CHROMIUM_PATH=$(which chromium) pnpm e2e   # Playwright against the mocks: *.spec.ts and the Gherkin scenarios in e2e/features (playwright-bdd), desktop + phone
@@ -48,8 +48,9 @@ iPad) on the deployed hub with `e2e/fixtures/script.epub` uploaded as a book:
   `/api/pwned` in the network tab (only CSP reports, if any)
 - delete the test book afterwards
 
-Don't start a local calibre-server for development: calibre allows one
-program per user and that blocks calibre Desktop.
+Don't start a calibre-server by hand for development: calibre allows one
+program per user and that blocks calibre Desktop. `dev/up` runs it in a sandbox
+as a user of its own (README, Development).
 
 `nix build .#frontend` builds `dist/` and runs lint, typecheck and unit
 tests. After changing dependencies set `hash = lib.fakeHash` in
