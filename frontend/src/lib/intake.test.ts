@@ -201,6 +201,13 @@ describe("a library entry", () => {
     expect(errorText({ ...library, error: "title changed since the plan" })).toBe("Titel wurde seit dem Vorschlag geändert. Bitte ablehnen oder Bestand neu prüfen.")
     expect(errorText({ ...library, error: "calibre down" })).toBe("calibre down")
   })
+  it("says what calibre refused an entry for, when the hub found no such book", () => {
+    const refused = { ...library, kind: "file" as const, action: "duplicate" as const, match: "calibre", bookId: null, error: "Dune (Frank Herbert)" }
+    expect(errorText(refused)).toBe("calibre lehnt das als Dublette ab, es gibt schon „Dune (Frank Herbert)“.")
+    expect(errorText({ ...refused, error: "Dune (Frank Herbert); Dune (F. Herbert)" })).toBe("calibre lehnt das als Dublette ab, es gibt schon „Dune (Frank Herbert)“, „Dune (F. Herbert)“.")
+    expect(errorText({ ...refused, bookId: 7, error: "a.pdf too large for another format" })).toBe("a.pdf too large for another format")
+    expect(noteTexts({ ...refused, notes: [], changes: [], candidates: [] })).toEqual([])
+  })
   it("is its own filter", () => {
     expect(intakeFilter("all", "library")).toEqual({ band: undefined, duplicates: undefined, skipped: undefined, library: true })
   })

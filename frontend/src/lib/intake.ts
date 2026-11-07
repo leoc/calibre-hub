@@ -117,8 +117,13 @@ export const readableFormat = (e: IntakeEntry) =>
 // the format the line about reading in names
 export const unreadable = (e: IntakeEntry) => readableFormat(e) === null && e.files.some((f) => f.format === "CHM")
 
-// why a decision came back; the hub's reason for a field changed since the plan
+// why a decision came back: the hub's reason for a field changed since the
+// plan, or the books calibre refused it for, „Title (Author); …“, when the hub
+// found none of them
 export function errorText(e: IntakeEntry): string | null {
+  if (e.error && e.match === "calibre" && e.action === "duplicate" && e.bookId === null) {
+    return t("intake.calibreRefused", { books: e.error.split("; ").map((b) => `„${b}“`).join(", ") })
+  }
   const changed = e.error && /^(\w+) changed since the plan/.exec(e.error)
   return changed ? t("intake.changedSince", { field: fieldLabel(changed[1]) }) : e.error
 }
@@ -194,7 +199,7 @@ export function noteTexts(e: IntakeDetail): string[] {
   const list: string[] = []
   if (isLibrary(e)) return list
   if (e.sameAs) list.push(t("intake.note.same", { name: e.sameAs.split("/").pop() ?? e.sameAs }))
-  else if (e.action !== "add") {
+  else if (e.action !== "add" && e.bookId !== null) {
     const title = e.bookTitle ?? `#${e.bookId}`
     list.push(e.action === "addFormats" ? t("intake.note.formats", { title, formats: e.addFormats.join(", ") }) : t("intake.note.duplicate", { title }))
   }

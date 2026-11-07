@@ -163,6 +163,13 @@ function sameBooks() {
   for (const e of ENTRIES) if (e.sameAs) Object.assign(e, { sameAs: null, bookId: 2, bookTitle: e.proposal?.title, sure: true })
 }
 
+// The file like another in the Eingang as one calibre refused, of a book the
+// hub didn't find (localStorage hub.mock.intake.refused)
+function refused() {
+  if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.refused")) return
+  for (const e of ENTRIES) if (e.sameAs) Object.assign(e, { sameAs: null, match: "calibre", error: "Stem Cells (Ariff Bongso); Stem Cells 2 (Eng Hin Lee)" })
+}
+
 // The book of the possible duplicate was renamed since the list was shown: the
 // first bulk finds it out (localStorage hub.mock.intake.renamed)
 function renamed(): boolean {
@@ -280,6 +287,7 @@ export const intakeHandlers = [
     const q = new URL(request.url).searchParams
     sources()
     sameBooks()
+    refused()
     const filter = { duplicates: q.get("duplicates"), skipped: q.get("skipped"), origin: q.get("origin") }
     const pending = waiting ? 1 : 0
     if (waiting && limitOf(q) > 1) {

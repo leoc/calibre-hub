@@ -438,6 +438,13 @@ Feature: Eingang
     And a message says "2 Dateien gehen in den Papierkorb."
     And the list says "Hier ist nichts zu entscheiden."
 
+  Scenario: What calibre refused without a book stays for a person and says so in German
+    Given calibre refused a possible duplicate as one of two books
+    When I open the Eingang
+    And I choose "Mögliche Dubletten" in "Art"
+    Then the row "Stem Cells: From Bench to Bedside" says "Dublette?"
+    And the row "Stem Cells: From Bench to Bedside" says "Das hat nicht geklappt: calibre lehnt das als Dublette ab, es gibt schon „Stem Cells (Ariff Bongso)“, „Stem Cells 2 (Eng Hin Lee)“."
+
   Scenario: A book renamed since the list was shown trashes nothing, the number follows
     Given the book of a possible duplicate was renamed
     When I open the Eingang

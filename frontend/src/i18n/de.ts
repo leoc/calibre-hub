@@ -831,6 +831,7 @@ export const de = {
   "intake.trashAll.doneOne": "1 Datei geht in den Papierkorb.",
   "intake.changed": "Die Liste hat sich geändert, bitte noch einmal.",
   "intake.failed": "Das hat nicht geklappt: {error}",
+  "intake.calibreRefused": "calibre lehnt das als Dublette ab, es gibt schon {books}.",
   "intake.row.duplicate": "Dublette von",
   "intake.row.formats": "Neues Format für",
   "intake.row.same": "Dublette von „{name}“ im Eingang",

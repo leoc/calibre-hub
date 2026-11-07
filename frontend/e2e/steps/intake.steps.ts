@@ -174,6 +174,10 @@ Given("every possible duplicate is the same as its book", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("hub.mock.intake.sameBooks", "1"))
 })
 
+Given("calibre refused a possible duplicate as one of two books", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.intake.refused", "1"))
+})
+
 Given("the book of a possible duplicate was renamed", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("hub.mock.intake.renamed", "1"))
 })
