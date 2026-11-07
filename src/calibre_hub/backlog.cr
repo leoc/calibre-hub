@@ -435,9 +435,10 @@ module CalibreHub
       end
 
       # From calibre-server and, when the hub can read the library, its
-      # files and the checksums of files the hub rewrote
-      def self.load(calibre : Calibre, library : String?, db : DB::Database) : Index
-        books = calibre.list("")
+      # files and the checksums of files the hub rewrote; only: just these
+      # books, for a look at a few of them
+      def self.load(calibre : Calibre, library : String?, db : DB::Database, only : Array(Int64)? = nil) : Index
+        books = only ? calibre.books(only) : calibre.list("")
         files = [] of {Int64, String, String, Int64}
         if library && File.file?(File.join(library, "metadata.db"))
           ldb = LibraryDB.open_read_only(File.join(library, "metadata.db"))
@@ -515,6 +516,11 @@ module CalibreHub
           return e.book if (p = e.path) && md5(p) == sum
         end
         nil
+      end
+
+      # Two lists of files have one in common, as same_file sees it
+      def same_files?(a : Array(BookFile), b : Array(BookFile)) : Bool
+        a.any? { |f| b.any? { |g| f.size == g.size && (sum = md5(f.path)) && sum == md5(g.path) } }
       end
 
       # The library's book that has every file of the unit, compared byte for

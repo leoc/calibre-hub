@@ -42,6 +42,8 @@ private class FakeCalibre
   property blind = false
   # add-book answers these file names as duplicates of the book
   property duplicate_names = {} of String => Int64
+  # calibre calls it a duplicate, a search for that title finds nothing
+  property unfound = false
   @next = 100_i64
 
   def initialize
@@ -88,7 +90,7 @@ private class FakeCalibre
         ctx.response.print({result: {book_ids: ids, data: data}}.to_json)
       when "/ajax/search"
         title = ctx.request.query_params["query"][/title:"=([^"]+)"/, 1]?
-        ids = @books.select { |_, b| b["title"].as_s == title }.keys
+        ids = @unfound ? [] of Int64 : @books.select { |_, b| b["title"].as_s == title }.keys
         ctx.response.print({total_num: ids.size, book_ids: ids}.to_json)
       else
         ctx.response.status_code = 404
@@ -540,7 +542,7 @@ describe CalibreHub::IntakeJobs do
 end
 
 # Alle N in den Papierkorb: the filter's list and what it asks with
-private def trash_all(intake : Intake, list : JSON::Any, expect = list["trashable"], query = {duplicates: true}) : {Int32, JSON::Any}
+private def trash_all(intake : Intake, list : JSON::Any, expect = list["trashable"], query = {duplicates: "sure"}) : {Int32, JSON::Any}
   intake.decide(JSON.parse({target: {query: query, last: list["last"], expect: expect}, decision: "trash"}.to_json).as_h)
 end
 
@@ -566,7 +568,7 @@ private def duplicates_library(root : String)
   fake
 end
 
-describe "all possible duplicates to the trash" do
+describe "all sure duplicates to the trash" do
   it "counts only the same title and authors, and that many go" do
     tmpdir do |_, root|
       fake = duplicates_library(root)
@@ -576,10 +578,13 @@ describe "all possible duplicates to the trash" do
       db.exec "update intake_entries set action = 'duplicate', book_id = 5, match = 'isbn' where path like '%By ISBN%'"
       intake.run_once
       entries(intake, duplicates: true).find! { |e| e["name"] == "Jane Doe - Other Formats.pdf" }["action"].should eq "addFormats"
-      list = intake.list(duplicates: true)
-      list["total"].should eq 5
+      intake.list(duplicates: true)["total"].should eq 3
+      list = intake.list(duplicates: "sure")
+      list["total"].should eq 2
       list["trashable"].should eq 2
-      list["entries"].as_a.select(&.["sameBook"].as_bool).map(&.["name"].as_s).sort.should eq ["FRANK HERBERT - Children of Dune!.pdf", "Frank Herbert - Dune.pdf"]
+      list["entries"].as_a.map(&.["name"].as_s).sort.should eq ["FRANK HERBERT - Children of Dune!.pdf", "Frank Herbert - Dune.pdf"]
+      list["entries"].as_a.all?(&.["sure"].as_bool).should be_true
+      list["left"]["duplicates"].should eq 0
       status, r = trash_all(intake, list)
       status.should eq 202
       r["total"].should eq list["trashable"]
@@ -608,7 +613,8 @@ describe "all possible duplicates to the trash" do
       intake.run_once
       list = intake.list(duplicates: true)
       list["trashable"].should eq 0
-      intake.decide(JSON.parse({target: {query: {duplicates: true}, last: list["last"], expect: 0}, decision: "trash"}.to_json).as_h)[1]["total"].should eq 0
+      intake.list(duplicates: "sure")["total"].should eq 0
+      intake.decide(JSON.parse({target: {query: {duplicates: "sure"}, last: list["last"], expect: 0}, decision: "trash"}.to_json).as_h)[1]["total"].should eq 0
       trashed(root).should be_empty
     end
   end
@@ -618,14 +624,15 @@ describe "all possible duplicates to the trash" do
       fake = duplicates_library(root)
       intake, _, _, _ = setup(root, fake)
       intake.run_once
-      list = intake.list(duplicates: true)
-      expect_raises(CalibreHub::Edit::Invalid, /possible duplicates/) { trash_all(intake, list, query: {band: "bulk"}) }
-      expect_raises(CalibreHub::Edit::Invalid, /possible duplicates/) { trash_all(intake, list, query: {duplicates: false}) }
+      list = intake.list(duplicates: "sure")
+      expect_raises(CalibreHub::Edit::Invalid, /sure duplicates/) { trash_all(intake, list, query: {band: "bulk"}) }
+      expect_raises(CalibreHub::Edit::Invalid, /sure duplicates/) { trash_all(intake, list, query: {duplicates: false}) }
+      expect_raises(CalibreHub::Edit::Invalid, /sure duplicates/) { trash_all(intake, list, query: {duplicates: true}) }
       expect_raises(CalibreHub::Edit::Invalid, /expect/) do
-        intake.decide(JSON.parse({target: {query: {duplicates: true}, last: list["last"]}, decision: "trash"}.to_json).as_h)
+        intake.decide(JSON.parse({target: {query: {duplicates: "sure"}, last: list["last"]}, decision: "trash"}.to_json).as_h)
       end
-      expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list, expect: list["total"]) }
-      intake.list["trashable"].should eq 0
+      expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list, expect: 9) }
+      intake.list["trashable"].should eq 2
       trashed(root).should be_empty
     end
   end
@@ -643,10 +650,10 @@ describe "all possible duplicates to the trash" do
       intake.list(duplicates: true, origin: "backlog", band: "review")["trashable"].should eq 0
       list = intake.list(duplicates: true)
       # what the analysis adds after the page was shown doesn't count
-      db.exec "insert into intake_entries (path, kind, files, status, proposal, confidence, action, book_id, same_book, at) " \
-              "select path || '.new', kind, files, status, proposal, 95, action, book_id, 1, at from intake_entries where path like '%Dune.pdf'"
+      db.exec "insert into intake_entries (path, kind, files, status, proposal, confidence, action, book_id, same_book, sure, at) " \
+              "select path || '.new', kind, files, status, proposal, 95, action, book_id, 1, 1, at from intake_entries where path like '%Dune.pdf'"
       intake.list(duplicates: true)["trashable"].should eq 3
-      r = trash_all(intake, sure, query: {band: "bulk", duplicates: true})[1]
+      r = trash_all(intake, sure, query: {band: "bulk", duplicates: "sure"})[1]
       r["total"].should eq 1
       wait(intake, r)
       trashed(root).should eq ["Frank Herbert - Dune.pdf"]
@@ -686,7 +693,7 @@ describe "all possible duplicates to the trash" do
       job = wait(intake, trash_all(intake, list)[1])
       job.errors.size.should eq 1
       trashed(root).should eq ["FRANK HERBERT - Children of Dune!.pdf", "Frank Herbert - Dune.pdf"]
-      left = intake.list(duplicates: true)
+      left = intake.list(duplicates: "sure")
       left["trashable"].should eq 1
       failed = left["entries"].as_a.find! { |e| e["name"] == "Jane Doe - Held Back.pdf" }
       failed["error"].as_s.should_not be_empty
@@ -699,11 +706,11 @@ describe "all possible duplicates to the trash" do
       fake = duplicates_library(root)
       intake, _, db, _ = setup(root, fake)
       intake.run_once
-      db.exec "update intake_entries set same_book = 0"
+      db.exec "update intake_entries set same_book = 0, sure = 0"
       intake.list(duplicates: true)["trashable"].should eq 0
       intake.run_once
       intake.list(duplicates: true)["trashable"].should eq 2
-      db.exec "update intake_entries set same_book = 0"
+      db.exec "update intake_entries set same_book = 0, sure = 0"
       intake.analysis = false
       done = Channel(Nil).new
       spawn do
@@ -728,6 +735,295 @@ describe "all possible duplicates to the trash" do
       fake.books[1_i64]["title"] = JSON::Any.new("Dune Messiah")
       intake.run_once
       intake.list(duplicates: true)["trashable"].should eq 1
+    end
+  end
+end
+
+# What calibre made of a file: same size, partial MD5 and first KiB as the one
+# in the library, not the same bytes, so it isn't moved as a copy by itself
+private def embedded(content : String) : String
+  content.sub(3000, 'y')
+end
+
+# A file the library has, under a longer title than the file's name says
+private def founders(dir : String, root : String) : {FakeCalibre, String}
+  content = pdf("founders")
+  write(File.join(root, "Wasserman - Founders Dilemmas.pdf"), embedded(content))
+  shelf = library(dir, {1_i64 => {"Noam Wasserman/Dilemmas (1)", "Dilemmas - Noam Wasserman", "PDF", content}})
+  fake = FakeCalibre.new
+  fake.add(1_i64, "The Founder's Dilemmas: Anticipating and Avoiding the Pitfalls", ["Noam Wasserman"])
+  {fake, shelf}
+end
+
+private def only_here(root : String, *folders : String)
+  folders.each { |f| write(File.join(root, f, "Jane Doe - Only Here.pdf"), pdf("only here")) }
+end
+
+private def left_on_disk(root : String) : Array(String)
+  Dir.glob(File.join(root, "**/*.pdf")).map(&.lchop(root + "/")).sort
+end
+
+private def shown(list : JSON::Any) : Array(String)
+  list["entries"].as_a.map(&.["path"].as_s)
+end
+
+describe "sure duplicates" do
+  it "are the files the library has, whatever title and authors say" do
+    tmpdir do |dir, root|
+      fake, shelf = founders(dir, root)
+      intake, _, _, _ = setup(root, fake, shelf)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      e = list["entries"][0]
+      e["match"].should eq "file"
+      e["bookId"].should eq 1
+      e["sameBook"].should be_false
+      e["sure"].should be_true
+      list["total"].should eq 1
+      list["trashable"].should eq 1
+      intake.list(duplicates: true)["total"].should eq 0
+      r = trash_all(intake, list)[1]
+      r["total"].should eq 1
+      wait(intake, r).errors.should be_empty
+      trashed(root).should eq ["Wasserman - Founders Dilemmas.pdf"]
+      File.exists?(File.join(shelf, "Noam Wasserman/Dilemmas (1)/Dilemmas - Noam Wasserman.pdf")).should be_true
+      entries(intake).should be_empty
+    end
+  end
+
+  it "of a book that isn't in the library leave one copy: of two, the second goes" do
+    tmpdir do |_, root|
+      only_here(root, "a", "b")
+      intake, _, _, _ = setup(root)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      shown(list).should eq [File.join(root, "b/Jane Doe - Only Here.pdf")]
+      list["trashable"].should eq 1
+      wait(intake, trash_all(intake, list)[1]).errors.should be_empty
+      left_on_disk(root).should eq ["a/Jane Doe - Only Here.pdf"]
+      intake.run_once
+      intake.list["trashable"].should eq 0
+      entries(intake).map(&.["action"]).should eq ["add"]
+    end
+  end
+
+  it "leave one of three" do
+    tmpdir do |_, root|
+      only_here(root, "a", "b", "c")
+      intake, _, _, _ = setup(root)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      list["total"].should eq 2
+      wait(intake, trash_all(intake, list)[1]).errors.should be_empty
+      left_on_disk(root).should eq ["a/Jane Doe - Only Here.pdf"]
+    end
+  end
+
+  it "leave one of copies pointing at each other, and of a chain its end" do
+    tmpdir do |_, root|
+      only_here(root, "a", "b")
+      intake, _, db, _ = setup(root)
+      intake.run_once
+      db.exec "update intake_entries set action = 'duplicate', match = 'file', same_as = ? where path like '%/a/%'", File.join(root, "b/Jane Doe - Only Here.pdf")
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      list["total"].should eq 1
+      wait(intake, trash_all(intake, list)[1]).errors.should be_empty
+      left_on_disk(root).size.should eq 1
+    end
+    tmpdir do |_, root|
+      only_here(root, "a", "b", "c")
+      intake, _, db, _ = setup(root)
+      intake.run_once
+      db.exec "update intake_entries set same_as = ? where path like '%/c/%'", File.join(root, "b/Jane Doe - Only Here.pdf")
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      list["total"].should eq 2
+      wait(intake, trash_all(intake, list)[1]).errors.should be_empty
+      left_on_disk(root).should eq ["a/Jane Doe - Only Here.pdf"]
+    end
+  end
+
+  it "may go together with the copy they point at when that is in the library" do
+    tmpdir do |dir, root|
+      content = pdf("both")
+      write(File.join(root, "a/x.pdf"), embedded(content))
+      write(File.join(root, "b/x.pdf"), embedded(content))
+      shelf = library(dir, {1_i64 => {"Wer/Buch (1)", "Buch - Wer", "PDF", content}})
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Buch", ["Wer"])
+      intake, _, db, _ = setup(root, fake, shelf)
+      intake.run_once
+      db.exec "update intake_entries set book_id = null, same_as = ? where path like '%/b/%'", File.join(root, "a/x.pdf")
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      list["total"].should eq 2
+      wait(intake, trash_all(intake, list)[1]).errors.should be_empty
+      left_on_disk(root).should be_empty
+    end
+  end
+
+  it "don't take a copy like another by title or ISBN only, or one that brings a format" do
+    tmpdir do |dir, root|
+      only_here(root, "a")
+      write(File.join(root, "b/Jane Doe - Only Here.pdf"), pdf("another scan"))
+      content = pdf("format")
+      write(File.join(root, "fmt/x.pdf"), embedded(content))
+      write(File.join(root, "fmt/x.epub"), "PK" + ("." * 4000))
+      shelf = library(dir, {1_i64 => {"Wer/Buch (1)", "Buch - Wer", "PDF", content}})
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Buch", ["Wer"])
+      intake, _, _, _ = setup(root, fake, shelf)
+      intake.run_once
+      intake.list(duplicates: "sure")["total"].should eq 0
+      possible = entries(intake, duplicates: true)
+      possible.map(&.["action"].as_s).sort.should eq ["addFormats", "duplicate"]
+      possible.find! { |e| e["sameAs"].as_s? }["match"].should eq "title"
+    end
+  end
+
+  it "leave what calibre refused without a book to the person" do
+    tmpdir do |_, root|
+      write(File.join(root, "a.pdf"), pdf("a"))
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Schon da", ["Wer"])
+      fake.duplicate_names["a.pdf"] = 1_i64
+      fake.unfound = true
+      intake, _, _, _ = setup(root, fake)
+      intake.run_once
+      wait(intake, decide(intake, [entries(intake).first["id"].as_i64], "accept"))
+      e = entries(intake, duplicates: true).first
+      e["action"].should eq "duplicate"
+      e["match"].should eq "calibre"
+      e["bookId"].raw.should be_nil
+      e["error"].should eq "Schon da (Wer)"
+      e["sure"].should be_false
+      intake.run_once
+      intake.list(duplicates: "sure")["total"].should eq 0
+    end
+  end
+
+  it "are exactly what goes, with any band and source: list, button and files agree" do
+    tmpdir do |dir, root|
+      fake, shelf = founders(dir, root)
+      write(File.join(root, "Frank Herbert - Dune.pdf"), pdf("dune"))
+      fake.add(2_i64, "Dune", ["Frank Herbert"])
+      only_here(root, "a", "b")
+      write(File.join(root, "Jane Doe - Other Title.pdf"), pdf("other"))
+      fake.add(3_i64, "Other Title", ["Jane Doe", "John Roe"])
+      intake, _, db, _ = setup(root, fake, shelf)
+      intake.run_once
+      db.exec "update intake_entries set confidence = 95 where path like '%Founders%'"
+      db.exec "update intake_entries set confidence = 95, origin = 'inbox' where path like '%Dune%'"
+      db.exec "update intake_entries set confidence = 70 where path like '%/b/%'"
+      moved = 0
+      [{"bulk", "inbox", 1}, {"bulk", "backlog", 1}, {"review", nil, 1}, {"unsure", nil, 0}].each do |band, origin, n|
+        list = intake.list(band: band, duplicates: "sure", origin: origin)
+        list["total"].should eq n
+        list["trashable"].should eq n
+        list["entries"].as_a.size.should eq n
+        list["counts"][band].should eq n
+        r = trash_all(intake, list, query: {band: band, duplicates: "sure", origin: origin})[1]
+        r["total"].should eq n
+        wait(intake, r) if n > 0
+        moved += n
+        trashed(root).size.should eq moved
+      end
+      left_on_disk(root).sort.should eq ["Jane Doe - Other Title.pdf", "a/Jane Doe - Only Here.pdf"]
+    end
+  end
+
+  it "go by the library's file as it is now: a file changed or a book gone is a 409, then the right number" do
+    tmpdir do |dir, root|
+      fake, shelf = founders(dir, root)
+      intake, _, _, _ = setup(root, fake, shelf)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      # a new title takes nothing from the same file
+      fake.books[1_i64]["title"] = JSON::Any.new("Dilemmas")
+      intake.run_once
+      intake.list(duplicates: "sure")["total"].should eq 1
+      File.write(File.join(shelf, "Noam Wasserman/Dilemmas (1)/Dilemmas - Noam Wasserman.pdf"), pdf("rewritten"))
+      expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
+      trashed(root).should be_empty
+      again = intake.list(duplicates: "sure")
+      again["total"].should eq 0
+      again["trashable"].should eq 0
+      intake.list(duplicates: true)["total"].should eq 1
+    end
+    tmpdir do |dir, root|
+      fake, shelf = founders(dir, root)
+      intake, _, _, _ = setup(root, fake, shelf)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      fake.books.delete(1_i64)
+      expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
+      trashed(root).should be_empty
+      intake.list(duplicates: "sure")["total"].should eq 0
+    end
+  end
+
+  it "go by the other copy as it is now: gone, changed or decided since, this one stays" do
+    tmpdir do |_, root|
+      only_here(root, "a", "b")
+      intake, _, _, _ = setup(root)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      File.delete(File.join(root, "a/Jane Doe - Only Here.pdf"))
+      expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
+      left_on_disk(root).should eq ["b/Jane Doe - Only Here.pdf"]
+      intake.list(duplicates: "sure")["total"].should eq 0
+    end
+    tmpdir do |_, root|
+      only_here(root, "a", "b")
+      intake, _, _, _ = setup(root)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      write(File.join(root, "a/Jane Doe - Only Here.pdf"), pdf("a new scan under the old name"))
+      expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
+      left_on_disk(root).size.should eq 2
+    end
+    tmpdir do |_, root|
+      only_here(root, "a", "b")
+      intake, _, _, _ = setup(root)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      first = entries(intake).find!(&.["action"].==("add"))["id"].as_i64
+      wait(intake, decide(intake, [first], "trash"))
+      # out of the count at once, not only after the next pass
+      intake.list(duplicates: "sure")["total"].should eq 0
+      intake.list(duplicates: true)["total"].should eq 1
+      expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
+      left_on_disk(root).should eq ["b/Jane Doe - Only Here.pdf"]
+    end
+  end
+
+  it "reach entries analysed before the column with the next pass" do
+    tmpdir do |dir, root|
+      fake, shelf = founders(dir, root)
+      only_here(root, "a", "b")
+      intake, _, db, _ = setup(root, fake, shelf)
+      intake.run_once
+      db.exec "alter table intake_entries drop column sure"
+      Intake.migrate(db)
+      intake.list(duplicates: "sure")["total"].should eq 0
+      intake.list(duplicates: true)["total"].should eq 2
+      intake.run_once
+      intake.list(duplicates: "sure")["total"].should eq 2
+      intake.list(duplicates: true)["total"].should eq 0
+    end
+  end
+
+  it "accept nothing as new" do
+    tmpdir do |_, root|
+      only_here(root, "a", "b")
+      intake, fake, _, _ = setup(root)
+      intake.run_once
+      list = intake.list(duplicates: "sure")
+      list["takeable"].should eq 0
+      body = {target: {query: {duplicates: "sure"}, last: list["last"], expect: 0}, decision: "accept"}
+      intake.decide(JSON.parse(body.to_json).as_h)[1]["total"].should eq 0
+      fake.added.should be_empty
     end
   end
 end

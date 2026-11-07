@@ -259,10 +259,12 @@ describe Intake do
       second = by_name["b/Ursula Le Guin - The Dispossessed.pdf"].first
       second["sameAs"].as_s.should end_with "a/Ursula Le Guin - The Dispossessed.pdf"
       by_name["a/Ursula Le Guin - The Dispossessed.pdf"].first["action"].should eq "add"
-      entries(intake, duplicates: true).size.should eq 2
+      # Dune has the book's title and authors: sure, the other is for a person
+      entries(intake, duplicates: "sure").size.should eq 1
+      entries(intake, duplicates: true).size.should eq 1
       entries(intake, duplicates: false).size.should eq 1
       # the counts are the kind's
-      intake.list(duplicates: true)["counts"].as_h.values.sum(&.as_i).should eq 2
+      intake.list(duplicates: true)["counts"].as_h.values.sum(&.as_i).should eq 1
       intake.list["counts"].as_h.values.sum(&.as_i).should eq 3
     end
   end
@@ -476,6 +478,7 @@ describe "intake routes" do
       call("/api/intake/999").status_code.should eq 404
       call("/api/intake/999/cover").status_code.should eq 404
       call("/api/intake?band=nonsense").status_code.should eq 400
+      JSON.parse(call("/api/intake?duplicates=sure").body)["entries"].as_a.all?(&.["sure"].as_bool).should be_true
 
       JSON.parse(call("/api/intake/analysis", "POST", %({"on":false})).body)["state"].should eq "off"
       intake.off?.should be_true

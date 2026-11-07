@@ -108,7 +108,13 @@ module CalibreHub
       level : Int32?, source : String?, decided : String?, isbn_source : String?, notes : Array(Meta::Flow::Note),
       changes : Array(Changed), action : String, book_id : Int64?, match : String?, same_as : String?,
       add_formats : Array(String), cover : String?, at : Int64, skipped : Bool, error : String?, book_title : String?,
-      decision : String?, origin : String, tags : Array(String), kategorie : String?, forced : Bool, same_book : Bool do
+      decision : String?, origin : String, tags : Array(String), kategorie : String?, forced : Bool, same_book : Bool, sure : Bool do
+      # the same file as another entry and nothing else: all it says is
+      # that one of the two is enough
+      def copy? : Bool
+        status == "analysed" && action == "duplicate" && match == "file" && !same_as.nil? && book_id.nil?
+      end
+
       def primary : Backlog::BookFile
         files.min_by { |f| Backlog::FORMATS.index(f.format) || Backlog::FORMATS.size }
       end
@@ -139,13 +145,13 @@ module CalibreHub
          titleConfidence: title_confidence, authorsConfidence: authors_confidence, level: level, source: source,
          decided: decided, isbnSource: isbn_source, notes: notes, action: action, bookId: book_id, match: match,
          sameAs: same_as, addFormats: add_formats, cover: cover ? "/api/intake/#{id}/cover?v=#{at}" : nil,
-         analysedAt: Time.unix(at).to_rfc3339, skipped: skipped, error: error, bookTitle: book_title, sameBook: same_book}
+         analysedAt: Time.unix(at).to_rfc3339, skipped: skipped, error: error, bookTitle: book_title, sameBook: same_book, sure: sure}
       end
     end
 
     COLUMNS = "id, path, kind, files, status, detail, proposal, confidence, title_confidence, authors_confidence, level, source, " \
               "decided, isbn_source, notes, changes, action, book_id, match, same_as, add_formats, cover, at, " \
-              "skipped, error, book_title, decision, origin, tags, kategorie, forced, same_book"
+              "skipped, error, book_title, decision, origin, tags, kategorie, forced, same_book, sure"
 
     # What comes with a file besides the file: where from, the inbox's folders
     # or an upload's form, and that it is wanted whatever it looks like
@@ -233,6 +239,8 @@ module CalibreHub
       db.exec "alter table intake_entries add column forced integer not null default 0" unless columns.includes?("forced")
       # a duplicate with the title and authors of its book (Dedup.same_book?)
       db.exec "alter table intake_entries add column same_book integer not null default 0" unless columns.includes?("same_book")
+      # a duplicate a bulk may trash (Intake#mark_same), filled by the next pass
+      db.exec "alter table intake_entries add column sure integer not null default 0" unless columns.includes?("sure")
       # An upload outlives its entry, so whoever sent it can ask what came of
       # it. status: staged (with or without an entry), imported, formatAdded,
       # copy (byte for byte in the library), trashed, gone
@@ -603,14 +611,44 @@ module CalibreHub
       all.each { |e| mark_same(e, ix) }
     end
 
-    # Is the entry the book it looks like, by title and authors? A format the
-    # book lacks isn't that (action addFormats), neither is a file like
-    # another in the Eingang (no book_id), or one without a proposal.
+    # A sure duplicate, what a bulk may trash: the book it looks like has its
+    # title and authors, or the library has its file, or it is a copy of a
+    # file that stays in the Eingang. A format the book lacks isn't that
+    # (action addFormats), and neither is what only looks like another book
+    # or file, that is for a person. ix knows at least the entry's book.
     private def mark_same(e : Entry, ix : Backlog::Index) : Bool
       p, book = e.proposal, e.book_id
-      same = e.status == "analysed" && e.action == "duplicate" && !p.nil? && !book.nil? && ix.same_book?(Intake.proposed_book(p), book)
-      @db.exec "update intake_entries set same_book = ? where id = ?", same ? 1 : 0, e.id unless same == e.same_book
-      same
+      duplicate = e.status == "analysed" && e.action == "duplicate"
+      same = duplicate && !p.nil? && !book.nil? && ix.same_book?(Intake.proposed_book(p), book)
+      sure = duplicate && (same || in_library?(e, ix) || (e.copy? && keeper(e, ix).id != e.id))
+      @db.exec "update intake_entries set same_book = ?, sure = ? where id = ?", same ? 1 : 0, sure ? 1 : 0, e.id unless same == e.same_book && sure == e.sure
+      sure
+    end
+
+    # the file that brought it together with its book is still the book's
+    private def in_library?(e : Entry, ix : Backlog::Index) : Bool
+      book = e.book_id
+      return false unless e.match == "file" && book
+      e.files.any? { |f| ix.same_file(f) == book }
+    end
+
+    # Of copies of a file the one that stays, so that no bulk takes them all
+    # while the library doesn't have the book: along same_as to the entry
+    # that isn't a copy itself, or to the last one whose other file left or
+    # changed; of copies pointing at each other the oldest. Not a matter of
+    # any filter: a bulk of one band or source never takes this one either.
+    private def keeper(e : Entry, ix : Backlog::Index) : Entry
+      seen = [e]
+      loop do
+        at = seen.last
+        other = at.same_as.try { |path| entry_at(path) }
+        return at unless other && other.decision.nil? && unchanged?(other) && ix.same_files?(at.files, other.files)
+        return other unless other.copy?
+        if i = seen.index { |s| s.id == other.id }
+          return seen[i..].min_by(&.id)
+        end
+        seen << other
+      end
     end
 
     private def unit_of(e : Entry) : Backlog::Unit?
@@ -649,6 +687,7 @@ module CalibreHub
 
     private def forget(e : Entry)
       settled_upload(e.path, "gone", nil) if e.origin == UPLOAD
+      @db.exec "update intake_entries set sure = 0 where same_as = ?", e.path
       @db.exec "delete from intake_candidates where entry_id = ?", e.id
       @db.exec "delete from intake_entries where id = ?", e.id
       e.cover.try { |c| File.delete?(c) if c.starts_with?(@covers) }
@@ -712,6 +751,8 @@ module CalibreHub
     def waiting(ids : Array(Int64), job : String)
       ids.each_slice(STORE_BATCH) do |slice|
         @db.exec "update intake_entries set decision = ?, error = null where id in (#{slice.join(",")})", job
+        # the copies of what leaves count on it no more
+        @db.exec "update intake_entries set sure = 0 where same_as in (select path from intake_entries where id in (#{slice.join(",")}))"
       end
     end
 
@@ -1143,11 +1184,11 @@ module CalibreHub
       source, decided, isbn_source, notes, changes, action = rs.read(String?, String?, String?, String, String, String)
       book, match, same_as, add_formats, cover, at = rs.read(Int64?, String?, String?, String, String?, Int64)
       skipped, error, book_title, job = rs.read(Int64, String?, String?, String?)
-      origin, tags, kategorie, forced, same_book = rs.read(String, String, String?, Int64, Int64)
+      origin, tags, kategorie, forced, same_book, sure = rs.read(String, String, String?, Int64, Int64, Int64)
       Entry.new(id, path, kind, Array(Backlog::BookFile).from_json(files), status, detail, proposal.try { |p| Proposal.from_json(p) },
         confidence, title, authors, level, source, decided, isbn_source, Array(Meta::Flow::Note).from_json(notes),
         Array(Changed).from_json(changes), action, book, match, same_as, Array(String).from_json(add_formats), cover, at,
-        skipped == 1, error, book_title, job, origin, Array(String).from_json(tags), kategorie, forced == 1, same_book == 1)
+        skipped == 1, error, book_title, job, origin, Array(String).from_json(tags), kategorie, forced == 1, same_book == 1, sure == 1)
     end
 
     private def all : Array(Entry)
@@ -1193,10 +1234,26 @@ module CalibreHub
       end
     end
 
+    # the filter on duplicates: nil all, false the new ones, true those that
+    # stay for a person, SURE_DUPLICATES those a bulk takes
+    alias Duplicates = Bool | String | Nil
+
+    SURE_DUPLICATES = "sure"
+    SURE_SQL        = "status = 'analysed' and action = 'duplicate' and sure = 1 and skipped = 0"
+
+    private def duplicates_sql(duplicates : Duplicates) : String?
+      case duplicates
+      when nil             then nil
+      when false           then "action = 'add'"
+      when true            then "action != 'add' and not (#{SURE_SQL})"
+      when SURE_DUPLICATES then SURE_SQL
+      else                      raise Edit::Invalid.new("duplicates", "true, false or sure expected")
+      end
+    end
+
     # what is in the list by a filter; what waits for its job isn't
-    private def filter_sql(band : String?, duplicates : Bool?, skipped : Bool?, origin : String? = nil) : String
-      kind = duplicates.nil? ? nil : (duplicates ? "action != 'add'" : "action = 'add'")
-      ["decision is null", band_sql(band), kind, skipped ? "skipped = 1" : nil, origin_sql(origin)].compact.join(" and ")
+    private def filter_sql(band : String?, duplicates : Duplicates, skipped : Bool?, origin : String? = nil) : String
+      ["decision is null", band_sql(band), duplicates_sql(duplicates), skipped ? "skipped = 1" : nil, origin_sql(origin)].compact.join(" and ")
     end
 
     private def origin_sql(origin : String?) : String?
@@ -1216,16 +1273,15 @@ module CalibreHub
     # Of a filter what „Alle N übernehmen“ takes. Not a failed file, there is
     # no proposal; not what looks like a book of the library, that is for
     # Arthur one by one; not what he skipped, unless that is the filter.
-    private def takeable_sql(band : String?, duplicates : Bool?, skipped : Bool?, origin : String? = nil) : String
+    private def takeable_sql(band : String?, duplicates : Duplicates, skipped : Bool?, origin : String? = nil) : String
       sql = "#{filter_sql(band, duplicates, skipped, origin)} and status = 'analysed' and action != 'duplicate'"
       skipped ? sql : "#{sql} and skipped = 0"
     end
 
-    # Of the filter on possible duplicates what „Alle N in den Papierkorb“
-    # takes: a duplicate with the title and authors of its book, not what
-    # only looks like it, what brings a format or what Arthur skipped.
+    # What „Alle N in den Papierkorb“ takes, all of the filter on sure
+    # duplicates: nothing Arthur skipped, and whatever else mark_same leaves
     private def trashable_sql(band : String?, origin : String? = nil) : String
-      "#{filter_sql(band, true, nil, origin)} and status = 'analysed' and action = 'duplicate' and same_book = 1 and skipped = 0"
+      filter_sql(band, SURE_DUPLICATES, nil, origin)
     end
 
     # a place in the list, for a page to go on from: confidence and what
@@ -1241,22 +1297,22 @@ module CalibreHub
 
     # What of a filter a bulk decision leaves in the list and why, so the
     # button's number and the filter's add up
-    private def left_out(band : String?, duplicates : Bool?, skipped : Bool?, origin : String? = nil)
+    private def left_out(band : String?, duplicates : Duplicates, skipped : Bool?, origin : String? = nil)
       clause = filter_sql(band, duplicates, skipped, origin)
       count = ->(extra : String) { @db.query_one("select count(*) from intake_entries where #{clause} and #{extra}", as: Int64) }
-      {duplicates: count.call("status = 'analysed' and action = 'duplicate'"), failed: count.call("status != 'analysed'"),
+      {duplicates: duplicates == SURE_DUPLICATES ? 0_i64 : count.call("status = 'analysed' and action = 'duplicate'"), failed: count.call("status != 'analysed'"),
        skipped: skipped ? 0_i64 : count.call("status = 'analysed' and action != 'duplicate' and skipped = 1")}
     end
 
     # The list for the page: a page of entries with the filter's total, how
     # many of that kind there are per band, and what a bulk decision takes
-    # (takeable; trashable on the filter on possible duplicates, else 0).
-    # band: by confidence; duplicates: only those that match a book, or
-    # (false) only the new ones; skipped: only the skipped ones; origin: of
-    # one source. In the order of ORDER; after: the page behind this place
+    # (takeable; trashable, of the band and source whatever the kind, so the
+    # filter's option can say it). band: by confidence; duplicates: see
+    # Duplicates; skipped: only the skipped ones; origin: of one source.
+    # In the order of ORDER; after: the page behind this place
     # (next of the page before), a confidence and a path, which stays right
     # while entries leave the list and the analysis adds some.
-    def list(band : String? = nil, duplicates : Bool? = nil, offset = 0, limit = 100, skipped : Bool? = nil, after : String? = nil, origin : String? = nil) : JSON::Any
+    def list(band : String? = nil, duplicates : Duplicates = nil, offset = 0, limit = 100, skipped : Bool? = nil, after : String? = nil, origin : String? = nil) : JSON::Any
       clause = filter_sql(band, duplicates, skipped, origin)
       total = @db.query_one("select count(*) from intake_entries where #{clause}", as: Int64)
       entries = [] of Entry
@@ -1281,7 +1337,7 @@ module CalibreHub
       JSON.parse({enabled: true, progress: progress, total: total, counts: counts, next: more ? Intake.place(entries.last.confidence, entries.last.path) : nil,
                   takeable: @db.query_one("select count(*) from intake_entries where #{takeable}", as: Int64),
                   unsure: @db.query_one("select count(*) from intake_entries where #{takeable} and confidence < #{Meta::Confidence::REVIEW}", as: Int64),
-                  trashable: duplicates ? @db.query_one("select count(*) from intake_entries where #{trashable_sql(band, origin)}", as: Int64) : 0_i64,
+                  trashable: @db.query_one("select count(*) from intake_entries where #{trashable_sql(band, origin)}", as: Int64),
                   left: left_out(band, duplicates, skipped, origin), skipped: skipped_count,
                   last: @db.query_one("select coalesce(max(id), 0) from intake_entries", as: Int64),
                   pending: pending_count,
@@ -1304,7 +1360,7 @@ module CalibreHub
     # accept all of a filter, {query: {band, duplicates, skipped, origin}, last, expect}:
     # last (the list's) leaves out what the analysis added since, expect
     # (takeable) is the number meant. The same to trash all of the filter on
-    # possible duplicates, {query: {band, duplicates: true, origin}, ...},
+    # sure duplicates, {query: {band, duplicates: "sure", origin}, ...},
     # expect being trashable. One entry's accept takes a candidate
     # (index) and the edited title and authors, a filter's the candidates
     # chosen so far (picks: {entry id: index}). Library books (negative ids,
@@ -1344,9 +1400,10 @@ module CalibreHub
       expect = target["expect"]?.try(&.as_i64?) || raise Edit::Invalid.new("target", "expect (the number of books meant) required")
       last = target["last"]?.try(&.as_i64?) || raise Edit::Invalid.new("target", "last expected")
       trash = decision == "trash"
-      raise Edit::Invalid.new("target", "trash takes the filter on possible duplicates") if trash && q["duplicates"]?.try(&.as_bool?) != true
+      duplicates = q["duplicates"]?.try { |v| v.as_s? || v.as_bool? }
+      raise Edit::Invalid.new("target", "trash takes the filter on sure duplicates") if trash && duplicates != SURE_DUPLICATES
       band, origin = q["band"]?.try(&.as_s?), q["origin"]?.try(&.as_s?)
-      sql = trash ? trashable_sql(band, origin) : takeable_sql(band, q["duplicates"]?.try(&.as_bool?), q["skipped"]?.try(&.as_bool?), origin)
+      sql = trash ? trashable_sql(band, origin) : takeable_sql(band, duplicates, q["skipped"]?.try(&.as_bool?), origin)
       ids = [] of Int64
       @db.query_each("select id from intake_entries where #{sql} and id <= ? order by #{ORDER}", last) { |rs| ids << rs.read(Int64) }
       ids = same_now(ids) if trash
@@ -1354,12 +1411,14 @@ module CalibreHub
       ids
     end
 
-    # The mark is as old as the last pass: the files go by the library as it
-    # is now. A book changed or removed since takes its entry out of the
-    # count and the mark, so the 409 is followed by the right number.
+    # The mark is as old as the last pass: the files go by the library and
+    # the list as they are now. A book changed or removed since, a library
+    # file that isn't the same any more, a copy whose other file left: that
+    # takes the entry out of the count and the mark, so the 409 is followed
+    # by the right number.
     private def same_now(ids : Array(Int64)) : Array(Int64)
       entries = ids.compact_map { |id| self[id]? }
-      ix = Backlog::Index.new(@calibre.books(entries.compact_map(&.book_id).uniq))
+      ix = Backlog::Index.load(@calibre, @library, @db, entries.compact_map(&.book_id).uniq)
       entries.select { |e| mark_same(e, ix) }.map(&.id)
     end
 
@@ -1441,7 +1500,7 @@ module CalibreHub
         if q["library"]? == "true"
           next intake.library_list(q["band"]?.presence, q["limit"]?.try(&.to_i?) || 100, q["after"]?.presence).to_json
         end
-        duplicates = q["duplicates"]?.presence.try { |v| v == "true" }
+        duplicates = q["duplicates"]?.presence.try { |v| v == Intake::SURE_DUPLICATES ? v : v == "true" }
         intake.list(q["band"]?.presence, duplicates, q["offset"]?.try(&.to_i?) || 0, q["limit"]?.try(&.to_i?) || 100,
           q["skipped"]? == "true" ? true : nil, q["after"]?.presence, q["origin"]?.presence).to_json
       end
