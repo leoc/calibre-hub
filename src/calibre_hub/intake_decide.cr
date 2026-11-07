@@ -75,6 +75,7 @@ module CalibreHub
         File.delete?(target) unless File.directory?(target)
         raise File::Error.new("not moved to the trash, can't remove it from where it is: #{ex.message}", file: path)
       end
+      puts "intake: #{path} copied to the trash, compared and removed"
     end
 
     private def copy_all(path : String, to : String)

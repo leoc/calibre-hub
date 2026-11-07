@@ -1422,6 +1422,8 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"cmp /tmp/Hochgeladen-weg.epub /srv/books/papierkorb/upload/{r['upload']['id']}/Hochgeladen-weg.epub")
         machine.succeed(f"test ! -e /var/lib/calibre-hub/uploads/{r['upload']['id']}/Hochgeladen-weg.epub")
         assert machine.succeed("find /srv/books/papierkorb -name '*.part'").strip() == ""
+        for name in ("/srv/books/inbox/Weg/Wegwerfbuch.epub", f"/var/lib/calibre-hub/uploads/{r['upload']['id']}/Hochgeladen-weg.epub"):
+            machine.succeed(f"journalctl -u calibre-hub | grep -qF 'intake: {name} copied to the trash, compared and removed'")
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
