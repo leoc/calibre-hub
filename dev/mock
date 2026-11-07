@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Usage: dev/mock [<branch>]
+# The web app of a branch against the mock hub, on the branch's own port.
+# Stopped by dev/down.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+use_branch "${1:-}"
+ports
+
+if ! running mock; then
+  node_modules
+  log=$STATE/log/mock.log
+  cd "$WT/frontend"
+  start_bg mock "$log" pnpm dev:mock --port "$MOCK_PORT" --strictPort --host 127.0.0.1
+  wait_for "the mock of $BRANCH" 60 "$log" curl -fsS "http://127.0.0.1:$MOCK_PORT/"
+fi
+
+say "$BRANCH: http://127.0.0.1:$MOCK_PORT/eingang?scenario=voll (password: hub)"
+say "scenarios: analyse, voll, leer, dubletten; stop: dev/down $BRANCH"

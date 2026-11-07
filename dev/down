@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Usage: dev/down [<branch>|--all]
+# Stops what dev/mock and dev/up started for a branch, or for all of them.
+# Its state stays; dev/reset takes it back to the start.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+stop_all() {
+  local name
+  for name in door vite hub calibre mock; do stop_bg "$name"; done
+}
+
+if [ "${1:-}" = "--all" ]; then
+  for STATE in "$DEV_ROOT"/*/; do
+    STATE=${STATE%/}
+    [ -d "$STATE/run" ] && stop_all
+  done
+else
+  # never makes a worktree just to stop nothing
+  BRANCH=${1:-$(current_branch)}
+  STATE=$DEV_ROOT/$(slug_of "$BRANCH")
+  stop_all
+fi
