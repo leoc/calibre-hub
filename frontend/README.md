@@ -25,13 +25,19 @@ makes the dev server send the same policy.
 
 ### Reader in Safari
 
-Playwright's WebKit doesn't run in this setup (nixpkgs' Playwright browsers
-are older than the npm package, and its own build wants some 80 Ubuntu
-libraries), so the e2e tests take Chromium for WebKit
-(`e2e/features/reading.feature`, Safari's `GestureEvent`). After changes
-to the reader or `vendor/foliate-js/book-security.js`, check once in Safari
-(Mac, iPhone or iPad) on the deployed hub with `e2e/fixtures/script.epub`
-uploaded as a book:
+`pnpm e2e` doesn't take WebKit: nixpkgs' Playwright browsers are older than
+the npm package and don't work with it, and its own build wants some 80
+Ubuntu libraries. So the e2e tests take Chromium for WebKit
+(`e2e/features/reading.feature`, Safari's `GestureEvent`), and
+`e2e/webkit/run.sh` opens an EPUB and a PDF in a real WebKit as an iPhone,
+with nixpkgs' Playwright, under the hub's policy (`HUB_CSP=1`), and again
+with what iOS below 16.4 lacks taken away. Chromium doesn't see what WebKit
+does with that policy, so run it after changes to the reader, the policy or
+`vendor/foliate-js`.
+
+That WebKit is not Safari on a phone. After changes to the reader or
+`vendor/foliate-js/book-security.js`, check once in Safari (Mac, iPhone or
+iPad) on the deployed hub with `e2e/fixtures/script.epub` uploaded as a book:
 
 - the book opens, arrow keys (Mac) and swipes/taps (iPhone, iPad) turn
   pages, E-Ink tap zones work
