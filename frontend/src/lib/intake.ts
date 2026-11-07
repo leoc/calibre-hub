@@ -11,7 +11,7 @@ export const INTAKE_PAGE = 100
 export type IntakeBand = ConfidenceBand | "none" | "all"
 export type IntakeSource = IntakeOrigin | "all"
 
-export const ORIGINS: IntakeOrigin[] = ["backlog", "inbox", "upload"]
+export const ORIGINS: IntakeOrigin[] = ["inbox", "upload"]
 
 export const originName = (o: IntakeOrigin) => t(`intake.from.${o}`)
 
@@ -23,6 +23,9 @@ export const intakeFilter = (band: IntakeBand, kind: IntakeKind, source: IntakeS
   library: kind === "library" ? true : undefined,
   origin: source === "all" || kind === "library" ? undefined : source,
 })
+
+// a source to name: a row older than the sources may have another word in origin
+export const knownOrigin = (o: string | undefined) => ORIGINS.find((x) => x === o)
 
 // the sources with entries, only with more than one there is a choice
 export const originsInList = (list: Pick<IntakeList, "origins"> | undefined) => ORIGINS.filter((o) => (list?.origins?.[o] ?? 0) > 0)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, bandCount, bulkOf, candidateDiff, candidateSource, entryName, errorText, headlineText, hubTook, inBar, inKind, inLegend, intakeFilter, isPicked, kindCount, leaving, noteTexts, openCount, originsInList, partTitle, shareParts, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
+import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, bandCount, bulkOf, candidateDiff, candidateSource, entryName, errorText, headlineText, hubTook, inBar, inKind, inLegend, intakeFilter, isPicked, kindCount, knownOrigin, leaving, noteTexts, openCount, originsInList, partTitle, shareParts, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -34,6 +34,14 @@ const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   candidates: [],
   bookTitle: null,
   ...extra,
+})
+
+describe("knownOrigin", () => {
+  it("names the sources there are, a row older than them stays without a word", () => {
+    expect(knownOrigin("inbox")).toBe("inbox")
+    expect(knownOrigin("backlog")).toBeUndefined()
+    expect(knownOrigin(undefined)).toBeUndefined()
+  })
 })
 
 describe("an entry on its way out", () => {
@@ -327,13 +335,14 @@ describe("asChosen", () => {
 
 describe("the sources", () => {
   it("names only the sources with entries", () => {
-    expect(originsInList({ origins: { backlog: 3, inbox: 0, upload: 1 } })).toEqual(["backlog", "upload"])
+    expect(originsInList({ origins: { inbox: 3, upload: 0 } })).toEqual(["inbox"])
+    expect(originsInList({ origins: { inbox: 3, upload: 1 } })).toEqual(["inbox", "upload"])
     expect(originsInList({})).toEqual([])
     expect(originsInList(undefined)).toEqual([])
   })
 
   it("says per source what goes by itself, only for the sources there are", () => {
-    expect(autoText({ backlog: null, inbox: 90, upload: 75 })).toBe("Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 75 %")
+    expect(autoText({ inbox: null, upload: 75 })).toBe("Automatisch übernehmen: Inbox aus, Upload ab 75 %")
     expect(autoText({ upload: 90 })).toBe("Automatisch übernehmen: Upload ab 90 %")
   })
 

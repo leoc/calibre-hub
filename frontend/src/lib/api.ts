@@ -173,10 +173,9 @@ export type MetadataTarget = "incomplete" | "all" | "authors" | BulkTarget
 // How sure a decision is: bulk from 90, review from 60, unsure below
 export type ConfidenceBand = "bulk" | "review" | "unsure"
 
-// the Eingang: new files of the backlog, the inbox and uploads, analysed, not
-// in the library
+// the Eingang: new files of the inbox and uploads, analysed, not in the library
 export type IntakeKind = "all" | "new" | "sure" | "duplicates" | "skipped" | "library"
-export type IntakeOrigin = "backlog" | "inbox" | "upload"
+export type IntakeOrigin = "inbox" | "upload"
 
 export type IntakeDecision = "accept" | "file" | "format" | "skip" | "unskip" | "trash" | "reject"
 export interface IntakeFilter {
@@ -190,7 +189,7 @@ export interface IntakeFilter {
 }
 
 export interface IntakeProgress {
-  state: "idle" | "scanning" | "analysing" | "paused" | "off"
+  state: "idle" | "scanning" | "analysing"
   // of the whole list, whatever the filters: every book in the Eingang,
   // those looked at, those with a proposal
   total: number

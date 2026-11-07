@@ -1,14 +1,14 @@
 import { http, HttpResponse } from "msw"
-import type { Book, ConfidenceBand, ImportRepairEntry, IntakeBands, IntakeCandidate, IntakeDetail, IntakeEntry, IntakeShares } from "@/lib/api"
+import type { Book, ConfidenceBand, ImportRepairEntry, IntakeBands, IntakeCandidate, IntakeDetail, IntakeEntry, IntakeOrigin, IntakeShares } from "@/lib/api"
 import pdfUrl from "./fixtures/sample.pdf?url"
 import { scenario, scenarioSeeds } from "./scenarios"
 
-// The Eingang of the mock hub: a dozen files like the live backlog, then
-// enough scans that the list needs a second page. The analysis stands at one
-// file, so the numbers read the same in every e2e scenario. Another situation
-// of the Eingang (mocks/scenarios.ts) has other files and nothing to analyse.
+// The Eingang of the mock hub: a dozen files like a real inbox, then enough
+// scans that the list needs a second page. The analysis stands at one file,
+// so the numbers read the same in every e2e scenario. Another situation of the
+// Eingang (mocks/scenarios.ts) has other files and nothing to analyse.
 
-const ROOT = "/srv/media/ebooks/backlog"
+const ROOT = "/srv/media/ebooks/inbox"
 
 export interface Seed {
   path: string
@@ -97,7 +97,7 @@ function entry(seed: Seed, id: number): IntakeDetail {
     name,
     folder: parts.join("/") || null,
     kind: "file",
-    origin: seed.origin ?? "backlog",
+    origin: seed.origin ?? "inbox",
     files: [{ path: `${ROOT}/${seed.path}`, format, size: 4_200_000 }],
     status: failed ? "failed" : "analysed",
     detail: seed.failed ?? null,
@@ -148,7 +148,7 @@ const LAST = Math.max(0, ...IDS)
 const asked: { decision: string; ids: number[]; candidate?: number; picks?: unknown; title?: string; authors?: string[]; query?: unknown; expect?: number }[] = []
 // the files read in, for the scenarios (window.__intakeReads)
 const reads: string[] = []
-const thresholds: Record<string, number | null> = { backlog: null, inbox: 90, upload: 90 }
+const thresholds: Record<string, number | null> = { inbox: 90, upload: 90 }
 // a job still running: the entry comes back with an error at the next look
 let waiting: { entry: IntakeDetail; error: string } | null = null
 // Taking the book adds nothing, the library has it: back in the list as a
@@ -159,12 +159,18 @@ const FAILS = "Britannica Illustrated Science Library: Birds"
 const returning = () => typeof localStorage !== "undefined" && !!localStorage.getItem("hub.mock.intake.returns")
 if (typeof window !== "undefined") Object.assign(window, { __intake: asked, __intakeReads: reads })
 
-// Two files that came another way, for the scenarios about sources
-// (localStorage hub.mock.intake.sources)
-const ELSEWHERE: Record<string, "inbox" | "upload"> = { "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf": "inbox", "Robbins - Basic Pathology 8e.chm": "upload" }
+// A file that came another way, for the scenarios about sources
+// (localStorage hub.mock.intake.sources); one from the days of the backlog,
+// which a state DB may still have, with no source of today to go by
+// (localStorage hub.mock.intake.oldRow)
+const UPLOADED = "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf"
+const OLD_ROW = "Robbins - Basic Pathology 8e.chm"
 function sources() {
-  if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.sources")) return
-  for (const e of ENTRIES) if (ELSEWHERE[e.name]) e.origin = ELSEWHERE[e.name]
+  if (typeof localStorage === "undefined") return
+  for (const e of ENTRIES) {
+    if (e.name === UPLOADED && localStorage.getItem("hub.mock.intake.sources")) e.origin = "upload"
+    if (e.name === OLD_ROW && localStorage.getItem("hub.mock.intake.oldRow")) e.origin = "backlog" as IntakeOrigin
+  }
 }
 
 // Three files skipped, one new, a possible and a sure duplicate: they count only

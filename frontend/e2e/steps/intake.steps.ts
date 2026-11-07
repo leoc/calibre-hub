@@ -368,12 +368,16 @@ Given("files came in by the inbox and an upload", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("hub.mock.intake.sources", "1"))
 })
 
+Given("a row from the days of the backlog is still there", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.intake.oldRow", "1"))
+})
+
 Then("there is no filter {string}", async ({ page }, label: string) => {
   await expect(page.getByLabel(label)).toHaveCount(0)
 })
 
 Then("the row of {string} shows no source", async ({ page }, name: string) => {
-  await expect(rows(page).filter({ hasText: name }).getByText(/^(Backlog|Inbox|Upload)$/)).toHaveCount(0)
+  await expect(rows(page).filter({ hasText: name }).getByText(/^(Inbox|Upload)$/)).toHaveCount(0)
 })
 
 Then("the row of {string} shows the source {string}", async ({ page }, name: string, source: string) => {

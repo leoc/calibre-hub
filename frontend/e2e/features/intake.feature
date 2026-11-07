@@ -1,7 +1,7 @@
-# The Eingang: what the analysis found in the backlog, the inbox and uploads,
-# before anything is in the library, and the four ways out of the list.
+# The Eingang: what the analysis found in the inbox and uploads, before anything
+# is in the library, and the four ways out of the list.
 #
-# The mock hub has nine files like the live backlog (a sure ISBN hit, a
+# The mock hub has nine files like a real inbox (a sure ISBN hit, a
 # possible duplicate, a file that failed, ...) and 150 scans, the analysis
 # standing at one file with 1,292 still to analyse and 3 proposals for books of
 # the library, 1,454 in the Eingang.
@@ -49,7 +49,7 @@ Feature: Eingang
   Scenario: Every number in the filters holds for a source too
     Given files came in by the inbox and an upload
     When I open the Eingang
-    And I choose "Backlog (157)" in "Quelle"
+    And I choose "Inbox (158)" in "Quelle"
     Then every number in the filters is what the list shows
 
   Scenario: Übersprungen is always a kind
@@ -122,7 +122,7 @@ Feature: Eingang
   Scenario: A source shows only its files, the overview stays whole
     Given files came in by the inbox and an upload
     When I open the Eingang
-    And I choose "Inbox (1)" in "Quelle"
+    And I choose "Upload (1)" in "Quelle"
     Then the bar's parts are "Neu, sicher: 1"
     And the legend has no row "Schon in der Bibliothek"
     And the legend has no row "Noch zu analysieren"
@@ -132,7 +132,7 @@ Feature: Eingang
   Scenario: The library's books have no source, going there leaves the source
     Given files came in by the inbox and an upload
     When I open the Eingang
-    And I choose "Inbox (1)" in "Quelle"
+    And I choose "Upload (1)" in "Quelle"
     And I choose "Schon in der Bibliothek (3)" in "Art"
     Then there is no filter "Quelle"
     When I choose "Neue Dateien (157)" in "Art"
@@ -356,20 +356,19 @@ Feature: Eingang
 
   Scenario: The thresholds hide behind one button, a line per source
     When I open the Eingang
-    Then the button "Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 90 %" is enabled
-    When I press the button "Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 90 %"
-    And I switch on "Backlog"
-    And I set "Backlog: ab Sicherheit (60 bis 100)" to "59"
+    Then the button "Automatisch übernehmen: Inbox ab 90 %, Upload ab 90 %" is enabled
+    When I press the button "Automatisch übernehmen: Inbox ab 90 %, Upload ab 90 %"
+    And I set "Inbox: ab Sicherheit (60 bis 100)" to "59"
     Then the dialog's "Speichern" is disabled
-    When I set "Backlog: ab Sicherheit (60 bis 100)" to "95"
-    And I switch off "Inbox"
+    When I set "Inbox: ab Sicherheit (60 bis 100)" to "95"
+    And I switch off "Upload"
     And I press the dialog's "Speichern"
-    Then the button "Automatisch übernehmen: Backlog ab 95 %, Inbox aus, Upload ab 90 %" is enabled
-    When I press the button "Automatisch übernehmen: Backlog ab 95 %, Inbox aus, Upload ab 90 %"
-    And I switch off "Backlog"
-    And I switch on "Inbox"
+    Then the button "Automatisch übernehmen: Inbox ab 95 %, Upload aus" is enabled
+    When I press the button "Automatisch übernehmen: Inbox ab 95 %, Upload aus"
+    And I set "Inbox: ab Sicherheit (60 bis 100)" to "90"
+    And I switch on "Upload"
     And I press the dialog's "Speichern"
-    Then the button "Automatisch übernehmen: Backlog aus, Inbox ab 90 %, Upload ab 90 %" is enabled
+    Then the button "Automatisch übernehmen: Inbox ab 90 %, Upload ab 90 %" is enabled
 
   @narrow
   Scenario: On a phone the thresholds' button stays within the page
@@ -384,25 +383,26 @@ Feature: Eingang
   Scenario: With several sources the rows say which and a filter chooses
     Given files came in by the inbox and an upload
     When I open the Eingang
-    Then the filter "Quelle" offers "Inbox (1)"
+    Then the filter "Quelle" offers "Inbox (158)"
     And the filter "Quelle" offers "Upload (1)"
-    And the row of "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf" shows the source "Inbox"
-    When I choose "Inbox (1)" in "Quelle"
+    And the row of "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf" shows the source "Upload"
+    When I choose "Upload (1)" in "Quelle"
     Then the list has 1 rows
     When I press the part "Neu, sicher: 1"
     Then the button "Alle 1 übernehmen" is enabled
     When I press the button "Alle 1 übernehmen"
-    Then the hub was asked to accept the filter of the source "inbox"
+    Then the hub was asked to accept the filter of the source "upload"
 
-  Scenario Outline: One muted line when the analysis stands still
-    Given the analysis is "<state>"
+  Scenario: A row from the days of the backlog lists and decides, no source to name
+    Given a row from the days of the backlog is still there
+    And files came in by the inbox and an upload
     When I open the Eingang
-    Then the page says "<hint>"
-
-    Examples:
-      | state  | hint                                                      |
-      | paused | Die Analyse des Backlogs wartet, bis die Reparatur fertig ist. |
-      | off    | Die Analyse des Backlogs ist ausgeschaltet.                            |
+    Then the filter "Quelle" offers "Inbox (157)"
+    And the filter "Quelle" offers "Upload (1)"
+    And the row of "Robbins - Basic Pathology 8e.chm" shows no source
+    When I press "Übernehmen" on the row "Basic Pathology"
+    Then the row "Basic Pathology" is gone
+    And the hub was asked to "accept" 1 entry
 
   Scenario: Nothing while the analysis runs normally
     When I open the Eingang
@@ -568,7 +568,7 @@ Feature: Eingang
     And I choose "Upload (1)" in "Quelle"
     Then the list says "Hier ist nichts zu entscheiden."
     And there is no button "Alle 0 in den Papierkorb"
-    When I choose "Backlog (157)" in "Quelle"
+    When I choose "Inbox (158)" in "Quelle"
     Then the list has 2 rows
     When I press the button "Alle 2 in den Papierkorb"
     Then a dialog asks "2 sichere Dubletten gehen in den Papierkorb. Die Bibliothek hat Buch oder Datei schon, oder eine Kopie bleibt im Eingang."

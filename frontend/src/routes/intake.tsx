@@ -26,6 +26,7 @@ import {
   intakeStatusQuery,
   isDjvu, isLibrary,
   kindCount,
+  knownOrigin,
   leaving,
   noteTexts,
   openCount,
@@ -82,8 +83,8 @@ type Edited = { title?: string; authors?: string[] }
 // a candidate chosen for an entry, not decided yet
 type Chosen = { index: number; candidate: IntakeCandidate }
 
-// The Eingang: what the analysis found in the backlog, the inbox and uploads,
-// before anything is in the library. Every entry leaves by a decision: at once
+// The Eingang: what the analysis found in the inbox and uploads, before
+// anything is in the library. Every entry leaves by a decision: at once
 // in the list, in a queue on the hub. The list stays where it is while the
 // analysis works; only the bars and the line under the title move.
 export function IntakePage() {
@@ -256,7 +257,7 @@ export function IntakePage() {
     <div className="mx-auto max-w-5xl space-y-4 p-4 lg:p-6">
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold">{t("intake.title")}</h1>
-        {status?.progress && shares && <IntakeNumbers list={status} waiting={shares.waiting} state={status.progress.state} />}
+        {status?.progress && shares && <IntakeNumbers list={status} waiting={shares.waiting} />}
       </div>
       {error && !status ? (
         <ErrorMessage error={error} onRetry={() => retry()} />
@@ -340,7 +341,7 @@ export function IntakePage() {
                   entry={e}
                   same={e.sameAs ? entries.find((x) => x.path === e.sameAs)?.id : undefined}
                   current={e.id === open}
-                  origin={several ? e.origin : undefined}
+                  origin={several ? knownOrigin(e.origin) : undefined}
                   pick={picks.get(e.id)}
                   onOpen={setOpen}
                   onAccept={() => decideOne(e, "accept")}
@@ -487,13 +488,8 @@ function AutoAccept({ thresholds, onChanged }: { thresholds: NonNullable<IntakeL
 }
 
 // The whole list, whatever the filters and the source
-function IntakeNumbers({ list, waiting, state }: { list: IntakeList; waiting: number; state: string }) {
-  return (
-    <div className={cn("space-y-1 text-sm tabular-nums", muted)}>
-      <p>{headlineText(waiting, openCount(list))}</p>
-      {(state === "paused" || state === "off") && <p>{t(state === "off" ? "intake.hint.off" : "intake.hint.paused")}</p>}
-    </div>
-  )
+function IntakeNumbers({ list, waiting }: { list: IntakeList; waiting: number }) {
+  return <p className={cn("text-sm tabular-nums", muted)}>{headlineText(waiting, openCount(list))}</p>
 }
 
 // a file's picture as BookCover shows a book's, without a book to go by
