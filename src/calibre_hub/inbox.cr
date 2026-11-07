@@ -9,7 +9,7 @@ module CalibreHub
   # embedded in the file are dropped. Originals move to _imported/<date>/
   # (taken) or _duplicates/<date>/ (byte for byte in the library), a file that
   # is no book to _failed/<date>/, keeping the subfolders. What Arthur throws
-  # away goes to <root>-papierkorb (IntakeTrash). Directories starting with
+  # away goes to the trash folder (IntakeTrash). Directories starting with
   # "_" or "." are not looked at. The uploads' staging folder goes the same way.
   class Inbox
     IMPORTED   = "_imported"

@@ -160,12 +160,18 @@ private def setup(root : String, fake = FakeCalibre.new, shelf : String? = nil, 
   calibre = fake.calibre
   writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
   imports = CalibreHub::Importer.new(db, calibre, writer, [root], shelf, retries: 0)
-  intake = Intake.new(db, calibre, imports, shelf, File.join(root, ".covers"), stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds)
+  intake = Intake.new(db, calibre, imports, shelf, File.join(root, ".covers"), IntakeTrash.new(File.join(File.dirname(root), "papierkorb")),
+    stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds)
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
   intake.reader = ->(path : String, _format : String) do
     Meta::FileMeta::Info.new(Meta::Record.new, [] of String, front: "", format: "PDF").as(Meta::FileMeta::Info?)
   end
   {intake, fake, db, imports}
+end
+
+# the trash folder's part for what comes from root
+private def bin(root : String) : String
+  File.join(File.dirname(root), "papierkorb", "backlog") + root
 end
 
 private def tmpdir(&)
@@ -227,36 +233,141 @@ describe CalibreHub::BookFiles do
   end
 end
 
+# what another file system answers to a rename
+private def cross_device(trash : IntakeTrash)
+  trash.rename = ->(from : String, to : String) { raise File::Error.from_os_error("Error renaming file", Errno::EXDEV, file: from, other: to) }
+end
+
 describe IntakeTrash do
-  it "moves a file under its path in the root, next to the root" do
-    tmpdir do |_, root|
+  it "moves a file below its source, under its path there" do
+    tmpdir do |dir, root|
       write(File.join(root, "Fach/a.pdf"), "a")
-      moved = IntakeTrash.move([root], [File.join(root, "Fach/a.pdf")])
-      moved.should eq ["#{root}-papierkorb/Fach/a.pdf"]
+      moved = IntakeTrash.new(File.join(dir, "papierkorb")).move("inbox", root, [File.join(root, "Fach/a.pdf")])
+      moved.should eq ["#{dir}/papierkorb/inbox/Fach/a.pdf"]
       File.read(moved.first).should eq "a"
       File.exists?(File.join(root, "Fach/a.pdf")).should be_false
     end
   end
 
+  it "keeps the whole path of what has no source any more" do
+    tmpdir do |dir, root|
+      write(File.join(root, "Fach/a.pdf"), "a")
+      moved = IntakeTrash.new(File.join(dir, "papierkorb")).move("backlog", nil, [File.join(root, "Fach/a.pdf")])
+      moved.should eq ["#{dir}/papierkorb/backlog#{root}/Fach/a.pdf"]
+      File.read(moved.first).should eq "a"
+    end
+  end
+
   it "never overwrites what is in the folder" do
-    tmpdir do |_, root|
+    tmpdir do |dir, root|
       write(File.join(root, "a.pdf"), "new")
-      write("#{root}-papierkorb/a.pdf", "old")
-      write("#{root}-papierkorb/a (2).pdf", "older")
-      moved = IntakeTrash.move([root], [File.join(root, "a.pdf")])
-      moved.should eq ["#{root}-papierkorb/a (3).pdf"]
-      File.read("#{root}-papierkorb/a.pdf").should eq "old"
-      File.read("#{root}-papierkorb/a (2).pdf").should eq "older"
+      write("#{dir}/papierkorb/inbox/a.pdf", "old")
+      write("#{dir}/papierkorb/inbox/a (2).pdf", "older")
+      moved = IntakeTrash.new(File.join(dir, "papierkorb")).move("inbox", root, [File.join(root, "a.pdf")])
+      moved.should eq ["#{dir}/papierkorb/inbox/a (3).pdf"]
+      File.read("#{dir}/papierkorb/inbox/a.pdf").should eq "old"
+      File.read("#{dir}/papierkorb/inbox/a (2).pdf").should eq "older"
       File.read(moved.first).should eq "new"
     end
   end
 
-  it "takes nothing outside its roots" do
+  it "takes nothing outside its source" do
     tmpdir do |dir, root|
       write(File.join(dir, "other/a.pdf"), "a")
-      expect_raises(File::Error) { IntakeTrash.move([root], [File.join(dir, "other/a.pdf")]) }
-      expect_raises(File::Error) { IntakeTrash.move([root], [root]) }
+      trash = IntakeTrash.new(File.join(dir, "papierkorb"))
+      expect_raises(File::Error) { trash.move("inbox", root, [File.join(dir, "other/a.pdf")]) }
+      expect_raises(File::Error) { trash.move("inbox", root, [root]) }
       File.exists?(File.join(dir, "other/a.pdf")).should be_true
+    end
+  end
+
+  it "copies between two file systems, then removes the source" do
+    tmpdir do |dir, root|
+      write(File.join(root, "ab/a.pdf"), "the book")
+      File.utime(Time.unix(1000), Time.unix(1000), File.join(root, "ab/a.pdf"))
+      trash = IntakeTrash.new(File.join(dir, "papierkorb"))
+      cross_device(trash)
+      moved = trash.move("upload", root, [File.join(root, "ab/a.pdf")])
+      moved.should eq ["#{dir}/papierkorb/upload/ab/a.pdf"]
+      File.read(moved.first).should eq "the book"
+      File.info(moved.first).modification_time.should eq Time.unix(1000)
+      File.exists?(File.join(root, "ab/a.pdf")).should be_false
+      Dir.children("#{dir}/papierkorb/upload/ab").should eq ["a.pdf"]
+    end
+  end
+
+  it "carries a calibre folder over as a whole" do
+    tmpdir do |dir, root|
+      write(File.join(root, "Dune (7)/Dune.pdf"), "the book")
+      write(File.join(root, "Dune (7)/metadata.opf"), "<package/>")
+      trash = IntakeTrash.new(File.join(dir, "papierkorb"))
+      cross_device(trash)
+      moved = trash.move("inbox", root, [File.join(root, "Dune (7)")])
+      Dir.children(moved.first).sort.should eq ["Dune.pdf", "metadata.opf"]
+      File.exists?(File.join(root, "Dune (7)")).should be_false
+    end
+  end
+
+  it "leaves the source and no half copy when the copy fails" do
+    tmpdir do |dir, root|
+      source = File.join(root, "a.pdf")
+      write(source, "the book")
+      trash = IntakeTrash.new(File.join(dir, "papierkorb"))
+      cross_device(trash)
+      trash.copy = ->(from : String, to : String) do
+        File.write(to, "the b")
+        raise File::Error.from_os_error("Error writing file", Errno::ENOSPC, file: to)
+      end
+      ex = expect_raises(File::Error) { trash.move("upload", root, [source]) }
+      ex.message.not_nil!.should contain("it stays where it is")
+      ex.message.not_nil!.should contain("No space left")
+      File.read(source).should eq "the book"
+      Dir.children("#{dir}/papierkorb/upload").should be_empty
+    end
+  end
+
+  it "doesn't take a copy that isn't the same for one" do
+    tmpdir do |dir, root|
+      source = File.join(root, "a.pdf")
+      write(source, "the book")
+      [
+        ->(_from : String, to : String) { File.write(to, "the b") },
+        ->(_from : String, to : String) { File.write(to, "the bird") },
+      ].each do |copy|
+        trash = IntakeTrash.new(File.join(dir, "papierkorb"))
+        cross_device(trash)
+        trash.copy = copy
+        expect_raises(File::Error, /isn't the same/) { trash.move("upload", root, [source]) }
+        File.read(source).should eq "the book"
+        Dir.children("#{dir}/papierkorb/upload").should be_empty
+      end
+    end
+  end
+
+  it "keeps a file in one place when its source can't be removed" do
+    tmpdir do |dir, root|
+      source = File.join(root, "ab/a.pdf")
+      write(source, "the book")
+      trash = IntakeTrash.new(File.join(dir, "papierkorb"))
+      cross_device(trash)
+      File.chmod(File.dirname(source), 0o555)
+      begin
+        expect_raises(File::Error, /can't remove it/) { trash.move("upload", root, [source]) }
+      ensure
+        File.chmod(File.dirname(source), 0o755)
+      end
+      File.read(source).should eq "the book"
+      Dir.children("#{dir}/papierkorb/upload/").should eq ["ab"]
+      Dir.children("#{dir}/papierkorb/upload/ab").should be_empty
+    end
+  end
+
+  it "says what is wrong with its folder" do
+    tmpdir do |dir, _|
+      IntakeTrash.new(File.join(dir, "papierkorb")).problem.should be_nil
+      File.directory?(File.join(dir, "papierkorb")).should be_true
+      write(File.join(dir, "taken"), "a file")
+      IntakeTrash.new(File.join(dir, "taken")).problem.should_not be_nil
     end
   end
 end
@@ -432,8 +543,8 @@ describe CalibreHub::IntakeJobs do
       e = entries(intake).first
       e["files"].as_a.size.should eq 2
       wait(intake, decide(intake, [e["id"].as_i64], "trash")).errors.should be_empty
-      File.exists?("#{root}-papierkorb/Fach/a.pdf").should be_true
-      File.exists?("#{root}-papierkorb/Fach/a.epub").should be_true
+      File.exists?("#{bin(root)}/Fach/a.pdf").should be_true
+      File.exists?("#{bin(root)}/Fach/a.epub").should be_true
       File.exists?(File.join(root, "Fach/a.pdf")).should be_false
       File.exists?(File.join(root, "Fach/notes.txt")).should be_true
       entries(intake).should be_empty
@@ -453,14 +564,14 @@ describe CalibreHub::IntakeJobs do
       intake.run_once
       wait(intake, decide(intake, [entries(intake).first["id"].as_i64], "trash")).errors.should be_empty
       Dir.exists?(folder).should be_false
-      Dir.children("#{root}-papierkorb/Frank Herbert/Dune (7)").sort.should eq ["Dune.pdf", "cover.jpg", "metadata.opf"]
+      Dir.children("#{bin(root)}/Frank Herbert/Dune (7)").sort.should eq ["Dune.pdf", "cover.jpg", "metadata.opf"]
     end
   end
 
   it "keeps an entry whose move failed, with the reason" do
     tmpdir do |_, root|
       write(File.join(root, "a.pdf"), pdf("a"))
-      write("#{root}-papierkorb", "a file where the folder belongs")
+      write("#{bin(root)}", "a file where the folder belongs")
       intake, _, _, _ = setup(root)
       intake.run_once
       r = decide(intake, [entries(intake).first["id"].as_i64], "trash")
@@ -562,7 +673,7 @@ private def trash_all(intake : Intake, list : JSON::Any, expect = list["trashabl
 end
 
 private def trashed(root : String) : Array(String)
-  dir = "#{root}-papierkorb"
+  dir = File.join(File.dirname(root), "papierkorb")
   Dir.exists?(dir) ? Dir.glob(File.join(dir, "**/*.pdf")).map { |f| File.basename(f) }.sort : [] of String
 end
 
@@ -700,7 +811,7 @@ describe "all sure duplicates to the trash" do
       fake = duplicates_library(root)
       write(File.join(root, "Blocked/Jane Doe - Held Back.pdf"), pdf("blocked"))
       fake.add(6_i64, "Held Back", ["Jane Doe"])
-      write("#{root}-papierkorb/Blocked", "a file where the folder belongs")
+      write("#{bin(root)}/Blocked", "a file where the folder belongs")
       intake, _, _, _ = setup(root, fake)
       intake.run_once
       list = intake.list(duplicates: true)
@@ -1098,7 +1209,7 @@ describe "exact duplicates" do
       intake.run_once
       entries(intake).should be_empty
       fake.added.should be_empty
-      File.exists?("#{root}-papierkorb/Fach/copy.pdf").should be_true
+      File.exists?("#{bin(root)}/Fach/copy.pdf").should be_true
       File.exists?(File.join(shelf, "Wer/Buch (1)/Buch - Wer.pdf")).should be_true
     end
   end
@@ -1123,7 +1234,7 @@ describe "exact duplicates" do
       e["bookId"].should eq 1
       e["bookTitle"].should eq "Buch"
       File.exists?(File.join(root, "copy.pdf")).should be_true
-      Dir.exists?("#{root}-papierkorb").should be_false
+      Dir.exists?("#{bin(root)}").should be_false
     end
   end
 
@@ -1168,15 +1279,15 @@ describe "exact duplicates" do
 
       shelf = library(dir, {1_i64 => {"Wer/Buch (1)", "Buch - Wer", "PDF", pdf("same")}})
       fake.add(1_i64, "Buch", ["Wer"])
-      write("#{root}-papierkorb", "in the way")
+      write("#{bin(root)}", "in the way")
       later, _, _, _ = setup(root, fake, shelf, db)
       later.run_once
       entries(later).size.should eq 1
 
-      File.delete("#{root}-papierkorb")
+      File.delete("#{bin(root)}")
       later.run_once
       entries(later).should be_empty
-      File.exists?("#{root}-papierkorb/copy.pdf").should be_true
+      File.exists?("#{bin(root)}/copy.pdf").should be_true
     end
   end
 end
@@ -2261,7 +2372,8 @@ private def sources(dir : String, fake = FakeCalibre.new, shelf : String? = nil,
   Dir.mkdir_p(File.join(dir, "inbox"))
   Dir.mkdir_p(File.join(dir, "uploads"))
   imports = CalibreHub::Importer.new(db, calibre, writer, [root], shelf, retries: 0)
-  intake = Intake.new(db, calibre, imports, shelf, File.join(dir, ".covers"), stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds,
+  intake = Intake.new(db, calibre, imports, shelf, File.join(dir, ".covers"), IntakeTrash.new(File.join(dir, "papierkorb")),
+    stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds,
     inbox: CalibreHub::Inbox.new(File.join(dir, "inbox"), 0.seconds), uploads: CalibreHub::Inbox.new(File.join(dir, "uploads"), 0.seconds))
   intake.category_column = "kategorie"
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
@@ -2426,15 +2538,39 @@ describe "the sources of the Eingang" do
     end
   end
 
-  it "throws an inbox file and an upload into the trash folder next to their root" do
+  it "throws an inbox file and an upload into the one trash folder, each below its source" do
     tmpdir do |dir, _|
       write(File.join(dir, "inbox/Roman/Agatha Christie - Poirot.pdf"), pdf("poirot"))
       intake, _, _, _ = sources(dir)
       up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
       intake.run_fast
       wait(intake, decide(intake, entries(intake).map(&.["id"].as_i64), "trash"))
-      File.exists?(File.join(dir, "inbox-papierkorb/Roman/Agatha Christie - Poirot.pdf")).should be_true
-      File.exists?(File.join(dir, "uploads-papierkorb", up, "Frank Herbert - Dune.pdf")).should be_true
+      File.exists?(File.join(dir, "papierkorb/inbox/Roman/Agatha Christie - Poirot.pdf")).should be_true
+      File.exists?(File.join(dir, "papierkorb/upload", up, "Frank Herbert - Dune.pdf")).should be_true
+      intake.upload_state(up).not_nil!["status"].should eq "trashed"
+    end
+  end
+
+  it "keeps an upload the copy to the trash failed for, the entry says why, and takes it the next time" do
+    tmpdir do |dir, _|
+      intake, _, _, _ = sources(dir)
+      up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      intake.run_fast
+      file = entries(intake).first["path"].as_s
+      cross_device(intake.trash)
+      fine = intake.trash.copy
+      intake.trash.copy = ->(_from : String, to : String) { raise File::Error.from_os_error("Error writing file", Errno::ENOSPC, file: to) }
+      id = entries(intake).first["id"].as_i64
+      wait(intake, decide(intake, [id], "trash")).errors.size.should eq 1
+      e = entries(intake).first
+      e["error"].as_s.should contain("it stays where it is")
+      e["error"].as_s.should contain("No space left")
+      File.read(file).should eq pdf("dune")
+      intake.upload_state(up).not_nil!["status"].should_not eq "trashed"
+      intake.trash.copy = fine
+      wait(intake, decide(intake, [id], "trash")).errors.should be_empty
+      File.exists?(file).should be_false
+      File.read(File.join(dir, "papierkorb/upload", up, "Frank Herbert - Dune.pdf")).should eq pdf("dune")
       intake.upload_state(up).not_nil!["status"].should eq "trashed"
     end
   end

@@ -59,6 +59,9 @@ module CalibreHub
     getter intake_tick : Time::Span = env("CALIBRE_HUB_INTAKE_TICK", "30").to_i.seconds
     # where uploads wait for the Eingang; by default next to the state DB
     getter uploads : String = ENV["CALIBRE_HUB_UPLOADS"]?.presence || File.join(File.dirname(File.expand_path(env("CALIBRE_HUB_STATE_DB", "calibre-hub.sqlite"))), "uploads")
+    # what the Eingang throws away; by default next to the inbox, without one
+    # next to the state DB
+    getter trash : String = ENV["CALIBRE_HUB_TRASH"]?.presence || File.join(File.dirname(File.expand_path(ENV["CALIBRE_HUB_INBOX"]?.presence || env("CALIBRE_HUB_STATE_DB", "calibre-hub.sqlite"))), "papierkorb")
     # folders the Eingang reads old collections from, ':' separated
     getter import_roots : Array(String) = env("CALIBRE_HUB_IMPORT_ROOTS", "").split(':', remove_empty: true).map(&.strip).reject(&.empty?)
     # tag of books whose file name could not be read for sure
@@ -498,7 +501,9 @@ module CalibreHub
     # the Eingang: new files of the import roots, the inbox and uploads,
     # analysed in the background
     Dir.mkdir_p(File.join(config.uploads, ".incoming"))
-    intake = Intake.new(db, calibre, imports, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"),
+    intake_trash = IntakeTrash.new(config.trash)
+    intake_trash.problem.try { |why| STDERR.puts "eingang: trash folder: #{why}, nothing can be thrown away" }
+    intake = Intake.new(db, calibre, imports, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"), intake_trash,
       interval: config.intake_interval, wait: config.intake_tick, tick: config.intake_tick,
       inbox: config.inbox.try { |dir| Inbox.new(dir, config.inbox_stable) }, uploads: Inbox.new(config.uploads))
     intake.busy = -> { repair.running? }

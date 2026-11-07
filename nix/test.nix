@@ -266,7 +266,6 @@ pkgs.testers.runNixOSTest {
         ''}";
       };
       systemd.tmpfiles.rules = [
-        # the Eingang's trash folder goes next to the root
         "d /srv/books 2775 root calibre-hub -"
         "d /srv/books/library 2775 calibre-server calibre-hub -"
         "d /srv/books/inbox 2775 root calibre-hub -"
@@ -1360,7 +1359,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the Eingang decides (#8605)"):
         IN = f"{ALT}/Eingang"
-        TRASH = f"{ALT}-papierkorb/Eingang"
+        TRASH = f"/srv/books/papierkorb/backlog{ALT}/Eingang"
         machine.succeed(f"install -d -m 2775 -g calibre-hub '{IN}'")
         put(f"{IN}/Ada Writer - Angenommen.pdf", pdf(b"s"))
         put(f"{IN}/wegwerfen.pdf", pdf(b"t"))
@@ -1404,14 +1403,14 @@ pkgs.testers.runNixOSTest {
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/w.txt /tmp/Wegwerfbuch.epub --title Wegwerfbuch --authors 'Walter Weg'")
         machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Weg && install -m 664 -g calibre-hub /tmp/Wegwerfbuch.epub /srv/books/inbox/Weg/Wegwerfbuch.epub")
         intake_decide(intake_entry("Wegwerfbuch.epub", "&origin=inbox", 120), "trash")
-        machine.succeed("test -f /srv/books/inbox-papierkorb/Weg/Wegwerfbuch.epub && test ! -e /srv/books/inbox/Weg/Wegwerfbuch.epub")
+        machine.succeed("test -f /srv/books/papierkorb/inbox/Weg/Wegwerfbuch.epub && test ! -e /srv/books/inbox/Weg/Wegwerfbuch.epub")
         machine.succeed("cp /tmp/Wegwerfbuch.epub /tmp/Hochgeladen-weg.epub")
         status, r = api("POST", "/api/books", extra="-F file=@/tmp/Hochgeladen-weg.epub")
         assert status == 202, (status, r)
         e = intake_entry("Hochgeladen-weg.epub", "&origin=upload", 120)
         intake_decide(e, "trash")
         assert api("GET", f"/api/intake/uploads/{r['upload']['id']}")[1]["status"] == "trashed"
-        machine.succeed(f"test -f /var/lib/calibre-hub/uploads-papierkorb/{r['upload']['id']}/Hochgeladen-weg.epub")
+        machine.succeed(f"test -f /srv/books/papierkorb/upload/{r['upload']['id']}/Hochgeladen-weg.epub")
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")

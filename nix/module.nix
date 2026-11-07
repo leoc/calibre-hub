@@ -75,12 +75,17 @@ let
   handlersDir = pkgs.linkFarm "calibre-hub-handlers" (
     lib.mapAttrsToList (name: path: { inherit name path; }) handlers
   );
-  # a root's parent: the Eingang moves files to <root>-papierkorb next to the
-  # root, with one rename, which fails between two mounts of ReadWritePaths.
-  # The same goes for the inbox; uploads wait in the state directory, which
-  # is writable anyway, and their trash folder lies there too.
-  writable = lib.optional (cfg.inbox.path != null) (dirOf (toString cfg.inbox.path))
-    ++ map (root: dirOf (toString root)) cfg.backlogImport.roots
+  stateDir = "/var/lib/calibre-hub";
+  trashDir = toString cfg.intake.trashDir;
+  # b is a or lies in it
+  within = a: b: b == a || lib.hasPrefix "${a}/" b;
+  trashInState = within stateDir trashDir;
+  # The inbox and the trash folder, not what holds them: between these two
+  # mounts the hub copies a file, compares it and only then removes it.
+  # Uploads wait in the state directory, which is writable anyway.
+  writable = lib.optional (cfg.inbox.path != null) (toString cfg.inbox.path)
+    ++ lib.optional (!trashInState) trashDir
+    ++ map (root: toString root) cfg.backlogImport.roots
     ++ lib.optional cfg.leseliste.enable (toString cfg.leseliste.target)
     ++ lib.optionals cfg.leseliste.enable (lib.mapAttrsToList (_: u: toString u.leseliste.target) ownTargets);
 
@@ -328,11 +333,8 @@ in
           category (A/B -> "A.B") and tags (A, B); tags embedded in the files
           are dropped. From the threshold of the source Inbox on (90 unless
           changed in the Eingang) a book goes to the library by itself, the
-          others wait in the Eingang.
-
-          What the Eingang throws away moves to `<path>-papierkorb` next to
-          the folder: the hub's group needs write access to the folder's
-          parent, the service may write there.
+          others wait in the Eingang. The hub's group needs write access to
+          the folder; the service may write there and nowhere around it.
         '';
       };
       stableSeconds = mkOption {
@@ -343,6 +345,23 @@ in
     };
 
     intake = {
+      trashDir = mkOption {
+        type = types.path;
+        default =
+          if cfg.inbox.path != null then "${dirOf (toString cfg.inbox.path)}/papierkorb" else "${stateDir}/papierkorb";
+        defaultText = "papierkorb next to inbox.path, without an inbox /var/lib/calibre-hub/papierkorb";
+        example = "/srv/media/ebooks/papierkorb";
+        description = ''
+          Where everything the Eingang throws away goes, in a folder of its
+          source (`inbox/`, `upload/`) under its path there, so it can be
+          brought back. Nothing there is ever deleted or shown on the
+          Papierkorb page: it is emptied by hand. The folder is created for
+          the hub's user and group and the service may write there; it may
+          neither hold nor lie in the library or the inbox. Another file
+          system is fine: a file is copied, compared and only then removed
+          at its source.
+        '';
+      };
       startDelay = mkOption {
         type = types.ints.positive;
         default = 60;
@@ -755,7 +774,19 @@ in
         assertion = lib.all (n: builtins.match "[A-Za-z0-9._-]+" n != null) (lib.attrNames cfg.users);
         message = "services.calibre-hub.users: names may only contain letters, digits, '.', '_' and '-'.";
       }
+      {
+        assertion = !(within (toString cfg.library) trashDir || within trashDir (toString cfg.library));
+        message = "services.calibre-hub.intake.trashDir (${trashDir}) may neither hold nor lie in the library: the hub only reads the library.";
+      }
+      {
+        assertion =
+          cfg.inbox.path != null -> !(within (toString cfg.inbox.path) trashDir || within trashDir (toString cfg.inbox.path));
+        message = "services.calibre-hub.intake.trashDir (${trashDir}) may neither hold nor lie in the inbox: what is thrown away would come back.";
+      }
     ];
+
+    # ReadWritePaths needs it there before the service starts
+    systemd.tmpfiles.rules = lib.optional (!trashInState) "d ${trashDir} 2775 calibre-hub ${cfg.group} -";
 
     users.users.calibre-hub = {
       isSystemUser = true;
@@ -855,6 +886,7 @@ in
         CALIBRE_HUB_ALERT_COMMAND = lib.optionalString (cfg.alertCommand != null) cfg.alertCommand;
         CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
         CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
+        CALIBRE_HUB_TRASH = trashDir;
         CALIBRE_HUB_INTAKE_START = toString cfg.intake.startDelay;
         CALIBRE_HUB_INTAKE_INTERVAL = toString cfg.intake.interval;
         CALIBRE_HUB_INTAKE_TICK = toString cfg.intake.tick;

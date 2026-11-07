@@ -1,31 +1,115 @@
 require "./intake"
 
 module CalibreHub
-  # The Eingang's trash: a folder next to the root, <root>-papierkorb, that
-  # the hub only ever moves files into. It doesn't show on the hub's
-  # Papierkorb page and nothing here deletes: Arthur empties it by hand. One
-  # rename per file, so a move is whole or didn't happen; a rename between
-  # two file systems fails and the entry stays in the list.
-  module IntakeTrash
-    SUFFIX = "-papierkorb"
+  # The Eingang's trash: one folder for everything thrown away, with a folder
+  # per source below it (inbox/, upload/, backlog/ for what is left of those
+  # days) and the path below the source under that, so a file can be brought
+  # back. It doesn't show on the hub's Papierkorb page and nothing here deletes
+  # what it wasn't sure to have: Arthur empties it by hand. One rename per file
+  # where that works, so a move is whole or didn't happen. Between two file
+  # systems, or two mounts of ReadWritePaths, the file is copied, compared byte
+  # for byte and only then removed at its source; a copy that fails leaves the
+  # source as it was, and the entry says why.
+  class IntakeTrash
+    getter dir : String
+    # a file system's part of a move; a spec has them fail
+    property rename : Proc(String, String, Nil) = ->(from : String, to : String) { File.rename(from, to) }
+    property copy : Proc(String, String, Nil) = ->(from : String, to : String) { IntakeTrash.copy_file(from, to) }
 
-    # Moves files or folders below a root to the trash folder, under their
-    # path in the root. Returns where they went.
-    def self.move(roots : Array(String), paths : Array(String)) : Array(String)
+    def initialize(dir : String)
+      @dir = File.expand_path(dir)
+    end
+
+    # what stands against throwing anything away, for the log at the start:
+    # a decision that runs into it says so itself
+    def problem : String?
+      Dir.mkdir_p(@dir)
+      File::Info.writable?(@dir) ? nil : "#{@dir} is not writable for the hub"
+    rescue ex : File::Error
+      ex.message
+    end
+
+    # Moves files or folders of a source to the trash folder, under their path
+    # below root, which a source no longer there hasn't got. Returns where
+    # they went.
+    def move(origin : String, root : String?, paths : Array(String)) : Array(String)
       paths.map do |path|
-        target = free(target(roots, path))
+        target = IntakeTrash.free(target(origin, root, path))
         Dir.mkdir_p(File.dirname(target))
-        File.rename(path, target)
+        place(path, target)
         target
       end
     end
 
-    # where a path of a root belongs in that root's trash folder
-    def self.target(roots : Array(String), path : String) : String
-      root = roots.select { |r| path.starts_with?(r.rstrip('/') + "/") }.max_by?(&.size)
-      raise File::Error.new("not below an import root", file: path) unless root
-      root = root.rstrip('/')
-      root + SUFFIX + path.lchop(root)
+    # where a path of a source belongs in the trash folder
+    def target(origin : String, root : String?, path : String) : String
+      return File.join(@dir, origin, path.lchop('/')) unless root
+      below = root.rstrip('/') + "/"
+      raise File::Error.new("not below #{root}", file: path) unless path.starts_with?(below)
+      File.join(@dir, origin, path.lchop(below))
+    end
+
+    private def place(path : String, target : String)
+      @rename.call(path, target)
+    rescue ex : File::Error
+      raise ex unless ex.os_error == Errno::EXDEV
+      carry(path, target)
+    end
+
+    # by way of a name nobody takes for a book
+    private def carry(path : String, target : String)
+      part = "#{target}.part"
+      begin
+        copy_all(path, part)
+        File.rename(part, target)
+      rescue ex : File::Error | IO::Error
+        # half a copy of the hub's own, the source is untouched
+        remove_all(part) if File.info?(part, follow_symlinks: false)
+        raise File::Error.new("not moved to the trash, it stays where it is: #{ex.message}", file: path)
+      end
+      begin
+        remove_all(path)
+      rescue ex : File::Error
+        # the file is whole where it was: not in two places. Of a folder some
+        # may be gone, the copy stays.
+        File.delete?(target) unless File.directory?(target)
+        raise File::Error.new("not moved to the trash, can't remove it from where it is: #{ex.message}", file: path)
+      end
+    end
+
+    private def copy_all(path : String, to : String)
+      info = File.info(path, follow_symlinks: false)
+      if info.directory?
+        Dir.mkdir(to)
+        Dir.each_child(path) { |name| copy_all(File.join(path, name), File.join(to, name)) }
+      elsif info.symlink?
+        File.symlink(File.readlink(path), to)
+      else
+        @copy.call(path, to)
+        raise IO::Error.new("the copy of #{path} isn't the same") unless BookFiles.same_content?(path, to)
+      end
+    end
+
+    private def remove_all(path : String)
+      info = File.info(path, follow_symlinks: false)
+      if info.directory?
+        Dir.each_child(path) { |name| remove_all(File.join(path, name)) }
+        Dir.delete(path)
+      else
+        File.delete(path)
+      end
+    end
+
+    # on disk before the source goes, with the source's time
+    def self.copy_file(from : String, to : String)
+      info = File.info(from)
+      File.open(from) do |source|
+        File.open(to, "w", info.permissions) do |copy|
+          IO.copy(source, copy)
+          copy.fsync
+        end
+      end
+      File.utime(info.modification_time, info.modification_time, to)
     end
 
     # A file of that name stays what it is: the next free one, „a (2).pdf“
@@ -46,8 +130,8 @@ module CalibreHub
   # when it is queued. Accepting goes through the import (Importer#import
   # with what was chosen), so a book gets what any imported book gets and
   # a backlog file is in import_files, an inbox file or an upload moves to
-  # _imported; a trashed file moves (IntakeTrash). An entry whose decision
-  # fails is back in the list and says why.
+  # _imported; a trashed file goes to the trash folder (IntakeTrash). An entry
+  # whose decision fails is back in the list and says why.
   class IntakeJobs < Jobs
     def initialize(db : DB::Database, calibre : Calibre, writer : Writer, @imports : Importer, @intake : Intake)
       super(db, calibre, writer, nil, "intake_jobs")

@@ -175,6 +175,8 @@ module CalibreHub
       Meta::FileMeta.cover(path, format, target, nice: true)
     end
 
+    # where what is thrown away goes
+    getter trash : IntakeTrash
     # idle, scanning, analysing, paused, off
     getter state = "idle"
     # the file being analysed
@@ -262,7 +264,7 @@ module CalibreHub
 
     # covers: where the pictures of plain files go, next to the state DB
     def initialize(@db : DB::Database, @calibre : Calibre, @imports : Importer, @library : String?,
-                   @covers : String, @interval = INTERVAL, @stable = STABLE, @pause = PAUSE, @wait = WAIT,
+                   @covers : String, @trash : IntakeTrash, @interval = INTERVAL, @stable = STABLE, @pause = PAUSE, @wait = WAIT,
                    @inbox : Inbox? = nil, @uploads : Inbox? = nil, @tick = TICK)
       Intake.migrate(@db)
       @peeks = File.join(File.dirname(@covers), "intake-peeks")
@@ -666,7 +668,7 @@ module CalibreHub
       book = ix.exact(u) || return false
       return false if u.kind == "calibre" && !Intake.only_book?(u)
       paths = Intake.paths(u.kind, u.name, u.files)
-      moved = box(origin).try { |b| paths.map { |p| b.move(p, Inbox::DUPLICATES) } } || IntakeTrash.move(roots, paths)
+      moved = box(origin).try { |b| paths.map { |p| b.move(p, Inbox::DUPLICATES) } } || @trash.move(origin, nil, paths)
       puts "intake: #{u.name} is in book #{book} byte for byte, moved to #{moved.join(", ")}"
       settled_upload(u.name, "copy", book) if origin == UPLOAD
       true
@@ -842,7 +844,7 @@ module CalibreHub
 
     # The entry's unit to the trash folder
     def trash(e : Entry)
-      moved = IntakeTrash.move(roots, Intake.paths(e.kind, e.path, e.files))
+      moved = @trash.move(e.origin, box(e.origin).try(&.dir), Intake.paths(e.kind, e.path, e.files))
       puts "intake: #{e.path} moved to #{moved.join(", ")}"
       settled_upload(e.path, "trashed", nil) if e.origin == UPLOAD
       forget(e)
