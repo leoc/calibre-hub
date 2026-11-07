@@ -36,8 +36,8 @@ import {
   type IntakeBand,
   type IntakeSource,
 } from "@/lib/intake"
-import { loadBookFile, readBody, type LoadProgress } from "@/lib/offline"
-import { fileName, loadingText } from "@/lib/reader"
+import { loadBookFile, readBody } from "@/lib/offline"
+import { fileName } from "@/lib/reader"
 import { errorText } from "@/lib/run-action"
 import { toast } from "@/lib/toast"
 import { formatNumber, t } from "@/i18n"
@@ -51,7 +51,7 @@ import { Input } from "@/components/ui/input"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { ChipsInput } from "@/components/ui/suggest"
 import { LibraryProposalView } from "@/components/library-proposal"
-import { FilePeek } from "@/routes/reader"
+import { FilePeek, type LoadFile } from "@/routes/reader"
 
 const muted = "text-muted-foreground eink:text-black"
 const select = "min-h-9 rounded-md border bg-background px-2 text-sm eink:min-h-12 eink:border-2 touch:min-h-11"
@@ -639,11 +639,9 @@ const ButtonKey = ({ children }: { children: ReactNode }) => <KeyChip className=
 // A large file comes as its first pages (Intake#peek), a DjVu as a PDF of them.
 function Peek({ entry: e, format, onClose }: { entry: IntakeEntry; format: string; onClose: () => void }) {
   const title = entryTitle(e)
-  const [loading, setLoading] = useState<string>()
   const [excerpt, setExcerpt] = useState(0)
   const shown = isDjvu(format) ? "PDF" : format
-  const load = async (signal: AbortSignal) => {
-    const progress: LoadProgress = (received, total) => setLoading(loadingText(received, total))
+  const load: LoadFile = async (signal, progress) => {
     if (isLibrary(e) && e.bookId !== null) return loadBookFile(e.bookId, format, signal, progress)
     const res = await fetch(intakeFileUrl(e.id, format), { credentials: "same-origin", signal })
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -654,7 +652,7 @@ function Peek({ entry: e, format, onClose }: { entry: IntakeEntry; format: strin
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogScreen aria-describedby={undefined}>
         <DialogTitle className="sr-only">{title}</DialogTitle>
-        <FilePeek title={title} name={fileName(e.id, shown)} format={shown} load={load} loading={loading} note={excerpt ? t("reader.excerpt", { pages: excerpt }) : undefined} onClose={onClose} />
+        <FilePeek title={title} name={fileName(e.id, shown)} format={shown} load={load} note={excerpt ? t("reader.excerpt", { pages: excerpt }) : undefined} onClose={onClose} />
       </DialogScreen>
     </Dialog>
   )

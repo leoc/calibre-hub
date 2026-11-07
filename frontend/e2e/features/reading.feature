@@ -172,3 +172,30 @@ Feature: Reading
     And I open the reader settings
     Then the reader settings offer no animation and no colors
     And the book is shown with up to 2 columns, paginated and not animated
+
+  @timeout:70000
+  Scenario: A download that stops ends in a message, and trying again opens the book
+    Given the detail of a book with the format "EPUB" is open
+    And the book's file stops coming after its first bytes
+    When I start reading from the detail
+    Then the reader gives up with "Vom Hub kommt nichts mehr an."
+    When the book's file comes again
+    And I click "Erneut versuchen" in the reader
+    Then the book opens in the reader
+    And the reader shows the first page
+
+  Scenario: A book whose pages can't be reached ends in the error, and trying again opens it
+    Given the detail of a book with the format "EPUB" is open
+    And the book's frames can't be reached
+    When I start reading from the detail
+    Then the reader gives up with "null"
+    When the book's frames can be reached again
+    And I click "Erneut versuchen" in the reader
+    Then the book opens in the reader
+    And the reader shows the first page
+
+  Scenario: A PDF whose pages can't be reached ends in the error too
+    Given the detail of a book with the format "PDF" is open
+    And the book's frames can't be reached
+    When I start reading from the detail
+    Then the reader gives up with "null"

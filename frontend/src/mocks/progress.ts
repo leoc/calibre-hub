@@ -59,6 +59,11 @@ export const progressHandlers = [
   }),
   http.get("/api/books/:id/download/:format", async ({ params }) => {
     const format = String(params.format).toLowerCase()
+    // e2e: the first bytes, then nothing (reading.feature)
+    if (localStorage.getItem("hub.mock.stall")) {
+      const body = new ReadableStream({ start: (c) => c.enqueue(new Uint8Array(1000)) })
+      return new HttpResponse(body, { headers: { "Content-Length": "2000000" } })
+    }
     const file = uploaded.get(`${params.id}/${format}`)
     const pdf = format === "pdf"
     return new HttpResponse(file ? await file.arrayBuffer() : await fixture(pdf ? pdfUrl : epubUrl), {

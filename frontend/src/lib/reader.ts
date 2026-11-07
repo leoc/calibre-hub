@@ -24,7 +24,33 @@ export const fileName = (id: number, format: string) => {
 // whole MB, so the line changes as often as it says something new
 export function loadingText(received: number, total: number | null): string {
   const mb = Math.floor(received / 1_000_000)
-  return total ? t("reader.loading.of", { received: mb, total: Math.ceil(total / 1_000_000) }) : t("reader.loading.mb", { received: mb })
+  if (!total) return t("reader.loading.mb", { received: mb })
+  const all = Math.ceil(total / 1_000_000)
+  // the last byte is all of it, whatever the rounding: 3.6 MB is not "3 von 4"
+  return t("reader.loading.of", { received: received >= total ? all : mb, total: all })
+}
+
+// No byte of the file for this long: the download stands. Time since the last
+// byte, not since the start: a large book on a slow line takes what it takes.
+export const STALL_LIMIT = 30_000
+// The whole file is here and the book doesn't open. Above pdf.js' 30 s
+// (vendor/foliate-js/pdf.js), which says more about why.
+export const OPEN_LIMIT = 60_000
+// An uncaught error while opening, and the book still isn't open
+export const UNCAUGHT_LIMIT = 3_000
+
+// Calls onSilent when wait() hasn't been called for ms; wait(ms) sets another limit
+export function watchdog(ms: number, onSilent: () => void) {
+  let limit = ms
+  let timer = setTimeout(onSilent, limit)
+  return {
+    wait(next = limit) {
+      limit = next
+      clearTimeout(timer)
+      timer = setTimeout(onSilent, limit)
+    },
+    stop: () => clearTimeout(timer),
+  }
 }
 
 // 0.634 -> 63; never 100 before the last page

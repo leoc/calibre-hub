@@ -36,6 +36,10 @@ describe("loadingText", () => {
     expect(loadingText(1000, 2000)).toBe("Lade 0 von 1 MB …")
   })
 
+  it("says all of it when the last byte is there", () => {
+    expect(loadingText(3_600_000, 3_600_000)).toBe("Lade 4 von 4 MB …")
+  })
+
   it("says what it has when the total isn't known", () => {
     expect(loadingText(12_400_000, null)).toBe("Lade 12 MB …")
   })

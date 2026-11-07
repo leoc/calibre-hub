@@ -49,6 +49,21 @@ Given("the reader is open for a book with the format {string}", async ({ page },
   await waitForReader(page)
 })
 
+Given("the book's file stops coming after its first bytes", async ({ page }) => {
+  await page.evaluate(() => localStorage.setItem("hub.mock.stall", "1"))
+})
+
+// what WebKit did to every book frame under `frame-ancestors 'none'`: the load
+// event comes, the document can't be reached, foliate-js throws in the handler
+Given("the book's frames can't be reached", async ({ page }) => {
+  await page.evaluate(() => {
+    const own = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentDocument")!
+    const w = window as unknown as { __noFrames: boolean }
+    w.__noFrames = true
+    Object.defineProperty(HTMLIFrameElement.prototype, "contentDocument", { configurable: true, get() { return w.__noFrames ? null : own.get!.call(this) } })
+  })
+})
+
 Given("the device {string} saved the position {int} % for the book", async ({ page }, name: string, pct: number) => {
   const status = await page.evaluate(
     ([id, name, fraction]) =>
@@ -136,9 +151,21 @@ When("I tap the right third of the page", async ({ page }) => tapAt(page, 0.85))
 When("I tap the left third of the page", async ({ page }) => tapAt(page, 0.15))
 When("I tap the middle of the page", async ({ page }) => tapAt(page, 0.5))
 
+When("I start reading from the detail", async ({ page }) => {
+  await page.getByRole("link", { name: /^(Lesen|Weiterlesen)/ }).click()
+})
+
 When("I open the reader from the detail", async ({ page }) => {
   await page.getByRole("link", { name: /^(Lesen|Weiterlesen)/ }).click()
   await waitForReader(page)
+})
+
+When("the book's file comes again", async ({ page }) => {
+  await page.evaluate(() => localStorage.removeItem("hub.mock.stall"))
+})
+
+When("the book's frames can be reached again", async ({ page }) => {
+  await page.evaluate(() => ((window as unknown as { __noFrames: boolean }).__noFrames = false))
 })
 
 When("I make the book available offline", async ({ page }) => {
@@ -217,6 +244,16 @@ Then("the hub has this device's position from offline", async ({ page }) => {
     )
     .toBe(saved.get(page))
   await expect.poll(() => page.evaluate(() => localStorage.getItem("hub.progressQueue"))).toBeNull()
+})
+
+Then("the book opens in the reader", async ({ page }) => waitForReader(page))
+
+Then("the reader gives up with {string}", async ({ page }, text: string) => {
+  const failed = page.locator('[data-reader="failed"]')
+  await expect(failed).toBeVisible({ timeout: 45_000 })
+  await expect(failed.getByRole("alert")).toHaveText("Das Buch ließ sich nicht öffnen.")
+  await expect(failed).toContainText(text)
+  await expect(failed.getByRole("button", { name: "Erneut versuchen" })).toBeVisible()
 })
 
 Then("the reader shows the book at {int} %", async ({ page }, pct: number) => {

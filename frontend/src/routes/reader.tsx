@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { getRouteApi, useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, ChevronLeft, ChevronRight, List, Type } from "lucide-react"
+import { ArrowLeft, ChevronLeft, ChevronRight, List, RotateCcw, Type } from "lucide-react"
 import type { FoliateView, RelocateDetail, TocItem } from "foliate-js/view.js"
 import { ApiError, type Book, type ProgressEntry, type ProgressSave } from "@/lib/api"
 import { bookQuery, progressQuery } from "@/lib/queries"
-import { loadBookFile, offlineSupported, refreshOffline, useOfflineBook } from "@/lib/offline"
+import { loadBookFile, offlineSupported, refreshOffline, useOfflineBook, type LoadProgress } from "@/lib/offline"
 import { isNetworkError, useOnline } from "@/lib/online"
 import { queuedProgress, saveProgress, withQueued } from "@/lib/progress-sync"
 import { OfflineBadge, OfflineButton } from "@/components/offline"
@@ -13,14 +13,19 @@ import {
   fileName,
   getDeviceId,
   getDeviceName,
+  loadingText,
+  OPEN_LIMIT,
   peekKey,
   percent,
   positionOf,
   readerFormat,
   readerKey,
+  STALL_LIMIT,
   startPoint,
   tapZone,
   targetOf,
+  UNCAUGHT_LIMIT,
+  watchdog,
   type StartPoint,
 } from "@/lib/reader"
 import { chromeVars, effectiveSettings } from "@/lib/reader-settings"
@@ -69,18 +74,21 @@ export function ReaderPage() {
   if (!format) return <Centered><p role="alert">{t("reader.noFormat")}</p><BackButton onClick={back} /></Centered>
   const start = startPoint(withQueued(devices, queuedProgress(id)), getDeviceId())
   const name = fileName(id, format)
-  const load = (signal: AbortSignal) => loadBookFile(id, format, signal)
+  const load: LoadFile = (signal, onProgress) => loadBookFile(id, format, signal, onProgress)
   return <Reader key={`${id}-${format}`} book={data} title={data.title} name={name} load={load} format={format} start={start} onBack={back} />
 }
 
 const NO_POSITION: StartPoint = { mine: null, elsewhere: null }
 
+// The file, saying how far it got: that is how the reader knows it still comes
+export type LoadFile = (signal: AbortSignal, onProgress: LoadProgress) => Promise<Blob>
+
 // A file's first pages without a book behind it (the Eingang): the reader
 // with its paging and settings, nothing about the reading is kept
-export function FilePeek({ title, name, format, load, loading, note, onClose }: { title: string; name: string; format: string; load: (signal: AbortSignal) => Promise<Blob>; loading?: string; note?: string; onClose: () => void }) {
+export function FilePeek({ title, name, format, load, note, onClose }: { title: string; name: string; format: string; load: LoadFile; note?: string; onClose: () => void }) {
   const settingsReady = useReaderSettingsReady()
   if (!settingsReady) return <Centered><p className="text-muted-foreground eink:text-black">{t("reader.loading")}</p></Centered>
-  return <Reader title={title} name={name} load={load} format={format} start={NO_POSITION} loading={loading} note={note} onBack={onClose} />
+  return <Reader title={title} name={name} load={load} format={format} start={NO_POSITION} note={note} onBack={onClose} />
 }
 
 // no answer, or a hub that can't answer now
@@ -114,15 +122,18 @@ interface Location {
 
 const SAVE_DELAY = 1500
 
-// book: what the position is saved for; without one nothing is. loading: how
-// far the file is; note: what is to be known about what is shown
-function Reader({ book, title, name, load, format, start, loading, note, onBack }: { book?: Book; title: string; name: string; load: (signal: AbortSignal) => Promise<Blob>; format: string; start: StartPoint; loading?: string; note?: string; onBack: () => void }) {
+// book: what the position is saved for; without one nothing is. note: what is
+// to be known about what is shown
+function Reader({ book, title, name, load, format, start, note, onBack }: { book?: Book; title: string; name: string; load: LoadFile; format: string; start: StartPoint; note?: string; onBack: () => void }) {
   const { eink } = useTheme()
   const queryClient = useQueryClient()
   const host = useRef<HTMLDivElement>(null)
   const viewRef = useRef<FoliateView | null>(null)
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading")
   const [failure, setFailure] = useState<unknown>(null)
+  // how far the file is, then that it is being opened
+  const [loading, setLoading] = useState<string>()
+  const [attempt, setAttempt] = useState(0)
   const [loc, setLoc] = useState<Location>({ fraction: start.mine?.fraction ?? 0, chapter: null })
   const [toc, setToc] = useState<TocItem[]>([])
   const [fixed, setFixed] = useState(false)
@@ -236,11 +247,54 @@ function Reader({ book, title, name, load, format, start, loading, note, onBack 
     let gone = false
     const abort = new AbortController()
     let view: FoliateView | null = null
+    // whatever the reason, the loading view ends: nothing else tells the
+    // reader that the file stopped coming or that a book frame never opened
+    let over = false
+    let opening = false
+    let uncaught: Error | null = null
+    const finish = () => {
+      over = true
+      clock.stop()
+      window.removeEventListener("error", onError)
+      window.removeEventListener("unhandledrejection", onRejection)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+    const fail = (e: unknown) => {
+      if (gone || over) return
+      finish()
+      abort.abort()
+      console.error(e)
+      setFailure(e)
+      setStatus("failed")
+    }
+    const clock = watchdog(STALL_LIMIT, () => fail(uncaught ?? new Error(t(opening ? "reader.openStalled" : "reader.stalled"))))
+    // a phone locked on the way holds the timers and the download alike
+    const onVisible = () => {
+      if (document.visibilityState === "visible") clock.wait()
+    }
+    // foliate-js works in event handlers: what goes wrong in one reaches no
+    // promise. It may be something else's, so the book gets a moment more.
+    const onUncaught = (e: Error) => {
+      uncaught ??= e
+      clock.wait(UNCAUGHT_LIMIT)
+    }
+    const onError = (e: ErrorEvent) => onUncaught(e.error instanceof Error ? e.error : new Error(e.message))
+    const onRejection = (e: PromiseRejectionEvent) => onUncaught(e.reason instanceof Error ? e.reason : new Error(String(e.reason)))
+    document.addEventListener("visibilitychange", onVisible)
     ;(async () => {
       try {
         await import("foliate-js/view.js")
-        const file = new File([await load(abort.signal)], name)
+        const blob = await load(abort.signal, (received, total) => {
+          clock.wait()
+          setLoading(loadingText(received, total))
+        })
+        const file = new File([blob], name)
         if (gone) return
+        opening = true
+        setLoading(t("reader.opening"))
+        clock.wait(OPEN_LIMIT)
+        window.addEventListener("error", onError)
+        window.addEventListener("unhandledrejection", onRejection)
         view = document.createElement("foliate-view") as FoliateView
         view.className = "block h-full w-full"
         el.append(view)
@@ -269,16 +323,16 @@ function Reader({ book, title, name, load, format, start, loading, note, onBack 
         applyReaderSettings(view, settings, el.clientWidth)
         await view.init({ lastLocation: start.mine ? targetOf(start.mine, format) : null })
         ready = true
-        if (!gone) setStatus("ready")
-      } catch (e) {
         if (gone) return
-        console.error(e)
-        setFailure(e)
-        setStatus("failed")
+        finish()
+        setStatus("ready")
+      } catch (e) {
+        fail(e)
       }
     })()
     return () => {
       gone = true
+      finish()
       abort.abort()
       view?.close()
       view?.remove()
@@ -286,7 +340,14 @@ function Reader({ book, title, name, load, format, start, loading, note, onBack 
     }
     // settings change through their own effects below; the view opens once
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, format])
+  }, [name, format, attempt])
+
+  const retry = () => {
+    setLoading(undefined)
+    setFailure(null)
+    setStatus("loading")
+    setAttempt((a) => a + 1)
+  }
 
   useApplyReaderSettings(viewRef, host, status === "ready" && !fixed, settings)
 
@@ -328,7 +389,12 @@ function Reader({ book, title, name, load, format, start, loading, note, onBack 
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background p-4 text-center">
             <p role="alert" className="font-medium">{t("reader.failed")}</p>
             {failure instanceof Error && <p className="text-sm text-muted-foreground eink:text-black">{failure.name === "PDFTimeout" ? t("reader.pdfTimeout") : failure.message}</p>}
-            <BackButton onClick={onBack} />
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button variant="outline" onClick={retry}>
+                <RotateCcw /> {t("error.retry")}
+              </Button>
+              <BackButton onClick={onBack} />
+            </div>
           </div>
         )}
         {elsewhere && status === "ready" && (

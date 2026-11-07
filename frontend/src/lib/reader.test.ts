@@ -1,5 +1,5 @@
 import type { ProgressEntry } from "./api"
-import { deviceLabel, peekKey, percent, positionOf, readerFormat, readerKey, startPoint, tapZone, targetOf } from "./reader"
+import { deviceLabel, peekKey, percent, positionOf, readerFormat, readerKey, startPoint, tapZone, targetOf, watchdog } from "./reader"
 
 const entry = (device: string, fraction: number, at: string, extra: Partial<ProgressEntry> = {}): ProgressEntry => ({
   bookId: 1,
@@ -87,5 +87,45 @@ describe("peekKey", () => {
     expect(key("Escape")).toBe("back")
     expect(key("ArrowRight")).toBe("next")
     expect(key("l", { ctrlKey: true })).toBeNull()
+  })
+})
+
+describe("watchdog", () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it("speaks up after the limit of silence", () => {
+    const silent = vi.fn()
+    watchdog(1000, silent)
+    vi.advanceTimersByTime(999)
+    expect(silent).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(silent).toHaveBeenCalledOnce()
+  })
+
+  it("never speaks up while something keeps coming, however long it takes", () => {
+    const silent = vi.fn()
+    const clock = watchdog(1000, silent)
+    for (let i = 0; i < 100; i++) {
+      vi.advanceTimersByTime(900)
+      clock.wait()
+    }
+    expect(silent).not.toHaveBeenCalled()
+    clock.stop()
+  })
+
+  it("takes another limit", () => {
+    const silent = vi.fn()
+    const clock = watchdog(1000, silent)
+    clock.wait(50)
+    vi.advanceTimersByTime(50)
+    expect(silent).toHaveBeenCalledOnce()
+  })
+
+  it("is quiet once stopped", () => {
+    const silent = vi.fn()
+    watchdog(1000, silent).stop()
+    vi.advanceTimersByTime(5000)
+    expect(silent).not.toHaveBeenCalled()
   })
 })
