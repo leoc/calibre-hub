@@ -500,6 +500,7 @@ module CalibreHub
       intake.search = ->(b : Book, g : Meta::Guess) { m.search(b, g) }
     end
     intake.start
+    repair.watch_gone
     # the library's books no plan got to, behind the analysis
     recheck = RepairRecheck.new(db, calibre, writer, repair)
     recheck.busy = -> { intake.working? }

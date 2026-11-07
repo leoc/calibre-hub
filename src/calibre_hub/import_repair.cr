@@ -32,7 +32,8 @@ module CalibreHub
   # skipped one is not asked again there (skipped). An accept that fails stays
   # and says why (detail); one that found a field changed is failed, only a new
   # plan helps there. A proposal that writes nothing (WRITES) has nothing to
-  # decide: it stays out of the Eingang until a recheck finds a change.
+  # decide: it stays out of the Eingang until a recheck finds a change. One
+  # whose book calibre no longer has is rejected (settle_gone).
   class ImportRepair < Jobs
     # automatic changes the repair builds on (not a person's edits)
     AUTO = Set{"rules", "model", "authors"}
@@ -47,6 +48,8 @@ module CalibreHub
     WRITES = "exists (select 1 from json_each(changes) where json_extract(value, '$.field') != '#{Meta::FileName::CANDIDATE}')"
     # open, but out of the Eingang: nothing to write
     HIDDEN = "status = 'pending' and decision is null and not #{WRITES}"
+    # how often watch_gone looks; the first time at the start
+    GONE_EVERY = 10.minutes
 
     record Proposed, field : String, old : JSON::Any, new : JSON::Any, source : String = "rules" do
       include JSON::Serializable
@@ -149,6 +152,41 @@ module CalibreHub
         @log.decided_status(id, "rejected") if n > 0
         n
       end
+    end
+
+    # Rejects the proposals of these books (without ids all open ones) that
+    # calibre no longer has, and says which. Only the whole library's ids
+    # decide: calibre that can't be reached raises, an empty library says
+    # nothing, and a search that finds nothing isn't asked. No book and no file
+    # is touched, and a later plan leaves them out like any rejected one.
+    def settle_gone(ids = open_books) : Array(Int64)
+      return ids if ids.empty?
+      known = @calibre.last_modified
+      return [] of Int64 if known.empty?
+      gone = ids.reject { |id| known.has_key?(id) }
+      reject(gone)
+      puts "import repair: proposals of #{gone.size} books gone from calibre settled" unless gone.empty?
+      gone
+    end
+
+    # Books leave calibre whatever the Eingang does, and a GET doesn't write:
+    # settle_gone in the background, again after calibre was away
+    def watch_gone(every = GONE_EVERY)
+      spawn do
+        loop do
+          begin
+            settle_gone
+          rescue ex
+            STDERR.puts "import repair: gone books not checked: #{ex.message}"
+          end
+          sleep every
+        end
+      end
+    end
+
+    # not waiting for an accept job, that one finds out itself
+    private def open_books : Array(Int64)
+      proposals("status in ('pending', 'failed') and decision is null", [] of DB::Any).map(&.book_id)
     end
 
     PROPOSAL = "book_id, file, decided, changes, status, detail, at, confidence, level, source, title_confidence, authors_confidence, notes, skipped"
@@ -369,6 +407,8 @@ module CalibreHub
       rescue ex : Jobs::Abort
         raise ex
       rescue ex
+        # gone for good there is nothing to come back for
+        return if ex.is_a?(Writer::NotFound) && gone?(id)
         # a proposal that stays pending says why it came back
         @db.exec "update import_repairs set decision = null, detail = ? where book_id = ? and status = 'pending'",
           ex.message || ex.class.name, id
@@ -382,6 +422,13 @@ module CalibreHub
           puts "import repair: job #{job.id}: metadata run #{run.id} for #{repaired.size} books"
         end
       end
+    end
+
+    # only for sure: when calibre can't say, the accept failed like any other
+    private def gone?(id : Int64) : Bool
+      settle_gone([id]).includes?(id)
+    rescue Calibre::Error
+      false
     end
 
     # The plan of a book, unless it was accepted or rejected meanwhile. A

@@ -38,6 +38,8 @@ private class FakeCalibre
   getter requests = [] of {String, JSON::Any}
   getter url : String
   property down = false
+  # a search for ids finds nothing, the whole list still has them
+  property blind = false
   # add-book answers these file names as duplicates of the book
   property duplicate_names = {} of String => Int64
   @next = 100_i64
@@ -81,7 +83,7 @@ private class FakeCalibre
       when "/cdb/cmd/list/0"
         fields = body[0].as_a.map(&.as_s)
         m = body[3].as_s.scan(/id:(\d+)/)
-        ids = m.empty? ? @books.keys : m.map(&.[1].to_i64).select { |i| @books.has_key?(i) }
+        ids = m.empty? ? @books.keys : m.map(&.[1].to_i64).select { |i| !@blind && @books.has_key?(i) }
         data = fields.to_h { |f| {f.sub('*', '#'), ids.to_h { |i| {i.to_s, @books[i][f.sub('*', '#')]? || JSON::Any.new(nil)} }} }
         ctx.response.print({result: {book_ids: ids, data: data}}.to_json)
       when "/ajax/search"
@@ -890,6 +892,11 @@ private def status_of(db : DB::Database, id : Int64) : String
   db.query_one("select status from import_repairs where book_id = ?", id, as: String)
 end
 
+# nothing of a book or its files was written or removed
+private def nothing_written(fake : FakeCalibre)
+  fake.requests.map(&.[0]).reject(&.==("/cdb/cmd/list/0")).should be_empty
+end
+
 private def repair_settled(repair : CalibreHub::ImportRepair)
   500.times do
     return unless repair.running?
@@ -1381,17 +1388,19 @@ describe "the filter Schon in der Bibliothek" do
   it "comes back with the reason when the write fails" do
     tmpdir do |_, root|
       fake = FakeCalibre.new
+      fake.add(9, "Alt", ["Jemand"])
       intake, _, db, _ = setup(root, fake)
       repair = repair_of(fake, db)
       intake.repair = repair
-      # no such book any more
       proposal_row(db, 9, title_change("Alt", "Neu"))
+      fake.down = true
       decide(intake, [-9_i64], "accept")
       repair_settled(repair)
+      fake.down = false
       e = library_entries(intake).first
       e["status"].should eq "analysed"
       e["error"].as_s.should_not be_empty
-      e["bookTitle"].raw.should be_nil
+      status_of(db, 9).should eq "pending"
     end
   end
 
@@ -1435,6 +1444,103 @@ describe "the filter Schon in der Bibliothek" do
       {list["total"], list["takeable"], list["left"]["failed"], list["left"]["skipped"]}.should eq({0, 0, 0, 0})
       list["entries"].as_a.should be_empty
       list["counts"].as_h.values.map(&.as_i).sum.should eq 0
+    end
+  end
+
+  it "settles a proposal whose book is gone, in the accept job, and writes to no book" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(1, "Alt", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 9, title_change("Alt", "Neu"))
+      id = decide(intake, [-9_i64], "accept")["jobId"].as_s
+      repair_settled(repair)
+      repair[id]?.not_nil!.errors.should be_empty
+      status_of(db, 9).should eq "rejected"
+      library_entries(intake).should be_empty
+      nothing_written(fake)
+      fake.books.keys.should eq [1_i64]
+    end
+  end
+
+  it "leaves the gone books' proposals to the background, the list only reads" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(1, "Alt", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 1, title_change("Alt", "Neu"))
+      proposal_row(db, 8, title_change("Alt", "Neu"), status: "failed")
+      proposal_row(db, 9, candidate_only)
+      library_entries(intake).map(&.["bookId"].as_i).should eq [1, 8]
+      status_of(db, 8).should eq "failed"
+      repair.settle_gone.should eq [8_i64, 9_i64]
+      {status_of(db, 1), status_of(db, 8), status_of(db, 9)}.should eq({"pending", "rejected", "rejected"})
+      library_entries(intake).map(&.["bookId"].as_i).should eq [1]
+      nothing_written(fake)
+      # once is enough
+      repair.settle_gone.should be_empty
+      repair.recheck_list[0].should be_empty
+    end
+  end
+
+  it "settles nothing while calibre can't say: down, an empty library, a search that finds nothing" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(1, "Alt", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 1, title_change("Alt", "Neu"))
+      proposal_row(db, 9, title_change("Alt", "Neu"))
+      fake.down = true
+      expect_raises(CalibreHub::Calibre::Unavailable) { repair.settle_gone }
+      decide(intake, [-9_i64], "accept")
+      repair_settled(repair)
+      fake.down = false
+      status_of(db, 9).should eq "pending"
+      db.query_one("select detail from import_repairs where book_id = 9", as: String?).should_not be_nil
+      # what the accept finds empty the whole list still has
+      fake.blind = true
+      decide(intake, [-1_i64], "accept")
+      repair_settled(repair)
+      status_of(db, 1).should eq "pending"
+      library_entries(intake).first["bookTitle"].raw.should be_nil
+      status_of(db, 1).should eq "pending"
+      fake.blind = false
+      # an empty library says nothing, in the background and in the job
+      saved = fake.books.dup
+      fake.books.clear
+      repair.settle_gone.should be_empty
+      decide(intake, [-1_i64], "accept")
+      repair_settled(repair)
+      {status_of(db, 1), status_of(db, 9)}.should eq({"pending", "pending"})
+      fake.books.merge!(saved)
+      repair.settle_gone.should eq [9_i64]
+    end
+  end
+
+  it "looks again by itself after calibre was away" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(1, "Alt", ["Jemand"])
+      intake, _, db, _ = setup(root, fake)
+      repair = repair_of(fake, db)
+      intake.repair = repair
+      proposal_row(db, 9, title_change("Alt", "Neu"))
+      fake.down = true
+      repair.watch_gone(5.milliseconds)
+      sleep 30.milliseconds
+      status_of(db, 9).should eq "pending"
+      fake.down = false
+      200.times do
+        break if status_of(db, 9) == "rejected"
+        sleep 5.milliseconds
+      end
+      status_of(db, 9).should eq "rejected"
     end
   end
 
