@@ -1723,3 +1723,62 @@ describe "an upload" do
     end
   end
 end
+
+describe "reading in an inbox file or an upload" do
+  it "gives the first pages of both, and they go when the entries do" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, _, _, _ = sources(dir)
+      intake.peeks = File.join(dir, "intake-peeks")
+      intake.peek_from = 0_i64
+      intake.peek_reader = ->(_path : String, _format : String, target : String) do
+        File.write(target, "pages")
+        40.as(Int32?)
+      end
+      upload(intake, dir, "Frank Herbert - Dune.djvu", "AT&TFORM" + "x" * 3000)
+      intake.run_fast
+      list = entries(intake)
+      list.map(&.["origin"].as_s).sort!.should eq ["inbox", "upload"]
+      list.each do |e|
+        id = e["id"].as_i64
+        file = intake.readable(id, nil, Intake::PEEKABLE).not_nil!
+        peek = intake.peek(id, file)
+        peek.excerpt.should be_true
+        File.read(peek.path.not_nil!).should eq "pages"
+      end
+      Dir.children(File.join(dir, "intake-peeks")).size.should eq 2
+
+      taken = list.find! { |e| e["origin"] == "inbox" }["id"].as_i64
+      wait(intake, decide(intake, [taken], "accept"))
+      Dir.children(File.join(dir, "intake-peeks")).map(&.split('-').first.to_i64).should_not contain taken
+      thrown = list.find! { |e| e["origin"] == "upload" }["id"].as_i64
+      wait(intake, decide(intake, [thrown], "trash"))
+      Dir.children(File.join(dir, "intake-peeks")).should be_empty
+    end
+  end
+
+  it "leaves nothing of the old entry when an inbox file changes" do
+    tmpdir do |dir, _|
+      path = File.join(dir, "inbox/Agatha Christie - Poirot.pdf")
+      write(path, pdf("poirot"))
+      intake, _, db, _ = sources(dir)
+      intake.peeks = File.join(dir, "intake-peeks")
+      intake.peek_from = 0_i64
+      intake.peek_reader = ->(_path : String, _format : String, target : String) do
+        File.write(target, "pages")
+        40.as(Int32?)
+      end
+      intake.run_fast
+      old = entries(intake).first["id"].as_i64
+      intake.peek(old, intake.readable(old).not_nil!)
+      Dir.children(File.join(dir, "intake-peeks")).size.should eq 1
+
+      write(path, pdf("poirot, zweite Fassung"))
+      intake.run_fast.should eq 1
+      now = entries(intake).first["id"].as_i64
+      now.should_not eq old
+      Dir.children(File.join(dir, "intake-peeks")).should be_empty
+      db.query_one("select count(*) from intake_candidates where entry_id = ?", old, as: Int64).should eq 0
+    end
+  end
+end

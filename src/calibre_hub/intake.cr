@@ -340,6 +340,14 @@ module CalibreHub
         fast(upload_unit(file), ix, extra) { settled_upload(file, "gone", nil) }
       end
       units.each do |u|
+        # a changed file: the old entry leaves like any other, with its
+        # candidates, cover and first pages; what a job has comes up afterwards
+        old = entry_at(u.name)
+        if old.try(&.decision)
+          @fast_left -= 1
+          next
+        end
+        old.try { |e| forget(e) }
         fast(u, ix, inbox_extra(u)) { }
       end
       uploads.size + units.size
@@ -432,7 +440,7 @@ module CalibreHub
     def upload_state(id : String) : JSON::Any?
       row = @db.query_one?("select file, name, status, book_id from intake_uploads where id = ?", id, as: {String, String, String, Int64?}) || return nil
       file, name, status, book = row
-      e = @db.query_one?("select #{COLUMNS} from intake_entries where path = ?", file) { |rs| read_entry(rs) }
+      e = entry_at(file)
       h = {} of String => JSON::Any
       h["id"] = JSON::Any.new(id)
       h["name"] = JSON::Any.new(name)
@@ -449,6 +457,10 @@ module CalibreHub
         h["duplicates"] = JSON.parse(book_list(book).to_json)
       end
       JSON::Any.new(h)
+    end
+
+    private def entry_at(path : String) : Entry?
+      @db.query_one?("select #{COLUMNS} from intake_entries where path = ?", path) { |rs| read_entry(rs) }
     end
 
     private def waiting_state(h : Hash(String, JSON::Any), e : Entry)
