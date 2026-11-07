@@ -1,14 +1,16 @@
 import { http, HttpResponse } from "msw"
 import type { Book, ConfidenceBand, ImportRepairEntry, IntakeBands, IntakeCandidate, IntakeDetail, IntakeEntry, IntakeShares } from "@/lib/api"
 import pdfUrl from "./fixtures/sample.pdf?url"
+import { scenario, scenarioSeeds } from "./scenarios"
 
 // The Eingang of the mock hub: a dozen files like the live backlog, then
 // enough scans that the list needs a second page. The analysis stands at one
-// file, so the numbers read the same in every scenario.
+// file, so the numbers read the same in every e2e scenario. Another situation
+// of the Eingang (mocks/scenarios.ts) has other files and nothing to analyse.
 
 const ROOT = "/srv/media/ebooks/backlog"
 
-interface Seed {
+export interface Seed {
   path: string
   title: string
   authors: string[]
@@ -17,6 +19,9 @@ interface Seed {
   decided?: string
   candidates?: [string, string[], number, string, IntakeCandidate["fields"]?][]
   action?: "add" | "addFormats" | "duplicate"
+  addFormats?: string[]
+  origin?: IntakeEntry["origin"]
+  skipped?: boolean
   bookId?: number
   bookTitle?: string
   sure?: boolean
@@ -92,7 +97,7 @@ function entry(seed: Seed, id: number): IntakeDetail {
     name,
     folder: parts.join("/") || null,
     kind: "file",
-    origin: "backlog",
+    origin: seed.origin ?? "backlog",
     files: [{ path: `${ROOT}/${seed.path}`, format, size: 4_200_000 }],
     status: failed ? "failed" : "analysed",
     detail: seed.failed ?? null,
@@ -110,10 +115,10 @@ function entry(seed: Seed, id: number): IntakeDetail {
     bookId: seed.bookId ?? null,
     match: seed.bookId ? "title" : null,
     sameAs: seed.sameAs ?? null,
-    addFormats: [],
+    addFormats: seed.addFormats ?? [],
     cover: seed.cover ? `/api/intake/${id}/cover?v=1` : null,
     analysedAt: "2026-11-06T20:00:00Z",
-    skipped: false,
+    skipped: seed.skipped ?? false,
     error: null,
     changes: [],
     candidates,
@@ -135,9 +140,9 @@ const scans: Seed[] = Array.from({ length: 150 }, (_, i) => ({
 const ordered = (a: { confidence: number | null; path: string }, b: { confidence: number | null; path: string }) =>
   (b.confidence ?? -1) - (a.confidence ?? -1) || a.path.toLowerCase().localeCompare(b.path.toLowerCase())
 
-let ENTRIES = [...SEEDS, ...scans].map((s, i) => entry(s, i + 1)).sort(ordered)
+let ENTRIES = (scenarioSeeds(scenario) ?? [...SEEDS, ...scans]).map((s, i) => entry(s, i + 1)).sort(ordered)
 const IDS = ENTRIES.map((e) => e.id)
-const LAST = Math.max(...IDS)
+const LAST = Math.max(0, ...IDS)
 
 // what the mock hub was asked, for the scenarios (window.__intake)
 const asked: { decision: string; ids: number[]; candidate?: number; picks?: unknown; title?: string; authors?: string[]; query?: unknown; expect?: number }[] = []
@@ -249,7 +254,7 @@ function libraryEntry(r: ImportRepairEntry): IntakeDetail {
 }
 
 // a proposal that writes nothing has nothing to decide here
-const library = () => proposalBoard.entries().filter((r) => r.changes.some((c) => c.field !== "candidate")).map(libraryEntry)
+const library = () => (scenario === "leer" ? [] : proposalBoard.entries().filter((r) => r.changes.some((c) => c.field !== "candidate")).map(libraryEntry))
 const libraryTakeable = (list: IntakeDetail[]) => list.filter((e) => e.status === "analysed" && !e.skipped)
 
 function libraryList(q: URLSearchParams) {
@@ -292,7 +297,7 @@ const trashable = (list: IntakeDetail[]) => list.filter(isSure)
 const limitOf = (q: URLSearchParams) => Number(q.get("limit") ?? 100)
 
 // the files of the analysis still ahead, as in the header of this file
-const WAITING = 1292
+const WAITING = scenario === "analyse" ? 1292 : 0
 
 const bandsOf = (list: IntakeDetail[]): IntakeBands => {
   const count = (b: string) => list.filter((e) => (e.band ?? "none") === b).length
@@ -354,7 +359,7 @@ export const intakeHandlers = [
     const ahead = mode === "idle" ? 0 : WAITING
     return HttpResponse.json({
       enabled: true,
-      progress: { state: mode ?? "analysing", total: ENTRIES.length + ahead, done: ENTRIES.length, analysed, current: "Mader - Biology - Inquiry into Life 9e HQ.pdf" },
+      progress: { state: mode ?? (WAITING ? "analysing" : "idle"), total: ENTRIES.length + ahead, done: ENTRIES.length, analysed, current: "Mader - Biology - Inquiry into Life 9e HQ.pdf" },
       total: list.length,
       counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: count("none") },
       takeable: take.length,

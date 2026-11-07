@@ -37,8 +37,8 @@ followShelves(queryClient)
 
 async function start() {
   if (import.meta.env.MODE === "mock") {
-    const { worker } = await import("./mocks/browser")
-    await worker.start({ quiet: true })
+    const { startMocks } = await import("./mocks/start")
+    await startMocks()
   }
   // positions read offline go to the hub once it is in reach
   startProgressSync(queryClient)
