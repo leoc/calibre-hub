@@ -13,15 +13,12 @@ require "./dedup"
 require "./backlog_pause"
 
 module CalibreHub
-  # An old collection (the "backlog") that is not sorted for the inbox: folders
-  # never become categories or tags. A folder of an old calibre library
+  # How a folder becomes books. A folder of an old calibre library
   # (metadata.opf, cover.jpg, the formats) becomes one book with the OPF's
   # metadata; any other book file becomes a book with what calibre reads from
   # it (files with the same name and another extension in the same folder are
   # formats of one book). Everything else stays where it is. Nothing is moved
-  # or deleted but by a decision in the Eingang (Intake): the state DB
-  # remembers every file it took, so it isn't offered again, unless the book
-  # it went to is no longer in the library (removed, or in calibre's trash).
+  # or deleted but by a decision in the Eingang (Intake).
   #
   # Before adding, every book is checked against the library: the same file
   # (size and KOReader partial MD5, also of files the hub rewrote since), the
@@ -37,13 +34,8 @@ module CalibreHub
   module Backlog
     # calibre reads the metadata from the first of these the book has
     FORMATS  = %w(EPUB KEPUB AZW3 AZW MOBI PRC AZW4 FB2 FBZ DOCX ODT RTF PDF DJVU DJV CHM CBZ CBR CB7 LIT PDB TXT)
-    MIN_SIZE = 2_048_i64
-    # short TXT files are READMEs, licences and notes, not books
-    MIN_TEXT = 20_480_i64
     # further formats go to calibre-server as base64 in JSON (set-fields)
     MAX_FORMAT = Writer::MAX_UPLOAD
-    # what the inbox moved away, at the top of the scanned folder
-    INBOX_DIRS = %w(_imported _duplicates _failed)
     OPF        = "metadata.opf"
     COVER      = "cover.jpg"
     # identifiers of the old library, not of the book
@@ -180,40 +172,26 @@ module CalibreHub
       end
     end
 
-    # path -> {size, mtime, status, book}: files earlier runs handled
-    alias Known = Hash(String, {Int64, Int64, String, Int64?})
+    # path -> {size, mtime}: files the list has
+    alias Known = Hash(String, {Int64, Int64})
 
-    # Walks folders (read-only, one after another) into units and skipped files
+    # Walks a folder (read-only) into units and skipped files. Somebody put
+    # these files there, so a short one is a book too, and folders starting
+    # with "_" or "." aren't looked at, at any depth.
     class Scanner
       # other fibers (the API) run every this many entries
       YIELD_EVERY = 64
-      # on_progress is called every this many entries
-      PROGRESS_EVERY = 500
 
       getter units = [] of Unit
       getter skipped = [] of Skipped
       getter already = 0
-      # files looked at, book files or not
-      getter files = 0
-      # the folder being walked
-      getter current : String? = nil
-      # (files, units) now and then while walking
-      property on_progress : Proc(Int32, Int32, Nil)?
       @entries = 0
 
-      # inbox: the inbox's rules. Somebody put these files there, so a short
-      # one is a book too, and folders starting with "_" aren't looked at, at
-      # any depth; else only INBOX_DIRS at the top
-      def initialize(@roots : Array(String), @known : Known = Known.new, @inbox = false)
-      end
-
-      def initialize(root : String, @known : Known = Known.new, @inbox = false)
-        @roots = [root]
+      def initialize(@root : String, @known : Known = Known.new)
       end
 
       def run : self
-        @roots.each { |r| walk(r, top: true) }
-        @on_progress.try &.call(@files, @units.size)
+        walk(@root)
         self
       end
 
@@ -222,9 +200,8 @@ module CalibreHub
         FORMATS.includes?(ext) ? ext : nil
       end
 
-      # nil when the file looks like a book of its format; short: any size
-      def self.problem(path : String, format : String, size : Int64, short = false) : String?
-        return "too small" if !short && size < (format == "TXT" ? MIN_TEXT : MIN_SIZE)
+      # nil when the file looks like a book of its format
+      def self.problem(path : String, format : String) : String?
         head = Bytes.new(1024)
         n = File.open(path) { |f| f.read(head) }
         head = head[0, n]
@@ -250,8 +227,7 @@ module CalibreHub
         head.size >= magic.bytesize && head[0, magic.bytesize] == magic.to_slice
       end
 
-      private def walk(dir : String, top = false)
-        @current = dir
+      private def walk(dir : String)
         children = begin
           Dir.children(dir).sort
         rescue ex : File::Error
@@ -268,13 +244,12 @@ module CalibreHub
           elsif info.directory?
             if name.starts_with?('.')
               @skipped << Skipped.new(path + "/", "hidden folder")
-            elsif (top && INBOX_DIRS.includes?(name)) || (@inbox && name.starts_with?('_'))
+            elsif name.starts_with?('_')
               @skipped << Skipped.new(path + "/", "inbox folder")
             else
               walk(path)
             end
           elsif info.file?
-            @files += 1
             if name.starts_with?('.')
               @skipped << Skipped.new(path, "hidden file")
             else
@@ -293,7 +268,6 @@ module CalibreHub
       private def tick
         @entries += 1
         Fiber.yield if @entries % YIELD_EVERY == 0
-        @on_progress.try &.call(@files, @units.size) if @entries % PROGRESS_EVERY == 0
       end
 
       # the book files of a calibre folder are one book
@@ -355,7 +329,7 @@ module CalibreHub
           @already += 1
           return nil
         end
-        if problem = Scanner.problem(path, format, size, @inbox)
+        if problem = Scanner.problem(path, format)
           @skipped << Skipped.new(path, problem)
           return nil
         end
@@ -385,7 +359,7 @@ module CalibreHub
     end
 
     # The library as the duplicate check sees it; books a run adds are added
-    # to it, so a backlog with the same book twice adds it once. Titles,
+    # to it, so a folder with the same book twice adds it once. Titles,
     # authors and ISBNs are compared with Dedup's rules (normalization,
     # never different volumes, editions of a standard or numbers of a
     # series); a title needs an author in common and the same words

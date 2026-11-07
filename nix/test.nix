@@ -53,7 +53,6 @@ pkgs.testers.runNixOSTest {
         calibre.servicePasswordFile = "/etc/hub/service";
         calibre.extraUsers.scripts = "/etc/hub/scripts";
         apiTokenFiles = [ "/etc/hub/token" ];
-        backlogImport.roots = [ "/srv/books/alt" ];
         # a second user besides the login user arthur
         users.lea = {
           role = "reader";
@@ -271,7 +270,6 @@ pkgs.testers.runNixOSTest {
         "d /srv/books/inbox 2775 root calibre-hub -"
         "d /srv/books/boox 2775 root calibre-hub -"
         "d /srv/books/boox-lea 2775 root calibre-hub -"
-        "d /srv/books/alt 0755 root root -"
       ];
     };
 
@@ -407,7 +405,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Roman /srv/books/inbox/Roman/Krimi")
         machine.succeed("cp /tmp/k.epub /srv/books/inbox/Roman/Krimi/k.epub")
         # it goes through the Eingang: below the threshold it waits there, in its folder
-        assert api("GET", "/api/intake?limit=1")[1]["thresholds"] == {"backlog": None, "inbox": 90, "upload": 90}
+        assert api("GET", "/api/intake?limit=1")[1]["thresholds"] == {"inbox": 90, "upload": 90}
         e = intake_entry("k.epub", "&origin=inbox", 120)
         assert e["folder"] == "Roman/Krimi" and e["confidence"] < 90, e
         machine.succeed("test -f /srv/books/inbox/Roman/Krimi/k.epub")
@@ -1188,7 +1186,7 @@ pkgs.testers.runNixOSTest {
         assert api("GET", "/api/epub-fix/jobs/nope")[0] == 404
         embed_idle()
 
-    with subtest("backlog import"):
+    with subtest("an old collection in the inbox"):
         import base64
 
         def put(path, data):
@@ -1220,7 +1218,11 @@ pkgs.testers.runNixOSTest {
             out += b"xref\n0 4\n0000000000 65535 f \n" + b"".join(b"%010d 00000 n \n" % x for x in offsets)
             return out + b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
 
-        ALT = "/srv/books/alt"
+        # looked at by a person, and nothing of it before it is all there: the
+        # hub leaves alone what it couldn't move away
+        assert api("POST", "/api/intake/threshold", {"origin": "inbox", "value": None})[0] == 200
+        ALT = "/srv/books/inbox/Alt"
+        DONE = "/srv/books/inbox/_imported/*/Alt"
         CAL = f"{ALT}/Ada Writer/Altes Buch (12)"
         # an old calibre library folder: metadata.opf, cover.jpg, two formats
         machine.succeed("printf 'Altes Buch\\n\\nText\\n' > /tmp/alt.txt")
@@ -1260,24 +1262,25 @@ pkgs.testers.runNixOSTest {
         # a MOBI through calibre's tools; a text with the same fill would be a duplicate
         machine.succeed(f"printf 'A Quiet Book\\n\\nby Jane Roe\\n\\nCopyright 2001. ISBN 0-201-91465-4\\n' > /tmp/quiet.txt && "
                         f"QT_QPA_PLATFORM=offscreen ebook-convert /tmp/quiet.txt '{FLOW}/Roe - A Quiet Book.mobi' --title 'A Quiet Book' --authors 'Jane Roe' >/dev/null")
-        # old enough to be looked at
-        machine.succeed(f"find {ALT} -type f -exec touch -d '1 hour ago' {{}} +")
+        # old enough to be looked at, and the hub's
+        machine.succeed(f"find {ALT} -type f -exec touch -d '1 hour ago' {{}} + && chgrp -R calibre-hub {ALT} && chmod -R g+w {ALT}")
 
-        # the Eingang: nothing to start, it looks at the roots by itself
+        # the Eingang: nothing to start, it looks at the inbox by itself
         status, intake = api("GET", "/api/intake")
-        assert status == 200 and intake["enabled"] is True and intake["progress"]["state"] in ("idle", "scanning", "analysing", "paused"), intake
+        assert status == 200 and intake["enabled"] is True and intake["progress"]["state"] in ("idle", "scanning", "analysing"), intake
         assert api("GET", "/api/intake/0")[0] == 404
         # the old ways in are gone
         for method, path in [("POST", "/api/import"), ("GET", "/api/import"), ("GET", "/api/import/runs/x"), ("GET", "/api/import/quality"),
                              ("GET", "/api/import/repair"), ("POST", "/api/import/repair/accept"), ("POST", "/api/import/repair/reject")]:
             assert code(f"-b /tmp/jar -X {method} {CSRF} {H}{path}") == "404", path
+        assert code(f"-b /tmp/jar -X POST {CSRF} {H}/api/intake/analysis") in ("404", "405")
         assert machine.execute(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import '{ALT}'")[0] == 1
         out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub eingang")
-        assert "taken by itself: backlog off, inbox from 60, upload from 60" in out, out
+        assert "taken by itself: inbox off, upload from 60" in out, out
 
         # an old calibre folder takes its metadata.opf and cover, no folder as a category
         e = intake_entry("Altes Buch - Ada Writer.epub")
-        assert e["origin"] == "backlog" and e["kind"] == "calibre", e
+        assert e["origin"] == "inbox" and e["kind"] == "calibre", e
         intake_decide(e, "accept")
         old = book_by_title("Altes Buch")
         old = api("GET", f"/api/books/{old['id']}")[1]
@@ -1290,9 +1293,9 @@ pkgs.testers.runNixOSTest {
         assert code(f"-b /tmp/jar {H}/api/books/{old['id']}/cover") == "200"
         # a file that says nothing
         e = intake_entry("book.pdf")
-        assert e["folder"] == "Some Author", e
+        assert e["folder"] == "Alt/Some Author", e
         intake_decide(e, "file")
-        machine.succeed(f"test -f '{ALT}/Some Author/book.pdf'")
+        machine.succeed(f"test -f {DONE}/'Some Author/book.pdf' && test ! -e '{ALT}/Some Author/book.pdf' && test -f '{ALT}/Some Author/talk.mp3'")
         # a format the library lacks goes to the book it has
         e = intake_entry("Inboxbuch.azw3")
         assert e["action"] == "addFormats" and e["bookId"] == ib["id"], e
@@ -1313,15 +1316,16 @@ pkgs.testers.runNixOSTest {
         # a book added the old way (calibre's add-book with the file name, as
         # the import did before): a recheck proposes the fix in the Eingang
         brass = "Brass - Advanced Data Structures (Cambridge, 2008).pdf"
-        put(f"{WW}/{brass}", pdf(b"r"))
-        out = machine.succeed(f"curl -sf --user scripts:scripts-secret -X POST --data-binary '@{WW}/{brass}' "
+        OLD = "/srv/books/old/Algebra"
+        put(f"{OLD}/{brass}", pdf(b"r"))
+        out = machine.succeed(f"curl -sf --user scripts:scripts-secret -X POST --data-binary '@{OLD}/{brass}' "
                               f"'http://127.0.0.1:8083/cdb/add-book/1/y/{urllib.parse.quote(brass)}/library'")
         old_id = json.loads(out)["book_id"]
         wait_until(f"curl -sf -b /tmp/jar {H}/api/books/{old_id}", timeout=30)
         old = api("GET", f"/api/books/{old_id}")[1]
         assert old["title"] == "Brass" and old["authors"] == ["Advanced Data Structures (Cambridge, 2008)"], old
         machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} \"insert into import_files (path, size, mtime, status, book_id, run_id, at) "
-                        f"values ('{WW}/{brass}', 1, 1, 'imported', {old_id}, 'old', strftime('%s', 'now'))\"")
+                        f"values ('{OLD}/{brass}', 1, 1, 'imported', {old_id}, 'old', strftime('%s', 'now'))\"")
         out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub eingang recheck --run old")
         assert "recheck: 1 books" in out, out
         for _ in ticks(900):
@@ -1359,7 +1363,8 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the Eingang decides (#8605)"):
         IN = f"{ALT}/Eingang"
-        TRASH = f"/srv/books/papierkorb/backlog{ALT}/Eingang"
+        TRASH = "/srv/books/papierkorb/inbox/Alt/Eingang"
+        COPIES = "/srv/books/inbox/_duplicates/*/Alt/Eingang"
         machine.succeed(f"install -d -m 2775 -g calibre-hub '{IN}'")
         put(f"{IN}/Ada Writer - Angenommen.pdf", pdf(b"s"))
         put(f"{IN}/wegwerfen.pdf", pdf(b"t"))
@@ -1369,10 +1374,11 @@ pkgs.testers.runNixOSTest {
         embed_idle()
         copy = machine.succeed("find /srv/books/library -name '*.pdf' | head -1").strip()
         machine.succeed(f"cp '{copy}' '{IN}/kopie.pdf' && touch -d '1 hour ago' '{IN}'/*.pdf")
-        wait_until(f"test -f '{TRASH}/kopie.pdf'", timeout=600)
-        assert machine.succeed(f"cmp '{copy}' '{TRASH}/kopie.pdf' && test ! -e '{IN}/kopie.pdf' && echo ok").strip() == "ok"
+        wait_until(f"test -f {COPIES}/kopie.pdf", timeout=600)
+        assert machine.succeed(f"cmp '{copy}' {COPIES}/kopie.pdf && test ! -e '{IN}/kopie.pdf' && echo ok").strip() == "ok"
+        machine.succeed(f"test ! -e '{TRASH}/kopie.pdf'")
 
-        # thrown away: out of the root, under its path, the hub's sandbox lets it
+        # thrown away: out of the inbox, under its path, the hub's sandbox lets it
         gone = intake_entry("wegwerfen.pdf")
         status, r = api("POST", "/api/intake/decide", {"target": {"ids": [gone["id"]]}, "decision": "trash"})
         assert status == 202, (status, r)
@@ -1380,37 +1386,42 @@ pkgs.testers.runNixOSTest {
         assert j["status"] == "done" and j["errors"] == [], j
         machine.succeed(f"test -f '{TRASH}/wegwerfen.pdf' && test ! -e '{IN}/wegwerfen.pdf'")
 
-        # accepted with an edited title: a book like any import's, the file stays
+        # accepted with an edited title: a book like any import's, the file is done
         kept = intake_entry("Ada Writer - Angenommen.pdf")
         status, r = api("POST", "/api/intake/decide", {"target": {"ids": [kept["id"]]}, "decision": "accept", "title": "Von Hand", "authors": ["Ada Writer"]})
         assert status == 202, (status, r)
         j = wait_job(r["jobId"], 120)
         assert j["status"] == "done" and j["errors"] == [], j
         assert book_by_title("Von Hand")["authors"] == ["Ada Writer"]
-        machine.succeed(f"test -f '{IN}/Ada Writer - Angenommen.pdf'")
+        machine.succeed(f"test -f {DONE}/'Eingang/Ada Writer - Angenommen.pdf' && test ! -e '{IN}/Ada Writer - Angenommen.pdf'")
         assert not [e for e in api("GET", "/api/intake?limit=500")[1]["entries"] if e["id"] == kept["id"]]
 
-        # a root's parent is writable for the hub, the library in it isn't
+        # the inbox and the trash folder are writable for the hub, the library
+        # and what holds them aren't
         pid = machine.succeed("systemctl show -p MainPID --value calibre-hub").strip()
         machine.fail(f"nsenter -t {pid} -m touch /srv/books/library/from-the-hub")
-        machine.succeed(f"nsenter -t {pid} -m touch /srv/books/from-the-hub && rm /srv/books/from-the-hub")
+        machine.fail(f"nsenter -t {pid} -m touch /srv/books/from-the-hub")
+        for folder in ("/srv/books/inbox", "/srv/books/papierkorb"):
+            machine.succeed(f"nsenter -t {pid} -m touch {folder}/.from-the-hub && rm {folder}/.from-the-hub")
 
-        # the inbox's and an upload's trash: one rename next to their root,
-        # with the service's sandbox around it
+        # the inbox's and an upload's trash: another mount for the hub, so a
+        # copy, compared before the source goes
         assert api("POST", "/api/intake/threshold", {"origin": "inbox", "value": None})[0] == 200
         assert api("POST", "/api/intake/threshold", {"origin": "upload", "value": None})[0] == 200
         machine.succeed("printf 'Weg\\n\\nText\\n' > /tmp/w.txt")
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/w.txt /tmp/Wegwerfbuch.epub --title Wegwerfbuch --authors 'Walter Weg'")
         machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Weg && install -m 664 -g calibre-hub /tmp/Wegwerfbuch.epub /srv/books/inbox/Weg/Wegwerfbuch.epub")
         intake_decide(intake_entry("Wegwerfbuch.epub", "&origin=inbox", 120), "trash")
-        machine.succeed("test -f /srv/books/papierkorb/inbox/Weg/Wegwerfbuch.epub && test ! -e /srv/books/inbox/Weg/Wegwerfbuch.epub")
+        machine.succeed("cmp /tmp/Wegwerfbuch.epub /srv/books/papierkorb/inbox/Weg/Wegwerfbuch.epub && test ! -e /srv/books/inbox/Weg/Wegwerfbuch.epub")
         machine.succeed("cp /tmp/Wegwerfbuch.epub /tmp/Hochgeladen-weg.epub")
         status, r = api("POST", "/api/books", extra="-F file=@/tmp/Hochgeladen-weg.epub")
         assert status == 202, (status, r)
         e = intake_entry("Hochgeladen-weg.epub", "&origin=upload", 120)
         intake_decide(e, "trash")
         assert api("GET", f"/api/intake/uploads/{r['upload']['id']}")[1]["status"] == "trashed"
-        machine.succeed(f"test -f /srv/books/papierkorb/upload/{r['upload']['id']}/Hochgeladen-weg.epub")
+        machine.succeed(f"cmp /tmp/Hochgeladen-weg.epub /srv/books/papierkorb/upload/{r['upload']['id']}/Hochgeladen-weg.epub")
+        machine.succeed(f"test ! -e /var/lib/calibre-hub/uploads/{r['upload']['id']}/Hochgeladen-weg.epub")
+        assert machine.succeed("find /srv/books/papierkorb -name '*.part'").strip() == ""
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
@@ -1491,7 +1502,7 @@ pkgs.testers.runNixOSTest {
         assert api("GET", "/api/session") == (200, {"user": "arthur", "role": "admin", "sync": True})
         users = machine.succeed(f"sqlite3 -cmd '.timeout 5000' {STATE} 'select name, role, active from users order by name'").split()
         assert users == ["arthur|admin|1", "lea|reader|1"], users
-        # a book with an EPUB (the newest ones may be PDFs of the backlog import)
+        # a book with an EPUB (the newest ones may be PDFs of the old collection)
         bid = next(b["id"] for b in api("GET", "/api/books?limit=100")[1]["books"] if "EPUB" in b["formats"])
         # reads and downloads
         assert as_lea("GET", f"/api/books/{bid}")[0] == 200

@@ -9,10 +9,10 @@ require "./api"
 
 module CalibreHub
   # What gets a file of the Eingang into the library, one unit at a time, as a
-  # decision of Intake wants it, and every file of the backlog it handled
-  # (import_files), so the Eingang doesn't offer it again. The runs of earlier
-  # imports stay in the state DB (import_runs, import_units), nothing reads
-  # them any more.
+  # decision of Intake wants it. The state DB keeps what earlier imports
+  # handled: import_runs and import_units, which nothing reads any more, and
+  # import_files, which ImportRepair goes by. Only a row left of the backlog
+  # still adds to it.
   class Importer
     # A decision of the Eingang in place of the rule flow: the values to
     # write (empty: as in the file), the flow's decision they come from, that
@@ -23,12 +23,10 @@ module CalibreHub
     record Chosen, values : Hash(String, JSON::Any), decision : Meta::Flow::Decision?, force : Bool = false,
       fresh : Bool = false, tags : Array(String) = [] of String, category : {String, String}? = nil
 
-    getter roots : Array(String)
     getter writer : Writer
 
-    def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer, roots : Array(String),
+    def initialize(@db : DB::Database, @calibre : Calibre, @writer : Writer,
                    @library : String?, @retries = 20, @retry_wait = 15.seconds)
-      @roots = roots.map { |r| File.expand_path(r) }
       Importer.migrate(@db)
       @index = nil.as(Backlog::Index?)
       @index_run = ""
@@ -50,19 +48,6 @@ module CalibreHub
         SQL
     end
 
-    # The files earlier runs handled; with an index, without those whose
-    # book (imported, a duplicate of or a format added to) is no longer in
-    # the library: they are planned again
-    def known(index : Backlog::Index? = nil) : Backlog::Known
-      k = Backlog::Known.new
-      @db.query_each("select path, size, mtime, status, book_id from import_files") do |rs|
-        path, size, mtime, status, book = rs.read(String, Int64, Int64, String, Int64?)
-        next if index && book && !index.exists?(book)
-        k[path] = {size, mtime, status, book}
-      end
-      k
-    end
-
     def index_for(run_id : String) : Backlog::Index
       if (ix = @index) && @index_run == run_id
         return ix
@@ -73,7 +58,7 @@ module CalibreHub
       ix
     end
 
-    # no other run takes these files again
+    # the book's files, for ImportRepair
     def handled(unit : Backlog::Unit, run_id : String)
       now = Time.utc.to_unix
       unit.files.each do |f|

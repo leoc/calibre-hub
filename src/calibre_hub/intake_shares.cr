@@ -36,7 +36,7 @@ module CalibreHub
         kinds[kind][band] = rs.read(Int64)
       end
       kinds["library"] = library_bands
-      {kinds: kinds, waiting: @left + @fast_left, books: book_count}
+      {kinds: kinds, waiting: @left, books: book_count}
     end
 
     private def library_bands : Hash(String, Int64)

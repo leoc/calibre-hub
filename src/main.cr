@@ -51,9 +51,8 @@ module CalibreHub
     getter alert_command : String? = ENV["CALIBRE_HUB_ALERT_COMMAND"]?.presence
     getter inbox : String? = ENV["CALIBRE_HUB_INBOX"]?.presence
     getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
-    # the Eingang: first look at the roots after a start, between two looks
-    # at them, between two looks at the inbox and uploads (and at a repair
-    # the roots wait for)
+    # the Eingang: first look at its list after a start, between two looks at
+    # it, between two looks at the inbox and uploads
     getter intake_start : Time::Span = env("CALIBRE_HUB_INTAKE_START", "60").to_i.seconds
     getter intake_interval : Time::Span = env("CALIBRE_HUB_INTAKE_INTERVAL", "300").to_i.seconds
     getter intake_tick : Time::Span = env("CALIBRE_HUB_INTAKE_TICK", "30").to_i.seconds
@@ -62,8 +61,6 @@ module CalibreHub
     # what the Eingang throws away; by default next to the inbox, without one
     # next to the state DB
     getter trash : String = ENV["CALIBRE_HUB_TRASH"]?.presence || File.join(File.dirname(File.expand_path(ENV["CALIBRE_HUB_INBOX"]?.presence || env("CALIBRE_HUB_STATE_DB", "calibre-hub.sqlite"))), "papierkorb")
-    # folders the Eingang reads old collections from, ':' separated
-    getter import_roots : Array(String) = env("CALIBRE_HUB_IMPORT_ROOTS", "").split(':', remove_empty: true).map(&.strip).reject(&.empty?)
     # tag of books whose file name could not be read for sure
     getter import_unsure_tag : String = env("CALIBRE_HUB_IMPORT_UNSURE_TAG", "auto-unsicher").strip.presence || "auto-unsicher"
     # tags the web app offers as one-click toggles
@@ -475,8 +472,7 @@ module CalibreHub
       epub_fix.watch_events(config.event_interval || 10.seconds)
       puts "epub-fix: EPUBs of added books are repaired"
     end
-    imports = Importer.new(db, calibre, writer, config.import_roots, config.library)
-    puts "eingang: backlog #{imports.roots.join(", ")}" unless imports.roots.empty?
+    imports = Importer.new(db, calibre, writer, config.library)
     cleanup = config.category_column ? ImportCleanup.new(db, calibre, writer, config.category_column, File.dirname(File.expand_path(config.state_db))) : nil
     # proposals for the library's books, in the Eingang's filter
     repair = ImportRepair.new(db, calibre, writer, metadata_jobs.try(&.metadata.log) || MetaLog.new(db))
@@ -498,15 +494,14 @@ module CalibreHub
     end
     imports.decisions = repair.log
     imports.review = ->(id : Int64, path : String, d : Meta::Flow::Decision) { repair.flagged(id, path, d); nil }
-    # the Eingang: new files of the import roots, the inbox and uploads,
+    # the Eingang: new files of the inbox and uploads,
     # analysed in the background
     Dir.mkdir_p(File.join(config.uploads, ".incoming"))
     intake_trash = IntakeTrash.new(config.trash)
     intake_trash.problem.try { |why| STDERR.puts "eingang: trash folder: #{why}, nothing can be thrown away" }
     intake = Intake.new(db, calibre, imports, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"), intake_trash,
-      interval: config.intake_interval, wait: config.intake_tick, tick: config.intake_tick,
+      interval: config.intake_interval, tick: config.intake_tick,
       inbox: config.inbox.try { |dir| Inbox.new(dir, config.inbox_stable) }, uploads: Inbox.new(config.uploads))
-    intake.busy = -> { repair.running? }
     intake.repair = repair
     intake.category_column = config.category_column
     writer.staging = File.join(config.uploads, ".incoming")

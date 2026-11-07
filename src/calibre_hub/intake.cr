@@ -10,60 +10,50 @@ require "./sanitizer"
 
 module CalibreHub
   # The „Eingang“: every book file goes through a list before it reaches the
-  # library, whichever way it came (origin: the backlog, the inbox, an upload).
-  # New files in the import roots are found without a button and analysed one
-  # after another, at low priority, while no repair runs; the inbox and uploads
-  # have a fiber of their own (run_fast), so a new book doesn't wait behind a
-  # backlog of thousands or the analysis being off. The same units as an
-  # import (Backlog::Scanner), the same
-  # check against the library (Backlog::Index) and the same decision
-  # (Meta::Flow), only from the file instead of from a book calibre added.
+  # library, whichever way it came (origin: the inbox, an upload). New files
+  # are found without a button and analysed one after another (run_once): the
+  # same units as an import (Backlog::Scanner), the same check against the
+  # library (Backlog::Index) and the same decision (Meta::Flow), only from the
+  # file instead of from a book calibre added. Now and then the list looks at
+  # itself (tidy), for what changed in the library or on disk.
   # Nothing here has a way to write: calibre-server is only asked for its
   # list, the result goes to the state DB (intake_entries, with everything
   # found per file in intake_candidates) and a file changes hands only by a
   # decision (IntakeJobs: Arthur's, the threshold's when it is on), or as an
-  # exact copy of a library's file: of the backlog that goes to the trash
-  # folder by itself, of the inbox and uploads to their _duplicates, byte for
-  # byte the same or it stays in the list.
+  # exact copy of a library's file, which goes to the source's _duplicates,
+  # byte for byte the same or it stays in the list.
   #
   # A file analysed once stays that way as long as path, size and mtime are
-  # the same, also over a restart; a file gone or handled by an import leaves
-  # the list. A calibre folder's metadata.opf is the file's metadata that has
-  # to prove itself like a PDF's, not what the book is called.
+  # the same, also over a restart; a file gone leaves the list. A calibre
+  # folder's metadata.opf is the file's metadata that has to prove itself like
+  # a PDF's, not what the book is called.
   #
-  # POST /api/intake/analysis stops the analysis after the file at hand and
-  # starts it again (hub eingang analysis off|on), without a deploy and over a
-  # restart: the flag is in the state DB.
+  # The inbox used to have a sister, the backlog of old collections: its import
+  # is over, but its rows may still be in a state DB (origin OLD_BACKLOG). They
+  # list and decide like the others, without a threshold.
   class Intake
-    # between two looks at the roots, after the hub started
+    # between two looks at the list, after the hub started
     INTERVAL = 5.minutes
     START    = 1.minute
-    # a file younger than this may still be copied
-    STABLE = 2.minutes
-    # between two books, so a run of hours stays in the background
-    PAUSE = 500.milliseconds
-    # between two looks while a repair runs
-    WAIT = 30.seconds
     # entries per request at most
     MAX_LIMIT = 500
     # ids per statement
     STORE_BATCH = 500
-    # meta: the analysis is switched off
-    OFF = "intake_off"
-    # meta: from this confidence on entries are accepted after the analysis,
-    # the backlog's under this key, the others' with their origin behind it
+    # meta: from this confidence on entries of the source behind it are
+    # accepted after the analysis
     AUTO     = "intake_auto"
     AUTO_MIN =  60
     AUTO_MAX = 100
-    # the inbox and uploads until someone changes it; the backlog: off
+    # until someone changes it
     AUTO_DEFAULT = 90
     # between two looks at the inbox and the uploads
     TICK = 30.seconds
     # where an entry comes from
-    BACKLOG = "backlog"
     INBOX   = "inbox"
     UPLOAD  = "upload"
-    ORIGINS = {BACKLOG, INBOX, UPLOAD}
+    ORIGINS = {INBOX, UPLOAD}
+    # what no new entry is; the old rows' folder in the trash too
+    OLD_BACKLOG = "backlog"
     # what a decision's run_id is in import_files
     RUN = "intake"
 
@@ -155,7 +145,7 @@ module CalibreHub
 
     # What comes with a file besides the file: where from, the inbox's folders
     # or an upload's form, and that it is wanted whatever it looks like
-    record Extra, origin : String = BACKLOG, tags : Array(String) = [] of String, kategorie : String? = nil, forced : Bool = false
+    record Extra, origin : String, tags : Array(String) = [] of String, kategorie : String? = nil, forced : Bool = false
 
     # reads a file for the rule flow (Metadata#read_flow, at low priority),
     # catalogs by ISBN (Metadata#isbn_lookup), an unclear name
@@ -166,8 +156,6 @@ module CalibreHub
     property decider : Meta::FileName::Decider?
     property checker : Meta::FileName::Checker?
     property search : Proc(Book, Meta::Guess, Array(Meta::Candidate))?
-    # a repair runs: the backlog's analysis waits
-    property busy : Proc(Bool)
     # the column an inbox's folders or an upload's category go to
     property category_column : String?
     # the file's cover at a path (FileMeta.cover), true when there is one
@@ -177,10 +165,8 @@ module CalibreHub
 
     # where what is thrown away goes
     getter trash : IntakeTrash
-    # idle, scanning, analysing, paused, off
+    # idle, scanning (the list looks at itself)
     getter state = "idle"
-    # the file being analysed
-    getter current : String? = nil
 
     def self.migrate(db : DB::Database)
       db.exec "create table if not exists meta (key text primary key, value text)"
@@ -232,7 +218,7 @@ module CalibreHub
       db.exec "alter table intake_entries add column error text" unless columns.includes?("error")
       # the library's book it looks like, for the list
       db.exec "alter table intake_entries add column book_title text" unless columns.includes?("book_title")
-      # backlog, inbox or upload
+      # inbox or upload; rows from before the column are the backlog's
       db.exec "alter table intake_entries add column origin text not null default 'backlog'" unless columns.includes?("origin")
       # what the source says of it
       db.exec "alter table intake_entries add column tags text not null default '[]'" unless columns.includes?("tags")
@@ -243,6 +229,8 @@ module CalibreHub
       db.exec "alter table intake_entries add column same_book integer not null default 0" unless columns.includes?("same_book")
       # a duplicate a bulk may trash (Intake#mark_same), filled by the next pass
       db.exec "alter table intake_entries add column sure integer not null default 0" unless columns.includes?("sure")
+      # the backlog's threshold and the switch of its analysis
+      db.exec "delete from meta where key in ('intake_auto', 'intake_off')"
       # An upload outlives its entry, so whoever sent it can ask what came of
       # it. status: staged (with or without an entry), imported, formatAdded,
       # copy (byte for byte in the library), trashed, gone
@@ -264,17 +252,14 @@ module CalibreHub
 
     # covers: where the pictures of plain files go, next to the state DB
     def initialize(@db : DB::Database, @calibre : Calibre, @imports : Importer, @library : String?,
-                   @covers : String, @trash : IntakeTrash, @interval = INTERVAL, @stable = STABLE, @pause = PAUSE, @wait = WAIT,
+                   @covers : String, @trash : IntakeTrash, @interval = INTERVAL,
                    @inbox : Inbox? = nil, @uploads : Inbox? = nil, @tick = TICK)
       Intake.migrate(@db)
       @peeks = File.join(File.dirname(@covers), "intake-peeks")
       @wake = Channel(Nil).new(1)
-      # of the inbox and uploads: files left and the current one
-      @fast_left = 0
-      @fast_current = nil.as(String?)
-      @busy = -> { false }
-      # files of this pass left, the current one included
+      # files of this pass left, the current one included, and that one
       @left = 0
+      @current = nil.as(String?)
       @decisions = nil.as(IntakeJobs?)
       @decisions = IntakeJobs.new(@db, @calibre, @imports.writer, @imports, self)
       release
@@ -285,13 +270,13 @@ module CalibreHub
       @decisions.not_nil!
     end
 
-    # Looks at the roots from now on, at the inbox and the uploads on their own
+    # Looks at the inbox, the uploads and the list from now on
     def start(delay = START)
       spawn do
         sleep delay
         loop do
           begin
-            run_once
+            tidy
           rescue ex
             # calibre-server down, usually: the next pass starts over
             STDERR.puts "intake failed: #{ex.message}"
@@ -302,7 +287,7 @@ module CalibreHub
       spawn do
         loop do
           begin
-            run_fast
+            run_once
           rescue ex
             STDERR.puts "intake failed: #{ex.message}"
           end
@@ -316,13 +301,12 @@ module CalibreHub
 
     # every folder a file of the list can lie in
     def roots : Array(String)
-      @imports.roots + [@inbox, @uploads].compact.map(&.dir)
+      [@inbox, @uploads].compact.map(&.dir)
     end
 
     # the sources there are here: an inbox only with its folder
     def origins_on : Array(String)
       list = [] of String
-      list << BACKLOG unless @imports.roots.empty?
       list << INBOX if @inbox
       list << UPLOAD if @uploads
       list
@@ -335,10 +319,9 @@ module CalibreHub
       end
     end
 
-    # One pass over what came in by the inbox and uploads. Nothing here waits
-    # for the backlog's analysis, a repair or the analysis being off: a book
-    # someone just sent is one file. Returns how many.
-    def run_fast : Int32
+    # One pass over what came in by the inbox and uploads: a book someone just
+    # sent is one file, nothing here waits. Returns how many.
+    def run_once : Int32
       now = Time.local
       @inbox.try(&.cleanup(now))
       @uploads.try(&.cleanup(now))
@@ -347,35 +330,35 @@ module CalibreHub
       return 0 if uploads.empty? && units.empty?
       ix = Backlog::Index.load(@calibre, @library, @db)
       all.each { |e| remember(ix, e) if e.action == "add" && e.status == "analysed" }
-      @fast_left = uploads.size + units.size
+      @left = uploads.size + units.size
       uploads.each do |file, extra|
-        fast(upload_unit(file), ix, extra) { settled_upload(file, "gone", nil) }
+        one(upload_unit(file), ix, extra) { settled_upload(file, "gone", nil) }
       end
       units.each do |u|
         # a changed file: the old entry leaves like any other, with its
         # candidates, cover and first pages; what a job has comes up afterwards
         old = entry_at(u.name)
         if old.try(&.decision)
-          @fast_left -= 1
+          @left -= 1
           next
         end
         old.try { |e| forget(e) }
-        fast(u, ix, inbox_extra(u)) { }
+        one(u, ix, inbox_extra(u)) { }
       end
       uploads.size + units.size
     ensure
-      @fast_left = 0
-      @fast_current = nil
+      @left = 0
+      @current = nil
     end
 
-    private def fast(unit : Backlog::Unit?, ix : Backlog::Index, extra : Extra, &)
+    private def one(unit : Backlog::Unit?, ix : Backlog::Index, extra : Extra, &)
       if unit
-        @fast_current = File.basename(unit.primary.path)
+        @current = File.basename(unit.primary.path)
         analyse(unit, ix, extra)
       else
         yield
       end
-      @fast_left -= 1
+      @left -= 1
     end
 
     # what is new in the inbox and may be taken in: settled, and movable once
@@ -386,9 +369,9 @@ module CalibreHub
       box = @inbox || return [] of Backlog::Unit
       known = Backlog::Known.new
       @db.query_each("select files from intake_entries where origin = ?", INBOX) do |rs|
-        Array(Backlog::BookFile).from_json(rs.read(String)).each { |f| known[f.path] = {f.size, f.mtime, "analysed", nil} }
+        Array(Backlog::BookFile).from_json(rs.read(String)).each { |f| known[f.path] = {f.size, f.mtime} }
       end
-      scanner = Backlog::Scanner.new([box.dir], known, inbox: true)
+      scanner = Backlog::Scanner.new(box.dir, known)
       scanner.run
       box.fail_broken(scanner.skipped, now)
       scanner.units.select { |u| u.files.all? { |f| box.settled?(f.mtime, now) } && u.files.all? { |f| box.movable?(f.path) } }
@@ -502,89 +485,26 @@ module CalibreHub
       nil
     end
 
-    # One pass: the new files of the roots analysed. Returns how many.
-    def run_once : Int32
-      # the analysis may stand still for long, the list's numbers don't
-      mark_same(Backlog::Index.load(@calibre, @library, @db)) if off? || @busy.call
-      wait_idle
+    # One look at the list: what left or changed on disk goes, what the
+    # library knows by now counts, the thresholds take what is above them.
+    def tidy
       @state = "scanning"
       ix = index
       sweep(ix)
       mark_same(ix)
       accept_above
-      scanner = Backlog::Scanner.new(@imports.roots, @known)
-      scanner.run
-      now = Time.utc.to_unix
-      units = scanner.units.select { |u| u.files.all? { |f| now - f.mtime >= @stable.total_seconds } }
-      @left = units.size
-      puts "intake: #{units.size} new books" unless units.empty?
-      units.each do |u|
-        ix = index if wait_idle
-        @state = "analysing"
-        @current = File.basename(u.primary.path)
-        analyse(u, ix)
-        @left -= 1
-        sleep @pause
-      end
-      units.size
     ensure
       @state = "idle"
-      @current = nil
-      @left = 0
-    end
-
-    @known = Backlog::Known.new
-
-    # true when it waited: the library may have changed
-    private def wait_idle : Bool
-      waited = false
-      while off? || @busy.call
-        waited = true
-        @state = off? ? "off" : "paused"
-        sleep @wait
-      end
-      waited
-    end
-
-    def off? : Bool
-      !@db.query_one?("select 1 from meta where key = ?", OFF, as: Int64).nil?
-    end
-
-    # on: the next file goes on, within WAIT; off: after the file at hand
-    def analysis=(on : Bool)
-      if on
-        @db.exec "delete from meta where key = ?", OFF
-      else
-        @db.exec "insert or replace into meta (key, value) values (?, '1')", OFF
-      end
     end
 
     # The library and the books the list would add already, so the same book
-    # twice in the roots is marked; what changed or left since goes first
+    # twice is marked. An entry whose files changed or went leaves the list.
     private def index : Backlog::Index
       ix = Backlog::Index.load(@calibre, @library, @db)
       release
-      handled = @imports.known(ix)
-      @known = settle(handled)
+      all.each { |e| forget(e) unless unchanged?(e) }
       all.each { |e| remember(ix, e) if e.action == "add" && e.status == "analysed" }
       ix
-    end
-
-    # The files not to look at again: what imports handled and what is
-    # analysed and unchanged. An entry whose files changed, went or were
-    # handled by an import leaves the list.
-    private def settle(handled : Backlog::Known) : Backlog::Known
-      known = handled.dup
-      all.each do |e|
-        same = unchanged?(e)
-        gone = e.origin == BACKLOG && e.files.all? { |f| (k = handled[f.path]?) && k[0] == f.size && k[1] == f.mtime }
-        if same && !gone
-          e.files.each { |f| known[f.path] = {f.size, f.mtime, "analysed", nil} }
-        else
-          forget(e)
-        end
-      end
-      known
     end
 
     def unchanged?(e : Entry) : Bool
@@ -661,9 +581,9 @@ module CalibreHub
     end
 
     # Every file of the unit is in the library, byte for byte, and a calibre
-    # folder has nothing else that would go with it: the unit moves to the
-    # trash folder, or by the inbox's rules to _duplicates. A move that fails
-    # leaves it in the list.
+    # folder has nothing else that would go with it: the unit moves to its
+    # source's _duplicates, a row of the backlog's to the trash folder. A move
+    # that fails leaves it in the list.
     private def trash_copy(u : Backlog::Unit, ix : Backlog::Index, origin : String) : Bool
       book = ix.exact(u) || return false
       return false if u.kind == "calibre" && !Intake.only_book?(u)
@@ -713,10 +633,11 @@ module CalibreHub
       forget(e)
     end
 
-    # The book is in the library. The backlog's file stays where it is and
-    # import_files remembers it, the inbox's and an upload's leaves the
-    # folder. A move that fails doesn't take the book back: the file comes up
-    # again and goes to _duplicates as a copy.
+    # The book is in the library. The inbox's file and an upload leave the
+    # folder; a move that fails doesn't take the book back: the file comes up
+    # again and goes to _duplicates as a copy. A row of the backlog's has no
+    # such folder, its file stays where it is and import_files remembers it,
+    # for ImportRepair like the ones before it.
     def taken(e : Entry, unit : Backlog::Unit)
       if b = box(e.origin)
         begin
@@ -850,16 +771,15 @@ module CalibreHub
       forget(e)
     end
 
-    private def auto_key(origin : String) : String
-      origin == BACKLOG ? AUTO : "#{AUTO}_#{origin}"
+    # A source's threshold, nil: off. They are on until someone switches them
+    # off, so a stored „off“ is what says so.
+    def threshold(origin : String) : Int32?
+      stored = @db.query_one?("select value from meta where key = ?", auto_key(origin), as: String)
+      stored ? stored.to_i? : AUTO_DEFAULT
     end
 
-    # A source's threshold, nil: off. The inbox and uploads are on until
-    # someone switches them off, so a stored „off“ is what says so.
-    def threshold(origin : String = BACKLOG) : Int32?
-      stored = @db.query_one?("select value from meta where key = ?", auto_key(origin), as: String)
-      return stored.to_i? if stored
-      origin == BACKLOG ? nil : AUTO_DEFAULT
+    private def auto_key(origin : String) : String
+      "#{AUTO}_#{origin}"
     end
 
     # the thresholds of the sources there are
@@ -888,7 +808,7 @@ module CalibreHub
 
     # the analysis is at it, so what can wait does (RepairRecheck)
     def working? : Bool
-      @state.in?("scanning", "analysing") || !@fast_current.nil?
+      @state == "scanning" || !@current.nil?
     end
 
     # the entry's book counts for later ones, by a pseudo id
@@ -913,7 +833,7 @@ module CalibreHub
 
     # One unit: what the library knows of it, what the rules make of it. An
     # upload sent on purpose is a new book, whatever it looks like.
-    def analyse(unit : Backlog::Unit, ix : Backlog::Index, extra = Extra.new)
+    def analyse(unit : Backlog::Unit, ix : Backlog::Index, extra : Extra)
       Backlog.plan(unit, ix)
       return if !extra.forced && trash_copy(unit, ix, extra.origin)
       primary = unit.primary
@@ -1219,9 +1139,7 @@ module CalibreHub
     def progress
       done = @db.query_one("select count(*) from intake_entries where decision is null", as: Int64)
       analysed = @db.query_one("select count(*) from intake_entries where decision is null and status = 'analysed'", as: Int64)
-      # the inbox and uploads go on while the rest stands still
-      state = @fast_current ? "analysing" : (off? ? "off" : @state)
-      {state: state, done: done, total: done + @left + @fast_left, analysed: analysed, current: @fast_current || @current}
+      {state: @current ? "analysing" : @state, done: done, total: done + @left, analysed: analysed, current: @current}
     end
 
     # bulk, review, unsure: Meta::Confidence's bands; none: failed files
@@ -1267,7 +1185,7 @@ module CalibreHub
 
     private def origin_sql(origin : String?) : String?
       return nil unless origin
-      raise Edit::Invalid.new("origin", "backlog, inbox or upload expected") unless ORIGINS.includes?(origin)
+      raise Edit::Invalid.new("origin", "inbox or upload expected") unless ORIGINS.includes?(origin) || origin == OLD_BACKLOG
       "origin = '#{origin}'"
     end
 
@@ -1518,7 +1436,7 @@ module CalibreHub
 
     post "/api/intake/decide" do |env|
       write_errors(env) do
-        next fail(env, 404, {error: "backlog import is off"}) unless intake
+        next fail(env, 404, {error: "the Eingang is off"}) unless intake
         status, result = intake.decide(json_body(env, required: true))
         env.response.status_code = status
         result.to_json
@@ -1529,10 +1447,10 @@ module CalibreHub
     # {origin, value: null} switches it off
     post "/api/intake/threshold" do |env|
       write_errors(env) do
-        next fail(env, 404, {error: "backlog import is off"}) unless intake
+        next fail(env, 404, {error: "the Eingang is off"}) unless intake
         body = json_body(env, required: true)
-        origin = body["origin"]?.try(&.as_s?) || raise Edit::Invalid.new("origin", "backlog, inbox or upload expected")
-        raise Edit::Invalid.new("origin", "backlog, inbox or upload expected") unless intake.origins_on.includes?(origin)
+        origin = body["origin"]?.try(&.as_s?) || raise Edit::Invalid.new("origin", "inbox or upload expected")
+        raise Edit::Invalid.new("origin", "inbox or upload expected") unless intake.origins_on.includes?(origin)
         raw = body["value"]? || raise Edit::Invalid.new("value", "number or null expected")
         value = raw.raw.nil? ? nil : (raw.as_i? || raise Edit::Invalid.new("value", "number or null expected"))
         raise Edit::Invalid.new("value", "#{Intake::AUTO_MIN} to #{Intake::AUTO_MAX} expected") if value && !(Intake::AUTO_MIN..Intake::AUTO_MAX).includes?(value)
@@ -1544,17 +1462,6 @@ module CalibreHub
     # what came of an upload (POST /api/books)
     get "/api/intake/uploads/:id" do |env|
       intake.try(&.upload_state(env.params.url["id"])).try(&.to_json) || fail(env, 404, {error: "not found"})
-    end
-
-    # {on: false} stops the analysis, {on: true} lets it go on
-    post "/api/intake/analysis" do |env|
-      write_errors(env) do
-        next fail(env, 404, {error: "backlog import is off"}) unless intake
-        on = json_body(env, required: true)["on"]?.try(&.as_bool?)
-        raise Edit::Invalid.new("on", "true or false expected") if on.nil?
-        intake.analysis = on
-        intake.progress.to_json
-      end
     end
 
     get "/api/intake/:id" do |env|

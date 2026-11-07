@@ -248,53 +248,49 @@ describe Backlog::Scanner do
       units.should contain({"calibre", ["Problem Solving.epub", "Problem Solving.mobi"]})
       units.should contain({"file", ["book.epub", "book.pdf"]})
       units.should contain({"file", ["other.pdf"]})
-      # only the inbox's own folders are left out, not every "_" folder
-      units.should contain({"file", ["sorted.pdf"]})
-      scan.units.size.should eq 4
+      # somebody put them there: short is no reason
+      units.should contain({"file", ["tiny.pdf"]})
+      units.should contain({"file", ["readme.txt"]})
+      scan.units.size.should eq 5
       cu = scan.units.find(&.kind.==("calibre")).not_nil!
       cu.cover.should eq File.join(cal, "cover.jpg")
       cu.primary.format.should eq "EPUB"
       reasons = scan.skipped.to_h { |s| {s.path.lchop(root + "/"), s.reason} }
       reasons["Ken Watanabe/Problem Solving 101 (257)/notes.html"].should eq "not a book format"
       reasons["Music/song.mp3"].should eq "not a book format"
-      reasons["tiny.pdf"].should eq "too small"
       reasons["broken.pdf"].should eq "broken (not a PDF file)"
-      reasons["readme.txt"].should eq "too small"
       reasons["Languages/._a.mp3"].should eq "hidden file"
       reasons["_imported/"].should eq "inbox folder"
+      reasons["_SORT/"].should eq "inbox folder"
       reasons["Empty (3)/metadata.opf"].should eq "calibre folder without a book file"
-      scan.units.size.should eq 4
       scan.units.count(&.kind.==("calibre")).should eq 1
     end
   end
 
-  it "walks several folders and lets other fibers run meanwhile" do
+  it "lets other fibers run meanwhile" do
     tmpdir do |root|
-      100.times { |i| write(File.join(root, "a", "f#{i}.txt"), "x") }
+      100.times { |i| write(File.join(root, "a", "f#{i}.mp3"), "x") }
+      write(File.join(root, "b", "_imported", "deep", "_old", "x.pdf"), pdf("x"))
+      write(File.join(root, "b", "c", "_old", "x.pdf"), pdf("y"))
       write(File.join(root, "b", "book.pdf"), pdf)
-      write(File.join(root, "b", "_imported", "x.pdf"), pdf("x"))
       ran = false
-      seen = false
       spawn { ran = true }
-      scan = Backlog::Scanner.new([File.join(root, "a"), File.join(root, "b")])
-      scan.on_progress = ->(files : Int32, units : Int32) { seen ||= ran; nil }
-      scan.run
-      seen.should be_true
-      scan.files.should eq 101
+      scan = Backlog::Scanner.new(root).run
+      ran.should be_true
       scan.units.map { |u| File.basename(u.files.first.path) }.should eq ["book.pdf"]
-      # the inbox's folders at the top of every scanned folder
-      scan.skipped.map(&.reason).should contain("inbox folder")
+      # the inbox's folders, at any depth
+      scan.skipped.map(&.reason).count("inbox folder").should eq 2
     end
   end
 
-  it "skips files an earlier run handled, unless they changed" do
+  it "skips files the list has, unless they changed" do
     tmpdir do |root|
       write(File.join(root, "a.pdf"), pdf)
       write(File.join(root, "b.pdf"), pdf("b"))
       a = File.info(File.join(root, "a.pdf"))
       b = File.info(File.join(root, "b.pdf"))
-      known = Backlog::Known{File.join(root, "a.pdf") => {a.size, a.modification_time.to_unix, "imported", 5_i64},
-                             File.join(root, "b.pdf") => {b.size + 1, b.modification_time.to_unix, "imported", 6_i64}}
+      known = Backlog::Known{File.join(root, "a.pdf") => {a.size, a.modification_time.to_unix},
+                             File.join(root, "b.pdf") => {b.size + 1, b.modification_time.to_unix}}
       scan = Backlog::Scanner.new(root, known).run
       scan.units.map { |u| File.basename(u.files.first.path) }.should eq ["b.pdf"]
       scan.already.should eq 1

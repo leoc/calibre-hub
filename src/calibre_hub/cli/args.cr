@@ -120,18 +120,18 @@ module CalibreHub
         Flag.new("offset", "N", "show: skip the first N books"),
         Flag.new("yes", short: 'y', help: "delete: don't ask for confirmation"),
       ], choices: %w(ls show create add rm delete)),
-      Command.new("import", "import cleanup (--min-id N | --since TIME) [--apply] | import undo <cleanup> [--apply] | import status | import analysis off|on | import repair recheck [--run ID]",
-        "take back the folder categories and tags the inbox set (dry run unless --apply); status, analysis and repair recheck are hub eingang's under their old names", [
+      Command.new("import", "import cleanup (--min-id N | --since TIME) [--apply] | import undo <cleanup> [--apply] | import status | import repair recheck [--run ID]",
+        "take back the folder categories and tags the inbox set (dry run unless --apply); status and repair recheck are hub eingang's under their old names", [
         Flag.new("apply", help: "clean up or undo instead of a dry run"),
         Flag.new("min-id", "N", "cleanup: books with this id or higher"),
         Flag.new("max-id", "N", "cleanup: books up to this id"),
         Flag.new("since", "TIME", "cleanup: books added since (2026-11-02T18:00, local time)"),
         Flag.new("run", "ID", "repair recheck: the books of this import run"),
       ]),
-      Command.new("eingang", "eingang | eingang analysis off|on | eingang recheck [--run ID]",
-        "what is in the Eingang and how it goes on; stop or go on with the backlog's analysis, plan the library's books again", [
+      Command.new("eingang", "eingang | eingang recheck [--run ID]",
+        "what is in the Eingang and how it goes on; plan the library's books again", [
         Flag.new("run", "ID", "recheck: the books of this import run"),
-      ], choices: %w(analysis recheck)),
+      ], choices: %w(recheck)),
       Command.new("tui", "tui", "browse the library in the terminal (Vim keys, ? shows them)"),
       Command.new("completion", "completion fish|bash [--prog hub|calibre-hub]",
         "print a shell completion script", [

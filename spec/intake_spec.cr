@@ -97,11 +97,19 @@ end
 private def setup(root : String, fake = ListOnlyCalibre.new, db = state_db, stable = 0.seconds)
   calibre = fake.calibre
   writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
-  imports = CalibreHub::Importer.new(db, calibre, writer, [root], nil, retries: 0)
+  imports = CalibreHub::Importer.new(db, calibre, writer, nil, retries: 0)
+  Dir.mkdir_p(root)
   intake = Intake.new(db, calibre, imports, nil, File.join(root, ".covers"), CalibreHub::IntakeTrash.new(File.join(File.dirname(root), "papierkorb")),
-    stable: stable, pause: 0.seconds, wait: 10.milliseconds)
+    inbox: CalibreHub::Inbox.new(root, stable))
+  intake.set_threshold("inbox", nil)
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
   {intake, fake, db, imports}
+end
+
+# what the hub does by itself, then what is new
+private def pass(intake : Intake) : Int32
+  intake.tidy
+  intake.run_once
 end
 
 private def tmpdir(&)
@@ -129,7 +137,7 @@ describe Intake do
         read << format
         File.basename(path) == "other.pdf" ? info : info("Dune", ["Frank Herbert"], "Dune by Frank Herbert")
       end
-      intake.run_once.should eq 2
+      pass(intake).should eq 2
       read.should eq ["PDF", "PDF"]
       fake.others.should be_empty
 
@@ -162,7 +170,7 @@ describe Intake do
       intake.by_isbn = ->(_isbn : String) { [Meta::Candidate.new("openlibrary", record)] }
       searched = 0
       intake.search = ->(_b : CalibreHub::Book, _g : Meta::Guess) { searched += 1; [] of Meta::Candidate }
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["proposal"]["title"].should eq "Thinking, Fast and Slow"
       e["proposal"]["isbn"].should eq "9780374533557"
@@ -189,7 +197,7 @@ describe Intake do
       hit.score = 0.95
       asked = [] of String
       intake.search = ->(_b : CalibreHub::Book, g : Meta::Guess) { asked << g.title; [hit] }
-      intake.run_once
+      pass(intake)
       asked.should eq ["The Dispossessed"]
       c = intake.candidates(entries(intake).first["id"].as_i64).find(&.source.==("hardcover")).not_nil!
       c.confidence.should eq Meta::Confidence::CATALOG_NAME
@@ -207,7 +215,7 @@ describe Intake do
       write(File.join(good, "metadata.opf"), opf("Problem Solving 101", "Ken Watanabe"))
       intake, _, _, _ = setup(root)
       intake.reader = ->(_p : String, _f : String) { info(format: "MOBI") }
-      intake.run_once
+      pass(intake)
       # the surer one first
       kept, swapped = entries(intake)
       swapped["kind"].should eq "calibre"
@@ -230,7 +238,7 @@ describe Intake do
       write(File.join(root, "Christie Golden", "Allies (177)", "Allies - Christie Golden.mobi"), mobi)
       intake, _, _, _ = setup(root)
       intake.reader = ->(_p : String, _f : String) { info(format: "MOBI") }
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["kind"].should eq "file"
       e["proposal"]["title"].should eq "Allies"
@@ -252,7 +260,7 @@ describe Intake do
       fake.books[7_i64] = {"Dune", ["Frank Herbert"], nil}
       intake, _, _, _ = setup(root, fake)
       intake.reader = ->(_p : String, _f : String) { info }
-      intake.run_once
+      pass(intake)
       by_name = entries(intake).group_by(&.["path"].as_s.lchop(root + "/"))
       dune = by_name["Frank Herbert - Dune.pdf"].first
       dune["bookId"].should eq 7
@@ -278,36 +286,31 @@ describe Intake do
       reads = 0
       reader = ->(_p : String, _f : String) { reads += 1; info }
       intake.reader = reader
-      intake.run_once.should eq 1
-      intake.run_once.should eq 0
+      pass(intake).should eq 1
+      pass(intake).should eq 0
 
       again, _, _, _ = setup(root, fake, db)
       again.reader = reader
-      again.run_once.should eq 0
+      pass(again).should eq 0
       reads.should eq 1
 
       write(path, pdf("a longer file than before"))
-      again.run_once.should eq 1
+      pass(again).should eq 1
       reads.should eq 2
       entries(again).size.should eq 1
     end
   end
 
-  it "drops what left the roots or an import handled" do
+  it "drops what left the inbox" do
     tmpdir do |root|
       gone = File.join(root, "Frank Herbert - Dune.pdf")
-      imported = File.join(root, "Ursula Le Guin - The Dispossessed.pdf")
       write(gone, pdf("a"))
-      write(imported, pdf("b"))
-      intake, _, db, _ = setup(root)
+      intake, _, _, _ = setup(root)
       intake.reader = ->(_p : String, _f : String) { info }
-      intake.run_once
-      entries(intake).size.should eq 2
+      pass(intake)
+      entries(intake).size.should eq 1
       File.delete(gone)
-      stat = File.info(imported)
-      db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values (?, ?, ?, 'imported', null, 'r', 0)",
-        imported, stat.size, stat.modification_time.to_unix
-      intake.run_once
+      pass(intake)
       entries(intake).should be_empty
     end
   end
@@ -316,7 +319,7 @@ describe Intake do
     tmpdir do |root|
       write(File.join(root, "Frank Herbert - Dune.pdf"), pdf, age: 0.seconds)
       intake, _, _, _ = setup(root, stable: 1.hour)
-      intake.run_once.should eq 0
+      pass(intake).should eq 0
       entries(intake).should be_empty
     end
   end
@@ -332,7 +335,7 @@ describe Intake do
         raise "broken" if File.basename(p) == "a.pdf"
         info
       end
-      intake.run_once.should eq 2
+      pass(intake).should eq 2
       # a file that failed has no confidence: the end of the list
       ok, failed = entries(intake)
       failed["status"].should eq "failed"
@@ -345,52 +348,24 @@ describe Intake do
       {progress["total"], progress["analysed"]}.should eq({2, 1})
       entries(intake, band: "none").size.should eq 1
       # unchanged it isn't tried again
-      intake.run_once.should eq 0
+      pass(intake).should eq 0
       reads.should eq 2
     end
   end
 
-  it "waits for a running import and reports where it is" do
+  it "reports where it is" do
     tmpdir do |root|
       write(File.join(root, "Frank Herbert - Dune.pdf"), pdf)
       intake, _, _, _ = setup(root)
-      importing = true
-      intake.busy = -> { importing }
       seen = [] of {String, String?, Int64, Int64}
       intake.reader = ->(_p : String, _f : String) do
         p = intake.progress
         seen << {p[:state], p[:current], p[:done], p[:total]}
         info
       end
-      spawn { intake.run_once }
-      sleep 50.milliseconds
-      intake.state.should eq "paused"
-      entries(intake).should be_empty
-      importing = false
-      sleep 100.milliseconds
+      pass(intake)
       seen.should eq [{"analysing", "Frank Herbert - Dune.pdf", 0_i64, 1_i64}]
       intake.progress.should eq({state: "idle", done: 1_i64, total: 1_i64, analysed: 1_i64, current: nil})
-    end
-  end
-
-  it "can be switched off and on, also over a restart" do
-    tmpdir do |root|
-      write(File.join(root, "Frank Herbert - Dune.pdf"), pdf)
-      intake, fake, db, _ = setup(root)
-      intake.reader = ->(_p : String, _f : String) { info }
-      intake.analysis = false
-      intake.progress[:state].should eq "off"
-      again, _, _, _ = setup(root, fake, db)
-      again.off?.should be_true
-      again.reader = ->(_p : String, _f : String) { info }
-      spawn { again.run_once }
-      sleep 50.milliseconds
-      again.state.should eq "off"
-      entries(again).should be_empty
-      again.analysis = true
-      sleep 100.milliseconds
-      entries(again).size.should eq 1
-      again.progress[:state].should eq "idle"
     end
   end
 
@@ -403,7 +378,7 @@ describe Intake do
       intake.reader = ->(p : String, _f : String) do
         File.basename(p).starts_with?("Frank") ? info("Dune", ["Frank Herbert"], "Dune by Frank Herbert") : info
       end
-      intake.run_once
+      pass(intake)
       list = intake.list(band: "unsure", limit: 1, offset: 1)
       list["total"].should eq 2
       list["entries"].as_a.map(&.["name"]).should eq ["c.pdf"]
@@ -433,7 +408,7 @@ describe Intake do
       write(File.join(root, "[DIN EN ISO 14971 2013-04] -- Medizinprodukte.pdf"), pdf)
       intake, _, _, _ = setup(root)
       intake.reader = ->(_p : String, _f : String) { info }
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["confidence"].should eq Meta::Confidence::KEPT
       e["proposal"]["title"].as_s.should contain "14971"
@@ -464,7 +439,7 @@ describe "intake routes" do
         File.write(target, "\xFF\xD8\xFFcover")
         true
       end
-      intake.run_once
+      pass(intake)
       reset_routes
       CalibreHub.intake_routes(intake)
 
@@ -481,11 +456,7 @@ describe "intake routes" do
       call("/api/intake?band=nonsense").status_code.should eq 400
       JSON.parse(call("/api/intake?duplicates=sure").body)["entries"].as_a.all?(&.["sure"].as_bool).should be_true
 
-      JSON.parse(call("/api/intake/analysis", "POST", %({"on":false})).body)["state"].should eq "off"
-      intake.off?.should be_true
-      call("/api/intake/analysis", "POST", %({"on":true})).status_code.should eq 200
-      intake.off?.should be_false
-      call("/api/intake/analysis", "POST", %({"on":"maybe"})).status_code.should eq 400
+      expect_raises(Kemal::Exceptions::MethodNotAllowed) { call("/api/intake/analysis", "POST", %({"on":false})) }
     end
   end
 
@@ -500,7 +471,7 @@ describe "intake routes" do
         File.write(target, "first pages") unless format == "DJVU"
         (format == "DJVU" ? nil : 100).as(Int32?)
       end
-      intake.run_once
+      pass(intake)
       reset_routes
       CalibreHub.intake_routes(intake)
       ids = JSON.parse(call("/api/intake").body)["entries"].as_a.to_h { |e| {e["name"].as_s, e["id"].as_i64} }

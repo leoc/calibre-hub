@@ -85,7 +85,6 @@ let
   # Uploads wait in the state directory, which is writable anyway.
   writable = lib.optional (cfg.inbox.path != null) (toString cfg.inbox.path)
     ++ lib.optional (!trashInState) trashDir
-    ++ map (root: toString root) cfg.backlogImport.roots
     ++ lib.optional cfg.leseliste.enable (toString cfg.leseliste.target)
     ++ lib.optionals cfg.leseliste.enable (lib.mapAttrsToList (_: u: toString u.leseliste.target) ownTargets);
 
@@ -123,6 +122,17 @@ let
   );
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "calibre-hub" "backlogImport" "roots" ] ''
+      The backlog is gone: books come in by services.calibre-hub.inbox.path or
+      as an upload, and what was thrown away is in intake.trashDir.
+    '')
+    (lib.mkRenamedOptionModule
+      [ "services" "calibre-hub" "backlogImport" "unsureTag" ]
+      [ "services" "calibre-hub" "intake" "unsureTag" ]
+    )
+  ];
+
   options.services.calibre-hub = {
     enable = mkEnableOption "calibre-hub, an API and web UI on top of calibre-server";
 
@@ -365,44 +375,27 @@ in
       startDelay = mkOption {
         type = types.ints.positive;
         default = 60;
-        description = "Seconds after a start before the Eingang first looks at the import roots.";
+        description = "Seconds after a start before the Eingang first looks at its list.";
       };
       interval = mkOption {
         type = types.ints.positive;
         default = 300;
-        description = "Seconds between two looks of the Eingang at the import roots.";
+        description = "Seconds between two looks of the Eingang at its list: what left the disk, what the library has by now.";
       };
       tick = mkOption {
         type = types.ints.positive;
         default = 30;
-        description = "Seconds between two looks of the Eingang at the inbox and the uploads, and at a repair the import roots wait for.";
+        description = "Seconds between two looks of the Eingang at the inbox and the uploads.";
       };
-    };
-
-    backlogImport.unsureTag = mkOption {
-      type = types.str;
-      default = "auto-unsicher";
-      description = ''
-        Tag for books whose file name could not be read for sure (which side
-        of " - " is the author), after the file, the metadata sources and the
-        model were asked: title and authors stay for a manual review.
-      '';
-    };
-
-    backlogImport.roots = mkOption {
-      type = types.listOf types.path;
-      default = [ ];
-      example = [ "/srv/media/ebooks/inbox" ];
-      description = ''
-        Folders the Eingang reads an old collection from: folders never
-        become categories or tags, calibre library folders bring their
-        metadata.opf and cover.jpg, files that aren't books stay. Empty: none.
-
-        What the Eingang throws away moves to `<root>-papierkorb` next to the
-        root, under its path in the root: the hub's group needs write access
-        to the root's parent and the root's folders, and the service may
-        write in the parent (the library stays read-only).
-      '';
+      unsureTag = mkOption {
+        type = types.str;
+        default = "auto-unsicher";
+        description = ''
+          Tag for books whose file name could not be read for sure (which side
+          of " - " is the author), after the file, the metadata sources and the
+          model were asked: title and authors stay for a manual review.
+        '';
+      };
     };
 
     fastTags = mkOption {
@@ -848,7 +841,7 @@ in
       # a model on the same host is up before the first run
       ++ lib.optional ((cfg.classify.enable || cfg.metadata.useModel) && config.services.ollama.enable) "ollama.service";
       wants = [ "calibre-server.service" ];
-      unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable ++ map toString cfg.backlogImport.roots;
+      unitConfig.RequiresMountsFor = [ (toString cfg.library) ] ++ writable;
       # ebook-convert for the reading list and conversions; the rule flow
       # reads books with pdfinfo/pdftotext/pdftoppm, djvutxt/djvused/ddjvu,
       # ebook-meta/ebook-convert, and scans with tesseract
@@ -890,8 +883,7 @@ in
         CALIBRE_HUB_INTAKE_START = toString cfg.intake.startDelay;
         CALIBRE_HUB_INTAKE_INTERVAL = toString cfg.intake.interval;
         CALIBRE_HUB_INTAKE_TICK = toString cfg.intake.tick;
-        CALIBRE_HUB_IMPORT_ROOTS = lib.concatMapStringsSep ":" toString cfg.backlogImport.roots;
-        CALIBRE_HUB_IMPORT_UNSURE_TAG = cfg.backlogImport.unsureTag;
+        CALIBRE_HUB_IMPORT_UNSURE_TAG = cfg.intake.unsureTag;
         CALIBRE_HUB_FAST_TAGS = lib.concatStringsSep "," cfg.fastTags;
         CALIBRE_HUB_LIST_MIGRATE_TAG = cfg.leseliste.tag;
         CALIBRE_HUB_CLASSIFY = lib.boolToString cfg.classify.enable;

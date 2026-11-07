@@ -3,20 +3,19 @@ require "json"
 module CalibreHub
   module Cli
     class Runner
-      # hub import cleanup ... | undo <id>. status, analysis and repair recheck
-      # are the old names of hub eingang's.
+      # hub import cleanup ... | undo <id>. status and repair recheck are the
+      # old names of hub eingang's.
       private def import(args : Args)
         first = args.positional.first? || raise Usage.new("cleanup or undo expected", "import")
         case first
-        when "status"   then import_status
-        when "cleanup"  then import_cleanup(args)
-        when "undo"     then import_undo(args)
-        when "analysis" then import_analysis(args)
+        when "status"  then import_status
+        when "cleanup" then import_cleanup(args)
+        when "undo"    then import_undo(args)
         when "repair"
           raise Usage.new("only repair recheck is left, the books' proposals are in the Eingang", "import") unless args.positional[1]? == "recheck"
           import_recheck(args)
         else
-          raise Usage.new("#{first}: a backlog is imported through the Eingang now, cleanup or undo expected", "import")
+          raise Usage.new("#{first}: books come in through the Eingang now, cleanup or undo expected", "import")
         end
       end
 
@@ -69,10 +68,9 @@ module CalibreHub
       # hub eingang: what is in the list, by source, and what happens by itself
       private def eingang(args : Args)
         case args.positional.first?
-        when nil        then eingang_status
-        when "analysis" then import_analysis(args)
-        when "recheck"  then import_recheck(args)
-        else                 raise Usage.new("analysis or recheck expected", "eingang")
+        when nil       then eingang_status
+        when "recheck" then import_recheck(args)
+        else                raise Usage.new("recheck expected", "eingang")
         end
       end
 
@@ -92,19 +90,6 @@ module CalibreHub
         @out.puts "  taken by itself: #{takes}"
         pending = st["pending"].as_i64
         @out.puts "  #{pending} decided, on their way" if pending > 0
-      end
-
-      # hub eingang analysis off|on: stops the backlog's analysis or lets it
-      # go on; the inbox and uploads don't stop
-      private def import_analysis(args : Args)
-        on = case args.positional[1]?
-             when "on"  then true
-             when "off" then false
-             else            raise Usage.new("on or off expected", "eingang")
-             end
-        result = client.post("/api/intake/analysis", {"on" => on})
-        return @out.puts result.to_json if @json
-        @out.puts "analysis: #{result["state"]}, #{result["done"]} of #{result["total"]}"
       end
 
       # plans the books no plan got to; runs behind the analysis, so it isn't

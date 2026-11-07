@@ -41,7 +41,7 @@ module CalibreHub
     # name them
     HAND_FIELDS = {"title" => "title", "authors" => "authors", "authorSort" => "authorSort", "publisher" => "publisher",
                    "pubdate" => "pubdate", "series" => "series", "seriesIndex" => "seriesIndex"}
-    # what a backlog import writes right after adding a book isn't an edit
+    # what an import writes right after adding a book isn't an edit
     IMPORT_WINDOW = 10.minutes
     # a proposal with something to write: not only a conflict's note or an
     # unconfirmed candidate
@@ -387,7 +387,7 @@ module CalibreHub
       names = begin
         Dir.children(dir).select { |n| Backlog::Scanner.format(n) }
       rescue File::Error
-        # the backlog isn't there (any more): the files the imports handled
+        # the folder isn't there any more: the files the imports handled
         list = [] of String
         @db.query_each("select path from import_files where path like ?", "#{dir}/%") do |rs|
           p = rs.read(String)

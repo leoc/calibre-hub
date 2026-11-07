@@ -159,9 +159,11 @@ end
 private def setup(root : String, fake = FakeCalibre.new, shelf : String? = nil, db = state_db)
   calibre = fake.calibre
   writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
-  imports = CalibreHub::Importer.new(db, calibre, writer, [root], shelf, retries: 0)
+  imports = CalibreHub::Importer.new(db, calibre, writer, shelf, retries: 0)
+  Dir.mkdir_p(root)
   intake = Intake.new(db, calibre, imports, shelf, File.join(root, ".covers"), IntakeTrash.new(File.join(File.dirname(root), "papierkorb")),
-    stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds)
+    inbox: CalibreHub::Inbox.new(root, 0.seconds))
+  intake.set_threshold("inbox", nil)
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
   intake.reader = ->(path : String, _format : String) do
     Meta::FileMeta::Info.new(Meta::Record.new, [] of String, front: "", format: "PDF").as(Meta::FileMeta::Info?)
@@ -169,16 +171,22 @@ private def setup(root : String, fake = FakeCalibre.new, shelf : String? = nil, 
   {intake, fake, db, imports}
 end
 
-# the trash folder's part for what comes from root
+# the trash folder's part for what comes from the inbox
 private def bin(root : String) : String
-  File.join(File.dirname(root), "papierkorb", "backlog") + root
+  File.join(File.dirname(root), "papierkorb", "inbox")
+end
+
+# what the hub does by itself, then what is new
+private def pass(intake : Intake) : Int32
+  intake.tidy
+  intake.run_once
 end
 
 private def tmpdir(&)
   dir = File.tempname("intake")
   Dir.mkdir_p(dir)
   begin
-    yield File.realpath(dir), File.join(File.realpath(dir), "backlog")
+    yield File.realpath(dir), File.join(File.realpath(dir), "inbox")
   ensure
     FileUtils.rm_rf(dir)
   end
@@ -377,7 +385,7 @@ describe CalibreHub::IntakeJobs do
     tmpdir do |_, root|
       write(File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf"), pdf("dune"))
       intake, fake, db, imports = setup(root)
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["proposal"]["title"].should eq "Dune"
 
@@ -392,11 +400,11 @@ describe CalibreHub::IntakeJobs do
       fake.books[id]["authors"].as_a.map(&.as_s).should eq ["Frank Herbert"]
       fake.books[id]["tags"].as_a.should be_empty
       fake.books[id]["publisher"].should eq "Chilton"
-      imports.known.keys.should eq [File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf")]
-      db.query_one("select status from import_files", as: String).should eq "imported"
-      File.exists?(File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf")).should be_true
+      db.query_one("select count(*) from import_files", as: Int64).should eq 0
+      File.exists?(File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf")).should be_false
+      Dir.glob(File.join(root, "_imported/*/*.pdf")).map { |f| File.basename(f) }.should eq ["Frank Herbert - Dune (Chilton, 1965).pdf"]
       # the next pass neither brings it back nor adds it again
-      intake.run_once.should eq 0
+      pass(intake).should eq 0
       entries(intake).should be_empty
     end
   end
@@ -407,7 +415,7 @@ describe CalibreHub::IntakeJobs do
       intake, fake, db, imports = setup(root)
       log = CalibreHub::MetaLog.new(db)
       imports.decisions = log
-      intake.run_once
+      pass(intake)
       r = decide(intake, [entries(intake).first["id"].as_i64], "file")
       wait(intake, r).errors.should be_empty
       id = fake.books.keys.max
@@ -422,7 +430,7 @@ describe CalibreHub::IntakeJobs do
       write(File.join(root, "a.pdf"), pdf("a"))
       write(File.join(root, "b.pdf"), pdf("b"))
       intake, fake, db, _ = setup(root)
-      intake.run_once
+      pass(intake)
       a, b = id_of(intake, "a.pdf"), id_of(intake, "b.pdf")
       db.exec "delete from intake_candidates"
       db.exec "insert into intake_candidates (entry_id, idx, source, confidence, fields) values (?, 0, 'dnb', 70, ?)",
@@ -448,7 +456,7 @@ describe CalibreHub::IntakeJobs do
       intake, fake, db, imports = setup(root)
       log = CalibreHub::MetaLog.new(db)
       imports.decisions = log
-      intake.run_once
+      pass(intake)
       wait(intake, decide(intake, [entries(intake).first["id"].as_i64], "accept")).errors.should be_empty
       log.decided(fake.books.keys.max).not_nil!.binding?.should be_true
     end
@@ -461,13 +469,12 @@ describe CalibreHub::IntakeJobs do
       fake = FakeCalibre.new
       fake.add(1_i64, "Dune", ["Frank Herbert"], ["EPUB"])
       intake, _, _, imports = setup(root, fake)
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["action"].should eq "addFormats"
       wait(intake, decide(intake, [e["id"].as_i64], "accept")).errors.should be_empty
       fake.added.should be_empty
       fake.books[1_i64]["formats"].as_a.map(&.as_s).should eq ["EPUB", "MOBI"]
-      imports.known.values.first[3].should eq 1_i64
     end
   end
 
@@ -477,7 +484,7 @@ describe CalibreHub::IntakeJobs do
       fake = FakeCalibre.new
       fake.add(1_i64, "Dune", ["Frank Herbert"])
       intake, _, _, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["action"].should eq "duplicate"
       e["bookTitle"].should eq "Dune"
@@ -496,14 +503,13 @@ describe CalibreHub::IntakeJobs do
       fake.add(1_i64, "Schon da", ["Wer"])
       fake.duplicate_names["a.pdf"] = 1_i64
       intake, _, _, imports = setup(root, fake)
-      intake.run_once
+      pass(intake)
       id = entries(intake).first["id"].as_i64
       fake.books[1_i64]["formats"] = JSON.parse(%(["PDF"]))
       wait(intake, decide(intake, [id], "accept"))
       e = entries(intake).first
       e["action"].should eq "duplicate"
       e["bookId"].should eq 1
-      imports.known.should be_empty
       fake.books.size.should eq 1
     end
   end
@@ -513,7 +519,7 @@ describe CalibreHub::IntakeJobs do
       write(File.join(root, "a.pdf"), pdf("a"))
       write(File.join(root, "b.pdf"), pdf("b"))
       intake, fake, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       a = id_of(intake, "a.pdf")
       intake.decide(JSON.parse({target: {ids: [a]}, decision: "skip"}.to_json).as_h)[0].should eq 200
       list = intake.list
@@ -524,7 +530,7 @@ describe CalibreHub::IntakeJobs do
       entries(intake, skipped: true).map(&.["id"].as_i64).should eq [a]
       intake.list(skipped: true)["takeable"].should eq 1
       fake.added.should be_empty
-      intake.run_once.should eq 0
+      pass(intake).should eq 0
       intake.list["skipped"].should eq 1
 
       decide(intake, [a], "unskip")
@@ -537,20 +543,19 @@ describe CalibreHub::IntakeJobs do
     tmpdir do |_, root|
       write(File.join(root, "Fach/a.pdf"), pdf("a"))
       write(File.join(root, "Fach/a.epub"), "PK" + ("." * 4000))
-      write(File.join(root, "Fach/notes.txt"), "stays")
+      write(File.join(root, "Fach/talk.mp3"), "stays")
       intake, fake, _, imports = setup(root)
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["files"].as_a.size.should eq 2
       wait(intake, decide(intake, [e["id"].as_i64], "trash")).errors.should be_empty
       File.exists?("#{bin(root)}/Fach/a.pdf").should be_true
       File.exists?("#{bin(root)}/Fach/a.epub").should be_true
       File.exists?(File.join(root, "Fach/a.pdf")).should be_false
-      File.exists?(File.join(root, "Fach/notes.txt")).should be_true
+      File.exists?(File.join(root, "Fach/talk.mp3")).should be_true
       entries(intake).should be_empty
       fake.added.should be_empty
-      imports.known.should be_empty
-      intake.run_once.should eq 0
+      pass(intake).should eq 0
     end
   end
 
@@ -561,7 +566,7 @@ describe CalibreHub::IntakeJobs do
       write(File.join(folder, "metadata.opf"), opf("Dune", "Frank Herbert"))
       write(File.join(folder, "cover.jpg"), "jpg")
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       wait(intake, decide(intake, [entries(intake).first["id"].as_i64], "trash")).errors.should be_empty
       Dir.exists?(folder).should be_false
       Dir.children("#{bin(root)}/Frank Herbert/Dune (7)").sort.should eq ["Dune.pdf", "cover.jpg", "metadata.opf"]
@@ -573,7 +578,7 @@ describe CalibreHub::IntakeJobs do
       write(File.join(root, "a.pdf"), pdf("a"))
       write("#{bin(root)}", "a file where the folder belongs")
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       r = decide(intake, [entries(intake).first["id"].as_i64], "trash")
       wait(intake, r).errors.size.should eq 1
       e = entries(intake).first
@@ -590,7 +595,7 @@ describe CalibreHub::IntakeJobs do
       fake = FakeCalibre.new
       fake.add(1_i64, "Dune", ["Frank Herbert"])
       intake, _, db, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set status = 'failed', proposal = null, confidence = null where path like '%z.pdf'"
       skipped = id_of(intake, "Jane Doe - Book 0.pdf")
       decide(intake, [skipped], "skip")
@@ -625,7 +630,7 @@ describe CalibreHub::IntakeJobs do
     tmpdir do |_, root|
       %w(a b c d).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       one = intake.list(limit: 2)
       one["entries"].as_a.map(&.["name"].as_s).should eq ["a.pdf", "b.pdf"]
       decide(intake, [id_of(intake, "a.pdf")], "trash")
@@ -641,7 +646,7 @@ describe CalibreHub::IntakeJobs do
       write(File.join(root, "a.pdf"), pdf("a"))
       write(File.join(root, "b.pdf"), pdf("b"))
       intake, fake, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       fake.down = true
       r = decide(intake, entries(intake).map(&.["id"].as_i64), "accept")
       wait(intake, r).status.should eq "failed"
@@ -656,12 +661,12 @@ describe CalibreHub::IntakeJobs do
     tmpdir do |_, root|
       write(File.join(root, "a.pdf"), pdf("a"))
       intake, fake, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       id = entries(intake).first["id"].as_i64
       write(File.join(root, "a.pdf"), pdf("changed a lot"))
       wait(intake, decide(intake, [id], "accept")).errors.should be_empty
       fake.added.should be_empty
-      intake.run_once.should eq 1
+      pass(intake).should eq 1
       entries(intake).size.should eq 1
     end
   end
@@ -699,10 +704,10 @@ describe "all sure duplicates to the trash" do
     tmpdir do |_, root|
       fake = duplicates_library(root)
       intake, _, db, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       # an ISBN brought it together with a book of another title
       db.exec "update intake_entries set action = 'duplicate', book_id = 5, match = 'isbn' where path like '%By ISBN%'"
-      intake.run_once
+      pass(intake)
       entries(intake, duplicates: true).find! { |e| e["name"] == "Jane Doe - Other Formats.pdf" }["action"].should eq "addFormats"
       intake.list(duplicates: true)["total"].should eq 3
       list = intake.list(duplicates: "sure")
@@ -732,11 +737,11 @@ describe "all sure duplicates to the trash" do
       fake = duplicates_library(root)
       write(File.join(root, "Kopie/Jane Doe - A Book of Mine.pdf"), pdf("copy"))
       intake, _, db, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       entries(intake, duplicates: true).find! { |e| e["sameAs"].as_s? }["bookId"].raw.should be_nil
       decide(intake, [id_of(intake, "Frank Herbert - Dune.pdf")], "skip")
       db.exec "update intake_entries set status = 'failed', proposal = null, confidence = null where path like '%Children of Dune%'"
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: true)
       list["trashable"].should eq 0
       intake.list(duplicates: "sure")["total"].should eq 0
@@ -749,7 +754,7 @@ describe "all sure duplicates to the trash" do
     tmpdir do |_, root|
       fake = duplicates_library(root)
       intake, _, _, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       expect_raises(CalibreHub::Edit::Invalid, /sure duplicates/) { trash_all(intake, list, query: {band: "bulk"}) }
       expect_raises(CalibreHub::Edit::Invalid, /sure duplicates/) { trash_all(intake, list, query: {duplicates: false}) }
@@ -767,13 +772,13 @@ describe "all sure duplicates to the trash" do
     tmpdir do |_, root|
       fake = duplicates_library(root)
       intake, _, db, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set confidence = 95 where path like '%Dune.pdf'"
-      db.exec "update intake_entries set confidence = 70, origin = 'inbox' where path like '%Children of Dune%'"
+      db.exec "update intake_entries set confidence = 70, origin = 'upload' where path like '%Children of Dune%'"
       sure = intake.list(band: "bulk", duplicates: true)
       sure["trashable"].should eq 1
-      intake.list(duplicates: true, origin: "inbox")["trashable"].should eq 1
-      intake.list(duplicates: true, origin: "backlog", band: "review")["trashable"].should eq 0
+      intake.list(duplicates: true, origin: "upload")["trashable"].should eq 1
+      intake.list(duplicates: true, origin: "inbox", band: "review")["trashable"].should eq 0
       list = intake.list(duplicates: true)
       # what the analysis adds after the page was shown doesn't count
       db.exec "insert into intake_entries (path, kind, files, status, proposal, confidence, action, book_id, same_book, sure, at) " \
@@ -791,7 +796,7 @@ describe "all sure duplicates to the trash" do
     tmpdir do |_, root|
       fake = duplicates_library(root)
       intake, _, _, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: true)
       list["trashable"].should eq 2
       fake.books[1_i64]["title"] = JSON::Any.new("Dune Messiah")
@@ -813,7 +818,7 @@ describe "all sure duplicates to the trash" do
       fake.add(6_i64, "Held Back", ["Jane Doe"])
       write("#{bin(root)}/Blocked", "a file where the folder belongs")
       intake, _, _, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: true)
       list["trashable"].should eq 3
       job = wait(intake, trash_all(intake, list)[1])
@@ -827,29 +832,15 @@ describe "all sure duplicates to the trash" do
     end
   end
 
-  it "knows entries analysed before the mark, also with the analysis off" do
+  it "knows entries analysed before the mark" do
     tmpdir do |_, root|
       fake = duplicates_library(root)
       intake, _, db, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set same_book = 0, sure = 0"
       intake.list(duplicates: true)["trashable"].should eq 0
-      intake.run_once
+      pass(intake)
       intake.list(duplicates: true)["trashable"].should eq 2
-      db.exec "update intake_entries set same_book = 0, sure = 0"
-      intake.analysis = false
-      done = Channel(Nil).new
-      spawn do
-        intake.run_once
-        done.send(nil)
-      end
-      300.times do
-        break if intake.list(duplicates: true)["trashable"] == 2
-        sleep 10.milliseconds
-      end
-      intake.list(duplicates: true)["trashable"].should eq 2
-      intake.analysis = true
-      done.receive
     end
   end
 
@@ -857,9 +848,9 @@ describe "all sure duplicates to the trash" do
     tmpdir do |_, root|
       fake = duplicates_library(root)
       intake, _, _, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       fake.books[1_i64]["title"] = JSON::Any.new("Dune Messiah")
-      intake.run_once
+      pass(intake)
       intake.list(duplicates: true)["trashable"].should eq 1
     end
   end
@@ -898,7 +889,7 @@ describe "sure duplicates" do
     tmpdir do |dir, root|
       fake, shelf = founders(dir, root)
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       e = list["entries"][0]
       e["match"].should eq "file"
@@ -921,13 +912,13 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b")
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       shown(list).should eq [File.join(root, "b/Jane Doe - Only Here.pdf")]
       list["trashable"].should eq 1
       wait(intake, trash_all(intake, list)[1]).errors.should be_empty
       left_on_disk(root).should eq ["a/Jane Doe - Only Here.pdf"]
-      intake.run_once
+      pass(intake)
       intake.list["trashable"].should eq 0
       entries(intake).map(&.["action"]).should eq ["add"]
     end
@@ -937,7 +928,7 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b", "c")
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       list["total"].should eq 2
       wait(intake, trash_all(intake, list)[1]).errors.should be_empty
@@ -949,9 +940,9 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b")
       intake, _, db, _ = setup(root)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set action = 'duplicate', match = 'file', same_as = ? where path like '%/a/%'", File.join(root, "b/Jane Doe - Only Here.pdf")
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       list["total"].should eq 1
       wait(intake, trash_all(intake, list)[1]).errors.should be_empty
@@ -960,9 +951,9 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b", "c")
       intake, _, db, _ = setup(root)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set same_as = ? where path like '%/c/%'", File.join(root, "b/Jane Doe - Only Here.pdf")
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       list["total"].should eq 2
       wait(intake, trash_all(intake, list)[1]).errors.should be_empty
@@ -979,9 +970,9 @@ describe "sure duplicates" do
       fake = FakeCalibre.new
       fake.add(1_i64, "Buch", ["Wer"])
       intake, _, db, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set book_id = null, same_as = ? where path like '%/b/%'", File.join(root, "a/x.pdf")
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       list["total"].should eq 2
       wait(intake, trash_all(intake, list)[1]).errors.should be_empty
@@ -1000,7 +991,7 @@ describe "sure duplicates" do
       fake = FakeCalibre.new
       fake.add(1_i64, "Buch", ["Wer"])
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       intake.list(duplicates: "sure")["total"].should eq 0
       possible = entries(intake, duplicates: true)
       possible.map(&.["action"].as_s).sort.should eq ["addFormats", "duplicate"]
@@ -1016,7 +1007,7 @@ describe "sure duplicates" do
       fake.duplicate_names["a.pdf"] = 1_i64
       fake.unfound = true
       intake, _, _, _ = setup(root, fake)
-      intake.run_once
+      pass(intake)
       wait(intake, decide(intake, [entries(intake).first["id"].as_i64], "accept"))
       e = entries(intake, duplicates: true).first
       e["action"].should eq "duplicate"
@@ -1024,7 +1015,7 @@ describe "sure duplicates" do
       e["bookId"].raw.should be_nil
       e["error"].should eq "Schon da (Wer)"
       e["sure"].should be_false
-      intake.run_once
+      pass(intake)
       intake.list(duplicates: "sure")["total"].should eq 0
     end
   end
@@ -1038,12 +1029,12 @@ describe "sure duplicates" do
       write(File.join(root, "Jane Doe - Other Title.pdf"), pdf("other"))
       fake.add(3_i64, "Other Title", ["Jane Doe", "John Roe"])
       intake, _, db, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set confidence = 95 where path like '%Founders%'"
-      db.exec "update intake_entries set confidence = 95, origin = 'inbox' where path like '%Dune%'"
+      db.exec "update intake_entries set confidence = 95, origin = 'upload' where path like '%Dune%'"
       db.exec "update intake_entries set confidence = 70 where path like '%/b/%'"
       moved = 0
-      [{"bulk", "inbox", 1}, {"bulk", "backlog", 1}, {"review", nil, 1}, {"unsure", nil, 0}].each do |band, origin, n|
+      [{"bulk", "upload", 1}, {"bulk", "inbox", 1}, {"review", nil, 1}, {"unsure", nil, 0}].each do |band, origin, n|
         list = intake.list(band: band, duplicates: "sure", origin: origin)
         list["total"].should eq n
         list["trashable"].should eq n
@@ -1063,11 +1054,11 @@ describe "sure duplicates" do
     tmpdir do |dir, root|
       fake, shelf = founders(dir, root)
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       # a new title takes nothing from the same file
       fake.books[1_i64]["title"] = JSON::Any.new("Dilemmas")
-      intake.run_once
+      pass(intake)
       intake.list(duplicates: "sure")["total"].should eq 1
       File.write(File.join(shelf, "Noam Wasserman/Dilemmas (1)/Dilemmas - Noam Wasserman.pdf"), pdf("rewritten"))
       expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
@@ -1080,7 +1071,7 @@ describe "sure duplicates" do
     tmpdir do |dir, root|
       fake, shelf = founders(dir, root)
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       fake.books.delete(1_i64)
       expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
@@ -1093,7 +1084,7 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b")
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       File.delete(File.join(root, "a/Jane Doe - Only Here.pdf"))
       expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
@@ -1103,7 +1094,7 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b")
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       write(File.join(root, "a/Jane Doe - Only Here.pdf"), pdf("a new scan under the old name"))
       expect_raises(CalibreHub::Jobs::CountMismatch) { trash_all(intake, list) }
@@ -1112,7 +1103,7 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b")
       intake, _, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       first = entries(intake).find!(&.["action"].==("add"))["id"].as_i64
       wait(intake, decide(intake, [first], "trash"))
@@ -1129,12 +1120,12 @@ describe "sure duplicates" do
       fake, shelf = founders(dir, root)
       only_here(root, "a", "b")
       intake, _, db, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       db.exec "alter table intake_entries drop column sure"
       Intake.migrate(db)
       intake.list(duplicates: "sure")["total"].should eq 0
       intake.list(duplicates: true)["total"].should eq 2
-      intake.run_once
+      pass(intake)
       intake.list(duplicates: "sure")["total"].should eq 2
       intake.list(duplicates: true)["total"].should eq 0
     end
@@ -1144,7 +1135,7 @@ describe "sure duplicates" do
     tmpdir do |_, root|
       only_here(root, "a", "b")
       intake, fake, _, _ = setup(root)
-      intake.run_once
+      pass(intake)
       list = intake.list(duplicates: "sure")
       list["takeable"].should eq 0
       body = {target: {query: {duplicates: "sure"}, last: list["last"], expect: 0}, decision: "accept"}
@@ -1155,22 +1146,22 @@ describe "sure duplicates" do
 end
 
 describe "the threshold" do
-  it "is off by default and takes what is at or above it" do
+  it "takes what is at or above it once it is on" do
     tmpdir do |_, root|
       write(File.join(root, "Frank Herbert - Dune.pdf"), pdf("dune"))
       write(File.join(root, "x.pdf"), pdf("x"))
       fake = FakeCalibre.new
       fake.add(1_i64, "Kinder", ["Wer Auch"])
       intake, _, db, _ = setup(root, fake)
-      intake.run_once
-      intake.threshold.should be_nil
+      pass(intake)
+      intake.threshold("inbox").should be_nil
       fake.added.should be_empty
       db.exec "update intake_entries set confidence = 99"
       db.exec "update intake_entries set action = 'duplicate' where path like '%x.pdf'"
 
-      intake.set_threshold("backlog", 90)
+      intake.set_threshold("inbox", 90)
       settled(intake)
-      intake.threshold.should eq 90
+      intake.threshold("inbox").should eq 90
       fake.added.should eq ["Frank Herbert - Dune.pdf"]
       entries(intake).size.should eq 1
     end
@@ -1180,17 +1171,17 @@ describe "the threshold" do
     tmpdir do |_, root|
       write(File.join(root, "Frank Herbert - Dune.pdf"), pdf("dune"))
       intake, fake, _, _ = setup(root)
-      intake.set_threshold("backlog", 60)
-      intake.run_once
+      intake.set_threshold("inbox", 60)
+      pass(intake)
       settled(intake)
       fake.added.size.should eq 1
 
       write(File.join(root, "Jane Doe - Zwei.pdf"), pdf("zwei"))
-      intake.set_threshold("backlog", nil)
-      intake.run_once
+      intake.set_threshold("inbox", nil)
+      pass(intake)
       id = id_of(intake, "Jane Doe - Zwei.pdf")
       decide(intake, [id], "skip")
-      intake.set_threshold("backlog", 60)
+      intake.set_threshold("inbox", 60)
       settled(intake)
       fake.added.size.should eq 1
       entries(intake).size.should eq 1
@@ -1199,17 +1190,18 @@ describe "the threshold" do
 end
 
 describe "exact duplicates" do
-  it "go to the trash folder when every byte is in the library" do
+  it "go to _duplicates when every byte is in the library, not to the trash folder" do
     tmpdir do |dir, root|
       write(File.join(root, "Fach/copy.pdf"), pdf("same"))
       shelf = library(dir, {1_i64 => {"Wer/Buch (1)", "Buch - Wer", "PDF", pdf("same")}})
       fake = FakeCalibre.new
       fake.add(1_i64, "Buch", ["Wer"])
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       entries(intake).should be_empty
       fake.added.should be_empty
-      File.exists?("#{bin(root)}/Fach/copy.pdf").should be_true
+      Dir.glob(File.join(root, "_duplicates/*/Fach/copy.pdf")).size.should eq 1
+      File.exists?(bin(root)).should be_false
       File.exists?(File.join(shelf, "Wer/Buch (1)/Buch - Wer.pdf")).should be_true
     end
   end
@@ -1227,7 +1219,7 @@ describe "exact duplicates" do
       fake = FakeCalibre.new
       fake.add(1_i64, "Buch", ["Wer"])
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       e = entries(intake).first
       e["action"].should eq "duplicate"
       e["match"].should eq "file"
@@ -1246,7 +1238,7 @@ describe "exact duplicates" do
       fake = FakeCalibre.new
       fake.add(1_i64, "Buch", ["Wer"])
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       entries(intake).size.should eq 1
       File.exists?(File.join(root, "a.pdf")).should be_true
     end
@@ -1262,7 +1254,7 @@ describe "exact duplicates" do
       fake = FakeCalibre.new
       fake.add(1_i64, "Buch", ["Wer"])
       intake, _, _, _ = setup(root, fake, shelf)
-      intake.run_once
+      pass(intake)
       entries(intake).size.should eq 1
       Dir.exists?(folder).should be_true
     end
@@ -1274,20 +1266,20 @@ describe "exact duplicates" do
       fake = FakeCalibre.new
       db = state_db
       intake, _, _, _ = setup(root, fake, nil, db)
-      intake.run_once
+      pass(intake)
       entries(intake).size.should eq 1
 
       shelf = library(dir, {1_i64 => {"Wer/Buch (1)", "Buch - Wer", "PDF", pdf("same")}})
       fake.add(1_i64, "Buch", ["Wer"])
-      write("#{bin(root)}", "in the way")
+      write(File.join(root, "_duplicates"), "in the way")
       later, _, _, _ = setup(root, fake, shelf, db)
-      later.run_once
+      pass(later)
       entries(later).size.should eq 1
 
-      File.delete("#{bin(root)}")
-      later.run_once
+      File.delete(File.join(root, "_duplicates"))
+      pass(later)
       entries(later).should be_empty
-      File.exists?("#{bin(root)}/copy.pdf").should be_true
+      Dir.glob(File.join(root, "_duplicates/*/copy.pdf")).size.should eq 1
     end
   end
 end
@@ -1350,7 +1342,7 @@ describe "a chosen candidate" do
       intake, fake, db, imports = setup(root)
       log = CalibreHub::MetaLog.new(db)
       imports.decisions = log
-      intake.run_once
+      pass(intake)
       a = id_of(intake, "a.pdf")
       proposal = Intake::Proposal.new("Falsches Buch", ["Falsche Autorin"], "Falscher Verlag", "1999", "Falsche Reihe", 1.0, "9780000000002", ["eng"])
       db.exec "update intake_entries set proposal = ?, level = 1, confidence = 20, title_confidence = 20, authors_confidence = 20, " \
@@ -1385,7 +1377,7 @@ describe "a chosen candidate" do
       write(File.join(root, "a.pdf"), pdf("a"))
       write(File.join(root, "b.pdf"), pdf("b"))
       intake, fake, db, _ = setup(root)
-      intake.run_once
+      pass(intake)
       a = id_of(intake, "a.pdf")
       db.exec "delete from intake_candidates where entry_id = ?", a
       db.exec "insert into intake_candidates (entry_id, idx, source, confidence, fields) values (?, 0, 'dnb', 40, ?)",
@@ -1406,7 +1398,7 @@ describe "the list's order" do
     tmpdir do |_, root|
       %w(a b c d e).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
       intake, _, db, _ = setup(root)
-      intake.run_once
+      pass(intake)
       id = %w(a b c d e).to_h { |n| {n, id_of(intake, "#{n}.pdf")} }
       {"a" => 50, "b" => 90, "c" => 70, "d" => 90}.each { |n, c| db.exec "update intake_entries set confidence = ? where id = ?", c, id[n] }
       db.exec "update intake_entries set confidence = null, status = 'failed', proposal = null where id = ?", id["e"]
@@ -1433,7 +1425,7 @@ describe "the list's order" do
       intake, _, db, _ = setup(root, fake)
       repair = repair_of(fake, db)
       intake.repair = repair
-      intake.run_once
+      pass(intake)
       a, b = id_of(intake, "a.pdf"), id_of(intake, "b.pdf")
       db.exec "update intake_entries set confidence = 50 where id = ?", a
       db.exec "update intake_entries set confidence = 90 where id = ?", b
@@ -1456,7 +1448,7 @@ describe "what a bulk leaves in the list" do
     tmpdir do |_, root|
       %w(a b c d).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
       intake, _, db, _ = setup(root)
-      intake.run_once
+      pass(intake)
       db.exec "update intake_entries set action = 'duplicate' where id = ?", id_of(intake, "a.pdf")
       db.exec "update intake_entries set status = 'failed', proposal = null where id = ?", id_of(intake, "b.pdf")
       db.exec "update intake_entries set skipped = 1 where id = ?", id_of(intake, "c.pdf")
@@ -1473,7 +1465,7 @@ end
 private def every_sort(root : String, fake = FakeCalibre.new)
   %w(bulk review unsure failed maybe maybe2 sure sure2 skipped skipped_maybe skipped_sure skipped_failed).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
   intake, _, db, _ = setup(root, fake)
-  intake.run_once
+  pass(intake)
   set = ->(name : String, sql : String) { db.exec "update intake_entries set #{sql} where id = ?", id_of(intake, "#{name}.pdf") }
   {"bulk" => 95, "review" => 70, "unsure" => 30, "skipped" => 70}.each { |n, c| set.call(n, "action = 'add', sure = 0, confidence = #{c}") }
   failed = "action = 'add', sure = 0, status = 'failed', proposal = null, confidence = null"
@@ -1595,14 +1587,14 @@ describe "the numbers of the bar and the filters" do
   it "follows the source: a filter of it shows the same numbers as the list" do
     tmpdir do |_, root|
       intake, db = every_sort(root)
-      %w(bulk skipped_sure failed).each { |n| db.exec "update intake_entries set origin = 'inbox' where id = ?", id_of(intake, "#{n}.pdf") }
+      %w(bulk skipped_sure failed).each { |n| db.exec "update intake_entries set origin = 'upload' where id = ?", id_of(intake, "#{n}.pdf") }
       all = intake.list
-      list = intake.list(origin: "inbox")
+      list = intake.list(origin: "upload")
       kinds = list["shares"]["kinds"]
-      files_sum(kinds).should eq all["origins"]["inbox"]
+      files_sum(kinds).should eq all["origins"]["upload"]
       files_sum(kinds).should eq 3
       {kinds["new"]["bulk"], kinds["new"]["none"], kinds["skipped"]["bulk"]}.should eq({1, 1, 1})
-      %w(new sure duplicates skipped).each { |k| listed(intake, k, nil, "inbox")["total"].as_i64.should eq share_sum(kinds[k]) }
+      %w(new sure duplicates skipped).each { |k| listed(intake, k, nil, "upload")["total"].as_i64.should eq share_sum(kinds[k]) }
       expect_raises(CalibreHub::Edit::Invalid) { intake.shares("nowhere") }
     end
   end
@@ -1678,7 +1670,7 @@ describe "reading in" do
       write(File.join(root, "d.pdf"), pdf("d"))
       write(File.join(dir, "secret.pdf"), pdf("secret"))
       intake, _, db, _ = setup(root)
-      intake.run_once
+      pass(intake)
       a, b, c, d = id_of(intake, "a.pdf"), id_of(intake, "b.djvu"), id_of(intake, "c.pdf"), id_of(intake, "d.pdf")
       intake.readable(a).not_nil!.path.should eq File.join(root, "a.pdf")
       intake.readable(a, "pdf").not_nil!.format.should eq "PDF"
@@ -1730,7 +1722,7 @@ private def peeking(root : String, dir : String, name : String)
   intake, _, db, _ = setup(root)
   intake.peeks = File.join(dir, "intake-peeks")
   intake.peek_from = 0_i64
-  intake.run_once
+  pass(intake)
   id = id_of(intake, name)
   {intake, id, intake.readable(id, nil, Intake::PEEKABLE).not_nil!, db}
 end
@@ -1814,7 +1806,7 @@ describe "the first pages to read in" do
       intake, _, _, _ = setup(root)
       intake.peeks = File.join(dir, "intake-peeks")
       intake.peek_reader = ->(_path : String, _format : String, _target : String) { raise "not to be asked" }
-      intake.run_once
+      pass(intake)
       {"a.epub", "small.pdf"}.each do |name|
         id = id_of(intake, name)
         file = intake.readable(id).not_nil!
@@ -1834,7 +1826,7 @@ describe "the first pages to read in" do
       intake, _, _, _ = setup(root)
       intake.peeks = File.join(dir, "intake-peeks")
       intake.peek_from = 0_i64
-      intake.run_once
+      pass(intake)
       # as many pages as it takes: nothing to make
       short = id_of(intake, "short.pdf")
       file = intake.readable(short).not_nil!
@@ -2174,7 +2166,7 @@ describe "the filter Schon in der Bibliothek" do
       fake.add(7, "Alt", ["Jemand"])
       intake, _, db, _ = setup(root, fake)
       intake.repair = repair_of(fake, db)
-      intake.run_once
+      pass(intake)
       proposal_row(db, 7, title_change("Alt", "Neu"))
       expect_raises(CalibreHub::Edit::Invalid, /library book/) { decide(intake, [-7_i64], "trash") }
       expect_raises(CalibreHub::Edit::Invalid, /library book/) { decide(intake, [-7_i64], "file") }
@@ -2367,13 +2359,10 @@ end
 private def sources(dir : String, fake = FakeCalibre.new, shelf : String? = nil, db = state_db)
   calibre = fake.calibre
   writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
-  root = File.join(dir, "backlog")
-  Dir.mkdir_p(root)
   Dir.mkdir_p(File.join(dir, "inbox"))
   Dir.mkdir_p(File.join(dir, "uploads"))
-  imports = CalibreHub::Importer.new(db, calibre, writer, [root], shelf, retries: 0)
+  imports = CalibreHub::Importer.new(db, calibre, writer, shelf, retries: 0)
   intake = Intake.new(db, calibre, imports, shelf, File.join(dir, ".covers"), IntakeTrash.new(File.join(dir, "papierkorb")),
-    stable: 0.seconds, pause: 0.seconds, wait: 10.milliseconds,
     inbox: CalibreHub::Inbox.new(File.join(dir, "inbox"), 0.seconds), uploads: CalibreHub::Inbox.new(File.join(dir, "uploads"), 0.seconds))
   intake.category_column = "kategorie"
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
@@ -2395,29 +2384,26 @@ describe "the sources of the Eingang" do
     tmpdir do |dir, _|
       write(File.join(dir, "inbox/Roman/Krimi/Agatha Christie - Poirot.pdf"), pdf("poirot"))
       intake, fake, _, _ = sources(dir)
-      intake.run_fast.should eq 1
+      intake.run_once.should eq 1
       fake.added.should be_empty
       e = entries(intake).first
       e["origin"].should eq "inbox"
       e["folder"].should eq "Roman/Krimi"
       File.exists?(File.join(dir, "inbox/Roman/Krimi/Agatha Christie - Poirot.pdf")).should be_true
       # the same file isn't looked at twice
-      intake.run_fast.should eq 0
+      intake.run_once.should eq 0
     end
   end
 
-  it "takes the inbox and uploads from 90 on and leaves the backlog alone until someone says so" do
+  it "takes the inbox and uploads from 90 on until someone says otherwise" do
     tmpdir do |dir, _|
       intake, _, _, _ = sources(dir)
-      intake.thresholds.should eq({"backlog" => nil, "inbox" => 90, "upload" => 90})
+      intake.thresholds.should eq({"inbox" => 90, "upload" => 90})
       intake.set_threshold("inbox", nil)
       intake.set_threshold("upload", 70)
       intake.threshold("inbox").should be_nil
       intake.threshold("upload").should eq 70
-      intake.set_threshold("backlog", 95)
-      intake.thresholds.should eq({"backlog" => 95, "inbox" => nil, "upload" => 70})
-      intake.set_threshold("backlog", nil)
-      intake.threshold("backlog").should be_nil
+      intake.thresholds.should eq({"inbox" => nil, "upload" => 70})
     end
   end
 
@@ -2426,7 +2412,7 @@ describe "the sources of the Eingang" do
       name = "Agatha Christie - Poirot.pdf"
       write(File.join(dir, "inbox/Roman/Krimi", name), pdf("poirot"))
       intake, fake, _, _ = sources(dir)
-      intake.run_fast
+      intake.run_once
       # a clear name is 80: below the default
       settled(intake)
       entries(intake).first["confidence"].should eq 80
@@ -2445,33 +2431,21 @@ describe "the sources of the Eingang" do
       # dropped again it is looked at again: nothing remembers the old path
       write(File.join(dir, "inbox/Roman/Krimi", name), pdf("poirot"))
       intake.set_threshold("inbox", nil)
-      intake.run_fast.should eq 1
+      intake.run_once.should eq 1
     end
   end
 
   it "leaves the sources' thresholds to themselves" do
-    tmpdir do |dir, root|
-      write(File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf"), pdf("dune"))
-      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
-      intake, fake, _, _ = sources(dir)
-      intake.set_threshold("inbox", 60)
-      intake.run_once
-      intake.run_fast
-      settled(intake)
-      fake.added.should eq ["Agatha Christie - Poirot.pdf"]
-      entries(intake).map(&.["origin"]).should eq ["backlog"]
-    end
-  end
-
-  it "goes on with the inbox and uploads while the analysis is off or a repair runs" do
     tmpdir do |dir, _|
       write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
-      intake, _, _, _ = sources(dir)
-      intake.analysis = false
-      intake.busy = -> { true }
-      upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
-      intake.run_fast.should eq 2
-      entries(intake).map(&.["origin"].as_s).sort!.should eq ["inbox", "upload"]
+      intake, fake, _, _ = sources(dir)
+      upload(intake, dir, "Frank Herbert - Dune (Chilton, 1965).pdf", pdf("dune"))
+      intake.set_threshold("inbox", 60)
+      intake.set_threshold("upload", nil)
+      intake.run_once
+      settled(intake)
+      fake.added.should eq ["Agatha Christie - Poirot.pdf"]
+      entries(intake).map(&.["origin"]).should eq ["upload"]
     end
   end
 
@@ -2481,7 +2455,7 @@ describe "the sources of the Eingang" do
       File.chmod(File.join(dir, "inbox/Privat"), 0o555)
       intake, _, _, _ = sources(dir)
       begin
-        intake.run_fast.should eq 0
+        intake.run_once.should eq 0
       ensure
         File.chmod(File.join(dir, "inbox/Privat"), 0o755)
       end
@@ -2497,16 +2471,16 @@ describe "the sources of the Eingang" do
       write(File.join(dir, "inbox/Roman/_alt/Frank Herbert - Dune.pdf"), pdf("b"))
       write(File.join(dir, "inbox/.tmp/Isaac Asimov - Foundation.pdf"), pdf("c"))
       intake, _, _, _ = sources(dir)
-      intake.run_fast.should eq 0
+      intake.run_once.should eq 0
     end
   end
 
-  it "takes a short file somebody put in the inbox, the backlog's sizes are for its noise" do
+  it "takes a short file somebody put in the inbox" do
     tmpdir do |dir, _|
       write(File.join(dir, "inbox/Agatha Christie - Kurz.txt"), "ein kurzer Text")
       write(File.join(dir, "inbox/Frank Herbert - Klein.epub"), "PK" + "x" * 100)
       intake, _, _, _ = sources(dir)
-      intake.run_fast.should eq 2
+      intake.run_once.should eq 2
       entries(intake).map(&.["name"].as_s).sort!.should eq ["Agatha Christie - Kurz.txt", "Frank Herbert - Klein.epub"]
     end
   end
@@ -2516,7 +2490,7 @@ describe "the sources of the Eingang" do
       write(File.join(dir, "inbox/Roman/kaputt.pdf"), "no pdf at all" * 400)
       write(File.join(dir, "inbox/notes.mp3"), "x")
       intake, _, _, _ = sources(dir)
-      intake.run_fast.should eq 0
+      intake.run_once.should eq 0
       File.exists?(File.join(dir, "inbox/_failed", Time.local.to_s("%F"), "Roman/kaputt.pdf")).should be_true
       # not a book format: stays what and where it is
       File.exists?(File.join(dir, "inbox/notes.mp3")).should be_true
@@ -2531,7 +2505,7 @@ describe "the sources of the Eingang" do
       fake = FakeCalibre.new
       fake.add(1_i64, "Dune", ["Frank Herbert"])
       intake, _, _, _ = sources(dir, fake, shelf)
-      intake.run_fast
+      intake.run_once
       entries(intake).should be_empty
       File.exists?(File.join(dir, "inbox/_duplicates", Time.local.to_s("%F"), "Roman/kopie.pdf")).should be_true
       Dir.exists?(File.join(dir, "inbox-papierkorb")).should be_false
@@ -2543,7 +2517,7 @@ describe "the sources of the Eingang" do
       write(File.join(dir, "inbox/Roman/Agatha Christie - Poirot.pdf"), pdf("poirot"))
       intake, _, _, _ = sources(dir)
       up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
-      intake.run_fast
+      intake.run_once
       wait(intake, decide(intake, entries(intake).map(&.["id"].as_i64), "trash"))
       File.exists?(File.join(dir, "papierkorb/inbox/Roman/Agatha Christie - Poirot.pdf")).should be_true
       File.exists?(File.join(dir, "papierkorb/upload", up, "Frank Herbert - Dune.pdf")).should be_true
@@ -2555,7 +2529,7 @@ describe "the sources of the Eingang" do
     tmpdir do |dir, _|
       intake, _, _, _ = sources(dir)
       up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
-      intake.run_fast
+      intake.run_once
       file = entries(intake).first["path"].as_s
       cross_device(intake.trash)
       fine = intake.trash.copy
@@ -2576,14 +2550,13 @@ describe "the sources of the Eingang" do
   end
 
   it "filters by source and takes only that source's books" do
-    tmpdir do |dir, root|
-      write(File.join(root, "Frank Herbert - Dune (Chilton, 1965).pdf"), pdf("dune"))
+    tmpdir do |dir, _|
       write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
       intake, fake, _, _ = sources(dir)
-      intake.run_once
-      intake.run_fast
+      upload(intake, dir, "Frank Herbert - Dune (Chilton, 1965).pdf", pdf("dune"))
+      pass(intake)
       all = intake.list
-      all["origins"].as_h.transform_values(&.as_i).should eq({"backlog" => 1, "inbox" => 1})
+      all["origins"].as_h.transform_values(&.as_i).should eq({"inbox" => 1, "upload" => 1})
       only = intake.list(origin: "inbox")
       only["total"].should eq 1
       only["takeable"].should eq 1
@@ -2596,7 +2569,166 @@ describe "the sources of the Eingang" do
       r = intake.decide(JSON.parse({decision: "accept", target: target}.to_json).as_h)[1]
       wait(intake, r)
       fake.added.should eq ["Agatha Christie - Poirot.pdf"]
-      entries(intake).map(&.["origin"]).should eq ["backlog"]
+      entries(intake).map(&.["origin"]).should eq ["upload"]
+    end
+  end
+end
+
+# A file of the inbox made into a row from the days of the backlog import, as
+# a state DB may still have one: a folder no source knows, no threshold
+private def old_row(db : DB::Database, dir : String, name : String) : String
+  from = File.join(dir, "inbox", name)
+  to = File.join(dir, "backlog", name)
+  Dir.mkdir_p(File.dirname(to))
+  File.rename(from, to)
+  db.exec "update intake_entries set origin = 'backlog', path = replace(path, ?, ?), files = replace(files, ?, ?) where path = ?", from, to, from, to, from
+  to
+end
+
+describe "a row of the backlog" do
+  it "gets no origin of its own any more: nothing new is one" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, _, _, _ = sources(dir)
+      intake.set_threshold("inbox", nil)
+      upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
+      intake.run_once
+      entries(intake).map(&.["origin"].as_s).sort!.should eq ["inbox", "upload"]
+      intake.origins_on.should eq ["inbox", "upload"]
+    end
+  end
+
+  it "lists like the others, with its numbers, and no threshold takes it" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, fake, db, _ = sources(dir)
+      intake.set_threshold("inbox", nil)
+      intake.run_once
+      path = old_row(db, dir, "Agatha Christie - Poirot.pdf")
+      db.exec "update intake_entries set confidence = 99"
+      intake.set_threshold("inbox", 60)
+      intake.set_threshold("upload", 60)
+      intake.tidy
+      settled(intake)
+      fake.added.should be_empty
+
+      list = intake.list
+      list["total"].should eq 1
+      list["entries"].as_a.first["path"].should eq path
+      list["entries"].as_a.first["origin"].should eq "backlog"
+      list["origins"].as_h.transform_values(&.as_i).should eq({"backlog" => 1})
+      list["thresholds"].as_h.keys.should eq ["inbox", "upload"]
+      intake.list(origin: "backlog")["total"].should eq 1
+      intake.list(origin: "inbox")["total"].should eq 0
+      intake.detail(list["entries"].as_a.first["id"].as_i64).not_nil!["origin"].should eq "backlog"
+    end
+  end
+
+  it "is accepted, its file staying where it is and import_files remembering it" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, fake, db, _ = sources(dir)
+      intake.set_threshold("inbox", nil)
+      intake.run_once
+      path = old_row(db, dir, "Agatha Christie - Poirot.pdf")
+      wait(intake, decide(intake, [entries(intake).first["id"].as_i64], "accept")).errors.should be_empty
+      fake.added.should eq ["Agatha Christie - Poirot.pdf"]
+      File.exists?(path).should be_true
+      entries(intake).should be_empty
+      db.query_one("select path from import_files where status = 'imported' and run_id = ?", Intake::RUN, as: String).should eq path
+      pass(intake).should eq 0
+      entries(intake).should be_empty
+    end
+  end
+
+  it "goes to the trash folder under its whole path, it has no root any more" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Fach/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, _, db, _ = sources(dir)
+      intake.set_threshold("inbox", nil)
+      intake.run_once
+      path = old_row(db, dir, "Fach/Agatha Christie - Poirot.pdf")
+      wait(intake, decide(intake, [entries(intake).first["id"].as_i64], "trash")).errors.should be_empty
+      File.exists?(path).should be_false
+      File.exists?(File.join(dir, "papierkorb/backlog", path)).should be_true
+      entries(intake).should be_empty
+    end
+  end
+
+  it "goes to the trash folder by itself as an exact copy of a library's file" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/copy.pdf"), pdf("same"))
+      shelf = library(dir, {1_i64 => {"Wer/Buch (1)", "Buch - Wer", "PDF", pdf("same")}})
+      fake = FakeCalibre.new
+      intake, _, db, _ = sources(dir, FakeCalibre.new)
+      intake.set_threshold("inbox", nil)
+      intake.run_once
+      path = old_row(db, dir, "copy.pdf")
+      fake.add(1_i64, "Buch", ["Wer"])
+      later, _, _, _ = sources(dir, fake, shelf, db)
+      later.tidy
+      entries(later).should be_empty
+      File.exists?(File.join(dir, "papierkorb/backlog", path)).should be_true
+    end
+  end
+
+  it "leaves the list when its file is gone, as on dmt where the folder went" do
+    tmpdir do |dir, _|
+      write(File.join(dir, "inbox/Agatha Christie - Poirot.pdf"), pdf("poirot"))
+      intake, _, db, _ = sources(dir)
+      intake.set_threshold("inbox", nil)
+      intake.run_once
+      File.delete(old_row(db, dir, "Agatha Christie - Poirot.pdf"))
+      intake.list["total"].should eq 1
+      intake.tidy
+      intake.list["total"].should eq 0
+    end
+  end
+end
+
+describe "a state DB from the days of the backlog" do
+  it "loses the backlog's settings, keeps the others and its history, and takes it twice" do
+    db = state_db
+    CalibreHub::Importer.migrate(db)
+    Intake.migrate(db)
+    db.exec "insert into meta (key, value) values ('intake_off', '1'), ('intake_auto', '75'), ('intake_auto_inbox', '80')"
+    db.exec "insert into import_files (path, size, mtime, status, book_id, run_id, at) values ('/srv/backlog/a.pdf', 1, 1, 'imported', 7, 'r', 100)"
+    2.times { Intake.migrate(db) }
+    keys = [] of String
+    db.query_each("select key from meta order by key") { |rs| keys << rs.read(String) }
+    keys.should eq ["intake_auto_inbox"]
+    db.query_one("select book_id from import_files where path = '/srv/backlog/a.pdf'", as: Int64).should eq 7
+  end
+
+  it "reads rows from before the origin as the backlog's" do
+    db = state_db
+    db.exec "create table intake_entries (id integer primary key autoincrement, path text not null unique, kind text not null, files text not null, " \
+            "status text not null, detail text, proposal text, confidence integer, title_confidence integer, authors_confidence integer, level integer, " \
+            "source text, decided text, isbn_source text, notes text not null default '[]', changes text not null default '[]', action text not null, " \
+            "book_id integer, match text, same_as text, add_formats text not null default '[]', cover text, at integer not null)"
+    db.exec "insert into intake_entries (path, kind, files, status, action, at) values ('/srv/backlog/a.pdf', 'file', '[]', 'failed', 'add', 1)"
+    Intake.migrate(db)
+    db.query_one("select origin from intake_entries", as: String).should eq "backlog"
+  end
+end
+
+describe "the hub without an inbox" do
+  it "starts, has its uploads, and a pass finds nothing" do
+    tmpdir do |dir, _|
+      db = state_db
+      fake = FakeCalibre.new
+      calibre = fake.calibre
+      writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
+      imports = CalibreHub::Importer.new(db, calibre, writer, nil, retries: 0)
+      Dir.mkdir_p(File.join(dir, "uploads"))
+      intake = Intake.new(db, calibre, imports, nil, File.join(dir, ".covers"), IntakeTrash.new(File.join(dir, "papierkorb")),
+        uploads: CalibreHub::Inbox.new(File.join(dir, "uploads"), 0.seconds))
+      intake.tidy
+      intake.run_once.should eq 0
+      intake.origins_on.should eq ["upload"]
+      intake.roots.should eq [File.join(dir, "uploads")]
+      intake.thresholds.should eq({"upload" => 90})
+      intake.list["total"].should eq 0
     end
   end
 end
@@ -2609,7 +2741,7 @@ describe "an upload" do
       state = intake.upload_state(up).not_nil!
       state["status"].should eq "checking"
       state["name"].should eq "Frank Herbert - Dune.pdf"
-      intake.run_fast.should eq 1
+      intake.run_once.should eq 1
       fake.added.should be_empty
 
       state = intake.upload_state(up).not_nil!
@@ -2638,18 +2770,18 @@ describe "an upload" do
       intake, fake, _, _ = sources(dir)
       intake.set_threshold("upload", 80)
       up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
-      intake.run_fast
+      intake.run_once
       settled(intake)
       fake.added.should eq ["Frank Herbert - Dune.pdf"]
       intake.upload_state(up).not_nil!["status"].should eq "imported"
     end
   end
 
-  it "takes file types the backlog's scan wouldn't, the proposal from the name" do
+  it "takes file types the inbox's scan wouldn't, the proposal from the name" do
     tmpdir do |dir, _|
       intake, _, _, _ = sources(dir)
       up = upload(intake, dir, "Frank Herbert - Dune.html", "<html>short</html>")
-      intake.run_fast
+      intake.run_once
       intake.upload_state(up).not_nil!["status"].should eq "waiting"
     end
   end
@@ -2669,7 +2801,7 @@ describe "an upload" do
       intake, _, _, _ = sources(dir, fake)
       up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
       intake.set_threshold("upload", 60)
-      intake.run_fast
+      intake.run_once
       settled(intake)
       fake.added.should be_empty
       state = intake.upload_state(up).not_nil!
@@ -2693,7 +2825,7 @@ describe "an upload" do
       intake, _, _, _ = sources(dir)
       upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
       upload(intake, dir, "Isaac Asimov - Foundation.pdf", pdf("found"))
-      intake.run_fast
+      intake.run_once
       ids = entries(intake).map(&.["id"].as_i64)
       format = ->(list : Array(Int64), book : Int64) { intake.decide(JSON.parse({target: {ids: list}, decision: "format", book: book}.to_json).as_h) }
       expect_raises(CalibreHub::Edit::Invalid) { format.call(ids, 1_i64) }
@@ -2712,7 +2844,7 @@ describe "an upload" do
       intake, _, _, _ = sources(dir, fake, shelf)
       intake.set_threshold("upload", 60)
       up = upload(intake, dir, "Frank Herbert - Dune.pdf", content, force: true)
-      intake.run_fast
+      intake.run_once
       settled(intake)
       fake.added.should eq ["Frank Herbert - Dune.pdf"]
       state = intake.upload_state(up).not_nil!
@@ -2729,7 +2861,7 @@ describe "an upload" do
       fake.add(1_i64, "Dune", ["Frank Herbert"])
       intake, _, _, _ = sources(dir, fake, shelf)
       up = upload(intake, dir, "kopie.pdf", content)
-      intake.run_fast
+      intake.run_once
       entries(intake).should be_empty
       state = intake.upload_state(up).not_nil!
       state["status"].should eq "copy"
@@ -2744,7 +2876,7 @@ describe "an upload" do
       first, _, _, _ = sources(dir, db: db)
       up = upload(first, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
       second, _, _, _ = sources(dir, db: db)
-      second.run_fast.should eq 1
+      second.run_once.should eq 1
       second.upload_state(up).not_nil!["status"].should eq "waiting"
     end
   end
@@ -2754,7 +2886,7 @@ describe "an upload" do
       intake, _, _, _ = sources(dir)
       up = upload(intake, dir, "Frank Herbert - Dune.pdf", pdf("dune"))
       File.delete(File.join(dir, "uploads", up, "Frank Herbert - Dune.pdf"))
-      intake.run_fast
+      intake.run_once
       intake.upload_state(up).not_nil!["status"].should eq "gone"
       intake.upload_state("nothing").should be_nil
     end
@@ -2773,7 +2905,7 @@ describe "reading in an inbox file or an upload" do
         40.as(Int32?)
       end
       upload(intake, dir, "Frank Herbert - Dune.djvu", "AT&TFORM" + "x" * 3000)
-      intake.run_fast
+      intake.run_once
       list = entries(intake)
       list.map(&.["origin"].as_s).sort!.should eq ["inbox", "upload"]
       list.each do |e|
@@ -2805,13 +2937,13 @@ describe "reading in an inbox file or an upload" do
         File.write(target, "pages")
         40.as(Int32?)
       end
-      intake.run_fast
+      intake.run_once
       old = entries(intake).first["id"].as_i64
       intake.peek(old, intake.readable(old).not_nil!)
       Dir.children(File.join(dir, "intake-peeks")).size.should eq 1
 
       write(path, pdf("poirot, zweite Fassung"))
-      intake.run_fast.should eq 1
+      intake.run_once.should eq 1
       now = entries(intake).first["id"].as_i64
       now.should_not eq old
       Dir.children(File.join(dir, "intake-peeks")).should be_empty

@@ -485,22 +485,21 @@ describe "hub eingang" do
   it "shows what is in the list, by source" do
     with_stub do |s|
       s.on("GET", "/api/intake", {enabled: true, progress: {state: "analysing", done: 12, total: 14, analysed: 11, current: "a.pdf"},
-                                  origins: {backlog: 10, inbox: 2}, thresholds: {backlog: nil, inbox: 90, upload: 90}, pending: 3})
+                                  origins: {inbox: 10, upload: 2}, thresholds: {inbox: nil, upload: 90}, pending: 3})
       code, stdo, _ = cli(s, "eingang")
       code.should eq(0)
       stdo.should contain("eingang: 14 books, 11 analysed, analysis analysing")
       stdo.should contain("at a.pdf")
-      stdo.should contain("from: backlog 10, inbox 2")
-      stdo.should contain("taken by itself: backlog off, inbox from 90, upload from 90")
+      stdo.should contain("from: inbox 10, upload 2")
+      stdo.should contain("taken by itself: inbox off, upload from 90")
       stdo.should contain("3 decided, on their way")
     end
   end
 
-  it "stops the backlog's analysis and plans the library's books" do
+  it "plans the library's books" do
     with_stub do |s|
-      s.on("POST", "/api/intake/analysis", {state: "off", done: 1, total: 2})
       s.on("POST", "/api/import/repair/recheck", {books: 3, job: {id: "j1"}}, 202)
-      cli(s, "eingang", "analysis", "off")[1].should contain("analysis: off")
+      cli(s, "eingang", "analysis", "off")[0].should eq(1)
       cli(s, "eingang", "recheck")[1].should contain("recheck: 3 books")
       cli(s, "eingang", "nonsense")[0].should eq(1)
     end
@@ -546,17 +545,6 @@ describe "hub import" do
       code, stdo, _ = cli(s, "import", "undo", "c1", "--apply")
       code.should eq(0)
       stdo.should contain("undo of c1: done, 1 books")
-    end
-  end
-
-  it "switches the intake analysis off and on" do
-    with_stub do |s|
-      s.on("POST", "/api/intake/analysis", {state: "off", done: 3, total: 3})
-      code, stdo, _ = cli(s, "import", "analysis", "off")
-      code.should eq(0)
-      JSON.parse(s.requests.last.body).should eq(JSON.parse(%({"on":false})))
-      stdo.should contain("analysis: off, 3 of 3")
-      cli(s, "import", "analysis", "maybe")[0].should eq(1)
     end
   end
 
