@@ -1228,7 +1228,7 @@ pkgs.testers.runNixOSTest {
         # the old ways in are gone
         for method, path in [("POST", "/api/import"), ("GET", "/api/import"), ("GET", "/api/import/runs/x"), ("GET", "/api/import/quality"),
                              ("GET", "/api/import/repair"), ("POST", "/api/import/repair/accept"), ("POST", "/api/import/repair/reject")]:
-            assert api(method, path, {} if method == "POST" else None)[0] == 404, path
+            assert code(f"-b /tmp/jar -X {method} {CSRF} {H}{path}") == "404", path
         assert machine.execute(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub import '{ALT}'")[0] == 1
         out = machine.succeed(f"CALIBRE_HUB_URL={H} CALIBRE_HUB_TOKEN_FILE=/etc/hub/token hub eingang")
         assert "taken by itself: backlog off, inbox from 60, upload from 60" in out, out
