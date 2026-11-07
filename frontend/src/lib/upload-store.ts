@@ -5,7 +5,7 @@ import { api, ApiError, uploadBook, write, type Book, type UploadOptions, type U
 export const MAX_UPLOAD = 200 * 1024 * 1024
 const PARALLEL = 2
 // between two looks at what the Eingang made of an upload
-const CHECK_EVERY = 2_000
+const CHECK_EVERY = 1_000
 
 export interface UploadItem {
   id: number
