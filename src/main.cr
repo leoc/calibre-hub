@@ -45,10 +45,17 @@ module CalibreHub
     getter handlers_dir : String? = ENV["CALIBRE_HUB_HANDLERS_DIR"]?.presence
     getter handler_timeout : Time::Span = env("CALIBRE_HUB_HANDLER_TIMEOUT", "600").to_i.seconds
     getter max_attempts : Int32 = env("CALIBRE_HUB_HANDLER_ATTEMPTS", "10").to_i
+    # before a failed handler's second attempt, doubled with every further one
+    getter handler_retry_delay : Time::Span = env("CALIBRE_HUB_HANDLER_RETRY_DELAY", "10").to_i.seconds
     # executable called with subject and text when a handler is parked
     getter alert_command : String? = ENV["CALIBRE_HUB_ALERT_COMMAND"]?.presence
     getter inbox : String? = ENV["CALIBRE_HUB_INBOX"]?.presence
     getter inbox_stable : Time::Span = env("CALIBRE_HUB_INBOX_STABLE", "120").to_i.seconds
+    # the Eingang: first look at the roots after a start, between two looks
+    # at them, between two looks at the inbox and uploads
+    getter intake_start : Time::Span = env("CALIBRE_HUB_INTAKE_START", "60").to_i.seconds
+    getter intake_interval : Time::Span = env("CALIBRE_HUB_INTAKE_INTERVAL", "300").to_i.seconds
+    getter intake_tick : Time::Span = env("CALIBRE_HUB_INTAKE_TICK", "30").to_i.seconds
     # where uploads wait for the Eingang; by default next to the state DB
     getter uploads : String = ENV["CALIBRE_HUB_UPLOADS"]?.presence || File.join(File.dirname(File.expand_path(env("CALIBRE_HUB_STATE_DB", "calibre-hub.sqlite"))), "uploads")
     # folders the Eingang reads old collections from, ':' separated
@@ -70,6 +77,8 @@ module CalibreHub
     # nightly run over the unsorted books, local time HH:MM; empty: none
     getter classify_schedule : String = env("CALIBRE_HUB_CLASSIFY_SCHEDULE", "03:45")
     getter classify_timeout : Time::Span = env("CALIBRE_HUB_CLASSIFY_TIMEOUT", "300").to_i.seconds
+    # before the model's second attempt, doubled with the third
+    getter classify_retry_delay : Time::Span = env("CALIBRE_HUB_CLASSIFY_RETRY_DELAY", "5").to_i.seconds
     # metadata cleanup: book file, Hardcover, DNB, Open Library; the classify model
     # (endpoint, model) only cleans up names when the rules can't decide
     getter metadata : Bool = env("CALIBRE_HUB_METADATA", "false") == "true"
@@ -107,6 +116,9 @@ module CalibreHub
     getter epub_fix_keep_original : Bool = env("CALIBRE_HUB_EPUB_FIX_KEEP_ORIGINAL", "true") != "false"
     # books with one of these tags (any case) are never sent to Hardcover
     getter hardcover_sync_private_tags : Array(String) = env("CALIBRE_HUB_HARDCOVER_SYNC_PRIVATE_TAGS", "Private,privat").split(',', remove_empty: true).map(&.strip)
+
+    # how often the background work looks for new events; empty: each its own
+    getter event_interval : Time::Span? = ENV["CALIBRE_HUB_EVENT_INTERVAL"]?.presence.try(&.to_i.seconds)
 
     # read only by serve, so scan works without them
     def login_password : String
@@ -320,7 +332,7 @@ module CalibreHub
       Meta::OpenLibrary.new(http, config.openlibrary_url, config.openlibrary_covers_url),
       Meta::Dnb.new(http, config.dnb_url), http, ollama, nightly: config.metadata_nightly.presence, hardcover: hardcover)
     jobs = MetadataJobs.new(db, calibre, writer, m)
-    jobs.watch_events
+    jobs.watch_events(config.event_interval || 10.seconds)
     config.metadata_nightly.presence.try { |at| jobs.schedule(at) }
     puts "metadata: sources #{m.active_sources.join(", ")}#{ollama ? ", names cleaned with #{config.classify_model}" : ""}"
     jobs
@@ -333,12 +345,12 @@ module CalibreHub
       STDERR.puts "classify: needs a category column, off"
       return nil
     end
-    ollama = Ollama.new(config.classify_endpoint, config.classify_model, config.classify_timeout)
+    ollama = Ollama.new(config.classify_endpoint, config.classify_model, config.classify_timeout, backoff: config.classify_retry_delay)
     c = Classify.new(calibre, writer, column, Suggestions.new(db), ollama, config.classify_threshold)
     jobs = ClassifyJobs.new(db, calibre, writer, c)
     # a new book is classified after its metadata run, on clean names
     metadata.try { |m| jobs.ready = ->(event : Int64, book : Int64, at : Time) { m.ready_for_classify?(event, book, at) } }
-    jobs.watch_events
+    jobs.watch_events(config.event_interval || 10.seconds)
     config.classify_schedule.presence.try { |at| jobs.schedule(at) }
     puts "classify: #{config.classify_model} at #{config.classify_endpoint}, auto-apply from #{config.classify_threshold}"
     jobs
@@ -354,13 +366,13 @@ module CalibreHub
     embedder = if config.embed
                  e = Embedder.new(db, calibre, config.library, config.embed_delay, detector, wake)
                  writer.on_cover = ->(id : Int64) { e.enqueue(id, force: true); nil }
-                 e.start
+                 e.start(config.event_interval || 2.seconds)
                  puts "embed: metadata into the files #{config.embed_delay.total_seconds.to_i} s after the last edit"
                  e
                end
     convert = ConvertJobs.new(db, calibre, writer, config.convert_target, config.convert_ignore, config.convert)
     if config.convert
-      convert.watch_events
+      convert.watch_events(config.event_interval || 10.seconds)
       puts "convert: added books to #{config.convert_target} (not from #{config.convert_ignore.join(", ")})"
     end
     {embedder, convert}
@@ -376,7 +388,7 @@ module CalibreHub
       {r.total.to_i64, r.ids}
     end
     lists = Lists.new(db, exists, wake, search, config.category_column)
-    lists.watch_events
+    lists.watch_events(config.event_interval || 5.seconds)
     unless lists.migrated?
       spawn do
         loop do
@@ -417,7 +429,7 @@ module CalibreHub
     detect(detector, config, wake)
     alert = config.alert_command.try { |c| [c] }
     env = {"CALIBRE_HUB_LIBRARY" => config.library || ""}
-    dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert), wake)
+    dispatch(Dispatcher.new(db, config.handlers_dir, env, config.max_attempts, config.handler_timeout, alert, config.handler_retry_delay), wake)
 
     auth = Auth.new(config.accounts, config.session_key, lifetime: config.session_days.days, secure: config.secure_cookies)
     Users.new(db).sync(auth.accounts)
@@ -434,7 +446,7 @@ module CalibreHub
     # in the request that submits the job, so the lists of its user
     members = ->(p : HTTP::Params) { Api.list_members(lists, auth.user, p) }
     private_tags = PrivateTags.new(db)
-    private_tags.watch_events
+    private_tags.watch_events(config.event_interval || 5.seconds)
     # {query: {ptag}} targets: the private tags of the request's user
     tagged = ->(tags : Array(String)) { private_tags.books(auth.user, tags) }
     # one per host interval for the metadata sources and the sync
@@ -456,7 +468,7 @@ module CalibreHub
     epub_fix = EpubFixJobs.new(db, calibre, writer, config.library, config.epub_fix_on_import,
       config.epub_fix_keep_original, detector, wake)
     if config.epub_fix_on_import
-      epub_fix.watch_events
+      epub_fix.watch_events(config.event_interval || 10.seconds)
       puts "epub-fix: EPUBs of added books are repaired"
     end
     imports = Importer.new(db, calibre, writer, config.import_roots, config.library)
@@ -486,6 +498,7 @@ module CalibreHub
     # analysed in the background
     Dir.mkdir_p(File.join(config.uploads, ".incoming"))
     intake = Intake.new(db, calibre, imports, config.library, File.join(File.dirname(File.expand_path(config.state_db)), "intake-covers"),
+      interval: config.intake_interval, tick: config.intake_tick,
       inbox: config.inbox.try { |dir| Inbox.new(dir, config.inbox_stable) }, uploads: Inbox.new(config.uploads))
     intake.busy = -> { repair.running? }
     intake.repair = repair
@@ -499,7 +512,7 @@ module CalibreHub
       intake.checker = m.checker
       intake.search = ->(b : Book, g : Meta::Guess) { m.search(b, g) }
     end
-    intake.start
+    intake.start(config.intake_start)
     repair.watch_gone
     # the library's books no plan got to, behind the analysis
     recheck = RepairRecheck.new(db, calibre, writer, repair)

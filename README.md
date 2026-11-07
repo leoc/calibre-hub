@@ -1068,9 +1068,11 @@ Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
 | `CALIBRE_HUB_SCAN_INTERVAL` | `900` | reconcile interval when triggers are missing |
 | `CALIBRE_HUB_RECONCILE_AT` | `03:30` | daily reconcile, local time |
 | `CALIBRE_HUB_HANDLERS_DIR` | none | executables called per event |
-| `CALIBRE_HUB_HANDLER_ATTEMPTS`, `_TIMEOUT` | `10`, `600` | |
+| `CALIBRE_HUB_HANDLER_ATTEMPTS`, `_TIMEOUT`, `_RETRY_DELAY` | `10`, `600`, `10` | attempts, seconds per run, seconds before the second attempt (doubled with every further one) |
+| `CALIBRE_HUB_EVENT_INTERVAL` | none | seconds between two looks for new events of the background work; none: each its own, 2 to 10 |
 | `CALIBRE_HUB_ALERT_COMMAND` | none | called with subject and text |
 | `CALIBRE_HUB_INBOX`, `_INBOX_STABLE` | none, `120` | |
+| `CALIBRE_HUB_INTAKE_START`, `_INTERVAL`, `_TICK` | `60`, `300`, `30` | the Eingang: seconds to the first look at the roots after a start, between two looks at them, between two looks at the inbox and uploads |
 | `CALIBRE_HUB_UPLOADS` | `uploads` next to the state DB | where uploads wait for the Eingang |
 | `CALIBRE_HUB_LIST_MIGRATE_TAG` | `leseliste` | books with this tag become the list "Leseliste" on the first start |
 | `CALIBRE_HUB_API_TOKEN_FILES` | none | comma separated files, one API token (≥ 16 characters) each, of the login user |
@@ -1078,7 +1080,7 @@ Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
 | `CALIBRE_HUB_SYNC_USERS` | none | users with a reader folder of their own, comma separated: readers among them may sync their lists |
 | `CALIBRE_HUB_CLASSIFY` | `false` | `true` turns on category suggestions (needs `CALIBRE_HUB_CATEGORY_COLUMN`) |
 | `CALIBRE_HUB_CLASSIFY_ENDPOINT`, `_MODEL` | `http://127.0.0.1:11434`, `qwen2.5:3b` | Ollama API and model |
-| `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT` | `0.85`, `03:45`, `300` | auto-apply from, nightly run (empty: none), seconds per answer |
+| `CALIBRE_HUB_CLASSIFY_THRESHOLD`, `_SCHEDULE`, `_TIMEOUT`, `_RETRY_DELAY` | `0.85`, `03:45`, `300`, `5` | auto-apply from, nightly run (empty: none), seconds per answer, seconds before the model's second attempt (doubled with the third) |
 | `CALIBRE_HUB_METADATA` | `false` | `true` turns on the metadata cleanup |
 | `CALIBRE_HUB_METADATA_SOURCES`, `_NIGHTLY`, `_MODEL`, `_INTERVAL` | `file,hardcover,dnb,openlibrary`, none, `false`, `1000` | sources, nightly run, clean names with the classify model, ms between requests |
 | `CALIBRE_HUB_EMBED`, `_EMBED_DELAY` | `false`, `60` | embed metadata into the files after edits (the module turns it on), seconds after the last edit |

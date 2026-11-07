@@ -296,6 +296,22 @@ in
       description = "Seconds before a handler run is killed and counted as failed.";
     };
 
+    handlerRetryDelay = mkOption {
+      type = types.ints.positive;
+      default = 10;
+      description = "Seconds before a failed handler's second attempt, doubled with every further one.";
+    };
+
+    eventInterval = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      description = ''
+        Seconds between two looks for new events of the background work
+        (metadata, classification, conversion, EPUB fixer, embedding, lists,
+        private tags). Null: each its own, 2 to 10 seconds.
+      '';
+    };
+
     alertCommand = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -323,6 +339,24 @@ in
         type = types.ints.positive;
         default = 120;
         description = "A file is analysed once it has not changed for this long.";
+      };
+    };
+
+    intake = {
+      startDelay = mkOption {
+        type = types.ints.positive;
+        default = 60;
+        description = "Seconds after a start before the Eingang first looks at the import roots.";
+      };
+      interval = mkOption {
+        type = types.ints.positive;
+        default = 300;
+        description = "Seconds between two looks of the Eingang at the import roots.";
+      };
+      tick = mkOption {
+        type = types.ints.positive;
+        default = 30;
+        description = "Seconds between two looks of the Eingang at the inbox and the uploads.";
       };
     };
 
@@ -396,6 +430,11 @@ in
         type = types.ints.positive;
         default = 300;
         description = "Seconds to wait for one answer (a small model on CPU, loading included).";
+      };
+      retryDelay = mkOption {
+        type = types.ints.positive;
+        default = 5;
+        description = "Seconds before the second attempt at a model that didn't answer, doubled with the third.";
       };
     };
 
@@ -811,9 +850,14 @@ in
         CALIBRE_HUB_HANDLERS_DIR = "${handlersDir}";
         CALIBRE_HUB_HANDLER_ATTEMPTS = toString cfg.handlerAttempts;
         CALIBRE_HUB_HANDLER_TIMEOUT = toString cfg.handlerTimeout;
+        CALIBRE_HUB_HANDLER_RETRY_DELAY = toString cfg.handlerRetryDelay;
+        CALIBRE_HUB_EVENT_INTERVAL = lib.optionalString (cfg.eventInterval != null) (toString cfg.eventInterval);
         CALIBRE_HUB_ALERT_COMMAND = lib.optionalString (cfg.alertCommand != null) cfg.alertCommand;
         CALIBRE_HUB_INBOX = lib.optionalString (cfg.inbox.path != null) (toString cfg.inbox.path);
         CALIBRE_HUB_INBOX_STABLE = toString cfg.inbox.stableSeconds;
+        CALIBRE_HUB_INTAKE_START = toString cfg.intake.startDelay;
+        CALIBRE_HUB_INTAKE_INTERVAL = toString cfg.intake.interval;
+        CALIBRE_HUB_INTAKE_TICK = toString cfg.intake.tick;
         CALIBRE_HUB_IMPORT_ROOTS = lib.concatMapStringsSep ":" toString cfg.backlogImport.roots;
         CALIBRE_HUB_IMPORT_UNSURE_TAG = cfg.backlogImport.unsureTag;
         CALIBRE_HUB_FAST_TAGS = lib.concatStringsSep "," cfg.fastTags;
@@ -824,6 +868,7 @@ in
         CALIBRE_HUB_CLASSIFY_THRESHOLD = toString cfg.classify.autoApplyThreshold;
         CALIBRE_HUB_CLASSIFY_SCHEDULE = lib.optionalString (cfg.classify.schedule != null) cfg.classify.schedule;
         CALIBRE_HUB_CLASSIFY_TIMEOUT = toString cfg.classify.timeout;
+        CALIBRE_HUB_CLASSIFY_RETRY_DELAY = toString cfg.classify.retryDelay;
         CALIBRE_HUB_METADATA = lib.boolToString cfg.metadata.enable;
         CALIBRE_HUB_METADATA_SOURCES = lib.concatStringsSep "," cfg.metadata.sources;
         CALIBRE_HUB_METADATA_NIGHTLY = lib.optionalString (cfg.metadata.nightly != null) cfg.metadata.nightly;
