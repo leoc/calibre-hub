@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyEvent, type MouseEvent, type ReactNode } from "react"
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query"
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { BookIcon, Check, Trash2, X } from "lucide-react"
-import { ApiError, EXCERPT_HEADER, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeOrigin, type IntakeProgress } from "@/lib/api"
+import { ApiError, EXCERPT_HEADER, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeOrigin } from "@/lib/api"
 import {
   acceptable,
   analysedShare,
@@ -10,18 +10,23 @@ import {
   authorsText,
   autoText,
   badgeText,
+  bandCount,
+  bulkOf,
   candidateDiff,
   candidateSource,
   entryName,
   entryTitle,
   errorText as entryError,
+  headlineText,
+  inKind,
   intakeEntryQuery,
   intakeFilter,
   intakeListQuery,
   intakeStatusQuery,
   isDjvu, isLibrary,
-  leftText,
+  kindCount,
   noteTexts,
+  openCount,
   originName,
   originsInList,
   ORIGINS,
@@ -35,6 +40,7 @@ import {
   unreadable,
   type IntakeBand,
   type IntakeSource,
+  type SharePart,
 } from "@/lib/intake"
 import { loadBookFile, readBody } from "@/lib/offline"
 import { fileName } from "@/lib/reader"
@@ -44,6 +50,7 @@ import { formatNumber, t } from "@/i18n"
 import { cn } from "@/lib/utils"
 import { isTyping } from "@/components/keyboard"
 import { ErrorMessage } from "@/components/error-view"
+import { ShareBars } from "@/components/intake-shares"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogScreen, DialogTitle } from "@/components/ui/dialog"
@@ -55,6 +62,9 @@ import { FilePeek, type LoadFile } from "@/routes/reader"
 
 const muted = "text-muted-foreground eink:text-black"
 const select = "min-h-9 rounded-md border bg-background px-2 text-sm eink:min-h-12 eink:border-2 touch:min-h-11"
+// Art and Sicherheit: each a line of its own on a phone
+const pickLabel = "inline-flex items-center gap-2 max-sm:flex-[1_1_100%]"
+const pickSelect = "max-sm:min-h-11 max-sm:min-w-0 max-sm:flex-auto"
 const BAND_COLOR: Record<ConfidenceBand, string> = { bulk: "text-band-bulk", review: "text-band-review", unsure: "text-band-unsure" }
 
 // the buttons that throw files away
@@ -72,24 +82,24 @@ type Chosen = { index: number; candidate: IntakeCandidate }
 // The Eingang: what the analysis found in the backlog, the inbox and uploads,
 // before anything is in the library. Every entry leaves by a decision: at once
 // in the list, in a queue on the hub. The list stays where it is while the
-// analysis works; only the line under the title moves.
+// analysis works; only the bars and the line under the title move.
 export function IntakePage() {
   const qc = useQueryClient()
   const [band, setBand] = useState<IntakeBand>("all")
   const [kind, setKind] = useState<IntakeKind>("all")
   const [source, setSource] = useState<IntakeSource>("all")
   const [open, setOpen] = useState<number | null>(null)
-  const [asking, setAsking] = useState(false)
   const [trashing, setTrashing] = useState(false)
   // per entry, until it is decided: the list shows it too
   const [picks, setPicks] = useState<Map<number, Chosen>>(new Map())
   // decided, gone from the list; with the error it had, a new one brings it back
   const [decided, setDecided] = useState<Map<number, string | null>>(new Map())
-  const { data: status, error, refetch: retry, dataUpdatedAt } = useQuery(intakeStatusQuery(band, kind, source))
+  // a new filter's answer is on its way: the bars don't follow the filter, they stay
+  const { data: status, error, refetch: retry, dataUpdatedAt } = useQuery({ ...intakeStatusQuery(band, kind, source), placeholderData: keepPreviousData })
   const list = useInfiniteQuery({ ...intakeListQuery(band, kind, source), enabled: status?.enabled === true })
   const { hasNextPage, isFetchingNextPage, fetchNextPage, refetch } = list
   const loaded = useMemo(() => uniqueEntries(list.data?.pages ?? []), [list.data])
-  const entries = useMemo(() => loaded.filter((e) => !decided.has(e.id) || (e.error != null && e.error !== decided.get(e.id))), [loaded, decided])
+  const entries = useMemo(() => loaded.filter((e) => inKind(e, kind) && (!decided.has(e.id) || (e.error != null && e.error !== decided.get(e.id)))), [loaded, decided, kind])
   const done = status?.progress?.done
   const pending = status?.pending
   const checked = status?.recheck?.done
@@ -120,6 +130,14 @@ export function IntakePage() {
     setOpen(null)
     next()
   }
+  // Art first, the band then starts over; the library's books have no source
+  const chooseKind = (next: IntakeKind, nextBand: IntakeBand = "all") =>
+    filter(() => {
+      setKind(next)
+      setBand(nextBand)
+      if (next === "library") setSource("all")
+    })
+  const pickPart = (p: SharePart) => chooseKind(p.kind ?? "all", p.band)
   const refresh = () => qc.invalidateQueries({ queryKey: ["intake-status"] })
   const queued = () => {
     waited.current = true
@@ -145,7 +163,11 @@ export function IntakePage() {
       undecide([v.entry.id])
       failed(err)
     },
-    onSettled: () => queued(),
+    onSettled: (_r, _e, v) => {
+      // it changed its kind: the other filters' lists are out of date
+      if (v.decision === "skip" || v.decision === "unskip") void qc.invalidateQueries({ queryKey: ["intake-list"], refetchType: "none" })
+      return queued()
+    },
   })
   const bulk = useMutation({
     mutationFn: (v: { decision: "accept" | "trash"; expect: number; last: number; gone: IntakeEntry[] }) =>
@@ -166,7 +188,7 @@ export function IntakePage() {
   })
   // what a filter's accept has to know: no choice gets lost in it
   const chosen = () => {
-    if (kind === "library" || picks.size === 0) return undefined
+    if (picks.size === 0) return undefined
     return Object.fromEntries([...picks].map(([id, p]) => [id, p.index]))
   }
   // the digit again takes the choice back
@@ -177,7 +199,7 @@ export function IntakePage() {
       else next.set(e.id, { index, candidate })
       return next
     })
-  // a skipped entry stays, the row only says so
+  // a skipped entry stays under Alle, the row says so; a filter on a kind lets it go
   const mark = (id: number, skipped: boolean) =>
     qc.setQueriesData<InfiniteData<IntakeList>>({ queryKey: ["intake-list"] }, (old) =>
       old && { ...old, pages: old.pages.map((p) => ({ ...p, entries: p.entries?.map((e) => (e.id === id ? { ...e, skipped } : e)) })) },
@@ -199,27 +221,19 @@ export function IntakePage() {
     mark(e.id, false)
     decide.mutate({ entry: e, decision: "unskip" })
   }
-  const acceptAll = () => {
-    setAsking(false)
+  const takeAll = (decision: "accept" | "trash", expect: number) => {
     setOpen(null)
-    const gone = entries.filter((e) => takeable(e, kind))
+    const gone = entries.filter(decision === "accept" ? takeable : trashable)
     leave(gone)
-    bulk.mutate({ decision: "accept", expect: status?.takeable ?? 0, last: status?.last ?? 0, gone })
-  }
-  const trashAll = () => {
-    setTrashing(false)
-    setOpen(null)
-    const gone = entries.filter(trashable)
-    leave(gone)
-    bulk.mutate({ decision: "trash", expect: toTrash, last: status?.last ?? 0, gone })
+    bulk.mutate({ decision, expect, last: status?.last ?? 0, gone })
   }
   const current = index >= 0 ? entries[index] : undefined
-  const counts = status?.counts
-  const all = counts ? counts.bulk + counts.review + counts.unsure + counts.none : 0
+  const shares = status?.shares
   const shown = list.data?.pages.at(-1)?.total ?? entries.length
-  const n = status?.takeable ?? 0
-  const unsure = status?.unsure ?? 0
-  const toTrash = status?.trashable ?? 0
+  const action = shares ? bulkOf(shares, kind, band) : null
+  // a number for an option, of the filter's numbers
+  const kindOption = (k: IntakeKind) => ({ count: formatNumber(shares ? kindCount(shares, k) : 0) })
+  const bandOption = (b: IntakeBand) => ({ count: formatNumber(shares ? bandCount(shares, kind, b) : 0) })
   const sources = originsInList(status)
   // the rows say where from when there is more than one place to come from
   const several = sources.length > 1
@@ -227,7 +241,7 @@ export function IntakePage() {
     <div className="mx-auto max-w-5xl space-y-4 p-4 lg:p-6">
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold">{t("intake.title")}</h1>
-        {status?.progress && <IntakeNumbers progress={status.progress} />}
+        {status?.progress && shares && <IntakeNumbers list={status} waiting={shares.waiting} state={status.progress.state} />}
       </div>
       {error && !status ? (
         <ErrorMessage error={error} onRetry={() => retry()} />
@@ -237,26 +251,38 @@ export function IntakePage() {
         <p className="py-12 text-center text-lg">{t("intake.disabled")}</p>
       ) : (
         <>
+          {shares && status.progress && (
+            <ShareBars
+              shares={shares}
+              open={openCount(status)}
+              analysed={analysedShare(status.progress)}
+              moving={status.progress.state === "analysing"}
+              kind={kind}
+              band={band}
+              source={source}
+              onPick={pickPart}
+            />
+          )}
           <div className="flex flex-wrap items-center gap-3 text-sm">
-            <label className="inline-flex items-center gap-2">
-              {t("intake.confidence")}
-              <select className={select} value={band} onChange={(e) => filter(() => setBand(e.target.value as IntakeBand))}>
-                <option value="all">{t("intake.band.all", { count: formatNumber(all) })}</option>
-                <option value="bulk">{t("intake.band.bulk", { count: formatNumber(counts?.bulk ?? 0) })}</option>
-                <option value="review">{t("intake.band.review", { count: formatNumber(counts?.review ?? 0) })}</option>
-                <option value="unsure">{t("intake.band.unsure", { count: formatNumber(counts?.unsure ?? 0) })}</option>
-                {!!counts?.none && <option value="none">{t("intake.band.none", { count: formatNumber(counts.none) })}</option>}
+            <label className={pickLabel}>
+              {t("intake.kind")}
+              <select className={cn(select, pickSelect)} value={kind} onChange={(e) => chooseKind(e.target.value as IntakeKind)}>
+                <option value="all">{t("intake.kind.all", kindOption("all"))}</option>
+                <option value="new">{t("intake.kind.new", kindOption("new"))}</option>
+                <option value="sure">{t("intake.kind.sure", kindOption("sure"))}</option>
+                <option value="duplicates">{t("intake.kind.duplicates", kindOption("duplicates"))}</option>
+                <option value="skipped">{t("intake.kind.skipped", kindOption("skipped"))}</option>
+                <option value="library">{t("intake.kind.library", kindOption("library"))}</option>
               </select>
             </label>
-            <label className="inline-flex items-center gap-2">
-              {t("intake.kind")}
-              <select className={select} value={kind} onChange={(e) => filter(() => setKind(e.target.value as IntakeKind))}>
-                <option value="all">{t("intake.kind.all")}</option>
-                <option value="new">{t("intake.kind.new")}</option>
-                <option value="sure">{t("intake.kind.sure", { count: formatNumber(toTrash) })}</option>
-                <option value="duplicates">{t("intake.kind.duplicates")}</option>
-                <option value="library">{t("intake.kind.library")}</option>
-                {(!!status.skipped || kind === "skipped") && <option value="skipped">{t("intake.kind.skipped", { count: formatNumber(status.skipped ?? 0) })}</option>}
+            <label className={pickLabel}>
+              {t("intake.confidence")}
+              <select className={cn(select, pickSelect)} value={band} onChange={(e) => filter(() => setBand(e.target.value as IntakeBand))}>
+                <option value="all">{t("intake.band.all", bandOption("all"))}</option>
+                <option value="bulk">{t("intake.band.bulk", bandOption("bulk"))}</option>
+                <option value="review">{t("intake.band.review", bandOption("review"))}</option>
+                <option value="unsure">{t("intake.band.unsure", bandOption("unsure"))}</option>
+                {(band === "none" || (shares && bandCount(shares, kind, "none") > 0)) && <option value="none">{t("intake.band.none", bandOption("none"))}</option>}
               </select>
             </label>
             {kind !== "library" && (several || source !== "all") && (
@@ -273,15 +299,14 @@ export function IntakePage() {
               </label>
             )}
             <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
-              {leftText(status.left) && <span className={muted}>{leftText(status.left)}</span>}
-              {kind === "sure" && toTrash > 0 && (
+              {action?.decision === "trash" && (
                 <Button variant="outline" className={trashButton} disabled={bulk.isPending} onClick={() => setTrashing(true)}>
-                  {t("intake.trashAll", { count: formatNumber(toTrash) })}
+                  {t("intake.trashAll", { count: formatNumber(action.count) })}
                 </Button>
               )}
-              {kind !== "sure" && (
-                <Button disabled={n === 0 || bulk.isPending} onClick={() => (unsure > 0 ? setAsking(true) : acceptAll())}>
-                  {t("intake.acceptAll", { count: formatNumber(n) })}
+              {action?.decision === "accept" && (
+                <Button disabled={bulk.isPending} onClick={() => takeAll("accept", action.count)}>
+                  {t("intake.acceptAll", { count: formatNumber(action.count) })}
                 </Button>
               )}
             </div>
@@ -331,27 +356,21 @@ export function IntakePage() {
             onSkip={skip}
             onUnskip={unskip}
           />
-          <Dialog open={asking} onOpenChange={setAsking}>
-            <DialogContent>
-              <DialogTitle className="text-lg font-semibold">{t("intake.confirm.title")}</DialogTitle>
-              <DialogDescription>{t("intake.confirm.text", { count: formatNumber(n), unsure: formatNumber(unsure) })}</DialogDescription>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setAsking(false)}>
-                  {t("edit.cancel")}
-                </Button>
-                <Button onClick={acceptAll}>{t("intake.confirm.yes")}</Button>
-              </div>
-            </DialogContent>
-          </Dialog>
           <Dialog open={trashing} onOpenChange={setTrashing}>
             <DialogContent>
               <DialogTitle className="text-lg font-semibold">{t("intake.trashAll.title")}</DialogTitle>
-              <DialogDescription>{trashAllText(toTrash)}</DialogDescription>
+              <DialogDescription>{trashAllText(action?.count ?? 0)}</DialogDescription>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setTrashing(false)}>
                   {t("edit.cancel")}
                 </Button>
-                <Button variant="destructive" onClick={trashAll}>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setTrashing(false)
+                    takeAll("trash", action?.count ?? 0)
+                  }}
+                >
                   {t("intake.trashAll.yes")}
                 </Button>
               </div>
@@ -452,32 +471,12 @@ function AutoAccept({ thresholds, onChanged }: { thresholds: NonNullable<IntakeL
   )
 }
 
-// The whole list, whatever the filters; the bar only while the analysis runs
-function IntakeNumbers({ progress: p }: { progress: IntakeProgress }) {
-  const share = analysedShare(p)
+// The whole list, whatever the filters and the source
+function IntakeNumbers({ list, waiting, state }: { list: IntakeList; waiting: number; state: string }) {
   return (
-    <div className="space-y-2 pb-1 text-sm">
-      <p className="flex flex-wrap gap-x-5 gap-y-1 tabular-nums">
-        <span>
-          <span className="font-semibold">{formatNumber(p.total)}</span> {t("intake.total")}
-        </span>
-        <span>
-          <span className="font-semibold">{formatNumber(p.analysed)}</span> {t("intake.analysed")}
-        </span>
-      </p>
-      {(p.state === "paused" || p.state === "off") && <p className={muted}>{t(p.state === "off" ? "intake.hint.off" : "intake.hint.paused")}</p>}
-      {p.state === "analysing" && (
-        <div
-          role="progressbar"
-          aria-label={t("intake.bar")}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={share}
-          className="h-1.5 max-w-[480px] overflow-hidden rounded-full bg-muted eink:rounded-none eink:border eink:border-black eink:bg-white"
-        >
-          <div className="h-full bg-primary eink:bg-black" style={{ width: `${share}%` }} />
-        </div>
-      )}
+    <div className={cn("space-y-1 text-sm tabular-nums", muted)}>
+      <p>{headlineText(waiting, openCount(list))}</p>
+      {(state === "paused" || state === "off") && <p>{t(state === "off" ? "intake.hint.off" : "intake.hint.paused")}</p>}
     </div>
   )
 }

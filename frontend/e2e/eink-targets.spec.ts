@@ -60,6 +60,38 @@ test("E-Ink: the Eingang's bulk to the trash and its dialog", async ({ page }) =
   expect(await smallTargets(page, "[role=dialog]")).toEqual([])
 })
 
+test("E-Ink: the Eingang's parts differ without color, the legend says the numbers", async ({ page }) => {
+  await page.goto("/eingang")
+  const parts = page.getByRole("group", { name: "Anteile im Eingang" }).locator("[aria-label]")
+  await expect(parts.first()).toBeVisible()
+  const looks = await parts.evaluateAll((all) =>
+    all.map((el) => {
+      const style = getComputedStyle(el)
+      return `${style.backgroundColor} ${style.backgroundImage} ${style.backgroundSize}`
+    }),
+  )
+  expect(new Set(looks).size).toBe(looks.length)
+  // black and white only: nothing of a band's color is left
+  for (const look of looks) expect(look.replace(/rgba?\((0, 0, 0|255, 255, 255)(, [\d.]+)?\)/g, "")).not.toMatch(/rgb/)
+  const main = page.getByRole("main")
+  for (const row of ["Neu, sicher", "Neu, prüfen", "Sichere Dubletten", "Übersprungen"]) await expect(main.getByRole("button", { name: new RegExp(`^${row} \\d`) })).toBeVisible()
+  // the same pattern in the legend as in the bar
+  const swatch = await main.getByRole("button", { name: /^Neu, prüfen \d/ }).locator("span").first().evaluate((el) => getComputedStyle(el).backgroundImage)
+  expect(looks[1]).toContain(swatch)
+})
+
+test("E-Ink: a part of the Eingang is marked without color, all targets stay large", async ({ page }) => {
+  await page.goto("/eingang")
+  const part = page.getByRole("button", { name: "Sichere Dubletten: 1", exact: true })
+  await part.click()
+  await expect(part).toHaveAttribute("aria-pressed", "true")
+  await expect(part).toHaveCSS("outline-width", "4px")
+  await expect(part).toHaveCSS("outline-color", "rgb(0, 0, 0)")
+  const row = page.getByRole("main").getByRole("button", { name: /^Sichere Dubletten 1/ })
+  await expect(row).toHaveCSS("outline-style", "solid")
+  expect(await smallTargets(page)).toEqual([])
+})
+
 test("E-Ink: list view and selection mode", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("hub.view", "list"))
   await page.goto("/")
@@ -121,10 +153,9 @@ test("E-Ink: the Eingang and its drawer", async ({ page }) => {
   await page.goto("/eingang")
   const list = page.getByRole("list", { name: "Eingang", exact: true })
   await expect(list.getByRole("listitem").first()).toBeVisible()
-  const bar = page.getByRole("progressbar", { name: "Analyse" })
+  const bar = page.getByRole("progressbar", { name: /^Noch zu analysieren/ })
   await expect(bar).toHaveCSS("border-top-color", "rgb(0, 0, 0)")
-  await expect(bar.locator("div")).toHaveCSS("background-color", "rgb(0, 0, 0)")
-  await expect(bar.locator("div")).toHaveCSS("transition-duration", "0s")
+  await expect(bar).toHaveCSS("animation-name", "none")
   expect(await smallTargets(page)).toEqual([])
   // the band's color doesn't show here: the text stays, without a dot or ring
   const row = page.locator("[data-entry]").filter({ hasText: "Functional Analysis" })

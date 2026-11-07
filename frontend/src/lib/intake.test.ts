@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, candidateDiff, candidateSource, entryName, errorText, intakeFilter, leftText, noteTexts, originsInList, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
+import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, bandCount, bulkOf, candidateDiff, candidateSource, entryName, errorText, headlineText, inBar, inKind, inLegend, intakeFilter, isPicked, kindCount, noteTexts, openCount, originsInList, partTitle, shareParts, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -46,12 +46,11 @@ describe("ringLabel", () => {
 
 describe("takeable", () => {
   it("leaves failed files, possible duplicates and skipped entries to Arthur", () => {
-    expect(takeable(entry({}), "all")).toBe(true)
-    expect(takeable(entry({ action: "addFormats" }), "all")).toBe(true)
-    expect(takeable(entry({ action: "duplicate" }), "all")).toBe(false)
-    expect(takeable(entry({ status: "failed" }), "all")).toBe(false)
-    expect(takeable(entry({ skipped: true }), "all")).toBe(false)
-    expect(takeable(entry({ skipped: true }), "skipped")).toBe(true)
+    expect(takeable(entry({}))).toBe(true)
+    expect(takeable(entry({ action: "addFormats" }))).toBe(true)
+    expect(takeable(entry({ action: "duplicate" }))).toBe(false)
+    expect(takeable(entry({ status: "failed" }))).toBe(false)
+    expect(takeable(entry({ skipped: true }))).toBe(false)
   })
 })
 
@@ -155,16 +154,85 @@ it("keeps an entry once over a moved page boundary", () => {
   expect(uniqueEntries([{ entries: [a, b] }, { entries: [b] }]).map((e) => e.id)).toEqual([1, 2])
 })
 
-describe("leftText", () => {
-  const left = { duplicates: 0, failed: 0, skipped: 0 }
-  it("says nothing when the bulk takes everything", () => {
-    expect(leftText(left)).toBeNull()
-    expect(leftText(undefined)).toBeNull()
+describe("the shares", () => {
+  const bands = (bulk: number, review: number, unsure: number, none = 0) => ({ bulk, review, unsure, none })
+  const shares = { kinds: { new: bands(0, 122, 241, 1), sure: bands(2, 1, 0), duplicates: bands(34, 89, 20), skipped: bands(0, 5, 0), library: bands(1, 1, 0) }, waiting: 12, books: 3179 }
+  const ids = (list: { id: string }[]) => list.map((p) => p.id)
+
+  it("adds the files of every kind up for Alle, not the library's books", () => {
+    expect(kindCount(shares, "all")).toBe(515)
+    expect(kindCount(shares, "library")).toBe(2)
+    expect(kindCount(shares, "skipped")).toBe(5)
   })
-  it("names what stays", () => {
-    expect(leftText({ ...left, duplicates: 59 })).toBe("59 mögliche Dubletten bleiben in der Liste")
-    expect(leftText({ ...left, duplicates: 1 })).toBe("1 mögliche Dublette bleibt in der Liste")
-    expect(leftText({ duplicates: 2, failed: 1, skipped: 3 })).toBe("2 mögliche Dubletten, 1 fehlgeschlagen und 3 übersprungen bleiben in der Liste")
+
+  it("says per kind what its bands hold, Alle over all files", () => {
+    expect(bandCount(shares, "new", "review")).toBe(122)
+    expect(bandCount(shares, "all", "review")).toBe(217)
+    expect(bandCount(shares, "duplicates", "all")).toBe(143)
+    expect(bandCount(shares, "all", "none")).toBe(1)
+  })
+
+  it("adds the parts up to what is open", () => {
+    const open = openCount({ progress: { state: "analysing", total: 527, done: 515, analysed: 514, current: null }, shares })
+    expect(open).toBe(529)
+    expect(shareParts(shares, "all").reduce((n, p) => n + p.count, 0)).toBe(open)
+  })
+
+  it("keeps the order of the design, a part at 0 only in the legend", () => {
+    const parts = shareParts(shares, "all")
+    expect(ids(parts)).toEqual(["bulk", "review", "unsure", "none", "sure", "duplicates", "skipped", "library", "waiting"])
+    expect(ids(inBar(parts))).not.toContain("bulk")
+    expect(ids(inLegend(parts))).toContain("bulk")
+  })
+
+  it("has failed files, the library and what waits in the legend only above 0", () => {
+    const none = { kinds: { ...shares.kinds, new: bands(0, 0, 0), library: bands(0, 0, 0) }, waiting: 0, books: 1 }
+    expect(ids(inLegend(shareParts(none, "all")))).toEqual(["bulk", "review", "unsure", "sure", "duplicates", "skipped"])
+  })
+
+  it("leaves what has no source out of a source's parts", () => {
+    const parts = shareParts(shares, "inbox")
+    expect(ids(inBar(parts))).toEqual(["review", "unsure", "none", "sure", "duplicates", "skipped"])
+    expect(ids(inLegend(parts))).not.toContain("library")
+  })
+
+  it("marks the part of the filter", () => {
+    const [bulk, , , , sure] = shareParts(shares, "all")
+    expect(isPicked(bulk, "new", "bulk")).toBe(true)
+    expect(isPicked(bulk, "new", "all")).toBe(false)
+    expect(isPicked(sure, "sure", "all")).toBe(true)
+    expect(isPicked(sure, "sure", "bulk")).toBe(false)
+  })
+
+  it("names a part with its number", () => {
+    expect(partTitle({ id: "skipped", kind: "skipped", band: "all", count: 1234 })).toBe("Übersprungen: 1.234")
+  })
+
+  it("has a bulk only for what is sure of the new files and for the sure duplicates, never at 0", () => {
+    expect(bulkOf(shares, "sure", "all")).toEqual({ decision: "trash", count: 3 })
+    expect(bulkOf(shares, "sure", "review")).toEqual({ decision: "trash", count: 1 })
+    expect(bulkOf(shares, "sure", "unsure")).toBeNull()
+    expect(bulkOf(shares, "new", "bulk")).toBeNull()
+    const sure = { ...shares, kinds: { ...shares.kinds, new: bands(7, 0, 0) } }
+    expect(bulkOf(sure, "new", "bulk")).toEqual({ decision: "accept", count: 7 })
+    for (const [kind, band] of [["new", "all"], ["new", "review"], ["all", "bulk"], ["duplicates", "bulk"], ["skipped", "bulk"], ["library", "bulk"]] as const) expect(bulkOf(sure, kind, band)).toBeNull()
+  })
+
+  it("says what waits, else that all is analysed", () => {
+    expect(headlineText(412, 1200)).toBe("412 von 1.200 noch zu analysieren")
+    expect(headlineText(0, 368)).toBe("368 Dateien warten auf dich, alle analysiert")
+    expect(headlineText(0, 1)).toBe("1 Datei wartet auf dich, alle analysiert")
+    expect(headlineText(0, 0)).toBe("Nichts wartet auf dich, alle analysiert")
+  })
+
+  it("moves a skipped entry out of the filters on kinds", () => {
+    expect(inKind(entry({ skipped: true }), "new")).toBe(false)
+    expect(inKind(entry({ skipped: true }), "sure")).toBe(false)
+    expect(inKind(entry({ skipped: true }), "duplicates")).toBe(false)
+    expect(inKind(entry({ skipped: true }), "all")).toBe(true)
+    expect(inKind(entry({ skipped: true }), "skipped")).toBe(true)
+    expect(inKind(entry({ skipped: false }), "skipped")).toBe(false)
+    expect(inKind(entry({ skipped: true }), "library")).toBe(true)
   })
 })
 

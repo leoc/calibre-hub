@@ -116,6 +116,74 @@
   filter: grayscale(1) contrast(1.15);
 }
 
+/* The Eingang's bars: a color per part, the greys from the theme's own text
+   and background, so they turn with it. */
+.share-part {
+  position: relative;
+}
+.share-bulk { background: var(--band-bulk); }
+.share-review { background: var(--band-review); }
+.share-unsure { background: var(--band-unsure); }
+.share-none { background: color-mix(in oklab, var(--band-unsure) 50%, var(--background)); }
+.share-sure { background: color-mix(in oklab, var(--foreground) 65%, var(--background)); }
+.share-duplicates { background: color-mix(in oklab, var(--foreground) 40%, var(--background)); }
+.share-skipped { background: color-mix(in oklab, var(--foreground) 20%, var(--background)); }
+.share-library,
+.share-books { background: var(--primary); }
+.share-open { background: color-mix(in oklab, var(--foreground) 40%, var(--background)); }
+
+/* what isn't analysed yet: the stripes of a loading bar */
+.share-waiting {
+  background: linear-gradient(135deg, var(--border) 25%, var(--muted) 25% 50%, var(--border) 50% 75%, var(--muted) 75%) 0 0 / 24px 24px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .share-moving {
+    animation: share-stripes 1.5s linear infinite;
+  }
+}
+@keyframes share-stripes {
+  to {
+    background-position: 24px 0;
+  }
+}
+
+/* the part filtered by, a shape on any part: a line in the text's color, one in
+   the page's inside it */
+.share-picked {
+  outline: 2px solid var(--foreground);
+  outline-offset: -2px;
+}
+.share-picked::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 2px solid var(--background);
+}
+
+/* no colors on E-Ink: a pattern says which part it is, in the legend too */
+.eink .share-part {
+  border: 2px solid #000;
+}
+.eink .share-bulk { background: #000; }
+.eink .share-review { background: repeating-linear-gradient(45deg, #000 0 3px, #fff 3px 8px); }
+.eink .share-unsure { background: repeating-linear-gradient(0deg, #000 0 3px, #fff 3px 8px); }
+.eink .share-none { background: repeating-conic-gradient(#000 0 25%, #fff 0 50%) 0 0 / 12px 12px; }
+.eink .share-sure { background: repeating-linear-gradient(90deg, #000 0 3px, #fff 3px 8px); }
+.eink .share-duplicates { background: radial-gradient(#000 2px, #fff 2.5px) 0 0 / 8px 8px; }
+.eink .share-skipped { background: #fff; }
+.eink .share-library {
+  background:
+    repeating-linear-gradient(45deg, #000 0 2px, transparent 2px 8px),
+    repeating-linear-gradient(-45deg, #000 0 2px, #fff 2px 8px);
+}
+.eink .share-waiting { background: repeating-linear-gradient(-45deg, #000 0 1px, #fff 1px 12px); }
+.eink .share-books { background: #000; }
+.eink .share-open { background: repeating-linear-gradient(45deg, #000 0 3px, #fff 3px 8px); }
+.eink .share-picked {
+  outline-width: 4px;
+  outline-offset: 2px;
+}
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

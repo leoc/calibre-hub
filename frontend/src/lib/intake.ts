@@ -1,5 +1,5 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query"
-import { api, type ConfidenceBand, type IntakeCandidate, type IntakeDetail, type IntakeEntry, type IntakeFilter, type IntakeKind, type IntakeLeft, type IntakeList, type IntakeOrigin, type IntakeProgress, type IntakeProposal } from "./api"
+import { api, type ConfidenceBand, type IntakeCandidate, type IntakeDetail, type IntakeEntry, type IntakeBands, type IntakeFilter, type IntakeKind, type IntakeList, type IntakeOrigin, type IntakeProgress, type IntakeProposal, type IntakeShares } from "./api"
 import { fieldLabel, sourceLabel } from "./metadata"
 import { readerFormat } from "./reader"
 import { formatNumber, t } from "@/i18n"
@@ -82,9 +82,9 @@ export const isLibrary = (e: IntakeEntry) => e.kind === "library"
 // a proposal to accept: a failed library entry needs a new plan first
 export const acceptable = (e: IntakeEntry) => e.proposal !== null && e.status === "analysed"
 
-// what a bulk decision of this filter takes: it leaves failed files and what
-// looks like a book of the library to Arthur, and what he skipped
-export const takeable = (e: IntakeEntry, kind: IntakeKind) => e.status === "analysed" && e.action !== "duplicate" && (kind === "skipped" || !e.skipped)
+// what „Alle N übernehmen“ takes: it leaves failed files and what looks like a
+// book of the library to Arthur, and what he skipped
+export const takeable = (e: IntakeEntry) => e.status === "analysed" && e.action !== "duplicate" && !e.skipped
 
 // what „Alle N in den Papierkorb“ takes: the hub says what is sure
 export const trashable = (e: IntakeEntry) => e.status === "analysed" && e.action === "duplicate" && e.sure === true && !e.skipped
@@ -92,18 +92,84 @@ export const trashable = (e: IntakeEntry) => e.status === "analysed" && e.action
 // the question before it; the filter is what it takes, nothing of it stays
 export const trashAllText = (count: number) => (count === 1 ? t("intake.trashAll.one") : t("intake.trashAll.many", { count: formatNumber(count) }))
 
-// what stays behind a bulk, in one line; null when it takes all of the filter
-export function leftText(left: IntakeLeft | undefined): string | null {
-  if (!left) return null
-  const parts = [
-    left.duplicates && t(left.duplicates === 1 ? "intake.left.duplicate" : "intake.left.duplicates", { count: formatNumber(left.duplicates) }),
-    left.failed && t("intake.left.failed", { count: formatNumber(left.failed) }),
-    left.skipped && t("intake.left.skipped", { count: formatNumber(left.skipped) }),
-  ].filter((p): p is string => !!p)
-  if (parts.length === 0) return null
-  const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} ${t("intake.left.and")} ${parts.at(-1)}` : parts[0]
-  const one = left.duplicates + left.failed + left.skipped === 1
-  return t(one ? "intake.left.one" : "intake.left.many", { list })
+const FILE_KINDS = ["new", "sure", "duplicates", "skipped"] as const
+const bandsSum = (b: IntakeBands) => b.bulk + b.review + b.unsure + b.none
+
+// A filter's number: exactly what the list then shows. Alle is every file, the
+// library's books have their own kind.
+export const kindCount = (s: IntakeShares, kind: IntakeKind) =>
+  kind === "all" ? FILE_KINDS.reduce((n, k) => n + bandsSum(s.kinds[k]), 0) : bandsSum(s.kinds[kind])
+
+export function bandCount(s: IntakeShares, kind: IntakeKind, band: IntakeBand) {
+  if (band === "all") return kindCount(s, kind)
+  return kind === "all" ? FILE_KINDS.reduce((n, k) => n + s.kinds[k][band], 0) : s.kinds[kind][band]
+}
+
+// all that is open in the Eingang, of every source: what the parts add up to
+export const openCount = (list: Pick<IntakeList, "progress" | "shares">) => (list.progress?.total ?? 0) + (list.shares ? bandsSum(list.shares.kinds.library) : 0)
+
+export type SharePartId = "bulk" | "review" | "unsure" | "none" | "sure" | "duplicates" | "skipped" | "library" | "waiting"
+
+// A part of the bar and its row in the legend, and the filter it sets; kind null
+// for what has no list yet
+export interface SharePart {
+  id: SharePartId
+  kind: IntakeKind | null
+  band: IntakeBand
+  count: number
+}
+
+// Each entry in exactly one part. With a source chosen, only its files: the
+// library's books and what waits for the analysis have no source.
+export function shareParts(s: IntakeShares, source: IntakeSource): SharePart[] {
+  const whole = source === "all"
+  const of = (id: SharePartId, kind: Exclude<IntakeKind, "all">, count = bandsSum(s.kinds[kind])): SharePart => ({ id, kind, band: "all", count })
+  const fresh = (id: ConfidenceBand | "none"): SharePart => ({ id, kind: "new", band: id, count: s.kinds.new[id] })
+  return [
+    fresh("bulk"),
+    fresh("review"),
+    fresh("unsure"),
+    fresh("none"),
+    of("sure", "sure"),
+    of("duplicates", "duplicates"),
+    of("skipped", "skipped"),
+    of("library", "library", whole ? undefined : 0),
+    { id: "waiting", kind: null, band: "all", count: whole ? s.waiting : 0 },
+  ]
+}
+
+const ONLY_ABOVE_ZERO: SharePartId[] = ["none", "library", "waiting"]
+
+export const inBar = (parts: SharePart[]) => parts.filter((p) => p.count > 0)
+
+// the legend keeps a part at 0, it says that there are none
+export const inLegend = (parts: SharePart[]) => parts.filter((p) => p.count > 0 || !ONLY_ABOVE_ZERO.includes(p.id))
+
+export const isPicked = (p: SharePart, kind: IntakeKind, band: IntakeBand) => p.kind === kind && p.band === band
+
+export const partLabel = (p: SharePart) => t(`intake.part.${p.id}`)
+
+export const partTitle = (p: SharePart) => t("intake.part.title", { label: partLabel(p), count: formatNumber(p.count) })
+
+// the line under the title
+export function headlineText(waiting: number, open: number): string {
+  if (waiting > 0) return t("intake.head.waiting", { waiting: formatNumber(waiting), open: formatNumber(open) })
+  if (open === 0) return t("intake.head.none")
+  return open === 1 ? t("intake.head.one") : t("intake.head.many", { count: formatNumber(open) })
+}
+
+// The bulk of a filter: of the new files what is sure, the sure duplicates, and
+// never one with nothing to take. Its number is the filter's.
+export function bulkOf(s: IntakeShares, kind: IntakeKind, band: IntakeBand): { decision: "accept" | "trash"; count: number } | null {
+  const decision = kind === "sure" ? "trash" : kind === "new" && band === "bulk" ? "accept" : null
+  const count = bandCount(s, kind, band)
+  return decision && count > 0 ? { decision, count } : null
+}
+
+// still of this filter: an entry skipped or taken back changes its kind at once
+export const inKind = (e: IntakeEntry, kind: IntakeKind) => {
+  if (kind === "skipped") return e.skipped
+  return kind === "all" || kind === "library" || !e.skipped
 }
 
 // the entry's format for the reader, null when it has none

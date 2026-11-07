@@ -4,7 +4,7 @@ import { Link } from "@tanstack/react-router"
 import { CopyCheck, Inbox, Library, ListIcon, Sparkles, Trash2, WandSparkles } from "lucide-react"
 import { booksQuery, categoriesQuery, classifyStatusQuery, configQuery } from "@/lib/queries"
 import { DEFAULT_CONFIG, type Named } from "@/lib/api"
-import { intakeStatusQuery } from "@/lib/intake"
+import { intakeStatusQuery, openCount } from "@/lib/intake"
 import { favoriteTree, findNode, flattenListTree, useListTree } from "@/lib/lists"
 import { ListTree } from "./list-tree"
 import { hasFilters, togglePrivateTag, toggleTag, unsortedQuery, withFilter, type LibrarySearch } from "@/lib/search"
@@ -126,7 +126,7 @@ export function Sidebar({ search, onNavigate }: Props) {
             <span className="flex items-center gap-2">
               <Inbox className="size-4" aria-hidden /> {t("intake.title")}
             </span>
-            {intake?.progress && <Count n={intake.progress.total} />}
+            {intake?.progress && <Count n={openCount(intake)} />}
           </Link>
         )}
         {admin && (

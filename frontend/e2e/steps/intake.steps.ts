@@ -38,16 +38,168 @@ Then("the menu shows {string} next to the Eingang", async ({ page }, count: stri
   await expect(await menuLink(page)).toContainText(count)
 })
 
-Then("the numbers are {string} and {string}", async ({ page }, a: string, b: string) => {
+Then("the line under the title says {string}", async ({ page }, text: string) => {
+  await expect(page.getByRole("main").getByText(text, { exact: true })).toBeVisible()
+})
+
+Then("the striped part {string} stands at {int} percent", async ({ page }, name: string, percent: number) => {
+  const bar = page.getByRole("progressbar", { name, exact: true })
+  await expect(bar).toHaveAttribute("aria-valuenow", String(percent))
+  await expect(bar).toHaveCSS("animation-name", "share-stripes")
+  await expect(page.getByText(/^Analysiert gerade/)).toHaveCount(0)
+})
+
+// the bars and the legend
+const parts = (page: Page) => page.getByRole("group", { name: "Anteile im Eingang" })
+const part = (page: Page, name: string) => parts(page).getByRole("button", { name, exact: true })
+// every row of the legend: one button whose label is its text
+const legend = (page: Page) => page.getByRole("main").locator("button:has(> span.share-part)")
+const legendRow = (page: Page, label: string) => legend(page).filter({ hasText: new RegExp(`^${label}`) })
+const named = (...names: string[]) => names
+
+async function barParts(page: Page) {
+  return parts(page).locator("[aria-label]").evaluateAll((all) => all.map((el) => el.getAttribute("aria-label")))
+}
+
+const barIs = async (page: Page, want: string[]) => expect.poll(() => barParts(page)).toEqual(want)
+const legendIs = async (page: Page, want: string[]) =>
+  expect.poll(async () => (await legend(page).allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim())).toEqual(want)
+
+Then("the bar's parts are {string}", async ({ page }, a: string) => barIs(page, named(a)))
+Then("the bar's parts are {string}, {string}, {string}, {string}, {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string, d: string, e: string, f: string, g: string) =>
+  barIs(page, named(a, b, c, d, e, f, g)),
+)
+Then("the bar's parts are {string}, {string}, {string}, {string}, {string}, {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string, d: string, e: string, f: string, g: string, h: string) =>
+  barIs(page, named(a, b, c, d, e, f, g, h)),
+)
+Then("the legend's rows are {string}, {string}, {string}, {string}, {string}, {string}, {string}, {string} and {string}", async ({ page }, a: string, b: string, c: string, d: string, e: string, f: string, g: string, h: string, i: string) =>
+  legendIs(page, named(a, b, c, d, e, f, g, h, i)),
+)
+
+Then("the legend's numbers add up to {int}", async ({ page }, sum: number) => {
+  await expect
+    .poll(async () => {
+      const texts = await legend(page).allInnerTexts()
+      return texts.reduce((n, text) => n + Number(text.replace(/\s+/g, " ").trim().split(" ").at(-1)?.replace(".", "")), 0)
+    })
+    .toBe(sum)
+})
+
+Then("the overview says {string} and {string}", async ({ page }, a: string, b: string) => {
   for (const text of [a, b]) await expect(page.getByRole("main").getByText(text, { exact: true })).toBeVisible()
 })
 
-Then("the analysis bar stands at {int} percent", async ({ page }, percent: number) => {
-  const bar = page.getByRole("progressbar", { name: "Analyse" })
-  await expect(bar).toHaveAttribute("aria-valuenow", String(percent))
-  await expect(bar).toHaveCSS("height", "6px")
-  await expect(page.getByText(/^Analysiert gerade/)).toHaveCount(0)
+Then("the overview reads {string}", async ({ page }, name: string) => {
+  await expect(page.getByRole("img", { name, exact: true })).toBeVisible()
 })
+
+When("I press the part {string}", async ({ page }, name: string) => {
+  await part(page, name).click()
+})
+
+When("I press the legend's row {string}", async ({ page }, label: string) => {
+  await legendRow(page, label).click()
+})
+
+Then("the part {string} is marked without color", async ({ page }, name: string) => {
+  await expect(part(page, name)).toHaveAttribute("aria-pressed", "true")
+  await expect(part(page, name)).toHaveCSS("outline-style", "solid")
+  await expect(part(page, name)).toHaveCSS("outline-width", "2px")
+})
+
+Then("the part {string} is not marked", async ({ page }, name: string) => {
+  await expect(part(page, name)).toHaveAttribute("aria-pressed", "false")
+})
+
+Then("the legend's row {string} is marked", async ({ page }, label: string) => {
+  const row = legendRow(page, label)
+  await expect(row).toHaveAttribute("aria-pressed", "true")
+  await expect(row).toHaveCSS("font-weight", "600")
+  await expect(row.locator("svg")).toBeVisible()
+})
+
+Then("the legend's row {string} reads {string}", async ({ page }, label: string, text: string) => {
+  await expect.poll(async () => (await legendRow(page, label).innerText()).replace(/\s+/g, " ").trim()).toBe(text)
+})
+
+Then("the legend has no row {string}", async ({ page }, label: string) => {
+  await expect(legendRow(page, label)).toHaveCount(0)
+})
+
+Then("the part {string} is at least {int} px wide", async ({ page }, name: string, width: number) => {
+  const box = await part(page, name).boundingBox()
+  expect(box?.width).toBeGreaterThanOrEqual(width)
+})
+
+When("I focus the part {string} and press {string}", async ({ page }, name: string, key: string) => {
+  await part(page, name).focus()
+  await page.keyboard.press(key)
+})
+
+Then("no part is striped", async ({ page }) => {
+  await expect(page.getByRole("progressbar")).toHaveCount(0)
+})
+
+Then("the page has no bulk", async ({ page }) => {
+  await expect(page.getByRole("main").getByRole("button", { name: /^Alle .* (übernehmen|in den Papierkorb)$/ })).toHaveCount(0)
+})
+
+Given("some files were skipped, a possible and a sure duplicate among them", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.intake.skipped", "1"))
+})
+
+Given("the screen is {int} px wide", async ({ page }, width: number) => {
+  await page.setViewportSize({ width, height: 800 })
+})
+
+const filterBox = (page: Page, label: string) => page.getByLabel(label)
+
+Then("the filters come in the order {string}, {string}", async ({ page }, a: string, b: string) => {
+  const first = await filterBox(page, a).boundingBox()
+  const second = await filterBox(page, b).boundingBox()
+  expect(first && second && (first.y < second.y || first.x < second.x)).toBe(true)
+})
+
+Then("the filter {string} reads {string}", async ({ page }, label: string, text: string) => {
+  await expect.poll(() => filterBox(page, label).evaluate((el: HTMLSelectElement) => el.selectedOptions[0]?.textContent)).toBe(text)
+})
+
+Then("the filters {string} and {string} have a line each", async ({ page }, a: string, b: string) => {
+  const width = page.viewportSize()?.width ?? 0
+  const boxes = await Promise.all([a, b].map((label) => filterBox(page, label).locator("xpath=ancestor::label").boundingBox()))
+  for (const box of boxes) expect(box?.width).toBeGreaterThan(width - 40)
+  expect((boxes[0]?.y ?? 0) + (boxes[0]?.height ?? 0)).toBeLessThanOrEqual(boxes[1]?.y ?? 0)
+  const select = await filterBox(page, a).boundingBox()
+  expect(select?.height).toBeGreaterThanOrEqual(44)
+})
+
+Then("each row of the legend is at least {int} px high", async ({ page }, height: number) => {
+  for (const box of await legend(page).evaluateAll((all) => all.map((el) => el.getBoundingClientRect().height))) expect(box).toBeGreaterThanOrEqual(height)
+})
+
+// Every option of Art, with every option of Sicherheit: the number it says is
+// the number of rows, or what the list says it has when there is a next page
+Then("every number in the filters is what the list shows", async ({ page }) => {
+  const optionsOf = (label: string) => filterBox(page, label).locator("option").allInnerTexts()
+  const numberIn = (text: string) => Number(/\(([\d.]+)\)$/.exec(text)?.[1].replace(".", ""))
+  const check = async (text: string) => {
+    const n = numberIn(text)
+    if (n > 100) await expect(page.getByRole("main").getByText(`100 von ${formatted(n)} angezeigt`, { exact: true })).toBeVisible()
+    else if (n > 0) await expect(rows(page)).toHaveCount(n)
+    else await expect(page.getByText("Hier ist nichts zu entscheiden.", { exact: true })).toBeVisible()
+  }
+  for (const art of await optionsOf("Art")) {
+    const shown = (await optionsOf("Art")).find((o) => o === art) ?? art
+    await filterBox(page, "Art").selectOption({ label: shown })
+    await check(shown)
+    for (const band of await optionsOf("Sicherheit")) {
+      await filterBox(page, "Sicherheit").selectOption({ label: band })
+      await check(band)
+    }
+  }
+})
+
+const formatted = (n: number) => n.toLocaleString("de-DE")
 
 Then("the row of {string} shows {string}, then {string} and {string}", async ({ page }, file: string, badge: string, title: string, authors: string) => {
   const r = rows(page).filter({ has: page.getByRole("button", { name: file, exact: true }) })
@@ -259,10 +411,6 @@ Then("the rows end with {string}, {string} and {string}", async ({ page }, a: st
 
 Then("the page has no sort control", async ({ page }) => {
   await expect(page.getByRole("main").getByLabel(/Sortierung/)).toHaveCount(0)
-})
-
-Then("the page has no line about what stays", async ({ page }) => {
-  await expect(page.getByRole("main").getByText(/in der Liste$/)).toHaveCount(0)
 })
 
 Then("the drawer has a button {string}", async ({ page }, text: string) => {

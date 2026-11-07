@@ -282,11 +282,24 @@ export interface IntakeLeft {
   skipped: number
 }
 
+// how many of a kind there are per band; none: no confidence, a failed file
+export type IntakeBands = { bulk: number; review: number; unsure: number; none: number }
+
+// Every number of the bar and the filters, whatever the filters are. The kinds
+// of files follow the source; library, waiting and books have none.
+export interface IntakeShares {
+  kinds: Record<"new" | "sure" | "duplicates" | "skipped" | "library", IntakeBands>
+  // found, not analysed yet
+  waiting: number
+  // of the library, null until calibre has answered
+  books: number | null
+}
+
 export interface IntakeList {
   enabled: boolean
   progress?: IntakeProgress
   total?: number
-  counts?: { bulk: number; review: number; unsure: number; none: number }
+  counts?: IntakeBands
   // what „Alle N übernehmen“ takes of the filter, how many of them unsure
   takeable?: number
   unsure?: number
@@ -302,6 +315,7 @@ export interface IntakeList {
   thresholds?: Partial<Record<IntakeOrigin, number | null>>
   // how many of each are in the list, whatever the filters
   origins?: Partial<Record<IntakeOrigin, number>>
+  shares?: IntakeShares
   // the next page is behind this place in the list
   next?: string | null
   entries?: IntakeEntry[]

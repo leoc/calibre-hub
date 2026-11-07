@@ -3,7 +3,8 @@
 #
 # The mock hub has nine files like the live backlog (a sure ISBN hit, a
 # possible duplicate, a file that failed, ...) and 150 scans, the analysis
-# standing at one file with 1,451 books in the Eingang.
+# standing at one file with 1,292 still to analyse and 3 proposals for books of
+# the library, 1,454 in the Eingang.
 
 Feature: Eingang
 
@@ -12,8 +13,8 @@ Feature: Eingang
 
   Scenario: The page shows the numbers, the bar while it analyses and the proposals
     When I open the Eingang
-    Then the numbers are "1.451 im Eingang" and "158 analysiert"
-    And the analysis bar stands at 11 percent
+    Then the line under the title says "1.292 von 1.454 noch zu analysieren"
+    And the striped part "Noch zu analysieren: 1.292" stands at 11 percent
     And the row of "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf" shows "98 % · Sicher", then "Functional Analysis" and "Kosaku Yosida"
     And the row of "Stewart Calculus Concepts and Contexts 2nd Edition.pdf" shows "78 % · Dublette?", then "Calculus: Concepts and Contexts" and "James Stewart"
     And a row has no checkbox
@@ -21,18 +22,152 @@ Feature: Eingang
   Scenario: The menu leads to the Eingang with its count
     Given I open the library
     When I open the Eingang from the menu
-    Then the menu shows "1.451" next to the Eingang
+    Then the menu shows "1.454" next to the Eingang
 
-  Scenario: Filtering by confidence and kind
+  Scenario: Filtering by kind, then confidence
     When I open the Eingang
-    Then the filter "Sicherheit" offers "Sicher ab 90 (2)"
+    Then the filters come in the order "Art", "Sicherheit"
+    And the filter "Sicherheit" offers "Sicher ab 90 (2)"
     When I choose "Sicher ab 90 (2)" in "Sicherheit"
     Then the list has 2 rows
-    When I choose "Alle (159)" in "Sicherheit"
-    And I choose "Mögliche Dubletten" in "Art"
-    Then the list has 1 rows
-    And the filter "Sicherheit" offers "Prüfen 60 bis 89 (1)"
-    And the numbers are "1.451 im Eingang" and "158 analysiert"
+    When I choose "Mögliche Dubletten (1)" in "Art"
+    Then the filter "Sicherheit" reads "Alle (1)"
+    And the list has 1 rows
+    And the filter "Sicherheit" offers "Prüfen (1)"
+    And the filter "Sicherheit" offers "Sicher ab 90 (0)"
+    And the line under the title says "1.292 von 1.454 noch zu analysieren"
+
+  Scenario: Every number in the filters is what the list then shows, skipped ones included
+    Given some files were skipped, a possible and a sure duplicate among them
+    When I open the Eingang
+    Then the filter "Art" offers "Neue Dateien (156)"
+    And the filter "Art" offers "Mögliche Dubletten (0)"
+    And the filter "Art" offers "Sichere Dubletten (0)"
+    And the filter "Art" offers "Übersprungen (3)"
+    And every number in the filters is what the list shows
+
+  Scenario: Every number in the filters holds for a source too
+    Given files came in by the inbox and an upload
+    When I open the Eingang
+    And I choose "Backlog (157)" in "Quelle"
+    Then every number in the filters is what the list shows
+
+  Scenario: Übersprungen is always a kind
+    When I open the Eingang
+    Then the filter "Art" offers "Übersprungen (0)"
+    When I choose "Übersprungen (0)" in "Art"
+    Then the list says "Hier ist nichts zu entscheiden."
+
+  Scenario: The bars show where everything stands, each entry in one part
+    When I open the Eingang
+    Then the overview says "Bibliothek 400" and "Eingang 1.454"
+    And the overview reads "400 in der Bibliothek, 1.454 im Eingang"
+    And the bar's parts are "Neu, sicher: 2", "Neu, prüfen: 2", "Neu, unsicher: 152", "Fehlgeschlagen: 1", "Sichere Dubletten: 1", "Mögliche Dubletten: 1", "Schon in der Bibliothek: 3" and "Noch zu analysieren: 1.292"
+    And the legend's rows are "Neu, sicher 2", "Neu, prüfen 2", "Neu, unsicher 152", "Fehlgeschlagen 1", "Sichere Dubletten 1", "Mögliche Dubletten 1", "Übersprungen 0", "Schon in der Bibliothek 3" and "Noch zu analysieren 1.292"
+    And the legend's numbers add up to 1454
+
+  Scenario: A skipped entry counts only under Übersprungen
+    Given some files were skipped, a possible and a sure duplicate among them
+    When I open the Eingang
+    Then the bar's parts are "Neu, sicher: 2", "Neu, prüfen: 1", "Neu, unsicher: 152", "Fehlgeschlagen: 1", "Übersprungen: 3", "Schon in der Bibliothek: 3" and "Noch zu analysieren: 1.292"
+    And the legend's numbers add up to 1454
+
+  Scenario: Clicking a part filters, the part stays marked, the bar stands still
+    When I open the Eingang
+    And I press the part "Neu, prüfen: 2"
+    Then the filter "Art" reads "Neue Dateien (157)"
+    And the filter "Sicherheit" reads "Prüfen (2)"
+    And the list has 2 rows
+    And the part "Neu, prüfen: 2" is marked without color
+    And the legend's row "Neu, prüfen" is marked
+    And the bar's parts are "Neu, sicher: 2", "Neu, prüfen: 2", "Neu, unsicher: 152", "Fehlgeschlagen: 1", "Sichere Dubletten: 1", "Mögliche Dubletten: 1", "Schon in der Bibliothek: 3" and "Noch zu analysieren: 1.292"
+    When I press the part "Sichere Dubletten: 1"
+    Then the filter "Art" reads "Sichere Dubletten (1)"
+    And the filter "Sicherheit" reads "Alle (1)"
+    And the part "Neu, prüfen: 2" is not marked
+    When I press the part "Schon in der Bibliothek: 3"
+    Then the list has 3 rows
+    And the part "Schon in der Bibliothek: 3" is marked without color
+
+  Scenario: The legend's rows filter too, a part at 0 as well
+    When I open the Eingang
+    And I press the legend's row "Mögliche Dubletten"
+    Then the filter "Art" reads "Mögliche Dubletten (1)"
+    And the list has 1 rows
+    When I press the legend's row "Übersprungen"
+    Then the filter "Art" reads "Übersprungen (0)"
+    And the legend's row "Übersprungen" is marked
+
+  Scenario: What isn't analysed yet leads nowhere in the bar, in the legend back to all
+    When I open the Eingang
+    And I press the part "Sichere Dubletten: 1"
+    Then there is no button "Noch zu analysieren: 1.292"
+    When I press the legend's row "Noch zu analysieren"
+    Then the filter "Art" reads "Alle (159)"
+
+  Scenario: A tiny part keeps its width, each part is a real button
+    When I open the Eingang
+    Then the part "Sichere Dubletten: 1" is at least 8 px wide
+    When I focus the part "Sichere Dubletten: 1" and press "Enter"
+    Then the filter "Art" reads "Sichere Dubletten (1)"
+
+  Scenario: With the analysis through there is no striped part, the line says so
+    Given the analysis is "idle"
+    When I open the Eingang
+    Then the line under the title says "162 Dateien warten auf dich, alle analysiert"
+    And no part is striped
+    And the legend has no row "Noch zu analysieren"
+    And the legend's numbers add up to 162
+
+  Scenario: A source shows only its files, the overview stays whole
+    Given files came in by the inbox and an upload
+    When I open the Eingang
+    And I choose "Inbox (1)" in "Quelle"
+    Then the bar's parts are "Neu, sicher: 1"
+    And the legend has no row "Schon in der Bibliothek"
+    And the legend has no row "Noch zu analysieren"
+    And the overview says "Bibliothek 400" and "Eingang 1.454"
+    And the legend's numbers add up to 1
+
+  Scenario: The library's books have no source, going there leaves the source
+    Given files came in by the inbox and an upload
+    When I open the Eingang
+    And I choose "Inbox (1)" in "Quelle"
+    And I choose "Schon in der Bibliothek (3)" in "Art"
+    Then there is no filter "Quelle"
+    When I choose "Neue Dateien (157)" in "Art"
+    Then the filter "Quelle" reads "Alle"
+    And the list has 100 rows
+
+  Scenario: Only Neu sicher and the sure duplicates have a bulk
+    When I open the Eingang
+    Then the page has no bulk
+    When I choose "Neue Dateien (157)" in "Art"
+    Then the page has no bulk
+    When I choose "Prüfen (2)" in "Sicherheit"
+    Then the page has no bulk
+    When I choose "Mögliche Dubletten (1)" in "Art"
+    Then the page has no bulk
+    When I choose "Schon in der Bibliothek (3)" in "Art"
+    Then the page has no bulk
+    When I press the part "Neu, sicher: 2"
+    Then the button "Alle 2 übernehmen" is enabled
+    When I press the part "Sichere Dubletten: 1"
+    Then the button "Alle 1 in den Papierkorb" is enabled
+
+  @narrow
+  Scenario: On a phone Art and Sicherheit have the full width, the legend's rows are the target
+    When I open the Eingang
+    Then the filters "Art" and "Sicherheit" have a line each
+    And each row of the legend is at least 44 px high
+
+  @narrow
+  Scenario: At 320 px nothing scrolls sideways
+    Given the screen is 320 px wide
+    When I open the Eingang
+    Then the page is no wider than the screen
+    When I press the part "Neu, sicher: 2"
+    Then the page is no wider than the screen
 
   Scenario: The list loads more on request
     When I open the Eingang
@@ -99,37 +234,25 @@ Feature: Eingang
     Then the row "Basic Pathology" is gone
     And no dialog asks anything
     And the hub was asked to "trash" 1 entry
-    And the numbers are "1.449 im Eingang" and "156 analysiert"
+    And the line under the title says "1.292 von 1.452 noch zu analysieren"
 
   Scenario: Accepting everything sure asks nothing
     When I open the Eingang
-    And I choose "Sicher ab 90 (2)" in "Sicherheit"
+    And I press the part "Neu, sicher: 2"
     And I press the button "Alle 2 übernehmen"
     Then no dialog asks anything
     And the hub was asked to "accept" 2 entries
+    And the hub was told to expect 2
     And the list says "Hier ist nichts zu entscheiden."
-    And the button "Alle 0 übernehmen" is disabled
-
-  Scenario: Accepting with unsure books in it asks first, across all pages
-    When I open the Eingang
-    Then the list has 100 rows
-    When I press the button "Alle 156 übernehmen"
-    Then a dialog asks "156 Bücher, davon 152 unsicher. Trotzdem übernehmen?"
-    When I press the dialog's "Abbrechen"
-    Then the list has 100 rows
-    When I press the button "Alle 156 übernehmen"
-    And I press the dialog's "Übernehmen"
-    Then the hub was asked to "accept" 156 entries
-    And the list has 3 rows
-    And the button "Alle 0 übernehmen" is disabled
+    And the page has no bulk
+    And the legend's row "Neu, sicher" reads "Neu, sicher 0"
 
   Scenario: A row that may be a duplicate says of what and stays out of a bulk
     When I open the Eingang
-    And I choose "Mögliche Dubletten" in "Art"
+    And I choose "Mögliche Dubletten (1)" in "Art"
     Then the row "Stem Cells: From Bench to Bedside" says "Dublette von „Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf“ im Eingang"
     And the list has 1 rows
-    And the button "Alle 0 übernehmen" is disabled
-    And there is no button "Alle 0 in den Papierkorb"
+    And the page has no bulk
     When I choose "Sichere Dubletten (1)" in "Art"
     Then the row "Calculus: Concepts and Contexts" links "Calculus: Concepts and Contexts" to book 1 after "Dublette von"
 
@@ -137,7 +260,7 @@ Feature: Eingang
     When I open the Eingang
     And I choose "Fehlgeschlagen (1)" in "Sicherheit"
     Then the row "kaputt.pdf" can't be accepted
-    And the button "Alle 0 übernehmen" is disabled
+    And the page has no bulk
 
   @wide
   Scenario: The drawer's four exits with their keys, the next entry opening
@@ -178,7 +301,9 @@ Feature: Eingang
     Then the drawer's header reads "Birds.pdf"
     And the hub was asked to "skip" 1 entry
     When I press "Escape"
-    Then the button "Alle 155 übernehmen" is enabled
+    Then the filter "Art" offers "Neue Dateien (156)"
+    When I choose "Neue Dateien (156)" in "Art"
+    Then the row "Britannica Illustrated Science Library: Birds" is gone
     When I choose "Übersprungen (1)" in "Art"
     Then the list has 1 rows
     When I open the row "Britannica Illustrated Science Library: Birds"
@@ -235,10 +360,11 @@ Feature: Eingang
     When I open the Eingang
     Then the filter "Quelle" offers "Inbox (1)"
     And the filter "Quelle" offers "Upload (1)"
-    And the row of "Birds.pdf" shows the source "Inbox"
+    And the row of "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf" shows the source "Inbox"
     When I choose "Inbox (1)" in "Quelle"
     Then the list has 1 rows
-    And the button "Alle 1 übernehmen" is enabled
+    When I press the part "Neu, sicher: 1"
+    Then the button "Alle 1 übernehmen" is enabled
     When I press the button "Alle 1 übernehmen"
     Then the hub was asked to accept the filter of the source "inbox"
 
@@ -300,7 +426,7 @@ Feature: Eingang
     Then the title field reads "Functional Analysis" and the authors "K. Yoshida"
     When I press "Escape"
     Then the row of "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf" shows "80 % · Prüfen", then "Functional Analysis" and "K. Yoshida"
-    When I choose "Sicher ab 90 (2)" in "Sicherheit"
+    When I press the part "Neu, sicher: 2"
     And I press the button "Alle 2 übernehmen"
     Then the bulk carries the chosen candidate 2
 
@@ -378,26 +504,14 @@ Feature: Eingang
     Then no reader is open
     And the drawer's header reads "Robbins - Basic Pathology 8e.chm"
 
-  Scenario: The bulk says what it leaves in the list
-    When I open the Eingang
-    And I choose "Sicher ab 90 (2)" in "Sicherheit"
-    Then the page has no line about what stays
-    When I choose "Alle (159)" in "Sicherheit"
-    Then the page says "2 mögliche Dubletten und 1 fehlgeschlagen bleiben in der Liste"
-    When I choose "Mögliche Dubletten" in "Art"
-    Then the page says "1 mögliche Dublette bleibt in der Liste"
-    When I choose "Sichere Dubletten (1)" in "Art"
-    Then the page has no line about what stays
-
   Scenario: The sure duplicates are what the list shows, they go to the trash after asking
     When I open the Eingang
     Then there is no button "Alle 1 in den Papierkorb"
-    When I choose "Mögliche Dubletten" in "Art"
+    When I choose "Mögliche Dubletten (1)" in "Art"
     Then there is no button "Alle 1 in den Papierkorb"
     When I choose "Sichere Dubletten (1)" in "Art"
     Then the bulk's button "Alle 1 in den Papierkorb" is outlined in red
     And the list has 1 rows
-    And the page has no button "Alle 0 übernehmen"
     When I press the button "Alle 1 in den Papierkorb"
     Then a dialog asks "1 sichere Dublette geht in den Papierkorb. Die Bibliothek hat Buch oder Datei schon, oder eine Kopie bleibt im Eingang."
     When I press the dialog's "Abbrechen"
@@ -411,7 +525,7 @@ Feature: Eingang
     And the list says "Hier ist nichts zu entscheiden."
     And there is no button "Alle 0 in den Papierkorb"
     And the filter "Art" offers "Sichere Dubletten (0)"
-    When I choose "Mögliche Dubletten" in "Art"
+    When I choose "Mögliche Dubletten (1)" in "Art"
     Then the list has 1 rows
     And the row "Stem Cells: From Bench to Bedside" says "Dublette von „Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf“ im Eingang"
 
@@ -424,7 +538,7 @@ Feature: Eingang
     When I choose "Sicher ab 90 (0)" in "Sicherheit"
     Then the list says "Hier ist nichts zu entscheiden."
     And there is no button "Alle 0 in den Papierkorb"
-    When I choose "Prüfen 60 bis 89 (2)" in "Sicherheit"
+    When I choose "Prüfen (2)" in "Sicherheit"
     And I choose "Upload (1)" in "Quelle"
     Then the list says "Hier ist nichts zu entscheiden."
     And there is no button "Alle 0 in den Papierkorb"
@@ -441,7 +555,7 @@ Feature: Eingang
   Scenario: What calibre refused without a book stays for a person and says so in German
     Given calibre refused a possible duplicate as one of two books
     When I open the Eingang
-    And I choose "Mögliche Dubletten" in "Art"
+    And I choose "Mögliche Dubletten (1)" in "Art"
     Then the row "Stem Cells: From Bench to Bedside" says "Dublette?"
     And the row "Stem Cells: From Bench to Bedside" says "Das hat nicht geklappt: calibre lehnt das als Dublette ab, es gibt schon „Stem Cells (Ariff Bongso)“, „Stem Cells 2 (Eng Hin Lee)“."
 
@@ -459,7 +573,7 @@ Feature: Eingang
   Scenario: The library's books have their proposals in the same list
     When I open the Eingang
     Then the page has no button "Bestand neu prüfen"
-    When I choose "Schon in der Bibliothek" in "Art"
+    When I choose "Schon in der Bibliothek (3)" in "Art"
     Then the list has 3 rows
     And the row "Formulas and Theorems in Pure Mathematics" has no trash
     And the first line of the row "Formulas and Theorems in Pure Mathematics" is "Carr - Formulas and Theorems in Pure Mathematics 2e (Chelsea, 1970).djvu"
@@ -470,7 +584,7 @@ Feature: Eingang
   @wide
   Scenario: A library entry's drawer: old to new, three exits, no file exits by key
     When I open the Eingang
-    And I choose "Schon in der Bibliothek" in "Art"
+    And I choose "Schon in der Bibliothek (3)" in "Art"
     And I open the row "Formulas and Theorems in Pure Mathematics"
     Then the drawer has the buttons "Übernehmen a", "Überspringen j" and "Ablehnen x"
     And the drawer changes "Verlag" from "–" to "Chelsea"
@@ -484,16 +598,17 @@ Feature: Eingang
 
   Scenario: A proposal that writes nothing is not in the list, and an empty list keeps the recheck
     When I open the Eingang
-    And I choose "Schon in der Bibliothek" in "Art"
+    And I choose "Schon in der Bibliothek (3)" in "Art"
     Then the list has 3 rows
     And the row "Nur ein Kandidat.pdf" is gone
-    And the page says "Alle 3 übernehmen"
+    And the page has no bulk
     When I press "Ablehnen" on the row "Formulas and Theorems in Pure Mathematics"
     And I press "Ablehnen" on the row "Dune"
     And I press "Ablehnen" on the row "Wine Tasting - A Professional Handbook.pdf"
     Then the list says "Hier ist nichts zu entscheiden."
-    And the button "Alle 0 übernehmen" is disabled
     And the button "Bestand neu prüfen" is enabled
+    And the legend has no row "Schon in der Bibliothek"
+    And the filter "Art" offers "Schon in der Bibliothek (0)"
 
   Scenario: The old address of the import page leads here
     When I open "/import"
@@ -508,18 +623,17 @@ Feature: Eingang
   @wide
   Scenario: A library book's decision takes it from the list
     When I open the Eingang
-    And I choose "Schon in der Bibliothek" in "Art"
+    And I choose "Schon in der Bibliothek (3)" in "Art"
     And I press "Übernehmen" on the row "Dune"
     Then the row "Dune" is gone
     And the hub was asked to "accept" 1 entry
 
   Scenario: An accept that finds a field changed comes back and says why
     When I open the Eingang
-    And I choose "Schon in der Bibliothek" in "Art"
+    And I choose "Schon in der Bibliothek (3)" in "Art"
     And I press "Übernehmen" on the row "Wine Tasting - A Professional Handbook.pdf"
     Then the row "Wine Tasting - A Professional Handbook.pdf" says "Das hat nicht geklappt: Titel wurde seit dem Vorschlag geändert. Bitte ablehnen oder Bestand neu prüfen."
     And the row "Wine Tasting - A Professional Handbook.pdf" can't be accepted
-    And the page says "1 fehlgeschlagen bleibt in der Liste"
 
   Scenario: A reader has no Eingang
     Given I am logged in as "lea"

@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Book, ConfidenceBand, ImportRepairEntry, IntakeCandidate, IntakeDetail, IntakeEntry } from "@/lib/api"
+import type { Book, ConfidenceBand, ImportRepairEntry, IntakeBands, IntakeCandidate, IntakeDetail, IntakeEntry, IntakeShares } from "@/lib/api"
 import pdfUrl from "./fixtures/sample.pdf?url"
 
 // The Eingang of the mock hub: a dozen files like the live backlog, then
@@ -150,10 +150,20 @@ if (typeof window !== "undefined") Object.assign(window, { __intake: asked, __in
 
 // Two files that came another way, for the scenarios about sources
 // (localStorage hub.mock.intake.sources)
-const ELSEWHERE: Record<string, "inbox" | "upload"> = { "Birds.pdf": "inbox", "Robbins - Basic Pathology 8e.chm": "upload" }
+const ELSEWHERE: Record<string, "inbox" | "upload"> = { "Functional Analysis 6th ed - K. Yoshida (Springer, 1980) WW.pdf": "inbox", "Robbins - Basic Pathology 8e.chm": "upload" }
 function sources() {
   if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.sources")) return
   for (const e of ENTRIES) if (ELSEWHERE[e.name]) e.origin = ELSEWHERE[e.name]
+}
+
+// Three files skipped, one new, a possible and a sure duplicate: they count only
+// there (localStorage hub.mock.intake.skipped), once, it can be taken back
+const SKIPPED = ["Birds.pdf", "Stewart Calculus Concepts and Contexts 2nd Edition.pdf", "Stem Cells - From Bench to Bedside.pdf"]
+let skippedOnce = false
+function skippedSome() {
+  if (skippedOnce || typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.skipped")) return
+  skippedOnce = true
+  for (const e of ENTRIES) if (SKIPPED.includes(e.name)) e.skipped = true
 }
 
 // The file like another in the Eingang as one more of a book, for the scenario
@@ -262,11 +272,12 @@ function libraryList(q: URLSearchParams) {
 
 const isSure = (e: IntakeDetail) => e.status === "analysed" && e.action === "duplicate" && e.sure === true && !e.skipped
 
-// the hub's filter on duplicates: sure ones, those for a person, the new ones
+// the hub's filter on duplicates: sure ones, those for a person, the new ones,
+// none of them with what is skipped
 const ofKind = (e: IntakeDetail, duplicates: string | boolean | null | undefined) => {
   if (duplicates === null || duplicates === undefined) return true
   if (duplicates === "sure") return isSure(e)
-  return String(duplicates) === "true" ? e.action !== "add" && !isSure(e) : e.action === "add"
+  return !e.skipped && (String(duplicates) === "true" ? e.action !== "add" && !isSure(e) : e.action === "add")
 }
 
 const inFilter = (q: { band?: string | null; duplicates?: string | boolean | null; skipped?: string | boolean | null; origin?: string | null }) => {
@@ -280,6 +291,31 @@ const trashable = (list: IntakeDetail[]) => list.filter(isSure)
 
 const limitOf = (q: URLSearchParams) => Number(q.get("limit") ?? 100)
 
+// the files of the analysis still ahead, as in the header of this file
+const WAITING = 1292
+
+const bandsOf = (list: IntakeDetail[]): IntakeBands => {
+  const count = (b: string) => list.filter((e) => (e.band ?? "none") === b).length
+  return { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: count("none") }
+}
+
+// the hub's kinds: each entry in one, skipped first
+function shares(origin: string | null, waiting: number): IntakeShares {
+  const files = ENTRIES.filter((e) => !origin || e.origin === origin)
+  const kind = (fits: (e: IntakeDetail) => boolean) => bandsOf(files.filter(fits))
+  return {
+    kinds: {
+      new: kind((e) => !e.skipped && e.action === "add"),
+      sure: kind(isSure),
+      duplicates: kind((e) => !e.skipped && e.action !== "add" && !isSure(e)),
+      skipped: kind((e) => e.skipped),
+      library: bandsOf(library()),
+    },
+    waiting,
+    books: proposalBoard.books.length,
+  }
+}
+
 const COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="#475569"/></svg>`
 
 export const intakeHandlers = [
@@ -288,6 +324,7 @@ export const intakeHandlers = [
     sources()
     sameBooks()
     refused()
+    skippedSome()
     const filter = { duplicates: q.get("duplicates"), skipped: q.get("skipped"), origin: q.get("origin") }
     const pending = waiting ? 1 : 0
     if (waiting && limitOf(q) > 1) {
@@ -314,9 +351,10 @@ export const intakeHandlers = [
       skipped: skippedFilter ? 0 : list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && e.skipped).length,
     }
     const mode = typeof localStorage === "undefined" ? null : localStorage.getItem("hub.mock.intake")
+    const ahead = mode === "idle" ? 0 : WAITING
     return HttpResponse.json({
       enabled: true,
-      progress: { state: mode ?? "analysing", total: 1451 - (159 - ENTRIES.length), done: ENTRIES.length, analysed, current: "Mader - Biology - Inquiry into Life 9e HQ.pdf" },
+      progress: { state: mode ?? "analysing", total: ENTRIES.length + ahead, done: ENTRIES.length, analysed, current: "Mader - Biology - Inquiry into Life 9e HQ.pdf" },
       total: list.length,
       counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: count("none") },
       takeable: take.length,
@@ -328,6 +366,7 @@ export const intakeHandlers = [
       pending,
       thresholds,
       origins: ENTRIES.reduce<Record<string, number>>((n, e) => ({ ...n, [e.origin as string]: (n[e.origin as string] ?? 0) + 1 }), {}),
+      shares: shares(q.get("origin"), ahead),
       next: rest.length > limit ? `${page[page.length - 1].confidence ?? -1}:${page[page.length - 1].path}` : null,
       entries: page,
       ...(q.get("library") === "true" ? libraryList(q) : {}),
