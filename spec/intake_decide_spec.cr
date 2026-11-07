@@ -8,6 +8,18 @@ private alias Backlog = CalibreHub::Backlog
 private alias Intake = CalibreHub::Intake
 private alias IntakeTrash = CalibreHub::IntakeTrash
 
+# files of a pass still to analyse, without running one
+class CalibreHub::Intake
+  def waiting_files=(n : Int32)
+    @left = n
+  end
+
+  def books_forgotten
+    @books = nil
+    @books_at = nil
+  end
+end
+
 private def write(path : String, content : String, age = 1.hour)
   Dir.mkdir_p(File.dirname(path))
   File.write(path, content)
@@ -44,6 +56,8 @@ private class FakeCalibre
   property duplicate_names = {} of String => Int64
   # calibre calls it a duplicate, a search for that title finds nothing
   property unfound = false
+  # a search without a query counts the library
+  property counts = false
   @next = 100_i64
 
   def initialize
@@ -89,8 +103,9 @@ private class FakeCalibre
         data = fields.to_h { |f| {f.sub('*', '#'), ids.to_h { |i| {i.to_s, @books[i][f.sub('*', '#')]? || JSON::Any.new(nil)} }} }
         ctx.response.print({result: {book_ids: ids, data: data}}.to_json)
       when "/ajax/search"
-        title = ctx.request.query_params["query"][/title:"=([^"]+)"/, 1]?
-        ids = @unfound ? [] of Int64 : @books.select { |_, b| b["title"].as_s == title }.keys
+        query = ctx.request.query_params["query"]
+        title = query[/title:"=([^"]+)"/, 1]?
+        ids = @unfound ? [] of Int64 : @books.select { |_, b| (@counts && query.empty?) || b["title"].as_s == title }.keys
         ctx.response.print({total_num: ids.size, book_ids: ids}.to_json)
       else
         ctx.response.status_code = 404
@@ -1190,7 +1205,7 @@ end
 
 # nothing of a book or its files was written or removed
 private def nothing_written(fake : FakeCalibre)
-  fake.requests.map(&.[0]).reject(&.==("/cdb/cmd/list/0")).should be_empty
+  fake.requests.map(&.[0]).reject(&.in?("/cdb/cmd/list/0", "/ajax/search")).should be_empty
 end
 
 private def repair_settled(repair : CalibreHub::ImportRepair)
@@ -1338,6 +1353,207 @@ describe "what a bulk leaves in the list" do
       {list["left"]["duplicates"], list["left"]["failed"], list["left"]["skipped"]}.should eq({1, 1, 1})
       list["takeable"].should eq 1
       intake.list(skipped: true)["left"]["skipped"].should eq 0
+    end
+  end
+end
+
+# one entry of each sort, skipped ones among them: every number the page shows
+# is taken from here
+private def every_sort(root : String, fake = FakeCalibre.new)
+  %w(bulk review unsure failed maybe maybe2 sure sure2 skipped skipped_maybe skipped_sure skipped_failed).each { |n| write(File.join(root, "#{n}.pdf"), pdf(n)) }
+  intake, _, db, _ = setup(root, fake)
+  intake.run_once
+  set = ->(name : String, sql : String) { db.exec "update intake_entries set #{sql} where id = ?", id_of(intake, "#{name}.pdf") }
+  {"bulk" => 95, "review" => 70, "unsure" => 30, "skipped" => 70}.each { |n, c| set.call(n, "action = 'add', sure = 0, confidence = #{c}") }
+  failed = "action = 'add', sure = 0, status = 'failed', proposal = null, confidence = null"
+  set.call("failed", failed)
+  set.call("maybe", "action = 'duplicate', sure = 0, confidence = 95")
+  set.call("maybe2", "action = 'addFormats', sure = 0, confidence = 70")
+  set.call("sure", "action = 'duplicate', sure = 1, confidence = 95")
+  set.call("sure2", "action = 'duplicate', sure = 1, confidence = 70")
+  set.call("skipped_maybe", "action = 'duplicate', sure = 0, confidence = 70")
+  set.call("skipped_sure", "action = 'duplicate', sure = 1, confidence = 95")
+  set.call("skipped_failed", failed)
+  %w(skipped skipped_maybe skipped_sure skipped_failed).each { |n| set.call(n, "skipped = 1") }
+  {intake, db}
+end
+
+private def share_sum(bands : JSON::Any) : Int64
+  bands.as_h.values.sum(0_i64, &.as_i64)
+end
+
+# what the list of a kind and band gives; the filter of the page (intakeFilter)
+private def listed(intake : Intake, kind : String, band : String?, origin : String? = nil) : JSON::Any
+  case kind
+  when "all"        then intake.list(band: band, origin: origin)
+  when "new"        then intake.list(band: band, duplicates: false, origin: origin)
+  when "sure"       then intake.list(band: band, duplicates: "sure", origin: origin)
+  when "duplicates" then intake.list(band: band, duplicates: true, origin: origin)
+  when "skipped"    then intake.list(band: band, skipped: true, origin: origin)
+  else                   intake.library_list(band)
+  end
+end
+
+# the files of all kinds, of a band or all of them
+private def files_sum(kinds : JSON::Any, band : String? = nil) : Int64
+  files = %w(new sure duplicates skipped).map { |k| kinds[k] }
+  band ? files.sum(0_i64, &.[band].as_i64) : files.sum(0_i64) { |b| share_sum(b) }
+end
+
+describe "the numbers of the bar and the filters" do
+  it "puts each entry in exactly one kind and band, skipped ones only under skipped" do
+    tmpdir do |_, root|
+      intake, _ = every_sort(root)
+      kinds = intake.list["shares"]["kinds"]
+      kinds["new"].should eq JSON.parse({bulk: 1, review: 1, unsure: 1, none: 1}.to_json)
+      kinds["duplicates"].should eq JSON.parse({bulk: 1, review: 1, unsure: 0, none: 0}.to_json)
+      kinds["sure"].should eq JSON.parse({bulk: 1, review: 1, unsure: 0, none: 0}.to_json)
+      kinds["skipped"].should eq JSON.parse({bulk: 1, review: 2, unsure: 0, none: 1}.to_json)
+    end
+  end
+
+  it "adds up to what is open, the skipped possible and sure duplicates once each" do
+    tmpdir do |_, root|
+      intake, _ = every_sort(root)
+      list = intake.list
+      files_sum(list["shares"]["kinds"]).should eq 12
+      files_sum(list["shares"]["kinds"]).should eq list["progress"]["done"].as_i64
+      list["total"].should eq 12
+    end
+  end
+
+  it "counts what isn't analysed yet, so the parts reach the Eingang's total" do
+    tmpdir do |_, root|
+      intake, _ = every_sort(root)
+      intake.waiting_files = 5
+      list = intake.list
+      list["shares"]["waiting"].should eq 5
+      list["progress"]["total"].should eq 17
+      (files_sum(list["shares"]["kinds"]) + list["shares"]["waiting"].as_i64).should eq list["progress"]["total"].as_i64
+    end
+  end
+
+  it "says in each number what the list then shows, in every kind and band" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(7, "Alt", ["Jemand"])
+      fake.add(8, "Auch alt", ["Niemand"])
+      intake, db = every_sort(root, fake)
+      intake.repair = repair_of(fake, db)
+      proposal_row(db, 7, title_change("Alt", "Neu"))
+      proposal_row(db, 8, title_change("Auch alt", "Auch neu"), 40)
+      kinds = intake.list["shares"]["kinds"]
+      %w(new sure duplicates skipped library).each do |kind|
+        listed(intake, kind, nil)["total"].as_i64.should eq share_sum(kinds[kind])
+        %w(bulk review unsure none).each do |band|
+          list = listed(intake, kind, band)
+          list["total"].as_i64.should eq kinds[kind][band].as_i64
+          list["entries"].as_a.size.should eq kinds[kind][band].as_i
+        end
+      end
+      listed(intake, "all", nil)["total"].as_i64.should eq files_sum(kinds)
+      %w(bulk review unsure none).each { |band| listed(intake, "all", band)["total"].as_i64.should eq files_sum(kinds, band) }
+    end
+  end
+
+  it "gives the two bulks the numbers of the list" do
+    tmpdir do |_, root|
+      intake, _ = every_sort(root)
+      kinds = intake.list["shares"]["kinds"]
+      intake.list(band: "bulk", duplicates: false)["takeable"].should eq kinds["new"]["bulk"]
+      intake.list(duplicates: "sure")["trashable"].as_i64.should eq share_sum(kinds["sure"])
+      intake.list(band: "review", duplicates: "sure")["trashable"].should eq kinds["sure"]["review"]
+    end
+  end
+
+  it "stands still whatever the filter" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(7, "Alt", ["Jemand"])
+      intake, db = every_sort(root, fake)
+      intake.repair = repair_of(fake, db)
+      proposal_row(db, 7, title_change("Alt", "Neu"))
+      shares = intake.list["shares"]
+      intake.list(band: "bulk", duplicates: false)["shares"].should eq shares
+      intake.list(band: "review", skipped: true)["shares"].should eq shares
+      intake.list(duplicates: "sure", limit: 1)["shares"].should eq shares
+      intake.library_list("review")["shares"].should eq shares
+    end
+  end
+
+  it "follows the source: a filter of it shows the same numbers as the list" do
+    tmpdir do |_, root|
+      intake, db = every_sort(root)
+      %w(bulk skipped_sure failed).each { |n| db.exec "update intake_entries set origin = 'inbox' where id = ?", id_of(intake, "#{n}.pdf") }
+      all = intake.list
+      list = intake.list(origin: "inbox")
+      kinds = list["shares"]["kinds"]
+      files_sum(kinds).should eq all["origins"]["inbox"]
+      files_sum(kinds).should eq 3
+      {kinds["new"]["bulk"], kinds["new"]["none"], kinds["skipped"]["bulk"]}.should eq({1, 1, 1})
+      %w(new sure duplicates skipped).each { |k| listed(intake, k, nil, "inbox")["total"].as_i64.should eq share_sum(kinds[k]) }
+      expect_raises(CalibreHub::Edit::Invalid) { intake.shares("nowhere") }
+    end
+  end
+
+  it "has the proposals for the library's books, skipped ones among them, whatever the source" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      intake, db = every_sort(root, fake)
+      intake.repair = repair_of(fake, db)
+      proposal_row(db, 7, title_change("Alt", "Neu"))
+      proposal_row(db, 8, title_change("Auch alt", "Auch neu"), 40)
+      proposal_row(db, 9, title_change("Fertig", "Neu"), status: "applied")
+      db.exec "update import_repairs set skipped = 1 where book_id = 8"
+      library = intake.list["shares"]["kinds"]["library"]
+      library.should eq JSON.parse({bulk: 0, review: 1, unsure: 1, none: 0}.to_json)
+      intake.list(origin: "inbox")["shares"]["kinds"]["library"].should eq library
+    end
+  end
+
+  it "has none without a repair" do
+    tmpdir do |_, root|
+      intake, _ = every_sort(root)
+      share_sum(intake.list["shares"]["kinds"]["library"]).should eq 0
+    end
+  end
+
+  it "says how many books the library has and asks calibre seldom" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      fake.add(1_i64, "Eins", ["Jemand"])
+      fake.add(2_i64, "Zwei", ["Jemand"])
+      fake.counts = true
+      intake, _ = every_sort(root, fake)
+      intake.list["shares"]["books"].should eq 2
+      fake.add(3_i64, "Drei", ["Jemand"])
+      intake.list["shares"]["books"].should eq 2
+      fake.requests.count { |r| r[0] == "/ajax/search" }.should eq 1
+    end
+  end
+
+  it "goes on without calibre, the library's number then unknown" do
+    tmpdir do |_, root|
+      fake = FakeCalibre.new
+      intake, _ = every_sort(root, fake)
+      fake.down = true
+      intake.books_forgotten
+      list = intake.list
+      list["shares"]["books"].raw.should be_nil
+      list["total"].should eq 12
+    end
+  end
+
+  it "leaves what is skipped out of the filters on duplicates" do
+    tmpdir do |_, root|
+      intake, _ = every_sort(root)
+      names = ->(list : JSON::Any) { list["entries"].as_a.map(&.["name"].as_s).sort! }
+      names.call(intake.list(duplicates: false)).should eq %w(bulk.pdf failed.pdf review.pdf unsure.pdf)
+      names.call(intake.list(duplicates: true)).should eq %w(maybe.pdf maybe2.pdf)
+      names.call(intake.list(duplicates: "sure")).should eq %w(sure.pdf sure2.pdf)
+      names.call(intake.list(skipped: true)).should eq %w(skipped.pdf skipped_failed.pdf skipped_maybe.pdf skipped_sure.pdf)
+      intake.list["total"].should eq 12
+      intake.list(duplicates: false)["left"]["skipped"].should eq 0
     end
   end
 end

@@ -1251,9 +1251,16 @@ module CalibreHub
       end
     end
 
-    # what is in the list by a filter; what waits for its job isn't
+    # what is in the list by a filter; what waits for its job isn't. A filter
+    # on duplicates leaves out what is skipped, that has a filter of its own:
+    # an entry counts in one place only (#shares).
     private def filter_sql(band : String?, duplicates : Duplicates, skipped : Bool?, origin : String? = nil) : String
-      ["decision is null", band_sql(band), duplicates_sql(duplicates), skipped ? "skipped = 1" : nil, origin_sql(origin)].compact.join(" and ")
+      ["decision is null", band_sql(band), duplicates_sql(duplicates), skipped_sql(duplicates, skipped), origin_sql(origin)].compact.join(" and ")
+    end
+
+    private def skipped_sql(duplicates : Duplicates, skipped : Bool?) : String?
+      return "skipped = 1" if skipped
+      duplicates.nil? ? nil : "skipped = 0"
     end
 
     private def origin_sql(origin : String?) : String?
@@ -1306,9 +1313,10 @@ module CalibreHub
 
     # The list for the page: a page of entries with the filter's total, how
     # many of that kind there are per band, and what a bulk decision takes
-    # (takeable; trashable, of the band and source whatever the kind, so the
-    # filter's option can say it). band: by confidence; duplicates: see
-    # Duplicates; skipped: only the skipped ones; origin: of one source.
+    # (takeable; trashable, of the band and source whatever the kind), and all
+    # the numbers of the bar and the filters (#shares). band: by confidence;
+    # duplicates: see Duplicates, nothing skipped in it; skipped: only the
+    # skipped ones; origin: of one source.
     # In the order of ORDER; after: the page behind this place
     # (next of the page before), a confidence and a path, which stays right
     # while entries leave the list and the analysis adds some.
@@ -1341,7 +1349,7 @@ module CalibreHub
                   left: left_out(band, duplicates, skipped, origin), skipped: skipped_count,
                   last: @db.query_one("select coalesce(max(id), 0) from intake_entries", as: Int64),
                   pending: pending_count,
-                  thresholds: thresholds, origins: origin_counts, entries: entries.map(&.to_api(roots))}.to_json)
+                  thresholds: thresholds, origins: origin_counts, shares: shares(origin), entries: entries.map(&.to_api(roots))}.to_json)
     end
 
     private def skipped_count : Int64
@@ -1591,3 +1599,4 @@ end
 require "./intake_decide"
 require "./intake_library"
 require "./intake_peek"
+require "./intake_shares"
