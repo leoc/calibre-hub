@@ -478,6 +478,38 @@ describe CalibreHub::IntakeJobs do
     end
   end
 
+  it "brings an accept back as a duplicate without an error, in the list and in its numbers" do
+    tmpdir do |dir, root|
+      write(File.join(root, "a.pdf"), pdf("same"))
+      fake = FakeCalibre.new
+      db = state_db
+      intake, _, _, _ = setup(root, fake, nil, db)
+      pass(intake)
+      id = entries(intake).first["id"].as_i64
+      entries(intake).first["action"].should eq "add"
+
+      # the library has the file by the time the job gets to it
+      shelf = library(dir, {1_i64 => {"Wer/Buch (1)", "Buch - Wer", "PDF", pdf("same")}})
+      fake.add(1_i64, "Buch", ["Wer"], ["PDF"])
+      later, _, _, _ = setup(root, fake, shelf, db)
+      wait(later, decide(later, [id], "accept")).errors.should be_empty
+
+      fake.added.should be_empty
+      list = later.list
+      list["total"].should eq 1
+      list["pending"].should eq 0
+      e = list["entries"].as_a.first
+      e["id"].should eq id
+      e["action"].should eq "duplicate"
+      e["bookId"].should eq 1
+      e["error"].raw.should be_nil
+      later.list(duplicates: false)["total"].should eq 0
+      kinds = list["shares"]["kinds"]
+      (kinds["sure"].as_h.values.sum(&.as_i) + kinds["duplicates"].as_h.values.sum(&.as_i)).should eq 1
+      kinds["new"].as_h.values.sum(&.as_i).should eq 0
+    end
+  end
+
   it "adds a marked duplicate only because a person says so" do
     tmpdir do |_, root|
       write(File.join(root, "Frank Herbert - Dune.pdf"), pdf("dune"))
