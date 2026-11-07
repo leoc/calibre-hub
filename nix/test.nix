@@ -402,10 +402,10 @@ pkgs.testers.runNixOSTest {
         # a folder without group write is skipped, not imported twice
         machine.succeed("mkdir -m 755 /srv/books/inbox/Privat && cp /tmp/b.epub /srv/books/inbox/Privat/")
         wait_until("journalctl -u calibre-hub -o cat | grep -q 'Privat/b.epub skipped'", timeout=30)
-        # like Samba on dmt: directory mask 2775
-        machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Roman /srv/books/inbox/Roman/Krimi")
         # finished, then in: a file ebook-convert is still writing looks broken
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt /tmp/k.epub --title Inboxbuch --authors 'Agatha Test' --tags Eingebettet")
+        # like Samba on dmt: directory mask 2775
+        machine.succeed("install -d -m 2775 -g calibre-hub /srv/books/inbox/Roman /srv/books/inbox/Roman/Krimi")
         machine.succeed("cp /tmp/k.epub /srv/books/inbox/Roman/Krimi/k.epub")
         # it goes through the Eingang: below the threshold it waits there, in its folder
         assert api("GET", "/api/intake?limit=1")[1]["thresholds"] == {"backlog": None, "inbox": 90, "upload": 90}
