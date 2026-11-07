@@ -29,6 +29,8 @@ import {
   reasonText,
   ringLabel,
   takeable,
+  trashable,
+  trashAllText,
   uniqueEntries,
   unreadable,
   type IntakeBand,
@@ -55,6 +57,9 @@ const muted = "text-muted-foreground eink:text-black"
 const select = "min-h-9 rounded-md border bg-background px-2 text-sm eink:min-h-12 eink:border-2 touch:min-h-11"
 const BAND_COLOR: Record<ConfidenceBand, string> = { bulk: "text-band-bulk", review: "text-band-review", unsure: "text-band-unsure" }
 
+// the buttons that throw files away
+const trashButton = "border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive eink:hover:bg-transparent"
+
 // a link's height where a pen or a finger has to hit it
 const linkSize = "inline-flex items-center eink:min-h-12 touch:min-h-11"
 
@@ -75,6 +80,7 @@ export function IntakePage() {
   const [source, setSource] = useState<IntakeSource>("all")
   const [open, setOpen] = useState<number | null>(null)
   const [asking, setAsking] = useState(false)
+  const [trashing, setTrashing] = useState(false)
   // per entry, until it is decided: the list shows it too
   const [picks, setPicks] = useState<Map<number, Chosen>>(new Map())
   // decided, gone from the list; with the error it had, a new one brings it back
@@ -142,8 +148,11 @@ export function IntakePage() {
     onSettled: () => queued(),
   })
   const bulk = useMutation({
-    mutationFn: (v: { expect: number; last: number; gone: IntakeEntry[] }) =>
-      write.intakeDecide({ decision: "accept", target: { query: intakeFilter(band, kind, source), last: v.last, expect: v.expect }, picks: chosen() }),
+    mutationFn: (v: { decision: "accept" | "trash"; expect: number; last: number; gone: IntakeEntry[] }) =>
+      write.intakeDecide({ decision: v.decision, target: { query: intakeFilter(band, kind, source), last: v.last, expect: v.expect }, picks: v.decision === "accept" ? chosen() : undefined }),
+    onSuccess: (r, v) => {
+      if (v.decision === "trash") toast.show(r.total === 1 ? t("intake.trashAll.doneOne") : t("intake.trashAll.doneMany", { count: formatNumber(r.total) }))
+    },
     onError: (err, v) => {
       undecide(v.gone.map((e) => e.id))
       if (err instanceof ApiError && err.status === 409) toast.show(t("intake.changed"))
@@ -195,7 +204,14 @@ export function IntakePage() {
     setOpen(null)
     const gone = entries.filter((e) => takeable(e, kind))
     leave(gone)
-    bulk.mutate({ expect: status?.takeable ?? 0, last: status?.last ?? 0, gone })
+    bulk.mutate({ decision: "accept", expect: status?.takeable ?? 0, last: status?.last ?? 0, gone })
+  }
+  const trashAll = () => {
+    setTrashing(false)
+    setOpen(null)
+    const gone = entries.filter(trashable)
+    leave(gone)
+    bulk.mutate({ decision: "trash", expect: toTrash, last: status?.last ?? 0, gone })
   }
   const current = index >= 0 ? entries[index] : undefined
   const counts = status?.counts
@@ -203,6 +219,7 @@ export function IntakePage() {
   const shown = list.data?.pages.at(-1)?.total ?? entries.length
   const n = status?.takeable ?? 0
   const unsure = status?.unsure ?? 0
+  const toTrash = status?.trashable ?? 0
   const sources = originsInList(status)
   // the rows say where from when there is more than one place to come from
   const several = sources.length > 1
@@ -256,6 +273,11 @@ export function IntakePage() {
             )}
             <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
               {leftText(status.left) && <span className={muted}>{leftText(status.left)}</span>}
+              {kind === "duplicates" && (
+                <Button variant="outline" className={trashButton} disabled={toTrash === 0 || bulk.isPending} onClick={() => setTrashing(true)}>
+                  {t("intake.trashAll", { count: formatNumber(toTrash) })}
+                </Button>
+              )}
               <Button disabled={n === 0 || bulk.isPending} onClick={() => (unsure > 0 ? setAsking(true) : acceptAll())}>
                 {t("intake.acceptAll", { count: formatNumber(n) })}
               </Button>
@@ -315,6 +337,20 @@ export function IntakePage() {
                   {t("edit.cancel")}
                 </Button>
                 <Button onClick={acceptAll}>{t("intake.confirm.yes")}</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={trashing} onOpenChange={setTrashing}>
+            <DialogContent>
+              <DialogTitle className="text-lg font-semibold">{t("intake.trashAll.title")}</DialogTitle>
+              <DialogDescription>{trashAllText(toTrash, (status.total ?? 0) - toTrash)}</DialogDescription>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setTrashing(false)}>
+                  {t("edit.cancel")}
+                </Button>
+                <Button variant="destructive" onClick={trashAll}>
+                  {t("intake.trashAll.yes")}
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -799,7 +835,7 @@ function IntakeSheet(props: {
                   {t("intake.reject")} <ButtonKey>x</ButtonKey>
                 </Button>
               ) : (
-                <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive eink:hover:bg-transparent" onClick={() => onDecide(e, "trash")}>
+                <Button variant="outline" className={trashButton} onClick={() => onDecide(e, "trash")}>
                   {t("intake.trash")} <ButtonKey>d</ButtonKey>
                 </Button>
               )}

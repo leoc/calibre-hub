@@ -384,6 +384,49 @@ Feature: Eingang
     When I choose "Mögliche Dubletten" in "Art"
     Then the page says "2 mögliche Dubletten bleiben in der Liste"
 
+  Scenario: The possible duplicates with a book's author and title go to the trash after asking, the others stay
+    When I open the Eingang
+    Then there is no button "Alle 0 in den Papierkorb"
+    When I choose "Mögliche Dubletten" in "Art"
+    Then the bulk's button "Alle 1 in den Papierkorb" is outlined in red
+    And the list has 2 rows
+    When I press the button "Alle 1 in den Papierkorb"
+    Then a dialog asks "1 Datei mit gleichem Autor und Titel wie ein Buch der Bibliothek geht in den Papierkorb. 1 weiterer Eintrag bleibt in der Liste."
+    When I press the dialog's "Abbrechen"
+    Then the hub wasn't asked anything
+    And the list has 2 rows
+    When I press the button "Alle 1 in den Papierkorb"
+    And I press the dialog's "In den Papierkorb"
+    Then the hub was asked to "trash" 1 entry
+    And the hub was told to expect 1
+    And a message says "1 Datei geht in den Papierkorb."
+    And the row "Calculus: Concepts and Contexts" is gone
+    And the list has 1 rows
+    And the button "Alle 0 in den Papierkorb" is disabled
+
+  Scenario: With nothing left behind the dialog says only the number
+    Given every possible duplicate is the same as its book
+    When I open the Eingang
+    And I choose "Mögliche Dubletten" in "Art"
+    And I press the button "Alle 2 in den Papierkorb"
+    Then a dialog asks "2 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb."
+    When I press the dialog's "In den Papierkorb"
+    Then the hub was asked to "trash" 2 entries
+    And the hub was told to expect 2
+    And a message says "2 Dateien gehen in den Papierkorb."
+    And the list says "Hier ist nichts zu entscheiden."
+
+  Scenario: A book renamed since the list was shown trashes nothing, the number follows
+    Given the book of a possible duplicate was renamed
+    When I open the Eingang
+    And I choose "Mögliche Dubletten" in "Art"
+    And I press the button "Alle 1 in den Papierkorb"
+    And I press the dialog's "In den Papierkorb"
+    Then a message says "Die Liste hat sich geändert, bitte noch einmal."
+    And the hub wasn't asked anything
+    And the list has 2 rows
+    And the button "Alle 0 in den Papierkorb" is disabled
+
   Scenario: The library's books have their proposals in the same list
     When I open the Eingang
     Then the page has no button "Bestand neu prüfen"

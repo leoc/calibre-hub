@@ -160,6 +160,24 @@ Then("the button {string} is outlined in red", async ({ page }, name: string) =>
   await expect(button).toHaveCSS("background-color", "oklch(1 0 0)")
 })
 
+Then("the bulk's button {string} is outlined in red", async ({ page }, name: string) => {
+  const button = page.getByRole("button", { name, exact: true })
+  await expect(button).toHaveClass(/border-destructive/)
+  await expect(button).toHaveClass(/text-destructive/)
+})
+
+Then("the hub was told to expect {int}", async ({ page }, n: number) => {
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __intake: { expect?: number }[] }).__intake.at(-1)?.expect)).toBe(n)
+})
+
+Given("every possible duplicate is the same as its book", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.intake.sameBooks", "1"))
+})
+
+Given("the book of a possible duplicate was renamed", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("hub.mock.intake.renamed", "1"))
+})
+
 When("I hold {string} down", async ({ page }, key: string) => {
   await page.keyboard.down(key)
   await page.keyboard.down(key)

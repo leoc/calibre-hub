@@ -19,6 +19,7 @@ interface Seed {
   action?: "add" | "addFormats" | "duplicate"
   bookId?: number
   bookTitle?: string
+  sameBook?: boolean
   sameAs?: string
   notes?: IntakeEntry["notes"]
   cover?: boolean
@@ -66,6 +67,7 @@ const SEEDS: Seed[] = [
     action: "duplicate",
     bookId: 1,
     bookTitle: "Calculus: Concepts and Contexts",
+    sameBook: true,
   },
   { path: "Kopie/Stem Cells - From Bench to Bedside.pdf", title: "Stem Cells: From Bench to Bedside", authors: ["Ariff Bongso"], confidence: 80, level: 3, decided: "name", action: "duplicate", sameAs: `${ROOT}/Stem Cells - From Bench to Bedside - A. Bongso, E. Lee (World, 2005) WW.pdf` },
   { path: "kaputt.pdf", title: "", authors: [], confidence: 0, level: null, failed: "pdfinfo: not a PDF" },
@@ -116,6 +118,7 @@ function entry(seed: Seed, id: number): IntakeDetail {
     changes: [],
     candidates,
     bookTitle: seed.bookTitle ?? null,
+    sameBook: seed.sameBook ?? false,
   }
 }
 
@@ -151,6 +154,22 @@ const ELSEWHERE: Record<string, "inbox" | "upload"> = { "Birds.pdf": "inbox", "R
 function sources() {
   if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.sources")) return
   for (const e of ENTRIES) if (ELSEWHERE[e.name]) e.origin = ELSEWHERE[e.name]
+}
+
+// The file like another in the Eingang as one more of a book, for the scenario
+// without anything left behind (localStorage hub.mock.intake.sameBooks)
+function sameBooks() {
+  if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.sameBooks")) return
+  for (const e of ENTRIES) if (e.sameAs) Object.assign(e, { sameAs: null, bookId: 2, bookTitle: e.proposal?.title, sameBook: true })
+}
+
+// The book of the possible duplicate was renamed since the list was shown: the
+// first bulk finds it out (localStorage hub.mock.intake.renamed)
+function renamed(): boolean {
+  if (typeof localStorage === "undefined" || !localStorage.getItem("hub.mock.intake.renamed")) return false
+  localStorage.removeItem("hub.mock.intake.renamed")
+  for (const e of ENTRIES) e.sameBook = false
+  return true
 }
 
 // What an upload waits for in the mock Eingang (mocks/handlers.ts): the entry
@@ -241,6 +260,8 @@ const inFilter = (q: { band?: string | null; duplicates?: string | boolean | nul
 
 const takeable = (list: IntakeDetail[], skipped: boolean) => list.filter((e) => e.status === "analysed" && e.action !== "duplicate" && (skipped || !e.skipped))
 
+const trashable = (list: IntakeDetail[]) => list.filter((e) => e.status === "analysed" && e.action === "duplicate" && e.sameBook && !e.skipped)
+
 const limitOf = (q: URLSearchParams) => Number(q.get("limit") ?? 100)
 
 const COVER = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="#475569"/></svg>`
@@ -249,6 +270,7 @@ export const intakeHandlers = [
   http.get("/api/intake", ({ request }) => {
     const q = new URL(request.url).searchParams
     sources()
+    sameBooks()
     const filter = { duplicates: q.get("duplicates"), skipped: q.get("skipped"), origin: q.get("origin") }
     const pending = waiting ? 1 : 0
     if (waiting && limitOf(q) > 1) {
@@ -283,6 +305,7 @@ export const intakeHandlers = [
       counts: { bulk: count("bulk"), review: count("review"), unsure: count("unsure"), none: count("none") },
       takeable: take.length,
       unsure: take.filter((e) => e.band === "unsure").length,
+      trashable: q.get("duplicates") === "true" ? trashable(list).length : 0,
       left,
       skipped: ENTRIES.filter((e) => e.skipped).length,
       last: LAST,
@@ -307,7 +330,9 @@ export const intakeHandlers = [
     const { decision, target } = body
     if (target.ids?.length === 1 && uploadBoard.decide(target.ids[0], decision, body.book)) return HttpResponse.json({ jobId: "upload", total: 1 }, { status: 202 })
     const libraryIds = target.query && "library" in target.query ? libraryTakeable(library()).map((e) => e.id) : null
-    const ids = target.ids ?? libraryIds ?? takeable(inFilter(target.query ?? {}), target.query?.skipped === true).map((e) => e.id)
+    const bulkTrash = decision === "trash" && target.query !== undefined
+    if (bulkTrash) renamed()
+    const ids = target.ids ?? libraryIds ?? (bulkTrash ? trashable(inFilter(target.query ?? {})) : takeable(inFilter(target.query ?? {}), target.query?.skipped === true)).map((e) => e.id)
     if (target.expect !== undefined && target.expect !== ids.length) {
       return HttpResponse.json({ error: "the query matches another number", field: "target", expected: target.expect, found: ids.length }, { status: 409 })
     }

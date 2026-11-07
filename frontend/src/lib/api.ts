@@ -246,6 +246,8 @@ export interface IntakeEntry {
   error: string | null
   // the library's book it looks like; a library entry's title now
   bookTitle: string | null
+  // a duplicate with the title and authors of its book: a bulk may trash it
+  sameBook?: boolean
   // a library entry with nothing to write: a conflict's note, a candidate
   unchanged?: boolean
 }
@@ -291,6 +293,8 @@ export interface IntakeList {
   // what „Alle N übernehmen“ takes of the filter, how many of them unsure
   takeable?: number
   unsure?: number
+  // what „Alle N in den Papierkorb“ takes of the filter on possible duplicates
+  trashable?: number
   left?: IntakeLeft
   skipped?: number
   // the newest entry: a bulk decision stops there

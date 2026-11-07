@@ -49,6 +49,17 @@ test("E-Ink: library, sidebar and pagination", async ({ page }) => {
   expect(await smallTargets(page)).toEqual([])
 })
 
+test("E-Ink: the Eingang's bulk to the trash and its dialog", async ({ page }) => {
+  await page.goto("/eingang")
+  await page.getByLabel("Art").selectOption({ label: "Mögliche Dubletten" })
+  const button = page.getByRole("button", { name: "Alle 1 in den Papierkorb", exact: true })
+  await expect(button).toBeEnabled()
+  expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(MIN)
+  await button.click()
+  await expect(page.getByRole("dialog")).toBeVisible()
+  expect(await smallTargets(page, "[role=dialog]")).toEqual([])
+})
+
 test("E-Ink: list view and selection mode", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("hub.view", "list"))
   await page.goto("/")

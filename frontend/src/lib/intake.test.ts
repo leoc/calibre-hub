@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, candidateDiff, candidateSource, entryName, errorText, intakeFilter, leftText, noteTexts, originsInList, readableFormat, reasonText, ringLabel, takeable, uniqueEntries, unreadable } from "./intake"
+import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, candidateDiff, candidateSource, entryName, errorText, intakeFilter, leftText, noteTexts, originsInList, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -52,6 +52,25 @@ describe("takeable", () => {
     expect(takeable(entry({ status: "failed" }), "all")).toBe(false)
     expect(takeable(entry({ skipped: true }), "all")).toBe(false)
     expect(takeable(entry({ skipped: true }), "skipped")).toBe(true)
+  })
+})
+
+describe("trashable", () => {
+  it("is what the hub marked as the same book, nothing else of the filter", () => {
+    expect(trashable(entry({ action: "duplicate", sameBook: true }))).toBe(true)
+    expect(trashable(entry({ action: "duplicate" }))).toBe(false)
+    expect(trashable(entry({ action: "addFormats", sameBook: true }))).toBe(false)
+    expect(trashable(entry({ action: "duplicate", sameBook: true, status: "failed" }))).toBe(false)
+    expect(trashable(entry({ action: "duplicate", sameBook: true, skipped: true }))).toBe(false)
+  })
+})
+
+describe("trashAllText", () => {
+  it("names the number and what stays, only if anything does", () => {
+    expect(trashAllText(640, 0)).toBe("640 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb.")
+    expect(trashAllText(1, 0)).toBe("1 Datei mit gleichem Autor und Titel wie ein Buch der Bibliothek geht in den Papierkorb.")
+    expect(trashAllText(2, 1)).toBe("2 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb. 1 weiterer Eintrag bleibt in der Liste.")
+    expect(trashAllText(2, 3)).toBe("2 Dateien mit gleichem Autor und Titel wie ein Buch der Bibliothek gehen in den Papierkorb. 3 weitere Einträge bleiben in der Liste.")
   })
 })
 
