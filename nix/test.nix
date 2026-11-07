@@ -20,6 +20,7 @@ pkgs.testers.runNixOSTest {
     {
       imports = [ module ];
       virtualisation.memorySize = 2048;
+      virtualisation.cores = 4;
       environment.systemPackages = [
         pkgs.calibre
         pkgs.curl
