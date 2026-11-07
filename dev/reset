@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Usage: dev/reset [<branch>]
+# Back to the start: library, Eingang, hub state as at the first dev/up. Logins,
+# ports and the branch's worktree stay. A running stack comes back up with the
+# flags it had.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+use_branch "${1:-}"
+
+was_up=false
+flags=()
+if running hub; then
+  was_up=true
+  read -r -a flags <"$STATE/run/flags" || true
+fi
+
+for name in door vite hub calibre; do stop_bg "$name"; done
+
+case $STATE in
+  "$DEV_ROOT"/?*) ;;
+  *) die "not under $DEV_ROOT: $STATE" ;;
+esac
+# the sandbox's files only; what it wrote is ours, nothing else is in there
+rm -rf "$STATE/ebooks" "$STATE/var" "$STATE/tmp" "$STATE/log"
+say "$BRANCH: back to the start"
+
+if $was_up; then
+  exec "$DEV_DIR/up" ${1:+"$1"} ${flags[@]+"${flags[@]}"}
+fi

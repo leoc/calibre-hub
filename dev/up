@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# Usage: dev/up [<branch>] [--devices] [--vite] [--no-lookups] [--ollama]
+#
+# The hub of a branch with a real calibre-server, on a demo library, each in a
+# sandbox. See README, Development.
+#
+#   --devices     also reachable at 100.64.0.2 in the tailnet, for iPhone and Boox
+#   --vite        the web app from Vite, with hot reload, on its own port
+#   --no-lookups  no DNB and Open Library, the file and its name alone
+#   --ollama      title and author cleaned by the model at 127.0.0.1:11434
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+branch="" devices=false vite=false lookups=true ollama=false
+flags=()
+for arg in "$@"; do
+  case $arg in
+    --devices) devices=true ;;
+    --vite) vite=true ;;
+    --no-lookups) lookups=false ;;
+    --ollama) ollama=true ;;
+    -*) die "unknown option $arg" ;;
+    *)
+      branch=$arg
+      continue
+      ;;
+  esac
+  flags+=("$arg")
+done
+
+use_branch "$branch"
+ports
+LOG=$STATE/log
+APP=$STATE/run/app
+
+if running hub; then
+  [ "$(<"$STATE/run/flags")" = "${flags[*]-}" ] || die "$BRANCH runs with other flags: dev/down $BRANCH first"
+fi
+
+# Before anything starts: the hub takes this address or none. Tailscale's state
+# is Arthur's, this script only looks.
+if $devices && ! ip -4 -o addr show | grep -qF " $DEVICES_IP/"; then
+  die "$DEVICES_IP is not on this host, Tailscale is down (tailscale up). Nothing started."
+fi
+
+# --- build -------------------------------------------------------------------
+
+build_hub() {
+  local bin=$WT/bin/calibre-hub
+  if [ -x "$bin" ] && [ -z "$(find "$WT/src" "$WT/shard.lock" -newer "$bin" -print -quit)" ]; then
+    return
+  fi
+  say "dev: building the hub of $BRANCH"
+  mkdir -p "$DEV_CACHE/crystal"
+  (cd "$WT" && CRYSTAL_CACHE_DIR=$DEV_CACHE/crystal nix develop . -c bash -c \
+    'shards check >/dev/null 2>&1 || shards install --frozen; shards build calibre-hub')
+}
+
+build_frontend() {
+  local dist=$WT/frontend/dist/index.html
+  node_modules
+  if [ -f "$dist" ] && [ -z "$(cd "$WT/frontend" && find src public vendor index.html package.json pnpm-lock.yaml vite.config.ts -newer "$dist" -print -quit)" ]; then
+    return
+  fi
+  say "dev: building the web app of $BRANCH"
+  (cd "$WT/frontend" && pnpm build)
+}
+
+# --- demo files --------------------------------------------------------------
+
+# Made once per version of the generator and of calibre, for all branches
+demo_files() {
+  local key
+  key=$(cat "$DEV_DIR/demo.py" "$DEV_DIR/demo-books.tsv" <(printf %s "$TOOLS") | sha1sum | cut -c1-12)
+  DEMO=$DEV_CACHE/demo-$key
+  [ -d "$DEMO" ] && return
+  say "dev: making the demo library and the files of the Eingang, once"
+  rm -rf "$DEMO.new"
+  mkdir -p "$DEMO.new"
+  sandbox
+  "${SANDBOX[@]}" --die-with-parent --bind "$DEMO.new" /demo --ro-bind "$DEV_DIR" /dev-tools \
+    --ro-bind "$WT/spec/fixtures/metadata" /fixtures --chdir /demo --setenv HOME /demo/work-home \
+    -- python3 -I /dev-tools/demo.py /demo/out /dev-tools/demo-books.tsv /fixtures
+  rm -rf "$DEMO.new/work-home"
+  mv "$DEMO.new/out" "$DEMO.ready"
+  rmdir "$DEMO.new"
+  mv "$DEMO.ready" "$DEMO"
+}
+
+# The start state of a branch: a copy, reflinked where the file system can
+seed_state() {
+  [ -d "$STATE/ebooks" ] && return
+  mkdir -p "$STATE/ebooks/sync/boox" "$STATE/var/calibre-hub" "$STATE/var/calibre-server"
+  cp -a --reflink=auto "$DEMO/calibre" "$DEMO/backlog" "$DEMO/inbox" "$STATE/ebooks/"
+  chmod 2775 "$STATE/ebooks" "$STATE/ebooks/sync" "$STATE/ebooks/sync/boox"
+}
+
+# Made here, never committed: dev/up prints the login
+credentials() {
+  local dir=$STATE/credentials
+  [ -d "$dir" ] && return
+  (
+    umask 077
+    mkdir -p "$dir"
+    head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$dir/login-password"
+    head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$dir/calibre-password"
+    head -c 32 /dev/urandom >"$dir/session-key"
+  )
+}
+
+# What the sandbox runs, a copy: a build in the worktree leaves it alone
+stage_app() {
+  rm -rf "$APP"
+  mkdir -p "$APP/bin" "$APP/handlers"
+  cp "$WT/bin/calibre-hub" "$APP/bin/"
+  cp "$WT/nix/init.sh" "$DEV_DIR/calibre-start.sh" "$APP/"
+  $vite || cp -a --reflink=auto "$WT/frontend/dist" "$APP/frontend"
+  cat >"$APP/handlers/50-leseliste" <<'EOF'
+#!/usr/bin/env bash
+export LESELISTE_TARGET=/srv/media/ebooks/sync/boox LESELISTE_FORMATS=epub,pdf
+exec /run/calibre-hub/bin/calibre-hub handler leseliste
+EOF
+  chmod +x "$APP/handlers/50-leseliste"
+}
+
+# --- environment -------------------------------------------------------------
+
+# The module's environment and on top what differs. Everything that could
+# reach out is switched off here, whatever the module says.
+hub_env() {
+  declare -A env
+  local line key
+  while IFS= read -r -d '' line; do env[${line%%=*}]=${line#*=}; done < <(module_env hub)
+  env[HOME]=/var/lib/calibre-hub
+  env[CALIBRE_HUB_CALIBRE_URL]=http://127.0.0.1:$CALIBRE_PORT
+  env[CALIBRE_HUB_HOST]=127.0.0.1
+  env[CALIBRE_HUB_PORT]=$HUB_PORT
+  env[CALIBRE_HUB_CALIBRE_PASSWORD_FILE]=/run/credentials/calibre-password
+  env[CALIBRE_HUB_LOGIN_PASSWORD_FILE]=/run/credentials/login-password
+  env[CALIBRE_HUB_SESSION_KEY_FILE]=/run/credentials/session-key
+  env[CALIBRE_HUB_API_TOKEN_FILES]=
+  env[CALIBRE_HUB_HANDLERS_DIR]=/run/calibre-hub/handlers
+  env[CALIBRE_HUB_FRONTEND]=$($vite || printf /run/calibre-hub/frontend)
+  # plain http, here and to devices
+  env[CALIBRE_HUB_SECURE_COOKIES]=false
+  # seconds instead of minutes
+  env[CALIBRE_HUB_INTAKE_START]=2
+  env[CALIBRE_HUB_INTAKE_INTERVAL]=20
+  env[CALIBRE_HUB_INTAKE_TICK]=5
+  env[CALIBRE_HUB_INBOX_STABLE]=5
+  env[CALIBRE_HUB_EMBED_DELAY]=5
+  # no alerts, no Hardcover: no token, no write, nothing to reach
+  env[CALIBRE_HUB_ALERT_COMMAND]=
+  env[CALIBRE_HUB_HARDCOVER_TOKEN_FILE]=
+  env[CALIBRE_HUB_HARDCOVER_SYNC]=false
+  env[CALIBRE_HUB_HARDCOVER_SYNC_WRITE]=false
+  env[CALIBRE_HUB_HARDCOVER_URL]=http://127.0.0.1:9
+  if $lookups; then
+    env[CALIBRE_HUB_METADATA_SOURCES]=file,dnb,openlibrary
+  else
+    env[CALIBRE_HUB_METADATA_SOURCES]=file
+    env[CALIBRE_HUB_OPENLIBRARY_URL]=http://127.0.0.1:9
+    env[CALIBRE_HUB_OPENLIBRARY_COVERS_URL]=http://127.0.0.1:9
+    env[CALIBRE_HUB_DNB_URL]=http://127.0.0.1:9
+  fi
+  env[CALIBRE_HUB_METADATA_MODEL]=$ollama
+  env[CALIBRE_HUB_CLASSIFY]=false
+
+  HUB_ENV=()
+  for key in "${!env[@]}"; do HUB_ENV+=(--setenv "$key" "${env[$key]}"); done
+}
+
+server_env() {
+  local line
+  SERVER_ENV=()
+  while IFS= read -r -d '' line; do
+    SERVER_ENV+=(--setenv "${line%%=*}" "${line#*=}")
+  done < <(module_env server)
+}
+
+# The module's command line, with this branch's port; the binary from the path
+server_command() {
+  local cmd
+  cmd=$(module_json | jq -r .serverCommand)
+  case $cmd in
+    *'"--listen-on=127.0.0.1"'*) ;;
+    *) die "calibre-server is not on 127.0.0.1 in nix/module.nix: $cmd" ;;
+  esac
+  printf %s "$cmd" | sed -E "s/\"//g; s#^[^ ]*/calibre-server#calibre-server#; s/--port=[0-9]+/--port=$CALIBRE_PORT --disable-use-bonjour/"
+}
+
+# --- start -------------------------------------------------------------------
+
+start_calibre() {
+  running calibre && return
+  say "dev: starting calibre-server"
+  local cmd
+  cmd=$(server_command)
+  server_env
+  sandbox
+  start_bg calibre "$LOG/calibre-server.log" "${SANDBOX[@]}" \
+    --bind "$STATE/ebooks/calibre" /srv/media/ebooks/calibre \
+    --bind "$STATE/var/calibre-server" /var/lib/calibre-server \
+    --ro-bind "$STATE/credentials" /run/credentials \
+    --ro-bind "$APP" /run/calibre-hub \
+    --chdir /var/lib/calibre-server \
+    --setenv HOME /var/lib/calibre-server \
+    "${SERVER_ENV[@]}" \
+    --setenv USERS "calibre-hub|/run/credentials/calibre-password" \
+    --setenv CALIBRE_SERVER "$cmd" \
+    -- bash /run/calibre-hub/calibre-start.sh
+  # an answer without the password is enough: it is up
+  wait_for calibre-server 120 "$LOG/calibre-server.log" \
+    bash -c "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$CALIBRE_PORT/ajax/library-info | grep -q 401"
+}
+
+start_hub() {
+  running hub && return
+  say "dev: starting the hub"
+  hub_env
+  sandbox
+  # like the unit: the library read-only, the folders around it writable, the
+  # state in /var/lib, umask 0002. Nothing else can be written.
+  start_bg hub "$LOG/hub.log" "${SANDBOX[@]}" \
+    --bind "$STATE/ebooks" /srv/media/ebooks \
+    --ro-bind "$STATE/ebooks/calibre" /srv/media/ebooks/calibre \
+    --bind "$STATE/var/calibre-hub" /var/lib/calibre-hub \
+    --ro-bind "$STATE/credentials" /run/credentials \
+    --ro-bind "$APP" /run/calibre-hub \
+    --chdir /var/lib/calibre-hub \
+    "${HUB_ENV[@]}" \
+    -- bash -c 'umask 0002; exec /run/calibre-hub/bin/calibre-hub serve'
+  wait_for "the hub" 60 "$LOG/hub.log" curl -fsS "http://127.0.0.1:$HUB_PORT/healthz"
+}
+
+start_vite() {
+  running vite && return
+  say "dev: starting Vite"
+  (cd "$WT/frontend" && HUB_URL=http://127.0.0.1:$HUB_PORT start_bg vite "$LOG/vite.log" pnpm exec vite --port "$VITE_PORT" --strictPort --host 127.0.0.1)
+  wait_for Vite 60 "$LOG/vite.log" curl -fsS "http://127.0.0.1:$VITE_PORT/"
+}
+
+# The hub listens on 127.0.0.1 only; this passes on the tailnet address alone
+start_door() {
+  running door && return
+  sandbox
+  start_bg door "$LOG/door.log" "${SANDBOX[@]}" -- \
+    socat "TCP4-LISTEN:$HUB_PORT,bind=$DEVICES_IP,reuseaddr,fork" "TCP4:127.0.0.1:$HUB_PORT"
+  wait_for "the tailnet address" 10 "$LOG/door.log" curl -fsS "http://$DEVICES_IP:$HUB_PORT/healthz"
+}
+
+# what the running hub has is not what the branch has now
+stale() {
+  ! cmp -s "$WT/bin/calibre-hub" "$APP/bin/calibre-hub" || { ! $vite && ! diff -rq "$WT/frontend/dist" "$APP/frontend" >/dev/null; }
+}
+
+tools
+build_hub
+if $vite; then node_modules; else build_frontend; fi
+demo_files
+seed_state
+credentials
+if running hub && stale; then stop_bg hub; fi
+running hub || stage_app
+mkdir -p "$LOG"
+start_calibre
+start_hub
+$vite && start_vite
+$devices && start_door
+printf '%s\n' "${flags[*]-}" >"$STATE/run/flags"
+
+url=http://127.0.0.1:$HUB_PORT
+$vite && url=http://127.0.0.1:$VITE_PORT
+say ""
+say "$BRANCH (from $WT)"
+say "  web app     $url/eingang"
+$devices && say "  devices     http://$DEVICES_IP:$HUB_PORT/eingang"
+say "  login       arthur / $(<"$STATE/credentials/login-password")"
+say "  calibre     http://127.0.0.1:$CALIBRE_PORT, calibre-hub / $(<"$STATE/credentials/calibre-password")"
+say "  calibre is  $(basename "$(readlink -f "$TOOLS/bin/calibre-server" | sed 's#/bin/.*##')") (nixpkgs ${NIXPKGS_REV:0:12})"
+say "  state       $STATE, logs in $LOG"
+say "  stop        dev/down $BRANCH, back to the start: dev/reset $BRANCH"
