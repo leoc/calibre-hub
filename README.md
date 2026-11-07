@@ -1074,13 +1074,15 @@ generated there and are never in the repo.
 
 After a change run `dev/up` again: it rebuilds and restarts what changed.
 
-The demo library has 50 books. Backlog and inbox have a case each for the
-flow (`dev/demo.py` says which file is for what): sure, to review, unsure, a
-scan without a text layer, a byte-identical copy (goes to the trash folder by
-itself), the same book with metadata embedded by calibre since, same title and
-authors, a possible duplicate, two copies within the Eingang, broken files, a
-large PDF and a long DjVu for first pages, a calibre folder of an old library.
-Only titles of old books are real, the text is generated.
+The demo library has 50 books. The inbox has a case each for the flow
+(`dev/demo.py` says which file is for what): sure, to review, unsure, a scan
+without a text layer, a byte-identical copy (goes to `_duplicates` by itself),
+the same book with metadata embedded by calibre since, same title and authors,
+a possible duplicate, two copies within the Eingang, broken files, a large PDF
+and a long DjVu for first pages, a calibre folder of an old library. Its
+folders are categories like on dmt (`Roman/Klassiker`, `Sachbuch`), and the
+Inbox's threshold starts off, so the sure cases wait in the Eingang; the dialog
+there switches it on. Only titles of old books are real, the text is generated.
 
 ### How close that is to dmt
 
@@ -1092,10 +1094,11 @@ the tools come from the nixpkgs dmt runs on (`nixpkgs-stable` in nixos-config's
 `flake.lock`, `dev/tools.nix`), the repo's own only without a nixos-config.
 
 Each runs in a bubblewrap sandbox in place of the systemd unit, with dmt's
-paths: `/srv/media/ebooks/{calibre,backlog,inbox,sync/boox}` and
-`/var/lib/calibre-hub`, mounted from the state directory. The hub sees the
-library read-only and the folders around it writable, as in `ReadOnlyPaths`
-and `ReadWritePaths`, the system read-only, a private `/tmp`, no `/home`, no
+paths: `/srv/media/ebooks/{calibre,inbox,papierkorb,sync/boox}` and
+`/var/lib/calibre-hub`, mounted from the state directory. The hub sees
+`/srv/media/ebooks` and the library read-only and each path of the module's
+`ReadWritePaths` writable as a mount of its own, so a file thrown away is copied
+there as on dmt, the system read-only, a private `/tmp`, no `/home`, no
 inherited environment, umask 0002, folders 2775. The hub can't write outside
 its state directory and can't read `~/.config/calibre-hub/token`.
 
@@ -1107,6 +1110,7 @@ What differs from dmt:
   one program per user: that keeps branches and calibre Desktop apart.
 - No seccomp, no `RestrictAddressFamilies`, `ProtectKernel*` only as far as
   bubblewrap goes.
+- The Inbox's threshold starts off, on dmt it stands at 90 until changed.
 - Seconds instead of minutes: `INTAKE_START` 2, `INTAKE_INTERVAL` 20,
   `INTAKE_TICK` 5, `INBOX_STABLE` 5, `EMBED_DELAY` 5.
 - `CALIBRE_HUB_SECURE_COOKIES=false`, plain http, no Traefik in front.

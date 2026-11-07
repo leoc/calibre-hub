@@ -42,7 +42,7 @@ const EXTENSIONS = ["pdf", "pdf", "pdf", "epub", "djvu", "mobi", "chm"]
 
 const pad = (n: number) => String(n).padStart(3, "0")
 
-// the n-th book of a made-up backlog, the same one on every load
+// the n-th book of a made-up collection, the same one on every load
 function made(n: number) {
   const author = AUTHORS[n % AUTHORS.length]
   const title = `${KINDS[n % KINDS.length]} ${SUBJECTS[n % SUBJECTS.length]}, Band ${Math.floor(n / 90) + 1}`
@@ -77,7 +77,7 @@ const copy = (n: number, sure: boolean): Seed => {
 }
 
 // a file that is another's in the list, not one of the library
-const twin = (n: number, of: Seed): Seed => ({ ...of, path: `Doppelt/${pad(n)} ${of.path.split("/").pop()}`, action: "duplicate", sameAs: `/srv/media/ebooks/backlog/${of.path}`, confidence: 80, level: 3, decided: "name" })
+const twin = (n: number, of: Seed): Seed => ({ ...of, path: `Doppelt/${pad(n)} ${of.path.split("/").pop()}`, action: "duplicate", sameAs: `/srv/media/ebooks/inbox/${of.path}`, confidence: 80, level: 3, decided: "name" })
 
 const another = (n: number): Seed => ({ ...copy(n, false), sure: false, action: "addFormats", addFormats: ["EPUB"], path: `Formate/${pad(n)}.epub` })
 
@@ -91,8 +91,8 @@ function full(): Seed[] {
   const twins = range(1, 10, (n) => twin(n, review[n]))
   const skipped = range(400, 10, (n) => ({ ...fresh(n, 70, 3, "name"), skipped: true }))
   const seeds = [...sure, ...review, ...unsure, ...failed, ...range(0, 40, (n) => copy(n, true)), ...range(40, 30, (n) => copy(n, false)), ...twins, ...range(70, 10, another), ...skipped]
-  // like live: nearly all of it from the backlog, what came lately otherwise
-  return seeds.map((s, i) => (i % 25 === 3 ? { ...s, origin: "inbox" } : i % 40 === 7 ? { ...s, origin: "upload" } : s))
+  // like live: nearly all of it from the inbox, a few uploads
+  return seeds.map((s, i) => (i % 40 === 7 ? { ...s, origin: "upload" } : s))
 }
 
 function duplicates(): Seed[] {

@@ -5,7 +5,7 @@
 #   offset        the branch's ports (see ports)
 #   worktree/     a checkout, when the branch had none
 #   credentials/  dev logins and the session key, made on first start
-#   ebooks/       /srv/media/ebooks in the sandbox: calibre/, backlog/, inbox/, ...
+#   ebooks/       /srv/media/ebooks in the sandbox: calibre/, inbox/, papierkorb/, ...
 #   var/          /var/lib in the sandbox: calibre-hub/, calibre-server/
 #   tmp/          /tmp in the sandbox
 #   run/          pid files, the hub's environment, the flags of the last start

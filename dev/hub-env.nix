@@ -29,7 +29,7 @@ let
           sessionKeyFile = dummy;
           calibre.servicePasswordFile = dummy;
           inbox.path = "${base}/inbox";
-          backlogImport.roots = [ "${base}/backlog" ];
+          intake.trashDir = "${base}/papierkorb";
           leseliste = {
             enable = true;
             target = "${base}/sync/boox";
@@ -42,6 +42,7 @@ let
 in
 {
   hub = system.config.systemd.services.calibre-hub.environment;
+  hubWritable = system.config.systemd.services.calibre-hub.serviceConfig.ReadWritePaths;
   server = system.config.systemd.services.calibre-server.environment;
   serverCommand = system.config.systemd.services.calibre-server.serviceConfig.ExecStart;
 }

@@ -90,9 +90,13 @@ demo_files() {
 # The start state of a branch: a copy, reflinked where the file system can
 seed_state() {
   [ -d "$STATE/ebooks" ] && return
-  mkdir -p "$STATE/ebooks/sync/boox" "$STATE/var/calibre-hub" "$STATE/var/calibre-server"
-  cp -a --reflink=auto "$DEMO/calibre" "$DEMO/backlog" "$DEMO/inbox" "$STATE/ebooks/"
-  chmod 2775 "$STATE/ebooks" "$STATE/ebooks/sync" "$STATE/ebooks/sync/boox"
+  mkdir -p "$STATE/ebooks/sync/boox" "$STATE/ebooks/papierkorb" "$STATE/var/calibre-hub" "$STATE/var/calibre-server"
+  cp -a --reflink=auto "$DEMO/calibre" "$DEMO/inbox" "$STATE/ebooks/"
+  chmod 2775 "$STATE/ebooks" "$STATE/ebooks/sync" "$STATE/ebooks/sync/boox" "$STATE/ebooks/papierkorb"
+  # the sure cases wait to be looked at; dmt has the threshold at 90, the dialog
+  # in the Eingang brings it back
+  "$TOOLS/bin/sqlite3" "$STATE/var/calibre-hub/state.sqlite" \
+    "create table meta (key text primary key, value text); insert into meta values ('intake_auto_inbox', 'off')"
 }
 
 # Made here, never committed: dev/up prints the login
@@ -170,6 +174,19 @@ hub_env() {
   for key in "${!env[@]}"; do HUB_ENV+=(--setenv "$key" "${env[$key]}"); done
 }
 
+# What the unit may write, each a mount of its own as on dmt; around them
+# /srv/media/ebooks is read-only
+hub_binds() {
+  local path
+  HUB_BINDS=()
+  while IFS= read -r path; do
+    case $path in
+      /srv/media/ebooks/*) HUB_BINDS+=(--bind "$STATE/ebooks/${path#/srv/media/ebooks/}" "$path") ;;
+      *) die "ReadWritePaths in nix/module.nix has $path, the sandbox has no such folder" ;;
+    esac
+  done < <(module_json | jq -r '.hubWritable[]')
+}
+
 server_env() {
   local line
   SERVER_ENV=()
@@ -218,12 +235,14 @@ start_hub() {
   running hub && return
   say "dev: starting the hub"
   hub_env
+  hub_binds
   sandbox
-  # like the unit: the library read-only, the folders around it writable, the
-  # state in /var/lib, umask 0002. Nothing else can be written.
+  # like the unit: the library and what holds it read-only, the inbox, the trash
+  # folder and the reader's folder writable, the state in /var/lib, umask 0002.
+  # Nothing else can be written.
   start_bg hub "$LOG/hub.log" "${SANDBOX[@]}" \
-    --bind "$STATE/ebooks" /srv/media/ebooks \
-    --ro-bind "$STATE/ebooks/calibre" /srv/media/ebooks/calibre \
+    --ro-bind "$STATE/ebooks" /srv/media/ebooks \
+    "${HUB_BINDS[@]}" \
     --bind "$STATE/var/calibre-hub" /var/lib/calibre-hub \
     --ro-bind "$STATE/credentials" /run/credentials \
     --ro-bind "$APP" /run/calibre-hub \

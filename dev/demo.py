@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """The demo library and the files of the Eingang, for dev/up.
 
-Usage: demo.py <out> <books.tsv> <spec fixtures>. Writes <out>/calibre,
-<out>/backlog and <out>/inbox. Runs in the sandbox (dev/lib.sh) with calibre on
-the path: nothing here touches a real library, and all text is generated, only
-titles of old books are real. What each file in the Eingang is for stands next
-to it below; dev/up copies the result, so it runs once.
+Usage: demo.py <out> <books.tsv> <spec fixtures>. Writes <out>/calibre and
+<out>/inbox. Runs in the sandbox (dev/lib.sh) with calibre on the path: nothing
+here touches a real library, and all text is generated, only titles of old
+books are real. What each file in the Eingang is for stands next to it below;
+the inbox's folders are the books' category and tags, so they are named like
+that. dev/up copies the result, so it runs once.
 """
 import os
 import random
@@ -19,7 +20,6 @@ OUT = Path(sys.argv[1])
 BOOKS = Path(sys.argv[2])
 FIXTURES = Path(sys.argv[3])
 LIBRARY = OUT / "calibre"
-BACKLOG = OUT / "backlog"
 INBOX = OUT / "inbox"
 WORK = OUT / "work"
 # older than the Eingang's two minutes for a file still being copied
@@ -163,112 +163,102 @@ def djvu_book(target, pages):
     run("djvm", "-c", target, *[FIXTURES / "scan.djvu"] * pages)
 
 
-def make_backlog():
+def make_inbox():
     def d(path):
-        return BACKLOG / path
+        return INBOX / path
 
     cases = [
         # sure: the file's metadata and its name say the same
         lambda: convert(d("Adalbert Stifter - Der Nachsommer.epub"), "Der Nachsommer", "Adalbert Stifter", publisher="Heckenast", year="1857"),
         lambda: convert(d("Wilhelm Raabe - Stopfkuchen.epub"), "Stopfkuchen", "Wilhelm Raabe", publisher="Janke", year="1891"),
-        lambda: convert(d("Klassiker/Eduard Mörike - Mozart auf der Reise nach Prag.epub"), "Mozart auf der Reise nach Prag", "Eduard Mörike"),
-        lambda: convert(d("Klassiker/Joseph von Eichendorff - Aus dem Leben eines Taugenichts.epub"), "Aus dem Leben eines Taugenichts", "Joseph von Eichendorff"),
-        lambda: convert(d("Klassiker/Novalis - Heinrich von Ofterdingen.pdf"), "Heinrich von Ofterdingen", "Novalis"),
-        lambda: convert(d("English/Lewis Carroll - Through the Looking-Glass.epub"), "Through the Looking-Glass", "Lewis Carroll", language="eng"),
+        lambda: convert(d("Roman/Klassiker/Eduard Mörike - Mozart auf der Reise nach Prag.epub"), "Mozart auf der Reise nach Prag", "Eduard Mörike"),
+        lambda: convert(d("Roman/Klassiker/Joseph von Eichendorff - Aus dem Leben eines Taugenichts.epub"), "Aus dem Leben eines Taugenichts", "Joseph von Eichendorff"),
+        lambda: convert(d("Roman/Klassiker/Novalis - Heinrich von Ofterdingen.pdf"), "Heinrich von Ofterdingen", "Novalis"),
+        lambda: convert(d("Roman/Englisch/Lewis Carroll - Through the Looking-Glass.epub"), "Through the Looking-Glass", "Lewis Carroll", language="eng"),
+        lambda: convert(d("Roman/Krimi/Friedrich Glauser - Wachtmeister Studer.epub"), "Wachtmeister Studer", "Friedrich Glauser", publisher="Morgarten"),
         # to review: good metadata under a name that says nothing, a clear
         # name without metadata, a live-style name with noise in it
-        lambda: convert(d("Unsortiert/x3f9q.epub"), "Der Sandmann", "E. T. A. Hoffmann"),
-        lambda: convert(d("Unsortiert/Theodor Storm - Der Schimmelreiter.pdf"), "Unknown", "Unknown", content=text("Der Schimmelreiter", "Theodor Storm")),
+        lambda: convert(d("x3f9q.epub"), "Der Sandmann", "E. T. A. Hoffmann"),
+        lambda: convert(d("Fachbuch/Mathematik/f7a1.epub"), "Theorie der Parallellinien", "Johann Heinrich Lambert"),
+        lambda: convert(d("Theodor Storm - Der Schimmelreiter.pdf"), "Unknown", "Unknown", content=text("Der Schimmelreiter", "Theodor Storm")),
         lambda: convert(d("Die Elixiere des Teufels - E.T.A. Hoffmann (Duncker, 1815) WW.epub"), "Die Elixiere des Teufels", "E. T. A. Hoffmann", publisher="Duncker"),
         # unsure: nothing in the file, nothing in the name
-        lambda: convert(d("Unsortiert/1380293052863.pdf"), "Unknown", "Unknown", content=text("", "", title_page=False)),
-        lambda: convert(d("Unsortiert/download (3).epub"), "Unknown", "Unknown", content=text("", "", title_page=False, seed="download")),
+        lambda: convert(d("1380293052863.pdf"), "Unknown", "Unknown", content=text("", "", title_page=False)),
+        lambda: convert(d("download (3).epub"), "Unknown", "Unknown", content=text("", "", title_page=False, seed="download")),
         # two copies of one file, the library doesn't have it
         lambda: copy_twins(),
-        # the calibre folder of an old library
+        # the calibre folder of an old library: no category, its OPF says what it is
         lambda: calibre_folder(),
         # a large PDF: the reader takes its first pages
-        lambda: large_pdf(d("Alexander von Humboldt - Kosmos.pdf"), "Kosmos", "Alexander von Humboldt"),
+        lambda: large_pdf(d("Sachbuch/Alexander von Humboldt - Kosmos.pdf"), "Kosmos", "Alexander von Humboldt"),
     ]
     with ThreadPoolExecutor(6) as pool:
         list(pool.map(lambda case: case(), cases))
 
     # a scan without a text layer, read by OCR: a book's pages, and the specs' page
     title_pages = convert(WORK / "scanned.pdf", "Der arme Spielmann", "Franz Grillparzer", content=text("Der arme Spielmann", "Franz Grillparzer"))
-    scan(d("Scans/Scan_0042.pdf"), title_pages)
-    (d("Scans")).mkdir(exist_ok=True)
-    shutil.copy(FIXTURES / "scan.pdf", d("Scans/Scan_0043.pdf"))
+    scan(d("Sachbuch/Scan_0042.pdf"), title_pages)
+    shutil.copy(FIXTURES / "scan.pdf", d("Sachbuch/Scan_0043.pdf"))
     # DjVu: short, and long enough for first pages
-    shutil.copy(FIXTURES / "scan.djvu", d("Scans/Seite.djvu"))
-    djvu_book(d("Scans/Handbuch der Fotografie.djvu"), 35)
+    shutil.copy(FIXTURES / "scan.djvu", d("Sachbuch/Seite.djvu"))
+    djvu_book(d("Sachbuch/Fotografie/Handbuch der Fotografie.djvu"), 35)
 
-    # byte for byte a file of the library: leaves for the trash folder by itself
-    (d("Kopien")).mkdir(exist_ok=True)
-    shutil.copy(library_file("Woyzeck"), d("Kopien/Woyzeck.epub"))
-    shutil.copy(library_file("Lenz"), d("Kopien/Georg Büchner - Lenz (Kopie).epub"))
+    # byte for byte a file of the library: leaves for _duplicates by itself
+    d("Roman").mkdir(exist_ok=True)
+    shutil.copy(library_file("Woyzeck"), d("Roman/Woyzeck.epub"))
+    shutil.copy(library_file("Lenz"), d("Roman/Georg Büchner - Lenz (Kopie).epub"))
+    shutil.copy(library_file("Der Stechlin"), d("Roman/Der Stechlin.epub"))
     # the same book, its metadata embedded by calibre since: other bytes
     original = library_file("Die Verwandlung")
-    shutil.copy(original, d("Kopien/Franz Kafka - Die Verwandlung.epub"))
+    shutil.copy(original, d("Roman/Franz Kafka - Die Verwandlung.epub"))
     embed("Die Verwandlung")
     # a possible duplicate: the title, one of the authors; and what the hub
     # takes for a book of its own, one letter off
-    convert(d("Dubletten/Oliver Twist - Charles Dickens, George Cruikshank.epub"), "Oliver Twist", "Charles Dickens & George Cruikshank", language="eng")
-    convert(d("Dubletten/Franz Kafka - Der Prozess.epub"), "Der Prozess", "Franz Kafka", content=text("Der Prozess", "Franz Kafka", seed="neu"))
+    convert(d("Roman/Englisch/Oliver Twist - Charles Dickens, George Cruikshank.epub"), "Oliver Twist", "Charles Dickens & George Cruikshank", language="eng")
+    convert(d("Roman/Franz Kafka - Der Prozess.epub"), "Der Prozess", "Franz Kafka", content=text("Der Prozess", "Franz Kafka", seed="neu"))
     # same title and authors, another edition: same format, a further format
-    convert(d("Dubletten/Theodor Fontane - Effi Briest (andere Ausgabe).epub"), "Effi Briest", "Theodor Fontane", content=text("Effi Briest", "Theodor Fontane", seed="zweite Ausgabe"), publisher="Reclam")
-    convert(d("Dubletten/Karl May - Winnetou I.pdf"), "Winnetou I", "Karl May", content=text("Winnetou I", "Karl May", seed="pdf"))
+    convert(d("Roman/Theodor Fontane - Effi Briest (andere Ausgabe).epub"), "Effi Briest", "Theodor Fontane", content=text("Effi Briest", "Theodor Fontane", seed="zweite Ausgabe"), publisher="Reclam")
+    convert(d("Roman/Karl May - Winnetou I.pdf"), "Winnetou I", "Karl May", content=text("Winnetou I", "Karl May", seed="pdf"))
 
-    # broken: not what the name says, a PDF that ends early, a zip with nothing in it
-    (d("Kaputt")).mkdir(exist_ok=True)
-    d("Kaputt/kaputt.pdf").write_bytes(b"this is no PDF\n" * 400)
-    d("Kaputt/abgebrochen.pdf").write_bytes(b"%PDF-1.4\n" + random.Random(1).randbytes(8000))
-    d("Kaputt/kaputt.epub").write_bytes(b"PK\x03\x04" + random.Random(2).randbytes(8000))
+    # broken: not what the name says (to _failed), a PDF that ends early, a zip
+    # with nothing in it
+    d("kaputt.pdf").write_bytes(b"this is no PDF\n" * 400)
+    d("abgebrochen.pdf").write_bytes(b"%PDF-1.4\n" + random.Random(1).randbytes(8000))
+    d("kaputt.epub").write_bytes(b"PK\x03\x04" + random.Random(2).randbytes(8000))
 
-    # not books: they stay where they are
-    d("Klassiker/Liesmich.nfo").write_text("Keine Bücher, nur eine Notiz.\n")
+    # no book: it stays where it is
+    d("Roman/Klassiker/Liesmich.nfo").write_text("Keine Bücher, nur eine Notiz.\n")
 
 
 def copy_twins():
-    twin = convert(BACKLOG / "Sammlung A/Gustav Freytag - Soll und Haben.epub", "Soll und Haben", "Gustav Freytag")
-    (BACKLOG / "Sammlung B").mkdir(exist_ok=True)
-    shutil.copy(twin, BACKLOG / "Sammlung B/Gustav Freytag - Soll und Haben.epub")
+    twin = convert(INBOX / "Roman/Gustav Freytag - Soll und Haben.epub", "Soll und Haben", "Gustav Freytag")
+    (INBOX / "Roman/Klassiker").mkdir(parents=True, exist_ok=True)
+    shutil.copy(twin, INBOX / "Roman/Klassiker/Gustav Freytag - Soll und Haben.epub")
 
 
 def calibre_folder():
-    folder = BACKLOG / "Alte Bibliothek/Jean Paul/Titan (42)"
+    folder = INBOX / "Alte Bibliothek/Jean Paul/Titan (42)"
     book = convert(folder / "Titan - Jean Paul.epub", "Titan", "Jean Paul", publisher="Matzdorff", year="1800")
     meta = run("ebook-meta", book, "--to-opf", "/dev/stdout")
     (folder / "metadata.opf").write_text(meta[meta.index("<?xml") :] if "<?xml" in meta else meta)
     run("ebook-meta", book, "--get-cover", folder / "cover.jpg")
 
 
-def make_inbox():
-    # sorted into folders like over Samba on dmt; the sure one goes to the library by itself
-    convert(INBOX / "Roman/Krimi/Friedrich Glauser - Wachtmeister Studer.epub", "Wachtmeister Studer", "Friedrich Glauser", publisher="Morgarten")
-    convert(INBOX / "Fachbuch/Mathematik/f7a1.epub", "Theorie der Parallellinien", "Johann Heinrich Lambert")
-    (INBOX / "Roman").mkdir(exist_ok=True)
-    # byte for byte in the library: to _duplicates
-    shutil.copy(library_file("Der Stechlin"), INBOX / "Roman/Der Stechlin.epub")
-    (INBOX / "kaputt.pdf").write_bytes(b"%PDF-1.4\n" + random.Random(3).randbytes(8000))
-
-
 def settle():
     """As on dmt: folders 2775, files group-writable, not just written"""
-    for root in (BACKLOG, INBOX):
-        for path in [root, *root.rglob("*")]:
-            path.chmod(0o2775 if path.is_dir() else 0o664)
-        for path in sorted(root.rglob("*"), reverse=True):
-            os.utime(path, (OLD, OLD))
+    for path in [INBOX, *INBOX.rglob("*")]:
+        path.chmod(0o2775 if path.is_dir() else 0o664)
+    for path in sorted(INBOX.rglob("*"), reverse=True):
+        os.utime(path, (OLD, OLD))
 
 
 def main():
     WORK.mkdir(parents=True)
     make_library()
-    make_backlog()
     make_inbox()
     settle()
     shutil.rmtree(WORK)
-    print(f"demo: {sum(1 for _ in BACKLOG.rglob('*') if _.is_file())} files in the backlog, {sum(1 for _ in INBOX.rglob('*') if _.is_file())} in the inbox")
+    print(f"demo: {sum(1 for _ in INBOX.rglob('*') if _.is_file())} files in the inbox")
 
 
 main()
