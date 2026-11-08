@@ -52,6 +52,9 @@ pkgs.testers.runNixOSTest {
         sessionKeyFile = "/etc/hub/key";
         calibre.servicePasswordFile = "/etc/hub/service";
         calibre.extraUsers.scripts = "/etc/hub/scripts";
+        # 1 MB instead of 2048: a test file over it stays small; every other
+        # request of the test is far below it
+        calibre.maxRequestBodySize = 1;
         apiTokenFiles = [ "/etc/hub/token" ];
         # a second user besides the login user arthur
         users.lea = {
@@ -1427,6 +1430,37 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed("find /srv/books/papierkorb -name '*.part'").strip() == ""
         for name in ("/srv/books/inbox/Weg/Wegwerfbuch.epub", f"/var/lib/calibre-hub/uploads/{r['upload']['id']}/Hochgeladen-weg.epub"):
             machine.succeed(f"journalctl -u calibre-hub | grep -qF 'intake: {name} copied to the trash, compared and removed'")
+
+    with subtest("a file over calibre-server's request limit stays in the Eingang and says why (#8649)"):
+        # calibre-server runs with the limit of the module, the hub knows it
+        machine.succeed("systemctl show -p ExecStart calibre-server.service | grep -qF -- '--max-request-body-size=1'")
+        machine.succeed("systemctl show -p Environment calibre-hub.service | grep -qF CALIBRE_HUB_CALIBRE_MAX_BODY_MB=1")
+        BIG = f"{ALT}/Gross"
+        machine.succeed(f"install -d -m 2775 -g calibre-hub '{BIG}'")
+        # too long for a command line: through the driver's shared folder
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+            f.write(pdf(b"r" * 400))
+            f.flush()
+            machine.copy_from_host(f.name, f"{BIG}/Ada Writer - Riesenbuch.pdf")
+        machine.succeed(f"chmod 644 '{BIG}/Ada Writer - Riesenbuch.pdf'")
+        put(f"{BIG}/Ada Writer - Kleinbuch.pdf", pdf(b"k"))
+        size = int(machine.succeed(f"stat -c %s '{BIG}/Ada Writer - Riesenbuch.pdf'"))
+        assert size > 1024 * 1024, size
+        big, small = intake_entry("Ada Writer - Riesenbuch.pdf"), intake_entry("Ada Writer - Kleinbuch.pdf")
+        status, r = api("POST", "/api/intake/decide", {"target": {"ids": [big["id"], small["id"]]}, "decision": "accept"})
+        assert status == 202, (status, r)
+        j = wait_job(r["jobId"], 120)
+        assert [e["error"] for e in j["errors"]] == ["file is 1.2 MB, calibre-server takes at most 1.0 MB (calibre-server max request body size)"], j
+        # back in the list with the reason, the file where it was
+        back = intake_entry("Ada Writer - Riesenbuch.pdf", seconds=30)
+        assert back["error"] == j["errors"][0]["error"], back
+        machine.succeed(f"test -f '{BIG}/Ada Writer - Riesenbuch.pdf'")
+        assert api("GET", "/api/books?q=title:Riesenbuch")[1]["books"] == []
+        # the one under the limit is in
+        machine.succeed(f"test -f {DONE}/'Gross/Ada Writer - Kleinbuch.pdf'")
+        # title and author as the folder's names read (Alt has them the other way round)
+        machine.succeed(f"{DB} search 'Kleinbuch' | grep -q '[0-9]'")
 
     with subtest("cleanup of inbox imports"):
         ib = book_by_title("Inboxbuch")
