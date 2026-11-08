@@ -374,7 +374,10 @@ module CalibreHub
       scanner = Incoming::Scanner.new(box.dir, known)
       scanner.run
       box.fail_broken(scanner.skipped, now)
-      scanner.units.select { |u| u.files.all? { |f| box.settled?(f.mtime, now) } && u.files.all? { |f| box.movable?(f.path) } }
+      # every file of a unit asked, so the Eingang counts files, not units
+      units = scanner.units.select { |u| u.files.all? { |f| box.settled?(f.mtime, now) } && u.files.count { |f| !box.movable?(f.path) } == 0 }
+      box.passed
+      units
     end
 
     # the folders are the category and the tags; a calibre folder's aren't
@@ -1269,7 +1272,13 @@ module CalibreHub
                   left: left_out(band, duplicates, skipped, origin), skipped: skipped_count,
                   last: @db.query_one("select coalesce(max(id), 0) from intake_entries", as: Int64),
                   pending: pending_count,
-                  thresholds: thresholds, origins: origin_counts, shares: shares(origin), entries: entries.map(&.to_api(roots))}.to_json)
+                  thresholds: thresholds, origins: origin_counts, shares: shares(origin), unwritable: unwritable,
+                  entries: entries.map(&.to_api(roots))}.to_json)
+    end
+
+    # what the last pass over the inbox could not take in, by folder
+    def unwritable : Inbox::Unwritable
+      @inbox.try(&.unwritable) || Inbox::Unwritable.none
     end
 
     private def skipped_count : Int64

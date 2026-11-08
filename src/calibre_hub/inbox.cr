@@ -16,13 +16,31 @@ module CalibreHub
     DUPLICATES = "_duplicates"
     FAILED     = "_failed"
 
+    # A folder of the inbox the hub may not move files out of, with how many
+    # files of the last pass lie there. path: below the inbox, "" for itself.
+    record Folder, path : String, files : Int32 do
+      include JSON::Serializable
+    end
+
+    # What the last pass could not take in for want of write access, the
+    # folders with the most files first; files: 0 when all is well
+    record Unwritable, files : Int32, folders : Array(Folder) do
+      include JSON::Serializable
+
+      def self.none
+        new(0, [] of Folder)
+      end
+    end
+
     getter dir : String
     getter stable : Time::Span
+    # of the last pass, for the Eingang
+    getter unwritable : Unwritable = Unwritable.none
 
-    def initialize(dir : String, @stable : Time::Span = 2.minutes)
+    def initialize(dir : String, @stable : Time::Span = 2.minutes, @writable : Proc(String, Bool) = ->(d : String) { File::Info.writable?(d) })
       @dir = File.expand_path(dir)
-      # said once per file, not on every pass
-      @unwritable = Set(String).new
+      # what this pass found it may not move, set by passed
+      @stuck = Set(String).new
     end
 
     # Category and tags from the folders between the inbox and the file
@@ -38,11 +56,35 @@ module CalibreHub
     # The file can be moved away once it is decided: taking it in without
     # that would take it in again on the next pass
     def movable?(path : String) : Bool
-      return true if File::Info.writable?(File.dirname(path))
-      if @unwritable.add?(path)
-        STDERR.puts "inbox: #{rel(path)} skipped, #{File.dirname(rel(path))} is not writable for the hub (group write missing?)"
-      end
+      return true if @writable.call(File.dirname(path))
+      @stuck << path
       false
+    end
+
+    # A pass is over: what it could not move becomes #unwritable, by folder.
+    # The log says it once when it changes, not on every pass.
+    def passed : Unwritable
+      by_folder = @stuck.group_by { |p| folder(p) }
+      folders = by_folder.map { |dir, paths| Folder.new(dir, paths.size) }.sort_by! { |f| {-f.files, f.path} }
+      now = Unwritable.new(@stuck.size, folders)
+      @stuck = Set(String).new
+      if now != @unwritable && now.files > 0
+        shown = folders.first(5).join(", ") { |f| "#{f.path.presence || "."} (#{f.files})" }
+        more = folders.size > 5 ? ", #{folders.size - 5} more" : ""
+        STDERR.puts "inbox: #{count(now.files, "file")} in #{count(folders.size, "folder")} skipped, not writable for the hub (group write missing?): #{shown}#{more}"
+      elsif now != @unwritable
+        STDERR.puts "inbox: all folders writable for the hub again"
+      end
+      @unwritable = now
+    end
+
+    private def count(n : Int32, what : String) : String
+      "#{n} #{what}#{n == 1 ? "" : "s"}"
+    end
+
+    private def folder(path : String) : String
+      dir = File.dirname(rel(path))
+      dir == "." ? "" : dir
     end
 
     # A file still being written isn't looked at

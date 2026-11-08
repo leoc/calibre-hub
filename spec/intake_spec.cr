@@ -94,13 +94,14 @@ private def info(title : String? = nil, authors : Array(String)? = nil, front = 
     front: front, format: format).as(Meta::FileMeta::Info?)
 end
 
-private def setup(root : String, fake = ListOnlyCalibre.new, db = state_db, stable = 0.seconds)
+private def setup(root : String, fake = ListOnlyCalibre.new, db = state_db, stable = 0.seconds,
+                  writable = ->(d : String) { File::Info.writable?(d) })
   calibre = fake.calibre
   writer = CalibreHub::Writer.new(calibre, nil, nil, "kategorie")
   imports = CalibreHub::Importer.new(db, calibre, writer, nil, retries: 0)
   Dir.mkdir_p(root)
   intake = Intake.new(db, calibre, imports, nil, File.join(root, ".covers"), CalibreHub::IntakeTrash.new(File.join(File.dirname(root), "papierkorb")),
-    inbox: CalibreHub::Inbox.new(root, stable))
+    inbox: CalibreHub::Inbox.new(root, stable, writable))
   intake.set_threshold("inbox", nil)
   intake.cover_reader = ->(_path : String, _format : String, _target : String) { false }
   {intake, fake, db, imports}
@@ -321,6 +322,24 @@ describe Intake do
       intake, _, _, _ = setup(root, stable: 1.hour)
       pass(intake).should eq 0
       entries(intake).should be_empty
+    end
+  end
+
+  it "lists no file of a folder it may not move out of, and says which folders those are" do
+    tmpdir do |root|
+      write(File.join(root, "Networks/a.pdf"), pdf("a"))
+      write(File.join(root, "Networks/b.pdf"), pdf("b"))
+      write(File.join(root, "Roman/Frank Herbert - Dune.pdf"), pdf("dune"))
+      locked = [File.join(root, "Networks")]
+      intake, _, _, _ = setup(root, writable: ->(d : String) { !locked.includes?(d) })
+      intake.list["unwritable"].should eq JSON.parse(%({"files":0,"folders":[]}))
+      pass(intake).should eq 1
+      entries(intake).map(&.["name"].as_s).should eq ["Frank Herbert - Dune.pdf"]
+      intake.list["unwritable"].should eq JSON.parse(%({"files":2,"folders":[{"path":"Networks","files":2}]}))
+      # the group fixed: the next pass takes them and the note is gone
+      locked.clear
+      pass(intake).should eq 2
+      intake.list["unwritable"]["files"].should eq 0
     end
   end
 

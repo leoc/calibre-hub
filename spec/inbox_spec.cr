@@ -63,4 +63,27 @@ describe CalibreHub::Inbox do
       end
     end
   end
+
+  it "counts what it may not move by folder, the fullest first, once per pass" do
+    tmpdir do |dir|
+      # the folders the hub may not write to, also when the spec runs as root
+      locked = [File.join(dir, "Networks"), File.join(dir, "Roman/Alt"), dir]
+      box = CalibreHub::Inbox.new(dir, writable: ->(d : String) { !locked.includes?(d) })
+      paths = ["Networks/a.pdf", "Networks/b.pdf", "Networks/c.pdf", "Roman/Alt/x.epub", "Roman/Alt/y.epub", "Roman/Neu/z.epub", "lose.pdf"]
+      paths.each { |p| box.movable?(File.join(dir, p)) }
+      # asked twice in a pass, counted once
+      box.movable?(File.join(dir, "Networks/a.pdf"))
+      box.unwritable.files.should eq 0
+      got = box.passed
+      got.files.should eq 6
+      got.folders.map { |f| {f.path, f.files} }.should eq [{"Networks", 3}, {"Roman/Alt", 2}, {"", 1}]
+      box.unwritable.should eq got
+      JSON.parse(got.to_json).should eq JSON.parse(%({"files":6,"folders":[{"path":"Networks","files":3},{"path":"Roman/Alt","files":2},{"path":"","files":1}]}))
+      # the next pass starts over: once the rights are fixed it is empty
+      locked.clear
+      paths.each { |p| box.movable?(File.join(dir, p)).should be_true }
+      box.passed.files.should eq 0
+      box.unwritable.folders.should be_empty
+    end
+  end
 end
