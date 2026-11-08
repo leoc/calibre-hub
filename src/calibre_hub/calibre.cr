@@ -111,7 +111,7 @@ module CalibreHub
       fits!(size, size)
       path = "/cdb/add-book/#{Random::Secure.hex(4)}/#{duplicates ? "y" : "n"}/#{URI.encode_path_segment(filename)}#{library_path}"
       body = File.open(file) do |io|
-        c = client
+        c = client(Calibre.upload_timeout(@read_timeout, size))
         c.basic_auth(@user, @password)
         r = c.post(path, headers: HTTP::Headers{"Accept" => "application/json", "Content-Length" => size.to_s}, body: io)
         raise Unavailable.new("calibre-server add-book: HTTP #{r.status_code}") if r.status_code >= 500
@@ -128,6 +128,14 @@ module CalibreHub
     # --max-request-body-size takes them; unset or empty: no check
     def self.max_body(mb : String?) : Int64?
       mb.presence.try { |v| (v.to_f * MB).to_i64 }
+    end
+
+    # How long an upload of a body that large may wait for its answer: after
+    # the last byte calibre-server still reads the whole book (a 915 MB PDF
+    # takes minutes), and a hub that gives up early may add it twice on the
+    # retry. The normal timeout plus a second per 5 MB.
+    def self.upload_timeout(base : Time::Span, body : Int64) : Time::Span
+      base + (body // (5 * MB)).seconds
     end
 
     # Why a book file is not sent: its size against its share of the limit
@@ -207,7 +215,8 @@ module CalibreHub
           writer.close
         end
         begin
-          request("POST", "/cdb/set-fields/#{book_id}#{library_path}", reader, length, upload: size)
+          request("POST", "/cdb/set-fields/#{book_id}#{library_path}", reader, length, upload: size,
+            timeout: Calibre.upload_timeout(@read_timeout, length))
         ensure
           reader.close
         end
@@ -301,8 +310,9 @@ module CalibreHub
 
     # upload: the size of the file in the body, for the reason when
     # calibre-server cuts the request off
-    private def request(method, path, body : String | IO | Nil, length : Int64? = nil, upload : Int64? = nil) : String
-      c = client
+    private def request(method, path, body : String | IO | Nil, length : Int64? = nil, upload : Int64? = nil,
+                        timeout = @read_timeout) : String
+      c = client(timeout)
       c.basic_auth(@user, @password)
       headers = HTTP::Headers{"Accept" => "application/json"}
       headers["Content-Type"] = "application/json" if body
@@ -328,10 +338,10 @@ module CalibreHub
       @library ? "/#{URI.encode_path_segment(@library.not_nil!)}" : ""
     end
 
-    private def client
+    private def client(timeout = @read_timeout)
       HTTP::Client.new(@url).tap do |c|
         c.connect_timeout = 5.seconds
-        c.read_timeout = @read_timeout
+        c.read_timeout = timeout
       end
     end
   end

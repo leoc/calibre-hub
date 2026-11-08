@@ -145,6 +145,38 @@ describe "Calibre uploads" do
     Calibre.max_body(nil).should be_nil
   end
 
+  it "waits longer for the answer to a larger upload" do
+    Calibre.upload_timeout(60.seconds, 0_i64).should eq 60.seconds
+    Calibre.upload_timeout(60.seconds, 4_i64 * Calibre::MB).should eq 60.seconds
+    Calibre.upload_timeout(60.seconds, 915_i64 * Calibre::MB).should eq 243.seconds
+    Calibre.upload_timeout(60.seconds, 2048_i64 * Calibre::MB).should eq 469.seconds
+  end
+
+  it "gives an upload its own timeout, other calls keep theirs" do
+    # answers after the normal timeout, within the upload's
+    slow = HTTP::Server.new do |ctx|
+      ctx.request.body.try(&.gets_to_end)
+      sleep 300.milliseconds
+      ctx.response.content_type = "application/json"
+      ctx.response.print(ctx.request.path.starts_with?("/cdb/add-book/") ? %({"book_id": 7}) : %({"result": {"book_ids": [], "data": {}}}))
+    end
+    url = "http://127.0.0.1:#{slow.bind_tcp("127.0.0.1", 0).port}"
+    spawn { slow.listen }
+    Fiber.yield
+    begin
+      calibre = Calibre.new(url, "u", "p")
+      calibre.read_timeout = 100.milliseconds
+      # 5 MB: a second more
+      with_file(5 * Calibre::MB) do |path|
+        calibre.add_book(path, "a.pdf").book_id.should eq 7
+        calibre.add_format(3, path, "pdf")
+      end
+      expect_raises(Calibre::Unavailable) { calibre.list }
+    ensure
+      slow.close
+    end
+  end
+
   it "writes sizes rounded up and limits down" do
     Calibre.mb(915_i64 * Calibre::MB + 1, up: true).should eq "916"
     Calibre.mb(2048_i64 * Calibre::MB, up: false).should eq "2048"
