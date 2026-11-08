@@ -717,6 +717,18 @@ in
         type = types.port;
         default = 8083;
       };
+      maxRequestBodySize = mkOption {
+        type = types.ints.positive;
+        default = 2048;
+        description = ''
+          Largest request calibre-server takes, in MB (calibre-server's
+          --max-request-body-size, 500 by default there). A book file goes
+          to calibre-server as one request; the hub doesn't send a larger
+          one, the entry stays in the Eingang and says so. A further format
+          goes as base64, it may be three quarters of this. Without
+          calibre.manage, set it to what that calibre-server takes.
+        '';
+      };
       triggersPackage = mkOption {
         type = types.package;
         default = pkgs.callPackage ./triggers.nix { };
@@ -793,6 +805,7 @@ in
       host = "127.0.0.1";
       port = cfg.calibre.port;
       group = cfg.group;
+      extraFlags = [ "--max-request-body-size=${toString cfg.calibre.maxRequestBodySize}" ];
       auth = {
         enable = true;
         # the hub talks Basic over localhost; digest would be "auto" without TLS
@@ -862,6 +875,7 @@ in
         CALIBRE_HUB_CALIBRE_URL = "http://127.0.0.1:${toString cfg.calibre.port}";
         CALIBRE_HUB_CALIBRE_USER = cfg.calibre.serviceUser;
         CALIBRE_HUB_CALIBRE_PASSWORD_FILE = "%d/calibre-password";
+        CALIBRE_HUB_CALIBRE_MAX_BODY_MB = toString cfg.calibre.maxRequestBodySize;
         CALIBRE_HUB_LIBRARY_ID = baseNameOf (toString cfg.library);
         CALIBRE_HUB_CUSTOM_COLUMNS = lib.concatStringsSep "," (lib.attrNames cfg.customColumns);
         CALIBRE_HUB_CATEGORY_COLUMN = lib.optionalString (cfg.categoryColumn != null) cfg.categoryColumn;
