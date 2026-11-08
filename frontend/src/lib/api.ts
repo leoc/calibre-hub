@@ -320,6 +320,15 @@ export interface IntakeList {
   entries?: IntakeEntry[]
   // the library filter: the recheck under way, waiting: for the analysis
   recheck?: { done: number; total: number; waiting: boolean } | null
+  // what the last pass over the inbox could not take in, files 0 when all is well
+  unwritable?: IntakeUnwritable
+}
+
+// Inbox folders the hub may not move files out of (group or write access
+// missing), the fullest first; path below the inbox, "" for the inbox itself
+export interface IntakeUnwritable {
+  files: number
+  folders: { path: string; files: number }[]
 }
 
 // a conflict for the review: the same ISBN on other books, or another ISBN

@@ -1,5 +1,5 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query"
-import { api, type ConfidenceBand, type IntakeCandidate, type IntakeDetail, type IntakeEntry, type IntakeBands, type IntakeFilter, type IntakeKind, type IntakeList, type IntakeOrigin, type IntakeProgress, type IntakeProposal, type IntakeShares } from "./api"
+import { api, type ConfidenceBand, type IntakeCandidate, type IntakeDetail, type IntakeEntry, type IntakeBands, type IntakeFilter, type IntakeKind, type IntakeList, type IntakeOrigin, type IntakeProgress, type IntakeProposal, type IntakeShares, type IntakeUnwritable } from "./api"
 import { fieldLabel, sourceLabel } from "./metadata"
 import { readerFormat } from "./reader"
 import { formatNumber, t } from "@/i18n"
@@ -301,3 +301,17 @@ export function candidateSource(source: string): string {
 
 // analysed of all in the Eingang, in percent
 export const analysedShare = (p: IntakeProgress) => (p.total > 0 ? Math.round((p.analysed * 100) / p.total) : 0)
+
+// the folders of the note the hub may not move files out of: the first few,
+// how many more there are
+export const UNWRITABLE_SHOWN = 10
+
+export function unwritableFolders(u: IntakeUnwritable, shown = UNWRITABLE_SHOWN) {
+  return { folders: u.folders.slice(0, shown), more: Math.max(0, u.folders.length - shown) }
+}
+
+export const unwritableText = (files: number) => (files === 1 ? t("intake.unwritable.one") : t("intake.unwritable.many", { count: formatNumber(files) }))
+
+export const filesText = (files: number) => (files === 1 ? t("intake.unwritable.file") : t("intake.unwritable.files", { count: formatNumber(files) }))
+
+export const folderName = (path: string) => path || t("intake.unwritable.root")

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyEvent, type MouseEvent, type ReactNode } from "react"
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { BookIcon, Check, Trash2, X } from "lucide-react"
-import { ApiError, EXCERPT_HEADER, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeOrigin } from "@/lib/api"
+import { BookIcon, Check, Trash2, TriangleAlert, X } from "lucide-react"
+import { ApiError, EXCERPT_HEADER, intakeFileUrl, write, type ConfidenceBand, type IntakeCandidate, type IntakeDecision, type IntakeDetail, type IntakeEntry, type IntakeKind, type IntakeList, type IntakeOrigin, type IntakeUnwritable } from "@/lib/api"
 import {
   acceptable,
   analysedShare,
@@ -17,6 +17,8 @@ import {
   entryName,
   entryTitle,
   errorText as entryError,
+  filesText,
+  folderName,
   headlineText,
   hubTook,
   inKind,
@@ -41,6 +43,8 @@ import {
   trashAllText,
   uniqueEntries,
   unreadable,
+  unwritableFolders,
+  unwritableText,
   type IntakeBand,
   type IntakeSource,
   type Leaving,
@@ -267,6 +271,7 @@ export function IntakePage() {
         <p className="py-12 text-center text-lg">{t("intake.disabled")}</p>
       ) : (
         <>
+          {status.unwritable && status.unwritable.files > 0 && <Unwritable unwritable={status.unwritable} />}
           {shares && status.progress && (
             <ShareBars
               shares={shares}
@@ -399,6 +404,38 @@ export function IntakePage() {
 }
 
 // Plans the books no plan got to; it goes on by itself behind the analysis
+// Files of the inbox the hub can't take in, it may not move them out of their
+// folder (group or write access missing); before, only the log said so
+function Unwritable({ unwritable }: { unwritable: IntakeUnwritable }) {
+  const { folders, more } = unwritableFolders(unwritable)
+  return (
+    <section
+      role="alert"
+      aria-labelledby="intake-unwritable"
+      className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm eink:border-2 eink:border-black eink:bg-transparent eink:text-base"
+    >
+      <h2 id="intake-unwritable" className="flex items-start gap-2 font-medium text-destructive eink:font-bold eink:text-black">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden /> {unwritableText(unwritable.files)}
+      </h2>
+      <p className={muted}>{t("intake.unwritable.hint")}</p>
+      <details>
+        <summary className="flex min-h-9 cursor-pointer items-center underline select-none eink:min-h-12 touch:min-h-11">
+          {t("intake.unwritable.folders", { count: formatNumber(unwritable.folders.length) })}
+        </summary>
+        <ul className="divide-y eink:divide-y-2" aria-label={t("intake.unwritable.list")}>
+          {folders.map((f) => (
+            <li key={f.path} className="flex items-baseline justify-between gap-3 py-1">
+              <span className="min-w-0 [overflow-wrap:anywhere]">{folderName(f.path)}</span>
+              <span className="shrink-0 tabular-nums">{filesText(f.files)}</span>
+            </li>
+          ))}
+          {more > 0 && <li className={cn("py-1", muted)}>{t("intake.unwritable.more", { count: formatNumber(more) })}</li>}
+        </ul>
+      </details>
+    </section>
+  )
+}
+
 function Recheck({ state, onChanged }: { state: IntakeList["recheck"] | null; onChanged: () => void }) {
   const start = useMutation({
     mutationFn: write.recheckLibrary,

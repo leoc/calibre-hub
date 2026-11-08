@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IntakeDetail, IntakeEntry } from "./api"
-import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, bandCount, bulkOf, candidateDiff, candidateSource, entryName, errorText, headlineText, hubTook, inBar, inKind, inLegend, intakeFilter, isPicked, kindCount, knownOrigin, leaving, noteTexts, openCount, originsInList, partTitle, shareParts, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable } from "./intake"
+import { acceptable, analysedShare, asChosen, authorsText, autoText, badgeText, bandCount, bulkOf, candidateDiff, candidateSource, entryName, errorText, headlineText, hubTook, inBar, inKind, inLegend, intakeFilter, isPicked, kindCount, knownOrigin, leaving, noteTexts, openCount, originsInList, partTitle, shareParts, readableFormat, reasonText, ringLabel, takeable, trashable, trashAllText, uniqueEntries, unreadable, filesText, folderName, unwritableFolders, unwritableText } from "./intake"
 
 const entry = (extra: Partial<IntakeDetail>): IntakeDetail => ({
   id: 1,
@@ -350,5 +350,28 @@ describe("the sources", () => {
     expect(intakeFilter("all", "all", "inbox").origin).toBe("inbox")
     expect(intakeFilter("all", "all", "all").origin).toBeUndefined()
     expect(intakeFilter("all", "library", "inbox").origin).toBeUndefined()
+  })
+})
+
+describe("the folders the hub may not move files out of", () => {
+  const folders = Array.from({ length: 13 }, (_, i) => ({ path: `Ordner ${i}`, files: 20 - i }))
+
+  it("shows the first ten and says how many more", () => {
+    const shown = unwritableFolders({ files: 2829, folders })
+    expect(shown.folders.map((f) => f.path)).toEqual(folders.slice(0, 10).map((f) => f.path))
+    expect(shown.more).toBe(3)
+    expect(unwritableFolders({ files: 1, folders: folders.slice(0, 1) }).more).toBe(0)
+  })
+
+  it("counts in German", () => {
+    expect(unwritableText(2829)).toBe("2.829 Dateien nicht beschreibbar für den Hub")
+    expect(unwritableText(1)).toBe("1 Datei nicht beschreibbar für den Hub")
+    expect(filesText(306)).toBe("306 Dateien")
+    expect(filesText(1)).toBe("1 Datei")
+  })
+
+  it("names the inbox itself", () => {
+    expect(folderName("Networks")).toBe("Networks")
+    expect(folderName("")).toBe("Eingangsordner selbst")
   })
 })
