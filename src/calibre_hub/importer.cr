@@ -126,7 +126,12 @@ module CalibreHub
           notes << "#{File.basename(f.path)} too large for another format"
           next
         end
-        with_retry(book: true) { @calibre.add_format(id, f.path, f.format.downcase) }
+        begin
+          with_retry(book: true) { @calibre.add_format(id, f.path, f.format.downcase) }
+        rescue ex : Calibre::TooLarge
+          notes << "#{File.basename(f.path)}: #{ex.message}"
+          next
+        end
         added << f
       end
       ix.add_files(id, added)
@@ -185,7 +190,12 @@ module CalibreHub
             notes << "#{File.basename(f.path)} too large for another format"
             next
           end
-          @calibre.add_format(id, f.path, f.format.downcase)
+          begin
+            @calibre.add_format(id, f.path, f.format.downcase)
+          rescue too : Calibre::TooLarge
+            # the book is in with its first file, as with one too large above
+            notes << "#{File.basename(f.path)}: #{too.message}"
+          end
         end
       rescue ex
         # no half imported book; the next run tries again

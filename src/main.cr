@@ -30,6 +30,9 @@ module CalibreHub
     getter calibre_user : String = env("CALIBRE_HUB_CALIBRE_USER", "calibre-hub")
     getter calibre_password : String = secret("CALIBRE_HUB_CALIBRE_PASSWORD_FILE")
     getter library_id : String? = ENV["CALIBRE_HUB_LIBRARY_ID"]?
+    # calibre-server's --max-request-body-size in bytes: larger book files
+    # are not sent (calibre-server would cut the upload off)
+    getter calibre_max_body : Int64? = Calibre.max_body(ENV["CALIBRE_HUB_CALIBRE_MAX_BODY_MB"]?)
     getter custom_columns : Array(String) = env("CALIBRE_HUB_CUSTOM_COLUMNS", "").split(',', remove_empty: true)
     # custom column shown as category tree and filterable with ?kategorie=
     getter category_column : String? = ENV["CALIBRE_HUB_CATEGORY_COLUMN"]?.presence
@@ -201,7 +204,7 @@ module CalibreHub
     end
 
     def calibre : Calibre
-      Calibre.new(calibre_url, calibre_user, calibre_password, library_id, custom_columns)
+      Calibre.new(calibre_url, calibre_user, calibre_password, library_id, custom_columns).tap { |c| c.max_body = calibre_max_body }
     end
 
     def metadata_db : String?

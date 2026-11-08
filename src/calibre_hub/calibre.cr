@@ -16,6 +16,14 @@ module CalibreHub
     class Unavailable < Error
     end
 
+    # a book file larger than calibre-server takes (its max request body
+    # size): nothing was sent, the book fails with the reason
+    class TooLarge < Error
+    end
+
+    # as calibre counts them for --max-request-body-size
+    MB = 1024_i64 * 1024
+
     # Fields for lists and the snapshot. Custom columns are "#name" in results
     # but "*name" in requests.
     FIELDS = %w(title authors author_sort tags series series_index formats
@@ -27,6 +35,9 @@ module CalibreHub
     getter custom_columns : Array(String)
     # how long a request may take (adding a large book, a slow list)
     property read_timeout : Time::Span = 60.seconds
+    # calibre-server's --max-request-body-size in bytes; nil: unknown,
+    # nothing is checked before an upload
+    property max_body : Int64? = nil
 
     def initialize(url : String, @user : String, @password : String, @library : String? = nil,
                    @custom_columns : Array(String) = [] of String)
@@ -92,13 +103,17 @@ module CalibreHub
     end
     record Added, book_id : Int64?, duplicates : Array(Duplicate)
 
-    # POST /cdb/add-book: the file is the body; calibre reads its metadata
+    # POST /cdb/add-book: the file is the body; calibre reads its metadata.
+    # Its length goes along (not chunked), so calibre-server checks it against
+    # its limit just as the hub does, byte for byte.
     def add_book(file : String, filename : String, duplicates = false) : Added
+      size = File.size(file)
+      fits!(size, size)
       path = "/cdb/add-book/#{Random::Secure.hex(4)}/#{duplicates ? "y" : "n"}/#{URI.encode_path_segment(filename)}#{library_path}"
       body = File.open(file) do |io|
         c = client
         c.basic_auth(@user, @password)
-        r = c.post(path, headers: HTTP::Headers{"Accept" => "application/json"}, body: io)
+        r = c.post(path, headers: HTTP::Headers{"Accept" => "application/json", "Content-Length" => size.to_s}, body: io)
         raise Unavailable.new("calibre-server add-book: HTTP #{r.status_code}") if r.status_code >= 500
         raise Error.new("calibre-server add-book: HTTP #{r.status_code} #{r.body[0, 200]}") unless r.success?
         JSON.parse(r.body)
@@ -106,7 +121,51 @@ module CalibreHub
       dups = body["duplicates"]?.try(&.as_a.map { |d| Duplicate.new(d["title"].as_s, d["authors"].as_a.map(&.as_s)) }) || [] of Duplicate
       Added.new(body["book_id"]?.try(&.as_i64), dups)
     rescue ex : IO::Error | Socket::Error
-      raise Unavailable.new("calibre-server: #{ex.message}")
+      raise Unavailable.new(Calibre.cut_off(ex.message, size))
+    end
+
+    # CALIBRE_HUB_CALIBRE_MAX_BODY_MB, MB as calibre-server's
+    # --max-request-body-size takes them; unset or empty: no check
+    def self.max_body(mb : String?) : Int64?
+      mb.presence.try { |v| (v.to_f * MB).to_i64 }
+    end
+
+    # Why a book file is not sent: its size against its share of the limit
+    def self.too_large(size : Int64, room : Int64) : String
+      "file is #{mb(size, up: true)} MB, calibre-server takes at most #{mb(room, up: false)} MB (calibre-server max request body size)"
+    end
+
+    # calibre-server answers a body over its limit with a 413 and closes the
+    # connection, which the hub only notices while it still writes. Without
+    # the hub knowing the limit (or knowing a wrong one) that is the reason.
+    def self.cut_off(message : String?, size : Int64?) : String
+      if size && message && message.matches?(/Broken pipe|Connection reset/i)
+        "calibre-server closed the connection during a #{mb(size, up: true)} MB upload, " \
+        "the file may be over calibre-server's max request body size (#{message})"
+      else
+        "calibre-server: #{message}"
+      end
+    end
+
+    # MB with one decimal below 10; sizes rounded up and limits down, so a
+    # file just over the limit never reads as the limit itself
+    def self.mb(bytes : Int64, up : Bool) : String
+      if bytes < 10 * MB
+        tenths = up ? (bytes * 10 + MB - 1) // MB : bytes * 10 // MB
+        "#{tenths // 10}.#{tenths % 10}"
+      else
+        (up ? (bytes + MB - 1) // MB : bytes // MB).to_s
+      end
+    end
+
+    # A body of that many bytes around a file of size, checked before it is
+    # sent. The file's share of the limit is what the body's overhead leaves;
+    # base64 makes 4 bytes of 3.
+    private def fits!(size : Int64, body : Int64) : Nil
+      limit = @max_body || return
+      return if body <= limit
+      room = body == size ? limit : Math.max(0_i64, (limit - (body - (size + 2) // 3 * 4)) // 4 * 3)
+      raise TooLarge.new(Calibre.too_large(size, room))
     end
 
     # POST /cdb/set-fields: {"changes": {"tags": [...], "#kategorie": "A.B",
@@ -133,7 +192,9 @@ module CalibreHub
     def add_format(book_id : Int64, file : String, ext : String) : Nil
       prefix = %({"changes":{"added_formats":[{"ext":#{ext.to_json},"data_url":")
       suffix = %("}]},"loaded_book_ids":[#{book_id}]})
-      length = prefix.bytesize + (File.size(file) + 2) // 3 * 4 + suffix.bytesize
+      size = File.size(file)
+      length = prefix.bytesize + (size + 2) // 3 * 4 + suffix.bytesize
+      fits!(size, length)
       File.open(file) do |f|
         reader, writer = IO.pipe
         spawn do
@@ -146,7 +207,7 @@ module CalibreHub
           writer.close
         end
         begin
-          request("POST", "/cdb/set-fields/#{book_id}#{library_path}", reader, length)
+          request("POST", "/cdb/set-fields/#{book_id}#{library_path}", reader, length, upload: size)
         ensure
           reader.close
         end
@@ -238,7 +299,9 @@ module CalibreHub
       request("GET", path, nil)
     end
 
-    private def request(method, path, body : String | IO | Nil, length : Int64? = nil) : String
+    # upload: the size of the file in the body, for the reason when
+    # calibre-server cuts the request off
+    private def request(method, path, body : String | IO | Nil, length : Int64? = nil, upload : Int64? = nil) : String
       c = client
       c.basic_auth(@user, @password)
       headers = HTTP::Headers{"Accept" => "application/json"}
@@ -253,7 +316,7 @@ module CalibreHub
       end
       response.body
     rescue ex : IO::Error | Socket::Error
-      raise Unavailable.new("calibre-server: #{ex.message}")
+      raise Unavailable.new(Calibre.cut_off(ex.message, upload))
     end
 
     # "/<library id>" for /get/* links, "" for the default library

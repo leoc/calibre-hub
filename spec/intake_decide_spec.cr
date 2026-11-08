@@ -58,6 +58,8 @@ private class FakeCalibre
   property unfound = false
   # a search without a query counts the library
   property counts = false
+  # calibre-server's max request body size as the hub knows it
+  property max_body : Int64? = nil
   @next = 100_i64
 
   def initialize
@@ -130,7 +132,7 @@ private class FakeCalibre
   end
 
   def calibre : CalibreHub::Calibre
-    CalibreHub::Calibre.new(url, "hub", "pw", nil, ["kategorie"])
+    CalibreHub::Calibre.new(url, "hub", "pw", nil, ["kategorie"]).tap { |c| c.max_body = @max_body }
   end
 end
 
@@ -686,6 +688,23 @@ describe CalibreHub::IntakeJobs do
       list = entries(intake)
       list.size.should eq 2
       list.first["error"].as_s.should contain "unavailable"
+    end
+  end
+
+  it "keeps a file larger than calibre-server takes in the list, says why and sends nothing" do
+    tmpdir do |_, root|
+      write(File.join(root, "big.pdf"), pdf("big") + ("." * 2000))
+      write(File.join(root, "small.pdf"), pdf("small"))
+      fake = FakeCalibre.new
+      fake.max_body = 5000_i64
+      intake, _, _, _ = setup(root, fake)
+      pass(intake)
+      wait(intake, decide(intake, entries(intake).map(&.["id"].as_i64), "accept")).errors.size.should eq 1
+      fake.added.should eq ["small.pdf"]
+      list = entries(intake)
+      list.map(&.["name"].as_s).should eq ["big.pdf"]
+      list.first["error"].as_s.should match /^file is 0.1 MB, calibre-server takes at most .* MB \(calibre-server max request body size\)$/
+      File.exists?(File.join(root, "big.pdf")).should be_true
     end
   end
 

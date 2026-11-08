@@ -350,6 +350,7 @@ module CalibreHub
       raise(log.to_s.lines.last? || "ebook-convert exit #{status.exit_code}") unless status.success?
       calibre = Calibre.new(env["CALIBRE_HUB_CALIBRE_URL"], env["CALIBRE_HUB_CALIBRE_USER"],
         Secret.read(env["CALIBRE_HUB_CALIBRE_PASSWORD_FILE"]), env["CALIBRE_HUB_LIBRARY_ID"]?)
+      calibre.max_body = Calibre.max_body(env["CALIBRE_HUB_CALIBRE_MAX_BODY_MB"]?)
       calibre.add_format(id, dst, fmt.downcase)
       dst
     end
