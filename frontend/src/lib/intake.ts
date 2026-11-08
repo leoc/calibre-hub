@@ -201,11 +201,17 @@ export const unreadable = (e: IntakeEntry) => readableFormat(e) === null && e.fi
 
 // why a decision came back: the hub's reason for a field changed since the
 // plan, or the books calibre refused it for, „Title (Author); …“, when the hub
-// found none of them
+// found none of them, or a file larger than calibre-server takes (sizes in
+// MB, „0.7“ written „0,7“)
 export function errorText(e: IntakeEntry): string | null {
   if (e.error && e.match === "calibre" && e.action === "duplicate" && e.bookId === null) {
     return t("intake.calibreRefused", { books: e.error.split("; ").map((b) => `„${b}“`).join(", ") })
   }
+  const mb = (s: string) => s.replace(".", ",")
+  const large = e.error && /^file is ([\d.]+) MB, calibre-server takes at most ([\d.]+) MB/.exec(e.error)
+  if (large) return t("intake.tooLarge", { size: mb(large[1]), limit: mb(large[2]) })
+  const cut = e.error && /^calibre-server closed the connection during a ([\d.]+) MB upload/.exec(e.error)
+  if (cut) return t("intake.cutOff", { size: mb(cut[1]) })
   const changed = e.error && /^(\w+) changed since the plan/.exec(e.error)
   return changed ? t("intake.changedSince", { field: fieldLabel(changed[1]) }) : e.error
 }

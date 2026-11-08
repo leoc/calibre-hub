@@ -845,6 +845,8 @@ export const de = {
   "intake.changed": "Die Liste hat sich geändert, bitte noch einmal.",
   "intake.failed": "Das hat nicht geklappt: {error}",
   "intake.calibreRefused": "calibre lehnt das als Dublette ab, es gibt schon {books}.",
+  "intake.tooLarge": "Die Datei hat {size} MB, calibre-server nimmt höchstens {limit} MB an (calibre.maxRequestBodySize).",
+  "intake.cutOff": "calibre-server hat beim Hochladen von {size} MB abgebrochen, die Datei ist vermutlich größer als sein Limit (calibre.maxRequestBodySize).",
   "intake.row.duplicate": "Dublette von",
   "intake.row.formats": "Neues Format für",
   "intake.row.same": "Dublette von „{name}“ im Eingang",

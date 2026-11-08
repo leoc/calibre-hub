@@ -300,6 +300,17 @@ describe("a library entry", () => {
     expect(errorText({ ...refused, bookId: 7, error: "a.pdf too large for another format" })).toBe("a.pdf too large for another format")
     expect(noteTexts({ ...refused, notes: [], changes: [], candidates: [] })).toEqual([])
   })
+  it("says when a file is larger than calibre-server takes", () => {
+    expect(errorText({ ...library, error: "file is 915 MB, calibre-server takes at most 500 MB (calibre-server max request body size)" })).toBe(
+      "Die Datei hat 915 MB, calibre-server nimmt höchstens 500 MB an (calibre.maxRequestBodySize).",
+    )
+    expect(errorText({ ...library, error: "file is 1.1 MB, calibre-server takes at most 1.0 MB (calibre-server max request body size)" })).toBe(
+      "Die Datei hat 1,1 MB, calibre-server nimmt höchstens 1,0 MB an (calibre.maxRequestBodySize).",
+    )
+    expect(
+      errorText({ ...library, error: "calibre-server closed the connection during a 915 MB upload, the file may be over calibre-server's max request body size (Broken pipe)" }),
+    ).toBe("calibre-server hat beim Hochladen von 915 MB abgebrochen, die Datei ist vermutlich größer als sein Limit (calibre.maxRequestBodySize).")
+  })
   it("is its own filter", () => {
     expect(intakeFilter("all", "library")).toEqual({ band: undefined, duplicates: undefined, skipped: undefined, library: true })
   })
