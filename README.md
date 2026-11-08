@@ -431,6 +431,17 @@ looks like a book of the library, what was skipped or came back with an error
 always waits. So an EPUB called `k.epub`, whose name says nothing, waits at
 75: the upload tray and `hub upload` say so, with a link to the Eingang.
 
+A book file goes to calibre-server as one request, and calibre-server takes
+none over its `--max-request-body-size` (500 MB of its own, 2048 MB from the
+module: `calibre.maxRequestBodySize`). The hub knows that limit and doesn't
+send a larger file: the entry comes back with `file is 915 MB,
+calibre-server takes at most 500 MB (calibre-server max request body size)`,
+in the Eingang „Die Datei hat 915 MB, calibre-server nimmt höchstens 500 MB
+an“, and the file stays where it is. A further format goes as base64, so it
+may be three quarters of the limit (and 200 MB at most from the Eingang).
+Should calibre-server still cut an upload off, the error says that the file
+may be over its limit.
+
 The inbox is looked at every 30 s, uploads at once, and what they bring is
 analysed file by file; every 5 minutes the list looks at itself, for files
 that left or changed and for what the library has by now.
@@ -999,6 +1010,7 @@ Scale: see [docs/scale.md](docs/scale.md) (`nix build .#scale-test -L`).
     # leseliste.target: her own reader folder, her synced lists go there
     users.lea = { role = "reader"; passwordFile = "/run/secrets/hub-lea"; leseliste.target = "/srv/books/reader-lea"; };
     calibre.servicePasswordFile = "/run/secrets/calibre-service";
+    # calibre.maxRequestBodySize = 2048;  # MB, the default; calibre-server's own is 500
     inbox.path = "/srv/books/inbox";
     leseliste = { enable = true; target = "/srv/books/reader"; };
     classify = {
@@ -1170,6 +1182,7 @@ Go. `crystal2nix` writes a `bubbletea` entry into `shards.nix`: remove it,
 | `CALIBRE_HUB_CALIBRE_URL` | `http://127.0.0.1:8083` | calibre-server |
 | `CALIBRE_HUB_CALIBRE_USER` | `calibre-hub` | service user in calibre-server |
 | `CALIBRE_HUB_CALIBRE_PASSWORD_FILE` | required | without trailing newline |
+| `CALIBRE_HUB_CALIBRE_MAX_BODY_MB` | none (no check) | calibre-server's `--max-request-body-size` in MB; larger book files aren't sent (module: `calibre.maxRequestBodySize`, 2048) |
 | `CALIBRE_HUB_LIBRARY_ID` | server default | |
 | `CALIBRE_HUB_CUSTOM_COLUMNS` | none | comma separated, e.g. `kategorie` |
 | `CALIBRE_HUB_STATE_DB` | `calibre-hub.sqlite` | snapshot, event queue, bulk jobs, suggestions, reading lists |
