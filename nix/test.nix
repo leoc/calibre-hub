@@ -398,7 +398,10 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'Krimi\\n\\nText\\n' > /tmp/k.txt")
         # a folder without group write is skipped, not imported twice
         machine.succeed("mkdir -m 755 /srv/books/inbox/Privat && cp /tmp/b.epub /srv/books/inbox/Privat/")
-        wait_until("journalctl -u calibre-hub -o cat | grep -q 'Privat/b.epub skipped'", timeout=30)
+        wait_until("journalctl -u calibre-hub -o cat | grep -q 'skipped, not writable for the hub.*: Privat (1)'", timeout=30)
+        # and the Eingang says so, not only the log
+        u = api("GET", "/api/intake?limit=1")[1]["unwritable"]
+        assert u == {"files": 1, "folders": [{"path": "Privat", "files": 1}]}, u
         # finished, then in: a file ebook-convert is still writing looks broken
         machine.succeed("QT_QPA_PLATFORM=offscreen ebook-convert /tmp/k.txt /tmp/k.epub --title Inboxbuch --authors 'Agatha Test' --tags Eingebettet")
         # like Samba on dmt: directory mask 2775
