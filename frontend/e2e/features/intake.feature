@@ -664,3 +664,20 @@ Feature: Eingang
   Scenario: A reader has no Eingang
     Given I am logged in as "lea"
     Then there is no link "Eingang"
+
+  # The hub takes a file in only when it may move it out of its folder
+  # afterwards; on 2026-11-07 107 folders lacked group srv and 2,829 files
+  # lay there, only the log knew (#8622). The scenario "rechte" has those.
+  Scenario: Folders the hub may not write show above the list, the fullest first
+    When I open the demo scenario "rechte"
+    Then a note above the list says "2.829 Dateien nicht beschreibbar für den Hub"
+    And the note says "Gruppe srv und Schreibrecht fehlen"
+    And the note's folders are hidden
+    When I open the note's folders "Ordner zeigen (107)"
+    Then the note's first folder is "Networks" with "306 Dateien"
+    And the note lists 10 folders and "und 97 weitere"
+    And the page is no wider than the screen
+
+  Scenario: With every folder writable there is no note
+    When I open the Eingang
+    Then there is no note about folders the hub may not write

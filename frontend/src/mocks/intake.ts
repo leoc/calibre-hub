@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw"
 import type { Book, ConfidenceBand, ImportRepairEntry, IntakeBands, IntakeCandidate, IntakeDetail, IntakeEntry, IntakeOrigin, IntakeShares } from "@/lib/api"
 import pdfUrl from "./fixtures/sample.pdf?url"
-import { scenario, scenarioSeeds } from "./scenarios"
+import { scenario, scenarioSeeds, scenarioUnwritable } from "./scenarios"
 
 // The Eingang of the mock hub: a dozen files like a real inbox, then enough
 // scans that the list needs a second page. The analysis stands at one file,
@@ -384,6 +384,7 @@ export const intakeHandlers = [
       thresholds,
       origins: ENTRIES.reduce<Record<string, number>>((n, e) => ({ ...n, [e.origin as string]: (n[e.origin as string] ?? 0) + 1 }), {}),
       shares: shares(q.get("origin"), ahead),
+      unwritable: scenarioUnwritable(scenario),
       next: rest.length > limit ? `${page[page.length - 1].confidence ?? -1}:${page[page.length - 1].path}` : null,
       entries: page,
       ...(q.get("library") === "true" ? libraryList(q) : {}),

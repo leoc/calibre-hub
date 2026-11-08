@@ -1,5 +1,6 @@
 import { makeBooks } from "./data"
 import type { Seed } from "./intake"
+import type { IntakeUnwritable } from "@/lib/api"
 
 // What the mock Eingang holds, by situation: ?scenario=voll on any page, kept
 // for the tab (the app drops the query), chosen with the switcher
@@ -12,6 +13,7 @@ export const SCENARIOS = {
   voll: "Eingang voll",
   leer: "Leer",
   dubletten: "Viele Dubletten",
+  rechte: "Ordner ohne Schreibrecht",
 } as const
 
 export type Scenario = keyof typeof SCENARIOS
@@ -102,7 +104,31 @@ function duplicates(): Seed[] {
 
 // The scenario's files instead of the ones of the e2e tests, null for those
 export function scenarioSeeds(which: Scenario): Seed[] | null {
-  if (which === "voll") return full()
+  if (which === "voll" || which === "rechte") return full()
   if (which === "dubletten") return duplicates()
   return which === "leer" ? [] : null
 }
+
+// Inbox folders the hub may not move files out of, like on 2026-11-07: 107
+// folders of group users instead of srv, 2.829 files
+const LOCKED: [string, number][] = [
+  ["Networks", 306],
+  ["Physik", 241],
+  ["Mathematik/Analysis", 198],
+  ["Informatik/Software", 176],
+  ["Chemie", 154],
+  ["Geschichte", 132],
+  ["Medizin/Anatomie", 117],
+  ["Philosophie", 98],
+  ["Sprachen/Englisch", 87],
+  ["Recht", 76],
+]
+
+function locked(): IntakeUnwritable {
+  const rest = range(0, 97, (n) => ({ path: `Archiv/${SUBJECTS[n % SUBJECTS.length]} ${Math.floor(n / SUBJECTS.length) + 1}`, files: n < 80 ? 13 : 12 }))
+  const folders = [...LOCKED.map(([path, files]) => ({ path, files })), ...rest]
+  return { files: folders.reduce((n, f) => n + f.files, 0), folders }
+}
+
+// What the last pass over the inbox could not take in, of the scenario
+export const scenarioUnwritable = (which: Scenario): IntakeUnwritable => (which === "rechte" ? locked() : { files: 0, folders: [] })

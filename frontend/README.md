@@ -10,7 +10,7 @@ components on Tailwind 4. Static build, served by the hub
 ```sh
 pnpm install
 pnpm dev          # proxies /api to https://hub.nor.sh (HUB_URL=… to change), log in with the real user
-pnpm dev:mock     # MSW mock library (400 books, VITE_MOCK_BOOKS=10000 for more), password "hub"; ?scenario=voll|analyse|leer|dubletten for the Eingang
+pnpm dev:mock     # MSW mock library (400 books, VITE_MOCK_BOOKS=10000 for more), password "hub"; ?scenario=voll|analyse|leer|dubletten|rechte for the Eingang
 pnpm test         # vitest
 pnpm lint && pnpm typecheck
 CHROMIUM_PATH=$(which chromium) pnpm e2e   # Playwright against the mocks: *.spec.ts and the Gherkin scenarios in e2e/features (playwright-bdd), desktop + phone

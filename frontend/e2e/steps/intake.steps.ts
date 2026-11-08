@@ -648,6 +648,48 @@ When("I click beside the drawer", async ({ page }) => {
   await page.mouse.click(40, 450)
 })
 
+// the note on inbox folders the hub may not move files out of
+const unwritable = (page: Page) => page.getByRole("alert").filter({ has: page.getByRole("heading", { name: /nicht beschreibbar für den Hub$/ }) })
+const unwritableFolders = (page: Page) => unwritable(page).getByRole("list", { name: "Ordner ohne Schreibrecht" })
+
+Then("a note above the list says {string}", async ({ page }, text: string) => {
+  const note = unwritable(page)
+  await expect(note.getByRole("heading", { name: text })).toBeVisible()
+  // above the filters and the list
+  const noteBox = await note.boundingBox()
+  const filter = await page.getByRole("main").getByLabel("Art").boundingBox()
+  expect(noteBox!.y + noteBox!.height).toBeLessThanOrEqual(filter!.y)
+})
+
+Then("the note says {string}", async ({ page }, text: string) => {
+  await expect(unwritable(page)).toContainText(text)
+})
+
+Then("the note's folders are hidden", async ({ page }) => {
+  await expect(unwritableFolders(page)).toBeHidden()
+})
+
+When("I open the note's folders {string}", async ({ page }, label: string) => {
+  await unwritable(page).getByText(label, { exact: true }).click()
+  await expect(unwritableFolders(page)).toBeVisible()
+})
+
+Then("the note's first folder is {string} with {string}", async ({ page }, folder: string, files: string) => {
+  const first = unwritableFolders(page).getByRole("listitem").first()
+  await expect(first).toContainText(folder)
+  await expect(first).toContainText(files)
+})
+
+Then("the note lists {int} folders and {string}", async ({ page }, count: number, more: string) => {
+  const items = unwritableFolders(page).getByRole("listitem")
+  await expect(items).toHaveCount(count + 1)
+  await expect(items.last()).toHaveText(more)
+})
+
+Then("there is no note about folders the hub may not write", async ({ page }) => {
+  await expect(page.getByText(/nicht beschreibbar für den Hub/)).toHaveCount(0)
+})
+
 Then("there is no link {string}", async ({ page }, name: string) => {
   await expect(page.getByRole("link", { name: new RegExp(`^${name}`) })).toHaveCount(0)
 })
